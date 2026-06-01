@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { parseWorkflowDefinition } from "../../src/workflow/definition";
 import type { WorkflowActivation } from "../../src/workflow/scheduler";
-import { createSessionWorkflowRuntimeHost } from "../../src/workflow/session-runtime";
+import { createSessionWorkflowRuntimeHost, type WorkflowAgentTaskRequest } from "../../src/workflow/session-runtime";
 
 const scriptWorkflow = `
 name: session-runtime-demo
@@ -13,6 +13,7 @@ nodes:
   build:
     type: agent
     agent: task
+    prompt: Implement the workflow feature.
 edges: []
 `;
 
@@ -60,5 +61,45 @@ describe("session workflow runtime host", () => {
 				model: node.model,
 			}),
 		).rejects.toThrow('workflow agent node "build" requires a subagent runtime adapter');
+	});
+
+	it("maps agent nodes to a single task runner invocation when configured", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "build");
+		if (!node) throw new Error("expected build node");
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: "agent completed",
+				};
+			},
+		});
+
+		const output = await host.runAgentNode?.({
+			node,
+			activation: activation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+			model: node.model,
+		});
+
+		expect(capturedRequest).toEqual({
+			agent: "task",
+			activationId: "activation-build",
+			nodeId: "build",
+			task: {
+				id: "build",
+				description: "build",
+				assignment: "Implement the workflow feature.",
+			},
+		});
+		expect(output).toEqual({
+			summary: "agent completed",
+			data: { exitCode: 0 },
+		});
 	});
 });
