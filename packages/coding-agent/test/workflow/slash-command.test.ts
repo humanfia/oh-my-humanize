@@ -182,6 +182,11 @@ edges:
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toContain("Workflow run: run-1");
 		expect(output[0]).toContain("Graph: 2 nodes, 1 edge");
+		expect(output[0]).toContain("Graph nodes:");
+		expect(output[0]).toContain("- build (agent)");
+		expect(output[0]).toContain("- review (review)");
+		expect(output[0]).toContain("Graph edges:");
+		expect(output[0]).toContain("- build -> review");
 		expect(output[0]).toContain("Activations: 1 completed");
 		expect(output[0]).toContain("activation-1 build completed - built");
 		expect(output[0]).toContain("activation-1 build openai/gpt-4o (workflow-default)");

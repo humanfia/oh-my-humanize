@@ -125,6 +125,18 @@ function formatWorkflowInspection(inspection: WorkflowInspection): string {
 		`State keys: ${Object.keys(inspection.state).join(", ") || "none"}`,
 		`Activations: ${formatActivationCounts({ completed, failed, running })}`,
 	];
+	if (inspection.graph.nodes.length > 0) {
+		lines.push("Graph nodes:");
+		for (const node of inspection.graph.nodes) {
+			lines.push(`- ${node.id} (${node.type})`);
+		}
+	}
+	if (inspection.graph.edges.length > 0) {
+		lines.push("Graph edges:");
+		for (const edge of inspection.graph.edges) {
+			lines.push(`- ${edge.from} -> ${edge.to}${formatEdgeCondition(edge.condition)}`);
+		}
+	}
 	if (inspection.pendingGraphPatchProposals.length > 0 || inspection.appliedGraphPatches.length > 0) {
 		lines.push(
 			`Graph patches: ${inspection.pendingGraphPatchProposals.length} pending, ${inspection.appliedGraphPatches.length} applied`,
@@ -166,6 +178,10 @@ function formatWorkflowInspection(inspection: WorkflowInspection): string {
 
 function formatReason(reason: string | undefined): string {
 	return reason === undefined ? "" : ` - ${reason}`;
+}
+
+function formatEdgeCondition(condition: string | undefined): string {
+	return condition === undefined ? "" : ` when ${condition}`;
 }
 
 function formatPatchImpact(impact: WorkflowInspection["pendingGraphPatchProposals"][number]["impact"]): string {
