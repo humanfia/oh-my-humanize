@@ -17,6 +17,33 @@ describe("workflow structured state and artifacts", () => {
 		).toThrow('workflow state write to "/private/token" is not allowed');
 	});
 
+	it("rejects conflicting writes to the same state path before mutating state", () => {
+		const state: Record<string, unknown> = {};
+
+		expect(() =>
+			applyWorkflowStatePatch(
+				state,
+				[
+					{ op: "set", path: "/review/verdict", value: "continue" },
+					{ op: "set", path: "/review/verdict", value: "finish" },
+				],
+				{ allowedWritePaths: ["/review"] },
+			),
+		).toThrow('workflow state patch writes "/review/verdict" more than once');
+		expect(state).toEqual({});
+		expect(() =>
+			validateWorkflowActivationOutput(
+				{
+					statePatch: [
+						{ op: "set", path: "/review/verdict", value: "continue" },
+						{ op: "set", path: "/review/verdict", value: "finish" },
+					],
+				},
+				{ allowedWritePaths: ["/review"] },
+			),
+		).toThrow('workflow state patch writes "/review/verdict" more than once');
+	});
+
 	it("reads state inside allowed scopes and rejects reads outside them", () => {
 		const state = {
 			review: { verdict: "continue" },

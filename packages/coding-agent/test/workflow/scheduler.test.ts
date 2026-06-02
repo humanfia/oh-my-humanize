@@ -274,6 +274,28 @@ describe("workflow activation scheduler", () => {
 		expect(join.parentActivationIds).toEqual([left.id, right.id]);
 	});
 
+	it("stops queued activations when the workflow is cancelled", async () => {
+		const definition = parseWorkflowDefinition(linearWorkflow, { sourcePath: "workflow.yml" });
+		const controller = new AbortController();
+		const executed: string[] = [];
+
+		const result = await runWorkflowScheduler(definition, {
+			startNodeId: "start",
+			signal: controller.signal,
+			executeNode: async activation => {
+				executed.push(activation.nodeId);
+				controller.abort("user cancelled workflow");
+				return { summary: `ran ${activation.nodeId}` };
+			},
+		});
+
+		expect(executed).toEqual(["start"]);
+		expect(result.activations.map(activation => [activation.nodeId, activation.status, activation.error])).toEqual([
+			["start", "completed", undefined],
+			["review", "failed", "user cancelled workflow"],
+		]);
+	});
+
 	it("uses the latest graph revision for future activations after an active-run graph patch", async () => {
 		const host = createHost();
 		const definition = parseWorkflowDefinition(mutableWorkflow, { sourcePath: "workflow.yml" });

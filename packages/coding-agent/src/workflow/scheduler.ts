@@ -19,6 +19,7 @@ export interface WorkflowSchedulerOptions {
 	initialState?: Record<string, unknown>;
 	maxActivations?: number;
 	maxNodeActivations?: number;
+	signal?: AbortSignal;
 	getCurrentDefinition?: () => WorkflowDefinition;
 	getCurrentGraphRevisionId?: () => string;
 	executeNode: (
@@ -31,6 +32,7 @@ export interface WorkflowSchedulerOptions {
 export interface WorkflowSchedulerExecutionContext {
 	state: Record<string, unknown>;
 	completedActivations: WorkflowActivation[];
+	signal?: AbortSignal;
 }
 
 export interface WorkflowSchedulerResult {
@@ -70,6 +72,13 @@ export async function runWorkflowScheduler(
 		}
 		const activation = queue.shift();
 		if (!activation) break;
+		const abortReason = workflowAbortReason(options.signal);
+		if (abortReason) {
+			activation.status = "failed";
+			activation.error = abortReason;
+			activations.push(activation);
+			break;
+		}
 		if (countNodeActivations(activations, activation.nodeId) >= maxNodeActivations) {
 			limitReached = true;
 			break;
@@ -89,6 +98,7 @@ export async function runWorkflowScheduler(
 			const context: WorkflowSchedulerExecutionContext = {
 				state,
 				completedActivations: activations.filter(candidate => candidate.status === "completed"),
+				signal: options.signal,
 			};
 			activation.output = validateWorkflowActivationOutput(await options.executeNode(activation, node, context), {
 				allowedWritePaths: node.writes,
@@ -131,6 +141,15 @@ export async function runWorkflowScheduler(
 	}
 
 	return { activations, limitReached, state };
+}
+
+function workflowAbortReason(signal: AbortSignal | undefined): string | undefined {
+	if (!signal?.aborted) return undefined;
+	const reason: unknown = signal.reason;
+	if (reason instanceof Error) return reason.message;
+	if (typeof reason === "string" && reason.length > 0) return reason;
+	if (reason !== undefined && reason !== null) return String(reason);
+	return "workflow cancelled";
 }
 
 function countNodeActivations(activations: WorkflowActivation[], nodeId: string): number {

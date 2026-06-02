@@ -46,6 +46,7 @@ export interface WorkflowRunnerOptions {
 	modelResolution?: WorkflowRunnerModelResolutionOptions;
 	maxActivations?: number;
 	maxNodeActivations?: number;
+	signal?: AbortSignal;
 	packageRoot?: string;
 	maxPromptBytes?: number;
 }
@@ -71,6 +72,7 @@ export async function runWorkflow(options: WorkflowRunnerOptions): Promise<Workf
 		startNodeId: options.startNodeId,
 		maxActivations: options.maxActivations,
 		maxNodeActivations: options.maxNodeActivations,
+		signal: options.signal,
 		getCurrentDefinition: () => run.definition,
 		getCurrentGraphRevisionId: () => run.currentGraphRevisionId,
 		executeNode: async (activation, node, context) =>

@@ -4,8 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parseWorkflowDefinition } from "../../src/workflow/definition";
 import type { WorkflowNodeRuntimeHost } from "../../src/workflow/node-runtime";
+import { resolveWorkflowPrompt } from "../../src/workflow/prompt-source";
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../../src/workflow/run-store";
 import { runWorkflow } from "../../src/workflow/runner";
+import type { WorkflowActivation } from "../../src/workflow/scheduler";
 
 interface CapturedEntry {
 	type: "custom";
@@ -38,6 +40,79 @@ afterEach(async () => {
 });
 
 describe("workflow prompt source resolution", () => {
+	it("resolves state and human prompt sources through declared read scopes", async () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: state-and-human-prompt-demo
+version: 1
+nodes:
+  seed:
+    type: script
+    writes:
+      - /assignments
+      - /human
+  build:
+    type: agent
+    agent: task
+    reads:
+      - /assignments
+    prompt:
+      state: /assignments/build
+  approval-question:
+    type: human
+    reads:
+      - /human
+    prompt:
+      human: /human/question
+edges:
+  - from: seed
+    to: build
+  - from: build
+    to: approval-question
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const host = createHost();
+		const receivedAgentPrompts: string[] = [];
+		const receivedHumanPrompts: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async () => ({
+				summary: "seeded",
+				statePatch: [
+					{ op: "set", path: "/assignments/build", value: "Build from structured workflow state." },
+					{ op: "set", path: "/human/question", value: "Approve the generated workflow assignment?" },
+				],
+			}),
+			runAgentNode: async input => {
+				receivedAgentPrompts.push(input.prompt ?? "");
+				return { summary: "built" };
+			},
+			runHumanNode: async input => {
+				receivedHumanPrompts.push(input.prompt ?? "");
+				return { summary: "approved" };
+			},
+		};
+
+		await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			startNodeId: "seed",
+			runtimeHost,
+		});
+
+		expect(receivedAgentPrompts).toEqual(["Build from structured workflow state."]);
+		expect(receivedHumanPrompts).toEqual(["Approve the generated workflow assignment?"]);
+		const reconstructed = reconstructWorkflowRuns(host.getBranch());
+		const promptSources = reconstructed[0]?.activations
+			.map(activation => activation.input?.prompt?.source)
+			.filter(source => source !== undefined);
+		expect(promptSources).toEqual([
+			{ kind: "state", path: "/assignments/build" },
+			{ kind: "human", path: "/human/question" },
+		]);
+	});
+
 	it("uses a prior agent activation output as the downstream agent prompt", async () => {
 		const definition = parseWorkflowDefinition(
 			`
@@ -100,6 +175,226 @@ edges:
 				},
 			},
 		});
+	});
+
+	it("uses script and human activation outputs as downstream agent prompts", async () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: non-agent-produced-prompt-demo
+version: 1
+nodes:
+  plan-script:
+    type: script
+  build-from-script:
+    type: agent
+    agent: task
+    prompt:
+      output:
+        node: plan-script
+        path: /data/nextPrompt
+        activation: parent
+  human-choice:
+    type: human
+    prompt: Choose the follow-up assignment.
+  build-from-human:
+    type: agent
+    agent: task
+    prompt:
+      output:
+        node: human-choice
+        path: /data/nextPrompt
+        activation: parent
+edges:
+  - from: plan-script
+    to: build-from-script
+  - from: build-from-script
+    to: human-choice
+  - from: human-choice
+    to: build-from-human
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const host = createHost();
+		const receivedPrompts: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async () => ({
+				summary: "script planned",
+				data: { nextPrompt: "Build the script-produced assignment." },
+			}),
+			runAgentNode: async input => {
+				receivedPrompts.push(input.prompt ?? "");
+				return { summary: `ran ${input.node.id}` };
+			},
+			runHumanNode: async () => ({
+				summary: "human supplied follow-up",
+				data: { nextPrompt: "Build the human-produced assignment." },
+			}),
+		};
+
+		await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			startNodeId: "plan-script",
+			runtimeHost,
+		});
+
+		expect(receivedPrompts).toEqual([
+			"Build the script-produced assignment.",
+			"Build the human-produced assignment.",
+		]);
+		const reconstructed = reconstructWorkflowRuns(host.getBranch());
+		const promptSources = reconstructed[0]?.activations
+			.map(activation => activation.input?.prompt?.source)
+			.filter(source => source !== undefined);
+		expect(promptSources).toEqual([
+			{
+				kind: "output",
+				node: "plan-script",
+				path: "/data/nextPrompt",
+				activation: "parent",
+				activationId: "activation-1",
+			},
+			{
+				kind: "inline",
+				text: "Choose the follow-up assignment.",
+			},
+			{
+				kind: "output",
+				node: "human-choice",
+				path: "/data/nextPrompt",
+				activation: "parent",
+				activationId: "activation-3",
+			},
+		]);
+	});
+
+	it("uses review output prompts deterministically across looped parent and latest selectors", async () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: looped-review-produced-prompt-demo
+version: 1
+nodes:
+  review:
+    type: review
+    prompt: Review the current build.
+    gates:
+      - continue
+      - finish
+    writes:
+      - /verdict
+  build-from-parent:
+    type: agent
+    agent: task
+    prompt:
+      output:
+        node: review
+        path: /summary
+        activation: parent
+  build-from-latest:
+    type: agent
+    agent: task
+    prompt:
+      output:
+        node: review
+        path: /summary
+        activation: latest-completed
+edges:
+  - from: review
+    to: build-from-parent
+    when: outputs.review.verdict == "continue"
+  - from: build-from-parent
+    to: review
+  - from: review
+    to: build-from-latest
+    when: outputs.review.verdict == "finish"
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const host = createHost();
+		const receivedPrompts: string[] = [];
+		let reviewCount = 0;
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runReviewNode: async () => {
+				reviewCount += 1;
+				const verdict = reviewCount === 1 ? "continue" : "finish";
+				return {
+					verdict,
+					summary: `review prompt ${reviewCount}`,
+				};
+			},
+			runAgentNode: async input => {
+				receivedPrompts.push(input.prompt ?? "");
+				return { summary: `ran ${input.node.id}` };
+			},
+		};
+
+		await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			startNodeId: "review",
+			runtimeHost,
+		});
+
+		expect(receivedPrompts).toEqual(["review prompt 1", "review prompt 2"]);
+		const reconstructed = reconstructWorkflowRuns(host.getBranch());
+		const buildPromptSources = reconstructed[0]?.activations
+			.filter(activation => activation.nodeId.startsWith("build"))
+			.map(activation => activation.input?.prompt?.source);
+		expect(buildPromptSources).toEqual([
+			{
+				kind: "output",
+				node: "review",
+				path: "/summary",
+				activation: "parent",
+				activationId: "activation-1",
+			},
+			{
+				kind: "output",
+				node: "review",
+				path: "/summary",
+				activation: "latest-completed",
+				activationId: "activation-3",
+			},
+		]);
+	});
+
+	it("fails before consuming an ambiguous parallel parent prompt", async () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: ambiguous-parent-prompt-demo
+version: 1
+nodes:
+  planner:
+    type: agent
+    agent: planner
+  build:
+    type: agent
+    agent: task
+    prompt:
+      output:
+        node: planner
+        path: /data/nextPrompt
+        activation: parent
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const buildNode = definition.nodes.find(node => node.id === "build");
+		if (!buildNode) throw new Error("expected build node");
+		const completedActivations: WorkflowActivation[] = [
+			completedActivation("activation-1", "planner", "first prompt"),
+			completedActivation("activation-2", "planner", "second prompt"),
+		];
+
+		await expect(
+			resolveWorkflowPrompt(buildNode, {
+				state: {},
+				completedActivations,
+				parentActivationIds: ["activation-1", "activation-2"],
+			}),
+		).rejects.toThrow('workflow prompt source for node "build" has multiple parent activations for node "planner"');
 	});
 
 	it("fails before running a downstream node when an output prompt is not a string", async () => {
@@ -251,3 +546,17 @@ edges: []
 		expect(receivedPrompt).toBe("Implement the package workflow.\n");
 	});
 });
+
+function completedActivation(id: string, nodeId: string, nextPrompt: string): WorkflowActivation {
+	return {
+		id,
+		nodeId,
+		graphRevisionId: "workflow-graph",
+		status: "completed",
+		parentActivationIds: [],
+		output: {
+			summary: `completed ${nodeId}`,
+			data: { nextPrompt },
+		},
+	};
+}

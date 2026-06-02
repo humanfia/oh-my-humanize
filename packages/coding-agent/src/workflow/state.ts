@@ -42,6 +42,7 @@ export function applyWorkflowStatePatch(
 	patch: WorkflowStatePatchOperation[],
 	policy: WorkflowStateAccessPolicy = {},
 ): void {
+	assertNoConflictingWrites(patch);
 	for (const operation of patch) {
 		assertPointerAllowed(operation.path, policy.allowedWritePaths, "write to");
 		assertInlineValue(operation.path, operation.value, policy);
@@ -72,12 +73,23 @@ export function validateWorkflowActivationOutput(
 	}
 	if (raw.statePatch !== undefined) {
 		result.statePatch = expectStatePatch(raw.statePatch);
+		assertNoConflictingWrites(result.statePatch);
 		for (const operation of result.statePatch) {
 			assertPointerAllowed(operation.path, policy.allowedWritePaths, "write to");
 			assertInlineValue(operation.path, operation.value, policy);
 		}
 	}
 	return result;
+}
+
+function assertNoConflictingWrites(patch: WorkflowStatePatchOperation[]): void {
+	const seen = new Set<string>();
+	for (const operation of patch) {
+		if (seen.has(operation.path)) {
+			throw new WorkflowStateError(`workflow state patch writes "${operation.path}" more than once`);
+		}
+		seen.add(operation.path);
+	}
 }
 
 function getStatePath(state: Record<string, unknown>, pointer: string): unknown {
