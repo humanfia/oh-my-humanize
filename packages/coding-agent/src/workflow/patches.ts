@@ -550,6 +550,15 @@ function validatePromptSourceReferences(definition: WorkflowDefinition, nodeIds:
 				`workflow graph patch leaves node "${node.id}" prompt referencing unknown output node "${source.node}"`,
 			);
 		}
+		validatePromptSourcePermissions(node);
+	}
+}
+
+function validatePromptSourcePermissions(node: WorkflowNode): void {
+	const source = node.promptSource;
+	if (!source) return;
+	if (source.kind === "state" || source.kind === "human" || source.kind === "output") {
+		readWorkflowState({}, source.path, { allowedReadPaths: node.reads });
 	}
 }
 

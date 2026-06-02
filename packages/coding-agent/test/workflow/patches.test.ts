@@ -209,6 +209,41 @@ describe("workflow graph patch API", () => {
 		expect(() =>
 			applyWorkflowGraphPatch(definition, [{ op: "remove_node", nodeId: "planner" }], { actor: "supervisor" }),
 		).toThrow('workflow graph patch leaves node "build" prompt referencing unknown output node "planner"');
+		expect(() =>
+			applyWorkflowGraphPatch(
+				parseWorkflowDefinition(
+					`
+name: prompt-permission-demo
+version: 1
+nodes:
+  planner:
+    type: agent
+  build:
+    type: agent
+    reads:
+      - /summary
+    prompt: Use the static fallback plan.
+edges:
+  - from: planner
+    to: build
+`,
+					{ sourcePath: "workflow.yml" },
+				),
+				[
+					{
+						op: "replace_node_prompt_source",
+						nodeId: "build",
+						promptSource: {
+							kind: "output",
+							node: "planner",
+							path: "/data/nextPrompt",
+							activation: "latest-completed",
+						},
+					},
+				],
+				{ actor: "supervisor" },
+			),
+		).toThrow('workflow state read from "/data/nextPrompt" is not allowed');
 
 		const result = applyWorkflowGraphPatch(
 			definition,
