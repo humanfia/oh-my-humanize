@@ -173,6 +173,8 @@ describe("workflow end-to-end smoke", () => {
 		).toEqual([
 			{
 				value: "Build round 1",
+				byteLength: 13,
+				contentHash: "sha256:88d770bb27b60717a4377c68b9c9dacb19260b9e3d4bb4d3ec6912c0dfaeff9c",
 				source: {
 					kind: "output",
 					node: "planner",
@@ -183,6 +185,8 @@ describe("workflow end-to-end smoke", () => {
 			},
 			{
 				value: "Build round 2",
+				byteLength: 13,
+				contentHash: "sha256:0cebaf4ba498d8318e0b7b48168f5cb7991e1ff301f5900fe28d59b994bdc73b",
 				source: {
 					kind: "output",
 					node: "planner",

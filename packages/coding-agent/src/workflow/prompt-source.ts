@@ -15,6 +15,8 @@ export interface WorkflowPromptResolutionContext {
 
 export interface WorkflowResolvedPrompt {
 	value: string;
+	byteLength: number;
+	contentHash: string;
 	source: WorkflowResolvedPromptSource;
 }
 
@@ -169,10 +171,17 @@ function resolvedPrompt(
 			`workflow prompt source for node "${node.id}" at "${label}" must resolve to a string`,
 		);
 	}
-	if (new TextEncoder().encode(value).byteLength > (context.maxPromptBytes ?? DEFAULT_WORKFLOW_MAX_PROMPT_BYTES)) {
+	const byteLength = new TextEncoder().encode(value).byteLength;
+	if (byteLength > (context.maxPromptBytes ?? DEFAULT_WORKFLOW_MAX_PROMPT_BYTES)) {
 		throw new WorkflowPromptSourceError(`workflow prompt source for node "${node.id}" exceeds the prompt size limit`);
 	}
-	return { value, source };
+	return { value, byteLength, contentHash: contentHash(value), source };
+}
+
+function contentHash(value: string): string {
+	const hasher = new Bun.CryptoHasher("sha256");
+	hasher.update(value);
+	return `sha256:${hasher.digest("hex")}`;
 }
 
 function readPointer(root: Record<string, unknown>, pointer: string): unknown {

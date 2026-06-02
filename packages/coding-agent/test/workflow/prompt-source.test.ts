@@ -89,6 +89,8 @@ edges:
 		expect(reconstructed[0]?.activations[1]?.input).toEqual({
 			prompt: {
 				value: "Build a playable terminal puzzle game.",
+				byteLength: 38,
+				contentHash: "sha256:7e5f5407597e0e2d187c5ed742e0033554dcb2a61825417c9b9c674457ac10d8",
 				source: {
 					kind: "output",
 					node: "planner",
