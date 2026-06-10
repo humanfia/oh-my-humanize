@@ -1,11 +1,67 @@
 import { describe, expect, it } from "bun:test";
-import { applyEdits, parsePatch } from "@oh-my-pi/hashline";
+import { applyEdits, Patch, parsePatch } from "@oh-my-pi/hashline";
 
 function applyPatch(text: string, diff: string): string {
 	return applyEdits(text, parsePatch(diff).edits).text;
 }
 
 const FILE = "a\nb\nc\nd\ne";
+
+describe("hashline section headers", () => {
+	it("accepts paths with spaces in anchored section headers", () => {
+		const section = Patch.parseSingle("[dir with spaces/file.ts#1a2b]\nreplace 1..1:\n+after");
+
+		expect(section.path).toBe("dir with spaces/file.ts");
+		expect(section.fileHash).toBe("1A2B");
+		expect(section.applyTo("before").text).toBe("after");
+	});
+
+	it("recovers apply_patch-contaminated headers whose paths contain spaces", () => {
+		const section = Patch.parseSingle("[*** Update File: dir with spaces/file.ts#1A2B]\nreplace 1..1:\n+after");
+
+		expect(section.path).toBe("dir with spaces/file.ts");
+		expect(section.fileHash).toBe("1A2B");
+		expect(section.applyTo("before").text).toBe("after");
+	});
+
+	it("rejects trailing junk after a snapshot tag", () => {
+		expect(() => Patch.parse("[src/a.ts#1A2B copied from read]\nreplace 1..1:\n+after")).toThrow(
+			/Input header must be/,
+		);
+		expect(() => Patch.parse("[src/a.ts#1A2B:812]\nreplace 1..1:\n+after")).toThrow(/Input header must be/);
+	});
+
+	it("rejects trailing junk after a snapshot tag even with apply_patch noise", () => {
+		expect(() => Patch.parse("[Update File: src/a.ts#1A2B copied from read]\nreplace 1..1:\n+after")).toThrow(
+			/Input header must be/,
+		);
+		expect(() => Patch.parse("[Update File: src/a.ts#1A2B:812]\nreplace 1..1:\n+after")).toThrow(
+			/Input header must be/,
+		);
+	});
+
+	it("rejects malformed snapshot tags", () => {
+		expect(() => Patch.parse("[src/a.ts#1A2]\nreplace 1..1:\n+after")).toThrow(/Input header must be/);
+		expect(() => Patch.parse("[src/a.ts#1A2G]\nreplace 1..1:\n+after")).toThrow(/Input header must be/);
+		expect(() => Patch.parse("[src/a.ts#1A2B5]\nreplace 1..1:\n+after")).toThrow(/Input header must be/);
+	});
+
+	it("rejects malformed snapshot tags even with apply_patch noise", () => {
+		expect(() => Patch.parse("[Update File: src/a.ts#1A2G]\nreplace 1..1:\n+after")).toThrow(/Input header must be/);
+	});
+
+	it("reports bracket syntax with a 4-hex example when the header is missing", () => {
+		try {
+			Patch.parse("delete 38..40");
+			throw new Error("expected missing-header error");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			expect(message).toContain('input must begin with "[PATH#HASH]"');
+			expect(message).toContain('Example: "[src/foo.ts#1A2B]"');
+			expect(message).not.toContain("#0A3");
+		}
+	});
+});
 
 describe("hashline core — verb header forms", () => {
 	it("rejects a bare single-number hunk header with verb guidance", () => {
@@ -50,6 +106,54 @@ describe("hashline body contracts", () => {
 		expect(result.warnings.some(w => /Auto-prefixed bare body row/.test(w))).toBe(true);
 	});
 
+	it("strips read-output line number prefix from auto-piped bare body rows", () => {
+		const result = parsePatch("replace 2..2:\n2:hello");
+		expect(applyEdits(FILE, result.edits).text).toBe("a\nhello\nc\nd\ne");
+		expect(result.warnings.some(w => /Auto-prefixed bare body row/.test(w))).toBe(true);
+	});
+	it("preserves `+N:` literal payloads without stripping", () => {
+		const result = parsePatch("replace 2..2:\n+3:keep");
+		expect(applyEdits(FILE, result.edits).text).toBe("a\n3:keep\nc\nd\ne");
+		expect(result.warnings.some(w => /Auto-prefixed/.test(w))).toBe(false);
+	});
+	it("strips only one N: prefix from bare body rows (preserves nested digits:colon)", () => {
+		// "2:42:hello" → should yield "42:hello", NOT "hello" (recursive would over-strip)
+		const result = parsePatch("replace 2..2:\n2:42:hello");
+		expect(applyEdits(FILE, result.edits).text).toBe("a\n42:hello\nc\nd\ne");
+	});
+
+	it("strips N: prefixes only when every bare body row carries one", () => {
+		const result = parsePatch("replace 2..3:\n2:foo\n3:bar");
+		expect(applyEdits(FILE, result.edits).text).toBe("a\nfoo\nbar\nd\ne");
+	});
+
+	it("leaves bare body rows untouched when only some carry an N: prefix", () => {
+		// "3:keep" looks like a snapshot prefix but "plain" does not, so the body
+		// is genuine content (not a pasted snapshot) — strip nothing.
+		const result = parsePatch("replace 2..3:\n3:keep\nplain");
+		expect(applyEdits(FILE, result.edits).text).toBe("a\n3:keep\nplain\nd\ne");
+	});
+
+	it("keeps interior blank rows in a bare replace body", () => {
+		const result = parsePatch("replace 2..3:\nfoo\n\nbar");
+		expect(applyEdits(FILE, result.edits).text).toBe("a\nfoo\n\nbar\nd\ne");
+	});
+
+	it("drops trailing blank rows between a bare body and the next hunk", () => {
+		const result = parsePatch("replace 2..2:\nfoo\n\nreplace 4..4:\nbaz");
+		expect(applyEdits(FILE, result.edits).text).toBe("a\nfoo\nc\nbaz\ne");
+	});
+
+	it("skips blank rows when checking N: prefix uniformity", () => {
+		const result = parsePatch("replace 2..3:\n2:foo\n\n3:bar");
+		expect(applyEdits(FILE, result.edits).text).toBe("a\nfoo\n\nbar\nd\ne");
+	});
+
+	it("leaves numeric-keyed literal bodies untouched (dict/YAML shape)", () => {
+		const result = parsePatch('replace 2..3:\n1: "one",\n2: "two",');
+		expect(applyEdits(FILE, result.edits).text).toBe('a\n1: "one",\n2: "two",\nd\ne');
+	});
+
 	it("rejects `-` body rows with a teaching error", () => {
 		expect(() => parsePatch("replace 2..2:\n-old\n+new")).toThrow(/`-` rows are not valid/);
 	});
@@ -58,8 +162,8 @@ describe("hashline body contracts", () => {
 		expect(applyPatch(FILE, "replace 2..2:\n+-literal\n++plus")).toBe("a\n-literal\n+plus\nc\nd\ne");
 	});
 
-	it("rejects empty replace and insert hunks", () => {
-		expect(() => parsePatch("replace 2..2:")).toThrow(/To delete lines, use `delete/);
+	it("treats empty replace as delete and still rejects empty insert", () => {
+		expect(applyPatch(FILE, "replace 2..2:")).toBe("a\nc\nd\ne");
 		expect(() => parsePatch("insert tail:")).toThrow(/`insert` needs/);
 	});
 

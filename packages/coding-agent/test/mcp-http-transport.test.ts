@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { connectToServer } from "@oh-my-pi/pi-coding-agent/mcp/client";
+import { resolveSSEConnectTimeoutMs } from "@oh-my-pi/pi-coding-agent/mcp/transports/http";
+import type { MCPServerConnection } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import type { Server } from "bun";
-import { connectToServer } from "../src/mcp/client";
-import { resolveSSEConnectTimeoutMs } from "../src/mcp/transports/http";
-import type { MCPServerConnection } from "../src/mcp/types";
 
 let activeServer: Server<undefined> | undefined;
 
@@ -66,6 +66,26 @@ describe("HTTP MCP transport", () => {
 		} finally {
 			await connection?.transport.close();
 		}
+	});
+
+	it("reports required initialize request failures", async () => {
+		activeServer = Bun.serve({
+			port: 0,
+			async fetch(request) {
+				if (request.method === "DELETE") {
+					return new Response(null, { status: 204 });
+				}
+				return new Response("initialize exploded", { status: 500 });
+			},
+		});
+
+		await expect(
+			connectToServer("broken", {
+				type: "http",
+				url: String(activeServer.url),
+				timeout: 1_000,
+			}),
+		).rejects.toThrow("HTTP 500: initialize exploded");
 	});
 
 	describe("resolveSSEConnectTimeoutMs", () => {

@@ -136,7 +136,7 @@ export declare class Shell {
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV15_7_6(): void
+export declare function __piNativesV15_10_12(): void
 
 /**
  * Apply conservative pre-execution rewrites to a bash command.
@@ -227,6 +227,56 @@ export interface AstFindResult {
  * worker thread.
  */
 export declare function astGrep(options: AstFindOptions): Promise<AstFindResult>
+
+/**
+ * Match ast-grep patterns against an in-memory source string; returns a
+ * promise resolved on a worker thread.
+ *
+ * This is the file-free counterpart to [`ast_grep`]: callers that already hold
+ * the source (streaming buffers, generated code, editor contents) avoid a
+ * temp-file round trip. `lang` is required since there is no path to infer it
+ * from.
+ */
+export declare function astMatch(options: AstMatchOptions): Promise<AstMatchResult>
+
+/**
+ * Options for `astMatch`: run ast-grep patterns against an in-memory source
+ * string instead of files on disk.
+ */
+export interface AstMatchOptions {
+  /** Source code to match against (parsed in memory, never read from disk). */
+  source: string
+  /** Language of `source` (required; e.g. "ts", "tsx", "rust", "python"). */
+  lang: string
+  /** ast-grep patterns to search for (OR across patterns). */
+  patterns: Array<string>
+  /** Rule selector for multi-rule ast-grep configurations. */
+  selector?: string
+  /** Pattern strictness; defaults to smart matching when omitted. */
+  strictness?: AstMatchStrictness
+  /** Maximum matches to return after `offset` (default applies when omitted). */
+  limit?: number
+  /** Number of leading matches to skip before applying `limit`. */
+  offset?: number
+  /** When true, include meta-variable bindings per match. */
+  includeMeta?: boolean
+  /** Optional cancellation handle (library-specific). */
+  signal?: unknown
+  /** Wall-clock timeout for the worker task in milliseconds. */
+  timeoutMs?: number
+}
+
+/** Result of an in-memory `astMatch` run. */
+export interface AstMatchResult {
+  /** Page of matches after sort, offset, and limit. */
+  matches: Array<AstFindMatch>
+  /** Total matches found before paging (can exceed `matches.length`). */
+  totalMatches: number
+  /** True when results were truncated by `limit`. */
+  limitReached: boolean
+  /** Non-fatal parse or pattern-compile errors collected during the run. */
+  parseErrors?: Array<string>
+}
 
 /** ast-grep pattern strictness (controls how patterns match syntax). */
 export declare enum AstMatchStrictness {
@@ -429,6 +479,31 @@ export declare enum Ellipsis {
 }
 
 /**
+ * Matching-bracket context for an arbitrary tree-sitter language.
+ *
+ * For each multi-line named node whose span crosses the visible window, return
+ * the boundary line sitting *outside* that window (the closer when the opener
+ * is shown, the opener when the closer is shown). Covers brace and indentation
+ * languages alike using real syntactic spans.
+ *
+ * Returns `null` when the language is unrecognized or the source fails to
+ * parse / carries a syntax error (caller should fall back to a lexical scan);
+ * a sorted, unique list of 1-indexed boundary lines otherwise.
+ */
+export declare function enclosingBlockBoundaries(options: EnclosingBoundaryOptions): Array<number> | null
+
+export interface EnclosingBoundaryOptions {
+  /** Source code to inspect. */
+  code: string
+  /** Language alias (e.g. "rust", "typescript") used before path inference. */
+  lang?: string
+  /** File path used to infer language by extension when `lang` is omitted. */
+  path?: string
+  /** 1-indexed inclusive visible line ranges (the lines actually shown). */
+  ranges: Array<LineRange>
+}
+
+/**
  * Encode image bytes into a SIXEL escape sequence for terminal rendering.
  *
  * The input image is decoded and resized to the requested pixel dimensions
@@ -544,8 +619,9 @@ export declare function getWorkProfile(lastSeconds: number): WorkProfile
  * Resolves the search root, scans entries, applies glob and optional file-type
  * filters, and optionally streams each accepted match through `on_match`.
  *
- * If `sortByMtime` is enabled, all matching entries are collected, sorted by
- * descending mtime, then truncated to `maxResults`.
+ * If `sortByMtime` is enabled with a finite `maxResults`, uncached scans keep
+ * only the current top results while traversing instead of collecting the full
+ * tree.
  *
  * # Errors
  * Returns an error when the search path cannot be resolved, the path is not a
@@ -675,6 +751,12 @@ export interface GrepOptions {
   maxColumns?: number
   /** Output mode (content, filesWithMatches, or count). */
   mode?: GrepOutputMode
+  /**
+   * Maximum matches collected per file (content mode). Keeps one hot file
+   * from exhausting the global `max_count` budget before other files are
+   * reached.
+   */
+  maxCountPerFile?: number
   /** Abort signal for cancelling the operation. */
   signal?: unknown
   /** Timeout in milliseconds for the operation. */
@@ -706,6 +788,8 @@ export interface GrepResult {
   filesSearched: number
   /** Whether the limit/offset stopped the search early. */
   limitReached?: boolean
+  /** Number of files skipped because they exceed the size limit. */
+  skippedOversized?: number
 }
 
 /**
@@ -906,6 +990,13 @@ export declare enum KeyEventType {
   Release = 3
 }
 
+export interface LineRange {
+  /** 1-indexed inclusive first visible line. */
+  startLine: number
+  /** 1-indexed inclusive last visible line. */
+  endLine: number
+}
+
 /**
  * Walk the workspace once and return tree entries plus AGENTS.md candidates.
  *
@@ -1048,6 +1139,18 @@ export interface MinimizerOptions {
    * the raw, un-minimized output. Default 4 MiB.
    */
   maxCaptureBytes?: number
+  /**
+   * Source-outline level for `cat <source-file>` minimization. Accepts
+   * `"default"` (current behavior) or `"aggressive"` (strip function bodies).
+   */
+  sourceOutlineLevel?: string
+  /**
+   * Kill-switch to fall back to the pre-PR (legacy) filter behavior for
+   * grep / find / pytest. When `Some(true)`, filters that opted into the
+   * always-shrink Tier 1 / Tier 2 behavior skip the new code path. When
+   * `None`, defers to the `OMP_MINIMIZER_LEGACY_FILTERS` env var.
+   */
+  legacyFilters?: boolean
 }
 
 /**
@@ -1182,6 +1285,17 @@ export interface PtyStartOptions {
 export declare function readImageFromClipboard(): Promise<ClipboardImage | undefined | null>
 
 /**
+ * Render one snapcompact frame: print pre-normalized text onto a square
+ * bitmap and encode it as PNG.
+ *
+ * The glyph grid holds `floor(size/cellWidth) * floor(size/cellHeight/lineRepeat)`
+ * characters; input beyond that is ignored (the caller chunks text to
+ * capacity). Native-cell shapes encode as 4-bit indexed PNG; stretched
+ * shapes (target cell != font cell) encode as RGB. Returns the PNG bytes.
+ */
+export declare function renderSnapcompactPng(text: string, options: SnapcompactRenderOptions): Uint8Array
+
+/**
  * Search content for a pattern (one-shot, compiles pattern each time).
  * For repeated searches with the same pattern, use [`grep`] with file filters.
  *
@@ -1309,6 +1423,31 @@ export interface SliceResult {
  * width.
  */
 export declare function sliceWithWidth(line: string, startCol: number, length: number, strict: boolean | undefined | null, tabWidth: number): SliceResult
+
+/** Shape options for one snapcompact frame. */
+export interface SnapcompactRenderOptions {
+  /** Frame edge in pixels. */
+  size: number
+  /** Bundled font: `"5x8"` (X.org BDF) or `"8x8"` (unscii-8). Default `"5x8"`. */
+  font?: string
+  /**
+   * Target cell advance in pixels. Differing from the font's natural cell
+   * triggers the Lanczos stretch path. Default: font natural width.
+   */
+  cellWidth?: number
+  /** Target cell pitch in pixels. Default: font natural height. */
+  cellHeight?: number
+  /**
+   * Ink variant: `"sent"` (six-hue sentence cycling) or `"bw"` (black).
+   * Default `"sent"`.
+   */
+  variant?: string
+  /**
+   * Print each text line this many times; copies after the first sit on a
+   * pale highlight band. Default 1.
+   */
+  lineRepeat?: number
+}
 
 export declare function summarizeCode(options: SummaryOptions): SummaryResult
 

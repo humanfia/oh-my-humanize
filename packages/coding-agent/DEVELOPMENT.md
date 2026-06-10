@@ -323,7 +323,8 @@ This separation keeps `SessionManager` logic independent from storage backend an
 `packages/coding-agent/src/session/history-storage.ts` (`HistoryStorage`) is not conversation state restoration.
 
 - Stores prompt history in SQLite (`history.db`) with FTS5 index (`history_fts`).
-- APIs are `add(prompt, cwd?)`, `getRecent(limit)`, `search(query, limit)`.
+- APIs are `add(prompt, cwd?, sessionId?)`, `getRecent(limit)`, `search(query, limit)`, `matchingSessionIds(query, limit?)`.
+- Each row records the originating session via the `session_id` column (surfaced as `HistoryEntry.sessionId`), so prompts can be traced back to the session they were submitted from (e.g. for `--resume`). Interactive mode registers a resolver via `setSessionResolver(...)` so prompts added without an explicit id are stamped with the session active at `add()` time, tracking fork/resume switches.
 - Uses singleton `HistoryStorage.open(...)` and asynchronous insert (`setImmediate`) with duplicate-last-prompt suppression.
 
 This is command/input recall data; it does not rebuild agent message trees.
@@ -395,7 +396,7 @@ A `ToolFactory` is `(session: ToolSession) => Tool | null | Promise<Tool | null>
 4. Computes effective gating (`isToolAllowed`) from settings and runtime state:
    - feature toggles (`find.enabled`, `grep.enabled`, etc.)
    - recursion guard for `task` (`task.maxRecursionDepth` vs `session.taskDepth`)
-   - yield mode (`requireYieldTool`) and `todo_write` suppression
+   - yield mode (`requireYieldTool`) and `todo` suppression
 5. Instantiates selected tools in parallel with `Promise.all`, records slow factory timings when `PI_TIMING=1`, and wraps results with `wrapToolWithMetaNotice`.
 6. Includes `resolve` unconditionally so plan mode and deferred preview/apply workflows always have it available.
 
@@ -922,7 +923,7 @@ What _is_ isolated is execution context and artifacts, not process memory:
 - Removes `task` when max recursion depth is reached (`task.maxRecursionDepth`).
 - Expands legacy `exec` alias into `eval` when any eval backend is enabled, and always includes `bash`.
 - Forces `requireYieldTool: true` in `createAgentSession(...)`.
-- Filters parent-owned tools out of child tools (`todo_write` is removed).
+- Filters parent-owned tools out of child tools (`todo` is removed).
 
 If parent MCP connections exist, executor creates in-process MCP proxy tools with `createMCPProxyTools(...)` so children reuse parent MCP connectivity rather than creating independent MCP sessions.
 
@@ -1016,7 +1017,7 @@ Core pipeline in `renderUrl(url, timeout, raw, signal)`:
    - HTML-to-text conversion (`renderHtmlToText`)
 7. If HTML conversion is low-quality (`isLowQualityOutput`), try document-link extraction (`extractDocumentLinks`) + markit.
 
-`renderHtmlToText(...)` fallback order is explicit in code: Jina reader endpoint (`https://r.jina.ai/<url>`), then `trafilatura` (via `ensureTool`), then `lynx`, then native `htmlToMarkdown`.
+`renderHtmlToText(...)` tries reader backends in priority order: native in-process `htmlToMarkdown`, then `trafilatura` (via `ensureTool`), then `lynx`, then Parallel extract, then the Jina reader endpoint (`https://r.jina.ai/<url>`). The `providers.fetch` setting picks the order — `auto` uses the default above; selecting a specific backend tries it first, then the rest as fallbacks. Every backend's output must clear the same quality gate (`>100` chars and not `isLowQualityOutput`); if none clears it, the highest-priority substantial-but-low-quality output is surfaced so step 7's targeted fallbacks still run. native operates on already-fetched HTML (instant, no network), so it both wins the common case and survives a stalled remote backend.
 
 ### Scraper registry role (`web/scrapers/index.ts`)
 

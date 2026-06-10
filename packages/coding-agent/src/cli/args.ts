@@ -1,7 +1,7 @@
 /**
  * CLI argument parsing and help display
  */
-import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
+import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { parseEffort } from "../thinking";
@@ -14,6 +14,7 @@ export interface Args {
 	allowHome?: boolean;
 	provider?: string;
 	model?: string;
+	config?: string[];
 	smol?: string;
 	slow?: string;
 	plan?: string;
@@ -21,6 +22,7 @@ export interface Args {
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
 	thinking?: Effort;
+	hideThinking?: boolean;
 	continue?: boolean;
 	resume?: string | true;
 	help?: boolean;
@@ -108,6 +110,10 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.version = true;
 		} else if (arg === "--allow-home") {
 			result.allowHome = true;
+		} else if (arg === "--cwd" && i + 1 < args.length) {
+			result.cwd = args[++i];
+		} else if (arg === "--config" && i + 1 < args.length) {
+			result.config = [...(result.config ?? []), args[++i]];
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
 			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "acp" || mode === "rpc-ui") {
@@ -182,6 +188,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 					validThinkingLevels: THINKING_EFFORTS,
 				});
 			}
+		} else if (arg === "--hide-thinking") {
+			result.hideThinking = true;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 		} else if (arg === "--export" && i + 1 < args.length) {
@@ -249,13 +257,13 @@ export function getExtraHelpText(): string {
   CLAUDE_CODE_USE_FOUNDRY    - Enable Anthropic Foundry mode (uses Foundry endpoint + mTLS)
   FOUNDRY_BASE_URL           - Anthropic Foundry base URL (e.g., https://<foundry-host>)
   ANTHROPIC_FOUNDRY_API_KEY  - Anthropic token used as Authorization: Bearer <token> in Foundry mode
-  ANTHROPIC_CUSTOM_HEADERS   - Extra Foundry headers (e.g., "user-id: USERNAME")
+  ANTHROPIC_CUSTOM_HEADERS   - Extra headers for Foundry or any custom ANTHROPIC_BASE_URL gateway (e.g., "user-id: USERNAME")
   CLAUDE_CODE_CLIENT_CERT    - Client certificate (PEM path or inline PEM) for mTLS
   CLAUDE_CODE_CLIENT_KEY     - Client private key (PEM path or inline PEM) for mTLS
   NODE_EXTRA_CA_CERTS        - CA bundle path (or inline PEM) for server certificate validation
   OPENAI_API_KEY             - OpenAI GPT models
   GEMINI_API_KEY             - Google Gemini models
-  GITHUB_TOKEN               - GitHub Copilot (or GH_TOKEN, COPILOT_GITHUB_TOKEN)
+  COPILOT_GITHUB_TOKEN      - GitHub Copilot
 
   ${chalk.dim("# Additional LLM Providers")}
   AZURE_OPENAI_API_KEY       - Azure OpenAI models
@@ -281,10 +289,11 @@ export function getExtraHelpText(): string {
   ${chalk.dim("# Search & Tools")}
   EXA_API_KEY                - Exa web search
   BRAVE_API_KEY              - Brave web search
-  PERPLEXITY_API_KEY         - Perplexity web search (API)
+  PERPLEXITY_API_KEY         - Perplexity web search API key (optional; anonymous fallback)
   PERPLEXITY_COOKIES         - Perplexity web search (session cookie)
   TAVILY_API_KEY             - Tavily web search
-  ANTHROPIC_SEARCH_API_KEY   - Anthropic search provider
+  ANTHROPIC_SEARCH_API_KEY   - Anthropic web search (override; isolates search from main ANTHROPIC_API_KEY)
+  ANTHROPIC_SEARCH_BASE_URL  - Anthropic web search base URL (override; pairs with ANTHROPIC_SEARCH_API_KEY)
 
   ${chalk.dim("# Configuration")}
   PI_CODING_AGENT_DIR        - Session storage directory (default: ~/${CONFIG_DIR_NAME}/agent)
@@ -309,7 +318,7 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   inspect_image - Analyze images with a vision model
   browser       - Browser automation (Puppeteer)
   task          - Launch sub-agents for parallel tasks
-  todo_write    - Manage todo/task lists
+  todo          - Manage todo/task lists
   web_search    - Search the web
   ask           - Ask user questions (interactive mode only)
 

@@ -15,6 +15,7 @@ import { isPromise } from "node:util/types";
 import winston from "winston";
 import DailyRotateFile from "winston-daily-rotate-file";
 import { getLogsDir } from "./dirs";
+import { drainModuleLoadEvents } from "./timing-buffer";
 
 /** Ensure a logs directory exists; return the resolved path. */
 function ensureDir(dir: string): string {
@@ -46,25 +47,30 @@ function jsonReplacer(_key: string, value: unknown): unknown {
 	return value;
 }
 
-/** Custom format that includes pid and flattens metadata */
-const logFormat = winston.format.combine(
-	winston.format.timestamp({ format: "YYYY-MM-DDTHH:mm:ss.SSSZ" }),
-	winston.format.printf(({ timestamp, level, message, ...meta }) => {
-		const entry: Record<string, unknown> = {
-			timestamp,
-			level,
-			pid: process.pid,
-			message,
-		};
-		// Flatten metadata into entry
-		for (const [key, value] of Object.entries(meta)) {
-			if (key !== "level" && key !== "timestamp" && key !== "message") {
-				entry[key] = value;
+/** Custom format that includes pid and flattens metadata; built on first use. */
+let logFormat: winston.Logform.Format | undefined;
+
+function getLogFormat(): winston.Logform.Format {
+	logFormat ??= winston.format.combine(
+		winston.format.timestamp({ format: "YYYY-MM-DDTHH:mm:ss.SSSZ" }),
+		winston.format.printf(({ timestamp, level, message, ...meta }) => {
+			const entry: Record<string, unknown> = {
+				timestamp,
+				level,
+				pid: process.pid,
+				message,
+			};
+			// Flatten metadata into entry
+			for (const [key, value] of Object.entries(meta)) {
+				if (key !== "level" && key !== "timestamp" && key !== "message") {
+					entry[key] = value;
+				}
 			}
-		}
-		return JSON.stringify(entry, jsonReplacer);
-	}),
-);
+			return JSON.stringify(entry, jsonReplacer);
+		}),
+	);
+	return logFormat;
+}
 
 /** Build a rotating file transport, materializing the target directory lazily. */
 function makeFileTransport(dir?: string): winston.transport {
@@ -79,17 +85,35 @@ function makeFileTransport(dir?: string): winston.transport {
 }
 
 function makeConsoleTransport(): winston.transport {
-	return new winston.transports.Console({ format: logFormat });
+	return new winston.transports.Console({ format: getLogFormat() });
 }
 
-/** The winston logger instance. Default: file ON (TUI-safe), console OFF. */
-const winstonLogger = winston.createLogger({
-	level: "debug",
-	format: logFormat,
-	transports: [makeFileTransport()],
-	// Don't exit on error - logging failures shouldn't crash the app
-	exitOnError: false,
-});
+/**
+ * Desired transport configuration, applied when the winston logger is built.
+ * Default: file ON (TUI-safe), console OFF.
+ */
+let transportOpts: { console?: boolean; file?: boolean | string } = { file: true };
+
+/** The winston logger instance, created lazily on first log emission. */
+let winstonLogger: winston.Logger | undefined;
+
+function buildTransports(opts: { console?: boolean; file?: boolean | string }): winston.transport[] {
+	const transports: winston.transport[] = [];
+	if (opts.file) transports.push(makeFileTransport(typeof opts.file === "string" ? opts.file : undefined));
+	if (opts.console) transports.push(makeConsoleTransport());
+	return transports;
+}
+
+function getWinstonLogger(): winston.Logger {
+	winstonLogger ??= winston.createLogger({
+		level: "debug",
+		format: getLogFormat(),
+		transports: buildTransports(transportOpts),
+		// Don't exit on error - logging failures shouldn't crash the app
+		exitOnError: false,
+	});
+	return winstonLogger;
+}
 
 /**
  * Replace the active log transports. Pass `console: true, file: false` for
@@ -97,11 +121,10 @@ const winstonLogger = winston.createLogger({
  * logs piped into a process supervisor instead of the rotating file.
  */
 export function setTransports(opts: { console?: boolean; file?: boolean | string }): void {
+	transportOpts = opts;
+	if (!winstonLogger) return; // applied lazily when the logger is first built
 	winstonLogger.clear();
-	if (opts.file) {
-		winstonLogger.add(makeFileTransport(typeof opts.file === "string" ? opts.file : undefined));
-	}
-	if (opts.console) winstonLogger.add(makeConsoleTransport());
+	for (const transport of buildTransports(opts)) winstonLogger.add(transport);
 }
 
 /**
@@ -111,7 +134,7 @@ export function setTransports(opts: { console?: boolean; file?: boolean | string
  */
 export function error(message: string, context?: Record<string, unknown>): void {
 	try {
-		winstonLogger.error(message, context);
+		getWinstonLogger().error(message, context);
 	} catch {
 		// Silently ignore logging failures
 	}
@@ -124,7 +147,7 @@ export function error(message: string, context?: Record<string, unknown>): void 
  */
 export function warn(message: string, context?: Record<string, unknown>): void {
 	try {
-		winstonLogger.warn(message, context);
+		getWinstonLogger().warn(message, context);
 	} catch {
 		// Silently ignore logging failures
 	}
@@ -137,7 +160,7 @@ export function warn(message: string, context?: Record<string, unknown>): void {
  */
 export function info(message: string, context?: Record<string, unknown>): void {
 	try {
-		winstonLogger.info(message, context);
+		getWinstonLogger().info(message, context);
 	} catch {
 		// Silently ignore logging failures
 	}
@@ -150,9 +173,26 @@ export function info(message: string, context?: Record<string, unknown>): void {
  */
 export function debug(message: string, context?: Record<string, unknown>): void {
 	try {
-		winstonLogger.debug(message, context);
+		getWinstonLogger().debug(message, context);
 	} catch {
 		// Silently ignore logging failures
+	}
+}
+
+/**
+ * Streaming startup markers, enabled by `PI_DEBUG_STARTUP`. Unlike the
+ * PI_TIMING tree (printed only after startup completes), these write one
+ * synchronous stderr line as each phase begins/ends, so a hard hang still
+ * shows the last phase that started. `fs.writeSync(2)` is used deliberately:
+ * it cannot be reordered or buffered past a synchronous block of the event
+ * loop (dlopen, sync fs on a dead mount, spawnSync).
+ */
+export function startupMarker(text: string): void {
+	if (!process.env.PI_DEBUG_STARTUP) return;
+	try {
+		fs.writeSync(2, `[startup] ${text}\n`);
+	} catch {
+		// stderr unavailable; markers are best-effort
 	}
 }
 
@@ -166,11 +206,35 @@ interface Span {
 	children: Span[];
 	/** Marker / point event without a duration. */
 	point?: boolean;
+	/** Absolute module path for module-load spans. */
+	modulePath?: string;
+	/** Own top-level module body / TLA duration for module-load spans. */
+	moduleBodyMs?: number;
+	/** Resolved static imports for module-load spans. */
+	moduleImports?: string[];
 }
-
 const spanStorage = new AsyncLocalStorage<Span>();
 let gRootSpan: Span | undefined;
 let gRecordTimings = false;
+
+export function timingModeIncludes(option: "full" | "x"): boolean {
+	const value = process.env.PI_TIMING;
+	if (!value) return false;
+	if (value === option) return true;
+	let start = 0;
+	for (let i = 0; i <= value.length; i++) {
+		const code = i === value.length ? 44 : value.charCodeAt(i);
+		const separator = code === 44 || code === 58 || code === 59 || code === 43 || code <= 32;
+		if (!separator) continue;
+		if (i > start && value.slice(start, i) === option) return true;
+		start = i + 1;
+	}
+	return false;
+}
+
+export function shouldExitAfterTimings(): boolean {
+	return timingModeIncludes("x") || timingModeIncludes("full");
+}
 
 /**
  * Print collected timings as an indented tree.
@@ -184,9 +248,22 @@ export function printTimings(): void {
 	}
 
 	gRootSpan.end = performance.now();
+	// Splice any preload-captured module-load events into the tree as root
+	// children and back-extend the root window over them, so the static-import
+	// phase that ran before the first explicit marker becomes visible (the
+	// `(modules)` summary below) instead of being lumped into the opaque
+	// `(before instrumentation)` figure.
+	spliceModuleLoadBuffer();
 	const lines: string[] = [];
 	lines.push("");
 	lines.push("--- Startup timings (hierarchical) ---");
+	// performance.now() shares the process-start origin, so the root span's start
+	// is the wall time before the first marker — runtime init plus any module
+	// loads not captured below. With the module-load preload active this shrinks
+	// to ~runtime init because the load phase is back-folded into the window.
+	if (gRootSpan.start > LOGGED_TIMING_THRESHOLD_MS) {
+		lines.push(`(before instrumentation): ${fmtMs(gRootSpan.start)} [runtime init + module load]`);
+	}
 	const work: Span[] = [];
 	const loads: Span[] = [];
 	for (const child of gRootSpan.children) {
@@ -199,8 +276,14 @@ export function printTimings(): void {
 	if (loads.length > 0) {
 		printModuleLoadSummary(loads, 0, lines);
 	}
+	// Surface the root's own unattributed time so the gap between the visible
+	// top-level spans and Total isn't silently swallowed.
+	const rootSelf = selfTimeOf(gRootSpan);
+	if (gRootSpan.children.length > 0 && rootSelf > LOGGED_TIMING_THRESHOLD_MS) {
+		lines.push(`(unattributed self): ${fmtMs(rootSelf)}`);
+	}
 	const totalMs = (gRootSpan.end - gRootSpan.start).toFixed(1);
-	lines.push(`Total: ${totalMs}ms`);
+	lines.push(`Total: ${totalMs}ms (since first marker)`);
 	lines.push("--------------------------------------");
 	lines.push("");
 	console.error(lines.join("\n"));
@@ -209,8 +292,8 @@ export function printTimings(): void {
 
 /**
  * Begin recording startup timings under a new root span.
- * Idempotent: a second call while already recording is a no-op so that side-effect
- * starters (see module-timer.ts) and explicit starters (main.ts) can coexist.
+ * Idempotent: a second call while already recording is a no-op, so an explicit
+ * starter (main.ts) and any future early starter can coexist.
  */
 export function startTiming(): void {
 	if (gRecordTimings) return;
@@ -225,10 +308,16 @@ export function startTiming(): void {
 
 /**
  * Record an externally-measured span as a leaf child of the active span (or root
- * when no span is active). Used by the module-load timing plugin to splice load
- * events into the tree retroactively.
+ * when no span is active). Used by {@link spliceModuleLoadBuffer} to fold
+ * preload-captured module windows into the tree.
  */
-export function recordModuleLoadSpan(path: string, start: number, durationMs: number): void {
+export function recordModuleLoadSpan(
+	path: string,
+	start: number,
+	durationMs: number,
+	bodyMs?: number,
+	imports: string[] = [],
+): void {
 	if (!gRecordTimings || !gRootSpan) return;
 	const parent = spanStorage.getStore() ?? gRootSpan;
 	const span: Span = {
@@ -237,8 +326,30 @@ export function recordModuleLoadSpan(path: string, start: number, durationMs: nu
 		end: start + durationMs,
 		parent,
 		children: [],
+		modulePath: path,
+		moduleBodyMs: bodyMs,
+		moduleImports: imports,
 	};
 	parent.children.push(span);
+}
+
+/**
+ * Drain the preload's module-load buffer (see module-timer.ts) into the tree as
+ * `load:` children of the root, then back-extend the root window to the earliest
+ * captured read so the pre-marker load phase is counted in Total rather than
+ * hidden as `(before instrumentation)`. No-op when nothing was captured (e.g. no
+ * `--preload`, or a compiled binary where module reads are not interceptable).
+ */
+function spliceModuleLoadBuffer(): void {
+	if (!gRootSpan) return;
+	const events = drainModuleLoadEvents();
+	if (events.length === 0) return;
+	let earliest = gRootSpan.start;
+	for (const event of events) {
+		recordModuleLoadSpan(event.path, event.start, event.durationMs, event.bodyMs, event.imports);
+		if (event.start < earliest) earliest = event.start;
+	}
+	gRootSpan.start = earliest;
 }
 
 function shortenLoadPath(p: string): string {
@@ -255,6 +366,29 @@ function shortenLoadPath(p: string): string {
 export function endTiming(): void {
 	gRootSpan = undefined;
 	gRecordTimings = false;
+}
+
+/**
+ * Ops of the currently-open span chain (root → deepest), following the most
+ * recently started unfinished child at each level. Lets a startup watchdog
+ * name the phase a stalled startup is stuck in.
+ */
+export function openSpanPath(): string[] {
+	const ops: string[] = [];
+	let node = gRootSpan;
+	while (node) {
+		let next: Span | undefined;
+		for (let i = node.children.length - 1; i >= 0; i--) {
+			if (node.children[i].end === undefined) {
+				next = node.children[i];
+				break;
+			}
+		}
+		if (!next) break;
+		ops.push(next.op);
+		node = next;
+	}
+	return ops;
 }
 
 function durationOf(span: Span): number {
@@ -296,6 +430,16 @@ function fmtMs(ms: number): string {
 
 const MODULE_LOAD_PREFIX = "load:";
 const MODULE_LOAD_VERBOSE_TOP = 10;
+const MODULE_TREE_MAX_DEPTH = 5;
+const MODULE_TREE_ROOT_TOP = 5;
+const MODULE_TREE_CHILD_TOP = 8;
+
+interface ModuleTimingNode {
+	span: Span;
+	children: ModuleTimingNode[];
+	parents: number;
+	body: number;
+}
 
 function isModuleLoadSpan(span: Span): boolean {
 	return span.op.startsWith(MODULE_LOAD_PREFIX);
@@ -330,33 +474,118 @@ function printSpan(span: Span, depth: number, lines: string[]): void {
 	}
 }
 
-/** Collapse the (typically hundreds of) module-load spans into one summary line. */
+/** Render module-load spans as a dependency-aware DAG/tree. */
 function printModuleLoadSummary(loads: Span[], depth: number, lines: string[]): void {
 	const childIndent = "  ".repeat(depth);
 	const grandIndent = "  ".repeat(depth + 1);
 	let unionStart = Number.POSITIVE_INFINITY;
 	let unionEnd = 0;
-	let totalSelf = 0;
 	for (const span of loads) {
 		if (span.end === undefined) continue;
 		if (span.start < unionStart) unionStart = span.start;
 		if (span.end > unionEnd) unionEnd = span.end;
-		totalSelf += span.end - span.start;
 	}
 	const wall = unionEnd > unionStart ? unionEnd - unionStart : 0;
-	lines.push(`${childIndent}(modules): ${loads.length} loaded, wall ${fmtMs(wall)}, sum ${fmtMs(totalSelf)}`);
-	const showAll = process.env.PI_TIMING === "full";
-	const sorted = [...loads].sort((a, b) => durationOf(b) - durationOf(a));
-	const visible = showAll ? sorted : sorted.slice(0, MODULE_LOAD_VERBOSE_TOP);
-	for (const span of visible) {
-		const dur = durationOf(span);
-		if (dur < LOGGED_TIMING_THRESHOLD_MS) break;
-		const tag = isParallel(span) ? " [parallel]" : "";
-		lines.push(`${grandIndent}${span.op}: ${fmtMs(dur)}${tag}`);
+	const nodes = buildModuleTimingGraph(loads);
+	lines.push(`${childIndent}(modules): ${loads.length} loaded, wall ${fmtMs(wall)}`);
+	if (nodes.length === 0) return;
+
+	const showAll = timingModeIncludes("full");
+	const byBody = [...nodes].sort(compareModuleNodes);
+	const topBody = showAll ? byBody : byBody.slice(0, MODULE_LOAD_VERBOSE_TOP);
+	lines.push(`${grandIndent}top body/TLA:`);
+	for (const node of topBody) {
+		if (!showAll && node.body < LOGGED_TIMING_THRESHOLD_MS) break;
+		lines.push(`${grandIndent}  ${node.span.op}: body ${fmtMs(node.body)} (total ${fmtMs(durationOf(node.span))})`);
 	}
-	if (!showAll && sorted.length > MODULE_LOAD_VERBOSE_TOP) {
-		lines.push(`${grandIndent}… ${sorted.length - MODULE_LOAD_VERBOSE_TOP} more (PI_TIMING=full to show all)`);
+	if (!showAll && byBody.length > MODULE_LOAD_VERBOSE_TOP) {
+		lines.push(`${grandIndent}  … ${byBody.length - MODULE_LOAD_VERBOSE_TOP} more (PI_TIMING=full to show all)`);
 	}
+
+	const roots = nodes.filter(node => node.parents === 0);
+	const treeRoots = (roots.length > 0 ? roots : nodes).sort((a, b) => durationOf(b.span) - durationOf(a.span));
+	const visibleRoots = showAll ? treeRoots : treeRoots.slice(0, MODULE_TREE_ROOT_TOP);
+	lines.push(`${grandIndent}tree:`);
+	const rendered = new Set<string>();
+	for (const node of visibleRoots) {
+		renderModuleTimingNode(node, depth + 2, lines, rendered, new Set<string>(), showAll);
+	}
+	if (!showAll && treeRoots.length > MODULE_TREE_ROOT_TOP) {
+		lines.push(
+			`${grandIndent}  … ${treeRoots.length - MODULE_TREE_ROOT_TOP} more roots (PI_TIMING=full to show all)`,
+		);
+	}
+}
+
+function buildModuleTimingGraph(loads: Span[]): ModuleTimingNode[] {
+	const nodes = new Map<string, ModuleTimingNode>();
+	for (const span of loads) {
+		if (!span.modulePath || span.end === undefined) continue;
+		nodes.set(span.modulePath, { span, children: [], parents: 0, body: span.moduleBodyMs ?? 0 });
+	}
+	for (const node of nodes.values()) {
+		for (const childPath of node.span.moduleImports ?? []) {
+			const child = nodes.get(childPath);
+			if (!child || child === node) continue;
+			node.children.push(child);
+			child.parents++;
+		}
+	}
+	for (const node of nodes.values()) {
+		node.children.sort(compareModuleNodes);
+	}
+	return [...nodes.values()];
+}
+
+function compareModuleNodes(a: ModuleTimingNode, b: ModuleTimingNode): number {
+	const bodyDiff = b.body - a.body;
+	if (Math.abs(bodyDiff) > 0.001) return bodyDiff;
+	return durationOf(b.span) - durationOf(a.span);
+}
+
+function renderModuleTimingNode(
+	node: ModuleTimingNode,
+	depth: number,
+	lines: string[],
+	rendered: Set<string>,
+	ancestors: Set<string>,
+	showAll: boolean,
+): void {
+	const path = node.span.modulePath;
+	if (!path) return;
+	const indent = "  ".repeat(depth);
+	const total = durationOf(node.span);
+	if (!showAll && total < LOGGED_TIMING_THRESHOLD_MS && node.children.length === 0) return;
+	const wait = Math.max(0, total - node.body);
+	const shared = node.parents > 1 ? " [shared]" : "";
+	const timing =
+		node.body > LOGGED_TIMING_THRESHOLD_MS || node.children.length > 0
+			? ` (body ${fmtMs(node.body)}, wait ${fmtMs(wait)})`
+			: "";
+	const alreadyRendered = rendered.has(path);
+	const cycle = ancestors.has(path);
+	const suffix = cycle ? " [cycle]" : alreadyRendered ? " [already shown]" : "";
+	lines.push(`${indent}${node.span.op}: ${fmtMs(total)}${timing}${shared}${suffix}`);
+	if (cycle || alreadyRendered) return;
+	rendered.add(path);
+	ancestors.add(path);
+	if (!showAll && ancestors.size >= MODULE_TREE_MAX_DEPTH) {
+		if (node.children.length > 0) {
+			lines.push(`${indent}  … ${node.children.length} imports deeper (PI_TIMING=full to show all)`);
+		}
+		ancestors.delete(path);
+		return;
+	}
+	const visibleChildren = showAll ? node.children : node.children.slice(0, MODULE_TREE_CHILD_TOP);
+	for (const child of visibleChildren) {
+		renderModuleTimingNode(child, depth + 1, lines, rendered, ancestors, showAll);
+	}
+	if (!showAll && node.children.length > MODULE_TREE_CHILD_TOP) {
+		lines.push(
+			`${indent}  … ${node.children.length - MODULE_TREE_CHILD_TOP} more imports (PI_TIMING=full to show all)`,
+		);
+	}
+	ancestors.delete(path);
 }
 
 /** A span is parallel if it overlaps a sibling that started before it. */
@@ -383,33 +612,51 @@ function isParallel(span: Span): boolean {
 export function time(op: string): void;
 export function time<T, A extends unknown[]>(op: string, fn: (...args: A) => T, ...args: A): T;
 export function time<T, A extends unknown[]>(op: string, fn?: (...args: A) => T, ...args: A): T | undefined {
-	if (!gRecordTimings || !gRootSpan) {
-		if (fn === undefined) return undefined as T;
-		return fn(...args);
-	}
-
-	const parent = spanStorage.getStore() ?? gRootSpan;
-	const span: Span = { op, start: performance.now(), parent, children: [] };
-	parent.children.push(span);
+	const recording = gRecordTimings && gRootSpan !== undefined;
 
 	if (fn === undefined) {
-		span.end = span.start;
-		span.point = true;
+		startupMarker(op);
+		if (!recording) return undefined as T;
+		const parent = spanStorage.getStore() ?? gRootSpan!;
+		const now = performance.now();
+		parent.children.push({ op, start: now, end: now, parent, children: [], point: true });
 		return undefined as T;
 	}
 
-	const finish = (): void => {
-		span.end = performance.now();
+	if (!recording && !process.env.PI_DEBUG_STARTUP) {
+		return fn(...args);
+	}
+
+	startupMarker(`${op}:start`);
+	let span: Span | undefined;
+	if (recording) {
+		const parent = spanStorage.getStore() ?? gRootSpan!;
+		span = { op, start: performance.now(), parent, children: [] };
+		parent.children.push(span);
+	}
+
+	const finish = (ok: boolean): void => {
+		if (span) span.end = performance.now();
+		startupMarker(ok ? `${op}:done` : `${op}:fail`);
 	};
 	try {
-		const result = spanStorage.run(span, () => fn(...args));
+		const result = span ? spanStorage.run(span, () => fn(...args)) : fn(...args);
 		if (isPromise(result)) {
-			return result.finally(finish) as T;
+			return result.then(
+				value => {
+					finish(true);
+					return value;
+				},
+				error => {
+					finish(false);
+					throw error;
+				},
+			) as T;
 		}
-		finish();
+		finish(true);
 		return result;
 	} catch (error) {
-		finish();
+		finish(false);
 		throw error;
 	}
 }

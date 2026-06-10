@@ -82,7 +82,7 @@ export async function loadSkillsFromDir(options: LoadSkillsFromDirOptions): Prom
 			filePath: capSkill.path,
 			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 			source: options.source,
-			hide: capSkill.frontmatter?.hide === true,
+			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 			_source: capSkill._source,
 		})),
 		warnings: (result.warnings ?? []).map(message => ({ skillPath: options.dir, message })),
@@ -197,7 +197,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 				filePath: capSkill.path,
 				baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 				source: `${capSkill._source.provider}:${capSkill.level}`,
-				hide: capSkill.frontmatter?.hide === true,
+				hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 				_source: capSkill._source,
 			});
 			realPathSet.add(resolvedPath);
@@ -234,7 +234,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 					filePath: capSkill.path,
 					baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 					source: "custom:user",
-					hide: capSkill.frontmatter?.hide === true,
+					hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 					_source: { ...capSkill._source, providerName: "Custom" },
 				},
 				path: capSkill.path,
@@ -273,7 +273,6 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	const skills = Array.from(skillMap.values());
 	// Deterministic ordering for prompt stability (case-insensitive, then exact name, then path).
 	skills.sort((a, b) => compareSkillOrder(a.name, a.filePath, b.name, b.filePath));
-
 	return {
 		skills,
 		warnings: [...(result.warnings ?? []).map(w => ({ skillPath: "", message: w })), ...collisionWarnings],

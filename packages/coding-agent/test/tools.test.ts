@@ -16,6 +16,7 @@ import { JobTool } from "@oh-my-pi/pi-coding-agent/tools/job";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { DEFAULT_FILE_LIMIT, MULTI_FILE_PER_FILE_MATCHES, SearchTool } from "@oh-my-pi/pi-coding-agent/tools/search";
+import * as toolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { $which, Snowflake } from "@oh-my-pi/pi-utils";
 import { unzipSync } from "fflate";
@@ -176,6 +177,44 @@ function createZipArchive(entries: ArchiveFixtureEntry[]): Buffer {
 	endOfCentralDirectory.writeUInt32LE(localOffset, 16);
 
 	return Buffer.concat([...localParts, centralDirectory, endOfCentralDirectory]);
+}
+
+function createZipArchiveWithRawDeflateEntry(entry: {
+	path: string;
+	compressed: Buffer;
+	originalSize: number;
+}): Buffer {
+	const pathBuffer = Buffer.from(entry.path.replace(/\\/g, "/"), "utf-8");
+	const localHeader = Buffer.alloc(30, 0);
+	localHeader.writeUInt32LE(0x04034b50, 0);
+	localHeader.writeUInt16LE(20, 4);
+	localHeader.writeUInt16LE(0x0800, 6);
+	localHeader.writeUInt16LE(8, 8);
+	localHeader.writeUInt32LE(0, 14);
+	localHeader.writeUInt32LE(entry.compressed.length, 18);
+	localHeader.writeUInt32LE(entry.originalSize, 22);
+	localHeader.writeUInt16LE(pathBuffer.length, 26);
+
+	const centralHeader = Buffer.alloc(46, 0);
+	centralHeader.writeUInt32LE(0x02014b50, 0);
+	centralHeader.writeUInt16LE(20, 4);
+	centralHeader.writeUInt16LE(20, 6);
+	centralHeader.writeUInt16LE(0x0800, 8);
+	centralHeader.writeUInt16LE(8, 10);
+	centralHeader.writeUInt32LE(0, 16);
+	centralHeader.writeUInt32LE(entry.compressed.length, 20);
+	centralHeader.writeUInt32LE(entry.originalSize, 24);
+	centralHeader.writeUInt16LE(pathBuffer.length, 28);
+
+	const centralDirectory = Buffer.concat([centralHeader, pathBuffer]);
+	const endOfCentralDirectory = Buffer.alloc(22, 0);
+	endOfCentralDirectory.writeUInt32LE(0x06054b50, 0);
+	endOfCentralDirectory.writeUInt16LE(1, 8);
+	endOfCentralDirectory.writeUInt16LE(1, 10);
+	endOfCentralDirectory.writeUInt32LE(centralDirectory.length, 12);
+	endOfCentralDirectory.writeUInt32LE(localHeader.length + pathBuffer.length + entry.compressed.length, 16);
+
+	return Buffer.concat([localHeader, pathBuffer, entry.compressed, centralDirectory, endOfCentralDirectory]);
 }
 
 let artifactCounter = 0;
@@ -528,6 +567,23 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("Use :1 to read from the start, or :3 to read the last line.");
 		});
 
+		it("should emit a binary notice instead of mojibake for files with NUL bytes", async () => {
+			const testFile = path.join(testDir, "blob.bin");
+			fs.writeFileSync(testFile, Buffer.from([0x61, 0x62, 0x63, 0x00, 0xff, 0xfe, 0x64, 0x65]));
+
+			const result = await readTool.execute("test-call-binary-nul", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Cannot read binary file");
+			expect(output).toContain("NUL bytes");
+		});
+
+		it("should reject malformed internal-URL selectors instead of dumping the whole resource", async () => {
+			await expect(readTool.execute("test-call-bad-internal-sel", { path: "artifact://3:-100" })).rejects.toThrow(
+				/Invalid selector ':-100'/,
+			);
+		});
+
 		it("should include truncation details when truncated", async () => {
 			const testFile = path.join(testDir, "large-file.txt");
 			const lines = Array.from({ length: 3500 }, (_, i) => `Line ${i + 1}`);
@@ -618,6 +674,24 @@ describe("Coding Agent Tools", () => {
 			expect(result.details?.isDirectory).toBe(true);
 		});
 
+		it("should list zip archives without inflating member payloads", async () => {
+			const archivePath = path.join(testDir, "header-only.zip");
+			fs.writeFileSync(
+				archivePath,
+				createZipArchiveWithRawDeflateEntry({
+					path: "corrupt.bin",
+					compressed: Buffer.from([0xff, 0xff, 0xff, 0xff]),
+					originalSize: 1024,
+				}),
+			);
+
+			const result = await readTool.execute("test-call-zip-header-only", { path: archivePath });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("corrupt.bin");
+			expect(result.details?.isDirectory).toBe(true);
+		});
+
 		for (const archiveCase of [
 			{
 				label: ".tar",
@@ -661,6 +735,53 @@ describe("Coding Agent Tools", () => {
 				expect(output).toContain("Line 3");
 			});
 		}
+
+		it("should treat a selector-shaped archive subpath as a root listing selector", async () => {
+			const archivePath = path.join(testDir, "root-selector.tar");
+			fs.writeFileSync(
+				archivePath,
+				createTarArchive([
+					{ path: "alpha.txt", content: "alpha\n" },
+					{ path: "beta.txt", content: "beta\n" },
+				]),
+			);
+
+			// Previously misparsed as a member named "2" and failed with a
+			// misleading "not found inside archive" error. The selector is honored
+			// as a 1-indexed listing offset, so `:2` starts at the second entry.
+			const result = await readTool.execute("test-call-archive-root-selector", { path: `${archivePath}:2` });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("beta.txt");
+			expect(output).not.toContain("alpha.txt");
+			expect(result.details?.isDirectory).toBe(true);
+		});
+
+		it("should prefer an archive member over a selector-shaped name", async () => {
+			const archivePath = path.join(testDir, "member-precedence.tar");
+			fs.writeFileSync(archivePath, createTarArchive([{ path: "raw", content: "member named raw\n" }]));
+
+			const result = await readTool.execute("test-call-archive-member-raw", { path: `${archivePath}:raw` });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("member named raw");
+		});
+
+		it("should reject archive members larger than the in-memory extraction cap", async () => {
+			const archivePath = path.join(testDir, "bomb.zip");
+			fs.writeFileSync(
+				archivePath,
+				createZipArchiveWithRawDeflateEntry({
+					path: "bomb.bin",
+					compressed: Buffer.from([0xff, 0xff, 0xff, 0xff]),
+					originalSize: 3 * 1024 * 1024 * 1024, // 3GB declared, never allocated
+				}),
+			);
+
+			await expect(readTool.execute("test-call-archive-bomb", { path: `${archivePath}:bomb.bin` })).rejects.toThrow(
+				/too large to extract/i,
+			);
+		});
 
 		it("should detect image MIME type from file magic (not extension)", async () => {
 			const png1x1Base64 =
@@ -811,6 +932,36 @@ describe("Coding Agent Tools", () => {
 			const archive = new Bun.Archive(await Bun.file(archivePath).bytes());
 			const files = await archive.files();
 			expect(await files.get("pkg/new.txt")?.text()).toBe(content);
+		});
+
+		it("should preserve gzip compression when writing into an existing .tar.gz", async () => {
+			const archivePath = path.join(testDir, "write-existing.tar.gz");
+			fs.writeFileSync(
+				archivePath,
+				zlib.gzipSync(
+					createTarArchive([
+						{ path: "pkg/README.md", content: "# Original\n" },
+						{ path: "pkg/src/index.ts", content: "export const archiveValue = 1;\n" },
+					]),
+				),
+			);
+
+			const content = "# Updated\nLine 2\n";
+			await writeTool.execute("test-call-archive-write-targz", {
+				path: `${archivePath}:pkg/README.md`,
+				content,
+			});
+
+			const bytes = fs.readFileSync(archivePath);
+			// gzip magic must survive the rewrite (regression: archive was
+			// silently rewritten as a bare tar under the .gz name).
+			expect(bytes[0]).toBe(0x1f);
+			expect(bytes[1]).toBe(0x8b);
+
+			const archive = new Bun.Archive(await Bun.file(archivePath).bytes());
+			const files = await archive.files();
+			expect(await files.get("pkg/README.md")?.text()).toBe(content);
+			expect(await files.get("pkg/src/index.ts")?.text()).toBe("export const archiveValue = 1;\n");
 		});
 
 		it("should treat a plain archive filename as a regular file write", async () => {
@@ -1108,7 +1259,7 @@ function b() {
 			const updates: string[] = [];
 			const result = await bashTool.execute(
 				"test-call-8-stream",
-				{ command: "for i in 1 2 3; do echo $i; sleep 0.2; done" },
+				{ command: "for i in 1 2 3; do echo $i; sleep 0.1; done" },
 				undefined,
 				update => {
 					const text = update.content?.find(c => c.type === "text")?.text ?? "";
@@ -1160,7 +1311,6 @@ function b() {
 					deliveries.push(text);
 				},
 			});
-			AsyncJobManager.setInstance(asyncJobManager);
 			const autoBackgroundBashTool = wrapToolWithMetaNotice(
 				new BashTool(
 					createTestToolSession(
@@ -1171,6 +1321,7 @@ function b() {
 						}),
 						{
 							getSessionId: () => "test-session",
+							asyncJobManager,
 						},
 					),
 				),
@@ -1193,7 +1344,6 @@ function b() {
 					deliveries.push({ jobId, text });
 				},
 			});
-			AsyncJobManager.setInstance(asyncJobManager);
 			const autoBackgroundBashTool = wrapToolWithMetaNotice(
 				new BashTool(
 					createTestToolSession(
@@ -1204,6 +1354,7 @@ function b() {
 						}),
 						{
 							getSessionId: () => "test-session",
+							asyncJobManager,
 						},
 					),
 				),
@@ -1239,7 +1390,6 @@ function b() {
 					deliveries.push({ jobId, text });
 				},
 			});
-			AsyncJobManager.setInstance(asyncJobManager);
 			const autoBackgroundBashTool = wrapToolWithMetaNotice(
 				new BashTool(
 					createTestToolSession(
@@ -1250,17 +1400,24 @@ function b() {
 						}),
 						{
 							getSessionId: () => "test-session",
+							asyncJobManager,
 						},
 					),
 				),
 			);
+			// Drive the effective timeout via the production clamp seam so the
+			// backgrounded job times out in ~0.5s instead of a real wall-clock
+			// second. 0.5s still renders as "1 seconds" in the executor message
+			// (Math.round), so that delivery assertion is unchanged; the
+			// auto-background-on-timeout decision path is identical.
+			vi.spyOn(toolTimeouts, "clampTimeout").mockReturnValue(0.5);
 
 			const result = await autoBackgroundBashTool.execute("test-call-9-auto-timeout-background", {
 				command: "printf 'start\\n'; sleep 1.2; printf 'done\\n'",
 				timeout: 1,
 			});
 
-			expect(result.details?.timeoutSeconds).toBe(1);
+			expect(result.details?.timeoutSeconds).toBe(0.5);
 			expect(result.details?.async?.state).toBe("running");
 			expect(getTextOutput(result)).toContain("Background job");
 			const jobId = result.details?.async?.jobId;
@@ -1288,6 +1445,9 @@ function b() {
 		});
 
 		it("should respect timeout", async () => {
+			// Reduce the effective timeout through the production clamp seam; the
+			// real subprocess kill-on-timeout path is still exercised, just faster.
+			vi.spyOn(toolTimeouts, "clampTimeout").mockReturnValue(0.1);
 			await expect(bashTool.execute("test-call-10", { command: "sleep 5", timeout: 1 })).rejects.toThrow(
 				/timed out/i,
 			);
@@ -1295,10 +1455,19 @@ function b() {
 
 		it("should abort and recover for subsequent commands", async () => {
 			const controller = new AbortController();
-			const promise = bashTool.execute("test-call-10-abort", { command: "sleep 60" }, controller.signal);
-			// Give the native shell a beat to enter `sleep`; do not depend on chunk
-			// delivery timing, which is flaky on loaded CI runners.
-			await Bun.sleep(100);
+			const started = Promise.withResolvers<void>();
+			const promise = bashTool.execute(
+				"test-call-10-abort",
+				{ command: "echo READY; sleep 60" },
+				controller.signal,
+				update => {
+					const text = update.content?.find(c => c.type === "text")?.text ?? "";
+					if (text.includes("READY")) started.resolve();
+				},
+			);
+			// Abort as soon as the command has emitted output (proving the shell is
+			// live), instead of blindly waiting a fixed beat for it to enter `sleep`.
+			await started.promise;
 			controller.abort("test abort");
 			await expect(promise).rejects.toThrow(/abort|cancel|timed out/i);
 
@@ -1332,15 +1501,6 @@ function b() {
 			expect(output).toContain("second");
 			expect(output).toContain("third");
 		});
-
-		it("should expose background-job tools when bash auto-background is enabled", () => {
-			const autoBackgroundSession = createTestToolSession(
-				testDir,
-				Settings.isolated({ "bash.autoBackground.enabled": true }),
-			);
-
-			expect(JobTool.createIf(autoBackgroundSession)).not.toBeNull();
-		});
 	});
 
 	describe("JobTool", () => {
@@ -1348,9 +1508,10 @@ function b() {
 			const manager = new AsyncJobManager({
 				onJobComplete: async () => {},
 			});
-			const session = createTestToolSession(testDir, Settings.isolated({ "bash.autoBackground.enabled": true }), {});
-			AsyncJobManager.setInstance(manager);
-			const jobTool = JobTool.createIf(session)!;
+			const session = createTestToolSession(testDir, Settings.isolated({ "bash.autoBackground.enabled": true }), {
+				asyncJobManager: manager,
+			});
+			const jobTool = new JobTool(session);
 
 			const jobId = manager.register("bash", "test job", async () => "success");
 
@@ -1815,6 +1976,21 @@ function b() {
 
 			const files = (result.details?.files ?? []).slice().sort();
 			expect(files).toEqual(["alpha/tests/", "beta/tests/"]);
+		});
+
+		it("should not recurse into subdirectories for a single-star glob like dir/*", async () => {
+			const dir = path.join(testDir, "shallow");
+			const sub = path.join(dir, "sub");
+			fs.mkdirSync(sub, { recursive: true });
+			fs.writeFileSync(path.join(dir, "top.tsx"), "t");
+			fs.writeFileSync(path.join(sub, "nested.tsx"), "n");
+
+			const result = await findTool.execute("test-call-14h", {
+				paths: [`${dir}/*.tsx`],
+			});
+
+			const files = (result.details?.files ?? []).slice().sort();
+			expect(files).toEqual(["shallow/top.tsx"]);
 		});
 	});
 });

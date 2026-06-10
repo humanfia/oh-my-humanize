@@ -1,7 +1,7 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import * as z from "zod/v4";
-import { ensureBankMission } from "../hindsight/bank";
+import { ensureBankExists } from "../hindsight/bank";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -43,7 +43,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 					const query = params.context?.trim()
 						? `${params.query.trim()}\n\nAdditional context:\n${params.context.trim()}`
 						: params.query;
-					const results = state.recallResultsScoped(query);
+					const results = await state.recallResultsScoped(query);
 					if (results.length === 0) {
 						return {
 							content: [{ type: "text", text: "No relevant information found to reflect on." }],
@@ -67,7 +67,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 			}
 
 			try {
-				await ensureBankMission(state.client, state.bankId, state.config, state.missionsSet);
+				await ensureBankExists(state.client, state.bankId, state.config, state.banksSet);
 				const response = await state.client.reflect(state.bankId, params.query, {
 					context: params.context,
 					budget: state.config.recallBudget,

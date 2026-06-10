@@ -7,6 +7,8 @@
  * Used by `anthropic-messages.ts:parseRequest` to validate the inbound JSON
  * before walking it into pi-ai's canonical `Context`.
  */
+
+import * as z from "zod/v4";
 import type {
 	ContentBlockParam,
 	ImageBlockParam,
@@ -15,8 +17,7 @@ import type {
 	TextBlockParam,
 	Tool,
 	ToolChoice,
-} from "@anthropic-ai/sdk/resources/messages";
-import * as z from "zod/v4";
+} from "./anthropic-wire";
 
 // `cache_control` is accepted and translated to pi-ai's per-request
 // `cacheRetention` (any `ttl: "1h"` marker upgrades the request to "long";
@@ -101,7 +102,17 @@ const toolResultBlockSchema = z.object({
 // natively understand (server_tool_use, web_search_tool_result, mcp_*,
 // container_upload, code_execution_*, document, …). The walker flattens these
 // to a text placeholder so legitimate Anthropic clients don't get rejected.
-const unknownContentBlockSchema = z.object({ type: z.string() }).loose();
+// Known `type` values are excluded so a malformed known block (e.g.
+// `{type:"text", text: 123}`) fails validation with a clean 400 instead of
+// slipping past the discriminated union and throwing a TypeError downstream.
+function unknownContentBlockSchema(knownTypes: readonly string[]) {
+	const known = new Set(knownTypes);
+	return z
+		.object({
+			type: z.string().refine(t => !known.has(t), { message: "malformed known content block" }),
+		})
+		.loose();
+}
 
 // ─── System ────────────────────────────────────────────────────────────────
 
@@ -117,7 +128,7 @@ export const systemSchema = z.union([z.string(), z.array(systemBlockSchema)]).op
 
 const userContentBlockSchema = z.union([
 	z.discriminatedUnion("type", [textBlockSchema, imageBlockSchema, toolResultBlockSchema]),
-	unknownContentBlockSchema,
+	unknownContentBlockSchema(["text", "image", "tool_result"]),
 ]);
 
 const assistantContentBlockSchema = z.union([
@@ -127,7 +138,7 @@ const assistantContentBlockSchema = z.union([
 		redactedThinkingBlockSchema,
 		toolUseBlockSchema,
 	]),
-	unknownContentBlockSchema,
+	unknownContentBlockSchema(["text", "thinking", "redacted_thinking", "tool_use"]),
 ]);
 
 export const userMessageSchema = z.object({

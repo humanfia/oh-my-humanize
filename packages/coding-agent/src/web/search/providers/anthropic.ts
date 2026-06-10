@@ -7,12 +7,16 @@
 import {
 	type AnthropicAuthConfig,
 	type AnthropicSystemBlock,
+	type ApiKey,
 	type AuthStorage,
 	buildAnthropicAuthConfig,
 	buildAnthropicSearchHeaders,
 	buildAnthropicSystemBlocks,
 	buildAnthropicUrl,
+	type FetchImpl,
 	stripClaudeToolPrefix,
+	withAuth,
+	wrapFetchForCch,
 } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import type {
@@ -38,6 +42,7 @@ export interface AnthropicSearchParams {
 	max_tokens?: number;
 	temperature?: number;
 	signal?: AbortSignal;
+	fetch?: FetchImpl;
 }
 
 /**
@@ -60,7 +65,9 @@ function buildSystemBlocks(
 	model: string,
 	systemPrompt?: string,
 ): AnthropicSystemBlock[] | undefined {
-	const includeClaudeCode = !model.startsWith("claude-3-5-haiku");
+	// Match the streaming path: the CC billing header + system instruction are
+	// an OAuth fingerprint and must not be claimed on API-key requests.
+	const includeClaudeCode = auth.isOAuth && !model.startsWith("claude-3-5-haiku");
 	const extraInstructions = auth.isOAuth ? ["You are a helpful AI assistant with web search capabilities."] : [];
 
 	return buildAnthropicSystemBlocks(systemPrompt ? [systemPrompt] : undefined, {
@@ -87,6 +94,7 @@ async function callSearch(
 	maxTokens?: number,
 	temperature?: number,
 	signal?: AbortSignal,
+	fetchImpl: FetchImpl = fetch,
 ): Promise<AnthropicApiResponse> {
 	const url = buildAnthropicUrl(auth);
 	const headers = buildAnthropicSearchHeaders(auth);
@@ -113,7 +121,10 @@ async function callSearch(
 		body.system = systemBlocks;
 	}
 
-	const response = await fetch(url, {
+	// OAuth requests inject the CC billing header (buildSystemBlocks); patch its
+	// cch attestation like the streaming path instead of shipping `cch=00000`.
+	const doFetch = auth.isOAuth ? wrapFetchForCch(fetchImpl) : fetchImpl;
+	const response = await doFetch(url, {
 		method: "POST",
 		headers,
 		body: JSON.stringify(body),
@@ -247,18 +258,13 @@ export async function searchAnthropic(
 ): Promise<SearchResponse> {
 	const searchApiKey = $env.ANTHROPIC_SEARCH_API_KEY;
 	const searchBaseUrl = $env.ANTHROPIC_SEARCH_BASE_URL;
-	let auth: AnthropicAuthConfig | undefined;
+	const keyOrResolver: ApiKey | undefined = searchApiKey
+		? searchApiKey
+		: "authStorage" in params
+			? params.authStorage.resolver("anthropic", { sessionId: params.sessionId })
+			: undefined;
 
-	if (searchApiKey) {
-		auth = buildAnthropicAuthConfig(searchApiKey, searchBaseUrl);
-	} else if ("authStorage" in params) {
-		const apiKey = await params.authStorage.getApiKey("anthropic", params.sessionId, {
-			signal: params.signal,
-		});
-		if (apiKey) auth = buildAnthropicAuthConfig(apiKey);
-	}
-
-	if (!auth) {
+	if (!keyOrResolver) {
 		throw new Error(
 			"No Anthropic credentials found. Set ANTHROPIC_SEARCH_API_KEY or ANTHROPIC_API_KEY, or configure Anthropic OAuth.",
 		);
@@ -267,14 +273,24 @@ export async function searchAnthropic(
 	const model = getModel();
 	const systemPrompt = "authStorage" in params ? params.systemPrompt : params.system_prompt;
 	const maxTokens = "authStorage" in params ? params.maxOutputTokens : params.max_tokens;
-	const response = await callSearch(
-		auth,
-		model,
-		params.query,
-		systemPrompt,
-		maxTokens,
-		params.temperature,
-		params.signal,
+	const response = await withAuth(
+		keyOrResolver,
+		key =>
+			callSearch(
+				buildAnthropicAuthConfig(key, searchBaseUrl),
+				model,
+				params.query,
+				systemPrompt,
+				maxTokens,
+				params.temperature,
+				params.signal,
+				params.fetch,
+			),
+		{
+			signal: params.signal,
+			missingKeyMessage:
+				"No Anthropic credentials found. Set ANTHROPIC_SEARCH_API_KEY or ANTHROPIC_API_KEY, or configure Anthropic OAuth.",
+		},
 	);
 
 	const result = parseResponse(response);

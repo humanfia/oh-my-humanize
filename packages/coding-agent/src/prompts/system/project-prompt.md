@@ -3,11 +3,12 @@ PROJECT
 
 <workstation>
 {{#list environment prefix="- " join="\n"}}{{label}}: {{value}}{{/list}}
+{{#if model}}- Model: {{model}}{{/if}}
 </workstation>
 
 {{#if contextFiles.length}}
 <context>
-Follow the context files below for all tasks:
+You MUST follow the context files below for all tasks:
 {{#each contextFiles}}
 <file path="{{path}}">
 {{content}}
@@ -19,7 +20,7 @@ Follow the context files below for all tasks:
 {{#if agentsMdSearch.files.length}}
 <dir-context>
 Some directories may have their own rules. Deeper rules override higher ones.
-MUST read before making changes within:
+Before making changes within these directories, you MUST read:
 {{#list agentsMdSearch.files join="\n"}}- {{this}}{{/list}}
 </dir-context>
 {{/if}}

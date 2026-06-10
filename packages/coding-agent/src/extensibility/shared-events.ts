@@ -18,7 +18,7 @@ import type { ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-
 import type { Rule } from "../capability/rule";
 import type { Goal, GoalModeState } from "../goals/state";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session/session-manager";
-import type { TodoItem } from "../tools/todo-write";
+import type { TodoItem } from "../tools/todo";
 
 // ============================================================================
 // Session Events
@@ -204,13 +204,13 @@ export interface TurnEndEvent {
 export interface AutoCompactionStartEvent {
 	type: "auto_compaction_start";
 	reason: "threshold" | "overflow" | "idle" | "incomplete";
-	action: "context-full" | "handoff" | "shake";
+	action: "context-full" | "handoff" | "shake" | "snapcompact";
 }
 
 /** Fired when auto-compaction ends */
 export interface AutoCompactionEndEvent {
 	type: "auto_compaction_end";
-	action: "context-full" | "handoff" | "shake";
+	action: "context-full" | "handoff" | "shake" | "snapcompact";
 	result: CompactionResult | undefined;
 	aborted: boolean;
 	willRetry: boolean;

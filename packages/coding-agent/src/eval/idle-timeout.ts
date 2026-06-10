@@ -1,17 +1,13 @@
 /**
- * Inactivity watchdog for eval cells.
+ * Watchdog for eval cell work.
  *
- * A cell's `timeout` is treated as an *idle* budget rather than a hard
- * wall-clock deadline: the watchdog aborts {@link signal} (with a
- * `TimeoutError` reason, matching `AbortSignal.timeout`) only once `idleMs`
- * elapses with no {@link bump}. Every progress signal re-arms it, so a
- * long-running fanout that keeps reporting progress (e.g. `agent()` status
- * updates, `log()`/`phase()`) never trips the timeout, while a genuinely
- * stalled cell still gets interrupted.
+ * A cell's `timeout` bounds time while the Python kernel or JS VM is in control.
+ * Host-side bridge calls can {@link pause} the watchdog so delegated
+ * `agent()`/`parallel()`/`completion()` work is ignored completely, then {@link resume}
+ * starts a fresh timeout window once the runtime gets control back.
  *
- * The timer self-reschedules instead of being torn down and recreated on every
- * bump, so a high-frequency stream of bumps (sub-second agent progress) costs
- * one timestamp write per event rather than churning a timer each time.
+ * Pause is reference-counted because `parallel()` can have multiple bridge calls
+ * in flight at once.
  */
 export class IdleTimeout {
 	readonly #controller = new AbortController();
@@ -20,6 +16,7 @@ export class IdleTimeout {
 	#deadlineMs: number;
 	#timer: NodeJS.Timeout | undefined;
 	#settled = false;
+	#pauseDepth = 0;
 
 	constructor(idleMs: number) {
 		this.#idleMs = Math.max(1, Math.floor(idleMs));
@@ -27,20 +24,34 @@ export class IdleTimeout {
 		this.#arm(this.#idleMs);
 	}
 
-	/** Aborts with a `TimeoutError` reason once the inactivity budget is exhausted. */
+	/** Aborts with a `TimeoutError` reason once the active timeout window is exhausted. */
 	get signal(): AbortSignal {
 		return this.#controller.signal;
 	}
 
-	/** Configured inactivity budget in milliseconds. */
+	/** Configured active timeout window in milliseconds. */
 	get idleMs(): number {
 		return this.#idleMs;
 	}
 
-	/** Record activity, pushing the inactivity deadline forward by `idleMs`. */
-	bump(): void {
+	/** Suspend timeout accounting while control is delegated to host-side work. */
+	pause(): void {
 		if (this.#settled) return;
+		this.#pauseDepth++;
+		if (this.#pauseDepth !== 1) return;
+		if (this.#timer) {
+			clearTimeout(this.#timer);
+			this.#timer = undefined;
+		}
+	}
+
+	/** Resume timeout accounting with a fresh timeout window. */
+	resume(): void {
+		if (this.#settled || this.#pauseDepth === 0) return;
+		this.#pauseDepth--;
+		if (this.#pauseDepth > 0) return;
 		this.#deadlineMs = Date.now() + this.#idleMs;
+		this.#arm(this.#idleMs);
 	}
 
 	/** Stop the watchdog. Safe to call multiple times. */
@@ -65,11 +76,11 @@ export class IdleTimeout {
 	}
 
 	#onExpire(): void {
-		if (this.#settled) return;
+		if (this.#settled || this.#pauseDepth > 0) return;
 		const remainingMs = this.#deadlineMs - Date.now();
 		if (remainingMs > 0) {
-			// A bump moved the deadline forward after this timer was armed; wait
-			// out the remaining window instead of firing early.
+			// The deadline moved forward (resume re-arming) after this timer was
+			// armed; wait out the remaining window instead of firing early.
 			this.#arm(remainingMs);
 			return;
 		}

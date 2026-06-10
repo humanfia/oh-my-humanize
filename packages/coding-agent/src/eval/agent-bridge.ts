@@ -13,10 +13,10 @@ import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.m
 import * as taskDiscovery from "../task/discovery";
 import * as taskExecutor from "../task/executor";
 import { AgentOutputManager } from "../task/output-manager";
-import type { AgentDefinition, AgentProgress } from "../task/types";
+import type { AgentDefinition, AgentProgress, SingleResult } from "../task/types";
 import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
-import { withBridgeHeartbeat } from "./heartbeat";
+import { withBridgeTimeoutPause } from "./bridge-timeout";
 import type { JsStatusEvent } from "./js/shared/types";
 // Import review tools for side effects (registers subagent tool handlers).
 import "../tools/review";
@@ -34,7 +34,6 @@ const agentArgsSchema = z.object({
 	prompt: z.string().min(1, "prompt must be a non-empty string"),
 	agentType: z.string().min(1).optional(),
 	model: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
-	context: z.string().optional(),
 	label: z.string().optional(),
 	schema: z.unknown().optional(),
 });
@@ -43,7 +42,6 @@ interface EvalAgentArgs {
 	prompt: string;
 	agentType?: string;
 	model?: string | string[];
-	context?: string;
 	label?: string;
 	schema?: unknown;
 }
@@ -135,20 +133,12 @@ function getOutputManager(session: ToolSession): AgentOutputManager {
 async function getArtifacts(session: ToolSession): Promise<{
 	sessionFile: string | null;
 	artifactsDir: string;
-	contextFile?: string;
 }> {
 	const sessionFile = session.getSessionFile();
 	const sessionArtifactsDir = sessionFile ? sessionFile.slice(0, -6) : null;
 	const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `omp-eval-agent-${Snowflake.next()}`);
 	await fs.mkdir(artifactsDir, { recursive: true });
-
-	const shouldWriteConversationContext = session.settings.get("irc.enabled") !== true;
-	const compactContext = shouldWriteConversationContext ? session.getCompactContext?.() : undefined;
-	if (!compactContext) return { sessionFile, artifactsDir };
-
-	const contextFile = path.join(artifactsDir, "context.md");
-	await Bun.write(contextFile, compactContext);
-	return { sessionFile, artifactsDir, contextFile };
+	return { sessionFile, artifactsDir };
 }
 
 function emitProgressStatus(emitStatus: ((event: JsStatusEvent) => void) | undefined, progress: AgentProgress): void {
@@ -171,6 +161,26 @@ function emitProgressStatus(emitStatus: ((event: JsStatusEvent) => void) | undef
 		durationMs: progress.durationMs,
 		model: progress.resolvedModel,
 	});
+}
+
+/**
+ * Coalesce a subagent failure into a non-empty, human-meaningful error message.
+ *
+ * When the executor aborts a subagent (runtime limit, parent cancellation, …)
+ * the actionable explanation lives on `abortReason`, while `error`/`stderr`
+ * are routinely empty strings. Plain `??` coalescing stops at the empty string
+ * and ships an empty error through the bridge — Python then surfaces only the
+ * generic `bridge call '__agent__' failed`. See #2006.
+ */
+function buildSubagentFailureMessage(agentName: string, result: SingleResult): string {
+	const abortReason = trimToUndefined(result.abortReason);
+	if (result.aborted && abortReason) return abortReason;
+	return (
+		trimToUndefined(result.error) ??
+		trimToUndefined(result.stderr) ??
+		abortReason ??
+		`agent() subagent '${agentName}' failed.`
+	);
 }
 
 /**
@@ -225,23 +235,19 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		getSessionId: options.session.getSessionId ?? (() => null),
 	};
 	const parentArtifactManager = options.session.getArtifactManager?.() ?? undefined;
-	const parentEvalSessionId = options.session.getEvalSessionId?.() ?? undefined;
 	const mcpManager = options.session.mcpManager ?? MCPManager.instance();
-	const { sessionFile, artifactsDir, contextFile } = await getArtifacts(options.session);
+	const { sessionFile, artifactsDir } = await getArtifacts(options.session);
 	const outputManager = getOutputManager(options.session);
 	const id = await outputManager.allocate(outputIdBase(parsed.label, agentName));
 	const assignment = parsed.prompt.trim();
-	const context = trimToUndefined(parsed.context);
-	// Pump a heartbeat while the subagent runs so the eval idle watchdog stays
-	// armed across quiet stretches (time-to-first-token, long nested tools)
-	// where `onProgress` would otherwise emit no status to re-arm it.
-	const result = await withBridgeHeartbeat(options.emitStatus, () =>
+	// Suspend eval timeout accounting while the subagent owns control. The
+	// timeout clock restarts once the bridge returns to the cell runtime.
+	const result = await withBridgeTimeoutPause(options.emitStatus, () =>
 		taskExecutor.runSubprocess({
 			cwd: options.session.cwd,
 			agent: effectiveAgent,
 			task: renderSubagentPrompt(assignment),
 			assignment,
-			context,
 			description: trimToUndefined(parsed.label),
 			index: 0,
 			id,
@@ -253,14 +259,24 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			sessionFile,
 			persistArtifacts: Boolean(sessionFile),
 			artifactsDir,
-			contextFile,
-			enableLsp: (options.session.enableLsp ?? true) && options.session.settings.get("task.enableLsp"),
+			// Eval `agent()` subagents are short-lived programmatic helpers (data
+			// collection, structured output, parallel() fan-out). LSP server
+			// cold-start costs tens of seconds and is pure overhead here, so it is
+			// forced off regardless of the `task.enableLsp` setting — that knob only
+			// governs LSP-aware delegation through the `task` tool.
+			enableLsp: false,
 			signal: options.signal,
 			eventBus: options.session.eventBus,
 			onProgress: progress => emitProgressStatus(options.emitStatus, progress),
 			authStorage: options.session.authStorage,
 			modelRegistry: options.session.modelRegistry,
 			settings: options.session.settings,
+			// Eval `agent()` subagents are never wall-clock capped: the parent
+			// cell's idle watchdog is suspended for the whole bridge call
+			// (withBridgeTimeoutPause), so a long-running phase/recovery workflow
+			// must not be killed by `task.maxRuntimeMs`. Force the limit off
+			// regardless of the inherited session setting.
+			maxRuntimeMs: 0,
 			mcpManager,
 			contextFiles,
 			skills: availableSkills,
@@ -272,14 +288,16 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			parentHindsightSessionState: options.session.getHindsightSessionState?.(),
 			parentMnemopiSessionState: options.session.getMnemopiSessionState?.(),
 			parentTelemetry: options.session.getTelemetry?.(),
-			parentEvalSessionId,
+			// Deliberately omit parentEvalSessionId: the parent's Python kernel is
+			// blocked on this bridge call, so sharing the eval session would deadlock
+			// (subagent queues behind the parent's in-flight execution, parent waits
+			// for subagent → circular). Each bridge-spawned subagent gets its own
+			// eval session with an independent kernel.
 		}),
 	);
 
-	if (result.exitCode !== 0 || result.error) {
-		const failureMessage =
-			result.error ?? result.stderr ?? result.abortReason ?? `agent() subagent '${agentName}' failed.`;
-		throw new ToolError(failureMessage);
+	if (result.exitCode !== 0 || result.error || result.aborted) {
+		throw new ToolError(buildSubagentFailureMessage(agentName, result));
 	}
 
 	options.session.recordEvalSubagentUsage?.(result.usage?.output ?? 0);

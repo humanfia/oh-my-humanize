@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import { getBundledModel } from "@oh-my-pi/pi-ai/models";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
@@ -156,7 +156,10 @@ describe("AgentSession auto-compaction queue resume", () => {
 		// compaction (contextWindow=200000, threshold ~80%).
 		const assistantMsg = {
 			role: "assistant" as const,
-			content: [],
+			// Non-empty content: an empty `stop` turn would trip the empty-stop guard
+			// (#handleEmptyAssistantStop) and short-circuit the agent_end handler before
+			// compaction/todo checks run — hanging this test forever under fake timers.
+			content: [{ type: "text" as const, text: "Done." }],
 			api: "anthropic-messages" as const,
 			provider: "anthropic" as const,
 			model: "claude-sonnet-4-5",
@@ -214,7 +217,8 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		const assistantMsg = {
 			role: "assistant" as const,
-			content: [],
+			// Non-empty content: see comment on the first test's assistantMsg.
+			content: [{ type: "text" as const, text: "Done." }],
 			api: "anthropic-messages" as const,
 			provider: "anthropic" as const,
 			model: "claude-sonnet-4-5",

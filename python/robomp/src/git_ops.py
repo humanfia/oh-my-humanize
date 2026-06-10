@@ -429,14 +429,56 @@ def fetch_prune(repo_dir: Path, *, token: str | None, safe_directory: Path | Non
 
 
 def fetch_ref(repo_dir: Path, ref: str, *, token: str | None, safe_directory: Path | None = None) -> None:
-    """`git fetch origin <ref>` (best-effort: caller decides to swallow)."""
-    args = ["fetch", "origin", ref]
+    """Fetch ``<ref>`` from origin AND materialize every reachable blob locally.
+
+    Callers invoke this immediately before a ``git worktree add`` / checkout
+    that needs the working-tree contents, so the blobs MUST be present after
+    this returns. ``<repo_dir>`` is typically a ``--filter=blob:none`` partial
+    clone: a plain ``git fetch origin <ref>`` would inherit
+    ``remote.origin.partialclonefilter`` from the pool, bringing the commit
+    and tree but no blobs, leaving the subsequent ``worktree add`` to trigger
+    a lazy promisor fetch — which in proxy-transport deployments has no PAT
+    in the orchestrator process and dies with::
+
+        fatal: could not read Username for 'https://github.com'
+        fatal: could not fetch <sha> from promisor remote
+
+    (oh-my-pi#1818). ``--refetch`` forces a fresh negotiation that ignores
+    "we already have this commit", and ``--no-filter`` overrides the inherited
+    filter for this one invocation without touching the on-disk config — so
+    ``fetch_prune`` keeps its cheap blob-skipping semantics on the next pool
+    refresh. Best-effort: a non-zero exit is logged and swallowed because the
+    caller still attempts the checkout (and a stale-ref worktree add will
+    surface a more actionable error than this fetch ever could).
+    """
+    args = ["fetch", "--refetch", "--no-filter", "origin", ref]
     proc = _run_git(args, cwd=repo_dir, token=token, safe_directory=safe_directory)
     if proc.returncode != 0:
         log.debug(
             "fetch_ref non-fatal failure",
             extra={"ref": ref, "stderr": proc.stderr},
         )
+
+
+def fetch_pr_head(
+    repo_dir: Path,
+    pr_number: int,
+    *,
+    token: str | None,
+    safe_directory: Path | None = None,
+) -> None:
+    """Fetch ``refs/pull/<n>/head`` into FETCH_HEAD with all reachable blobs.
+
+    Immediately followed by ``git worktree add --detach FETCH_HEAD`` for PR
+    review checkouts. See :func:`fetch_ref` for why ``--refetch --no-filter``
+    is required: without the blob backfill, the worktree-add triggers a
+    promisor lazy fetch that fails under proxy-transport deployments
+    (oh-my-pi#1818).
+    """
+    if pr_number <= 0:
+        raise ValueError(f"invalid PR number: {pr_number!r}")
+    args = ["fetch", "--refetch", "--no-filter", "origin", f"pull/{pr_number}/head"]
+    _check(_run_git(args, cwd=repo_dir, token=token, safe_directory=safe_directory), ["git", *args])
 
 
 @dataclass(slots=True, frozen=True)
@@ -646,6 +688,7 @@ __all__ = [
     "HeadDriftError",
     "PushResult",
     "clone",
+    "fetch_pr_head",
     "fetch_prune",
     "fetch_ref",
     "inspect_dirty_state",

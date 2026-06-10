@@ -33,7 +33,7 @@ import { MismatchError } from "./mismatch";
 import { detectLineEnding, type LineEnding, normalizeToLF, restoreLineEndings, stripBom } from "./normalize";
 import { Recovery, type RecoveryResult } from "./recovery";
 import type { SnapshotStore } from "./snapshots";
-import type { ApplyResult, BlockResolver, Edit } from "./types";
+import type { ApplyResult, BlockResolution, BlockResolver, Edit } from "./types";
 
 export interface PatcherOptions {
 	/** Storage backend used for all reads and writes. */
@@ -64,14 +64,20 @@ export interface PatchSectionResult {
 	persisted: string;
 	/** Final text that the {@link Filesystem} actually wrote (may differ if the FS transformed it). */
 	written: string;
-	/** 3-hex opaque snapshot tag for `after`. Use to anchor follow-up edits. */
+	/** 4-hex content-hash tag for `after`. Use to anchor follow-up edits. */
 	fileHash: string;
-	/** Hashline section header (`¶path#tag`) of the post-edit content. */
+	/** Hashline section header (`[path#tag]`) of the post-edit content. */
 	header: string;
 	/** 1-indexed first changed line in `after`, or `undefined` for noops. */
 	firstChangedLine?: number;
 	/** Warnings collected by the parser, applier, and (optionally) recovery. */
 	warnings: string[];
+	/**
+	 * Resolved spans for any `replace block`/`delete block` ops, present when the
+	 * apply matched the tagged content. Undefined for patches with no block ops
+	 * (and for resolutions routed through drift recovery, where numbers shift).
+	 */
+	blockResolutions?: BlockResolution[];
 }
 
 export interface PatcherApplyResult {
@@ -193,7 +199,24 @@ export class Patcher {
 		}
 
 		const results: PatchSectionResult[] = [];
-		for (const entry of prepared) results.push(await this.commit(entry));
+		for (let index = 0; index < prepared.length; index++) {
+			try {
+				results.push(await this.commit(prepared[index]));
+			} catch (error) {
+				// A mid-batch write failure leaves earlier sections on disk with no
+				// rollback; report exactly which sections landed so the caller can
+				// re-issue only the missing ones instead of double-applying.
+				const written = prepared.slice(0, index).map(entry => entry.section.path);
+				const notWritten = prepared.slice(index + 1).map(entry => entry.section.path);
+				const message = error instanceof Error ? error.message : String(error);
+				throw new Error(
+					`Failed to write ${prepared[index].section.path}: ${message}` +
+						(written.length > 0 ? ` Sections already written: ${written.join(", ")}.` : "") +
+						(notWritten.length > 0 ? ` Sections not written: ${notWritten.join(", ")}.` : ""),
+					{ cause: error },
+				);
+			}
+		}
 		return { sections: results };
 	}
 
@@ -300,6 +323,7 @@ export class Patcher {
 			fileHash,
 			header: formatHashlineHeader(section.path, fileHash),
 			firstChangedLine: applyResult.firstChangedLine,
+			blockResolutions: applyResult.blockResolutions,
 			warnings,
 		};
 	}
@@ -355,6 +379,7 @@ export class Patcher {
 		//     resulting ranges flow through the 3-way-merge recovery below.
 		// When a block edit needs the tagged snapshot but it is unavailable, the
 		// range cannot be placed safely — reject with a MismatchError (re-read).
+		const blockResolutions: BlockResolution[] = [];
 		let resolved: readonly Edit[] = edits;
 		if (hasBlockEdit(edits)) {
 			const baseText =
@@ -362,13 +387,20 @@ export class Patcher {
 			if (baseText === undefined) {
 				throw this.#mismatchError(section, canonicalPath, normalized, expected ?? "", false);
 			}
-			resolved = resolveBlockEdits(edits, baseText, section.path, this.blockResolver, { onUnresolved: "throw" });
+			resolved = resolveBlockEdits(edits, baseText, section.path, this.blockResolver, {
+				onUnresolved: "throw",
+				onResolved: resolution => blockResolutions.push(resolution),
+			});
 		}
 
-		if (expected === undefined) return applyEdits(normalized, resolved);
-		// Whole-file unchanged → the tag still names the live content, so an
-		// edit anchored at ANY line (displayed or not) is safe to apply.
-		if (liveMatches) return applyEdits(normalized, resolved);
+		// No tag, or the tag still names the live content: an edit anchored at any
+		// line is safe to apply, and the resolved block spans line up with what
+		// the caller read, so echo them back. (A drifted file falls through to
+		// recovery below, where line numbers shift, so resolutions are dropped.)
+		if (expected === undefined || liveMatches) {
+			const result = applyEdits(normalized, resolved);
+			return blockResolutions.length > 0 ? { ...result, blockResolutions } : result;
+		}
 		// Head/tail-only inserts are position-stable: "start"/"end" cannot move
 		// with content drift, so a stale tag is non-fatal. Apply onto the live
 		// content and warn instead of hard-failing — unlike an anchored

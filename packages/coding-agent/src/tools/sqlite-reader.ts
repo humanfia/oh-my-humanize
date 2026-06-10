@@ -5,13 +5,32 @@ import { ToolError } from "./tool-errors";
 const SQLITE_MAGIC = new Uint8Array([
 	0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00,
 ]);
+
+export function looksLikeSqlite(bytes: Uint8Array): boolean {
+	if (bytes.byteLength < SQLITE_MAGIC.byteLength) return false;
+	for (const [index, byte] of SQLITE_MAGIC.entries()) {
+		if (bytes[index] !== byte) return false;
+	}
+	return true;
+}
 const SQLITE_PATH_PATTERN = /\.(?:sqlite3?|db3?)(?=(?::|\?|$))/gi;
 const DEFAULT_QUERY_LIMIT = 20;
 const DEFAULT_SCHEMA_SAMPLE_LIMIT = 5;
 const MAX_QUERY_LIMIT = 500;
+/** Row cap for raw `?q=` SQL — protects against `SELECT *` on multi-million-row tables. */
+export const MAX_RAW_QUERY_ROWS = 1000;
 const MAX_RENDER_WIDTH = 120;
 const MAX_COLUMN_WIDTH = 40;
 const MIN_COLUMN_WIDTH = 1;
+/**
+ * Upper bound on rows scanned when counting a table for the listing. SQLite has
+ * no stored row count, so `COUNT(*)` is a full b-tree scan — multi-second on a
+ * multi-GB database, and `bun:sqlite` runs it synchronously on the JS thread
+ * that also drives the TUI, freezing rendering and input. The listing instead
+ * trusts the planner's `sqlite_stat1` estimate for large tables and only counts
+ * exactly when a table is provably small, reading at most this many rows.
+ */
+const ROW_COUNT_PROBE_CAP = 50_000;
 
 type SqliteBinding = Exclude<SQLQueryBindings, Record<string, unknown>>;
 
@@ -24,6 +43,11 @@ interface SqliteMasterRow {
 
 interface SqliteCountRow {
 	count: number;
+}
+
+interface SqliteStat1Row {
+	tbl: string;
+	stat: string | null;
 }
 
 interface SqliteTableInfoRow {
@@ -49,6 +73,23 @@ export type SqliteSelector =
 	| { kind: "raw"; sql: string };
 
 export type SqliteRowLookup = { kind: "pk"; column: string; type: string } | { kind: "rowid" };
+
+/**
+ * Row count for a table in the listing.
+ * - `exact`: counted in full (the table is small enough to count cheaply).
+ * - `estimate`: the planner's `sqlite_stat1` figure; the table is too large to
+ *   scan, so this may be stale.
+ * - `atLeast`: a lower bound; counting was capped before reaching the end.
+ */
+export type TableRowCount =
+	| { kind: "exact"; rows: number }
+	| { kind: "estimate"; rows: number }
+	| { kind: "atLeast"; rows: number };
+
+export interface SqliteTableSummary {
+	name: string;
+	count: TableRowCount;
+}
 
 function splitSqliteRemainder(remainder: string): { subPath: string; queryString: string } {
 	const queryIndex = remainder.indexOf("?");
@@ -412,18 +453,7 @@ export function parseSqlitePathCandidates(filePath: string): SqlitePathCandidate
 
 export async function isSqliteFile(absolutePath: string): Promise<boolean> {
 	try {
-		const bytes = await Bun.file(absolutePath).slice(0, SQLITE_MAGIC.byteLength).bytes();
-		if (bytes.length !== SQLITE_MAGIC.byteLength) {
-			return false;
-		}
-
-		for (const [index, byte] of SQLITE_MAGIC.entries()) {
-			if (bytes[index] !== byte) {
-				return false;
-			}
-		}
-
-		return true;
+		return looksLikeSqlite(await Bun.file(absolutePath).slice(0, SQLITE_MAGIC.byteLength).bytes());
 	} catch {
 		return false;
 	}
@@ -495,20 +525,61 @@ export function parseSqliteSelector(subPath: string, queryString: string): Sqlit
 	return { kind: "schema", table, sampleLimit: DEFAULT_SCHEMA_SAMPLE_LIMIT };
 }
 
-export function listTables(db: Database): { name: string; rowCount: number }[] {
+/**
+ * Reads the planner's per-table row estimate from `sqlite_stat1` (populated by
+ * `ANALYZE`). The first integer of each `stat` string is the number of rows in
+ * that index; for a full (non-partial) index it equals the table's row count,
+ * so the max across a table's entries is the table estimate. Returns an empty
+ * map when the database was never analyzed. One small indexed read — no scan.
+ */
+function loadRowEstimates(db: Database): Map<string, number> {
+	const estimates = new Map<string, number>();
+	const hasStat1 = db
+		.prepare<Pick<SqliteMasterRow, "name">, []>(
+			"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'",
+		)
+		.get();
+	if (!hasStat1) return estimates;
+
+	for (const { tbl, stat } of db.prepare<SqliteStat1Row, []>("SELECT tbl, stat FROM sqlite_stat1").all()) {
+		if (!stat) continue;
+		const rows = Number.parseInt(stat, 10);
+		if (!Number.isFinite(rows)) continue;
+		const prev = estimates.get(tbl);
+		if (prev === undefined || rows > prev) estimates.set(tbl, rows);
+	}
+	return estimates;
+}
+
+/**
+ * Counts a table while reading at most `cap + 1` rows. Returns an exact count
+ * when the table holds `cap` rows or fewer, otherwise a lower bound of `cap`.
+ * Bounds the worst-case scan so a stale or missing estimate can never trigger a
+ * full-table scan on the JS thread.
+ */
+function probeRowCount(db: Database, table: string, cap: number): TableRowCount {
+	const sql = `SELECT COUNT(*) AS count FROM (SELECT 1 FROM ${quoteSqliteIdentifier(table)} LIMIT ${cap + 1})`;
+	const counted = db.prepare<SqliteCountRow, []>(sql).get()?.count ?? 0;
+	return counted > cap ? { kind: "atLeast", rows: cap } : { kind: "exact", rows: counted };
+}
+
+export function listTables(db: Database, options: { probeCap?: number } = {}): SqliteTableSummary[] {
+	const cap = options.probeCap ?? ROW_COUNT_PROBE_CAP;
 	const names = db
 		.prepare<Pick<SqliteMasterRow, "name">, []>(
 			"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name COLLATE NOCASE",
 		)
 		.all();
+	const estimates = loadRowEstimates(db);
 
 	return names.map(({ name }) => {
-		const countRow =
-			db.prepare<SqliteCountRow, []>(`SELECT COUNT(*) AS count FROM ${quoteSqliteIdentifier(name)}`).get() ?? null;
-		return {
-			name,
-			rowCount: countRow?.count ?? 0,
-		};
+		const estimate = estimates.get(name);
+		// Trust the planner only when it says the table is too large to count
+		// cheaply; otherwise count exactly (bounded), which also corrects a
+		// stale-low estimate without ever scanning more than `cap` rows.
+		const count: TableRowCount =
+			estimate !== undefined && estimate > cap ? { kind: "estimate", rows: estimate } : probeRowCount(db, name, cap);
+		return { name, count };
 	});
 }
 
@@ -590,15 +661,25 @@ export function getRowByRowId(db: Database, table: string, key: string): Record<
 		.get(binding);
 }
 
-export function executeReadQuery(db: Database, sql: string): { columns: string[]; rows: Record<string, unknown>[] } {
+export function executeReadQuery(
+	db: Database,
+	sql: string,
+): { columns: string[]; rows: Record<string, unknown>[]; truncated: boolean } {
 	const statement = db.prepare<SqliteRow, []>(sql);
 	if (statement.paramsCount > 0) {
 		throw new ToolError("SQLite raw queries do not support bound parameters");
 	}
-	return {
-		columns: [...statement.columnNames],
-		rows: statement.all(),
-	};
+	const columns = [...statement.columnNames];
+	const rows: SqliteRow[] = [];
+	let truncated = false;
+	for (const row of statement.iterate()) {
+		if (rows.length >= MAX_RAW_QUERY_ROWS) {
+			truncated = true;
+			break;
+		}
+		rows.push(row);
+	}
+	return { columns, rows, truncated };
 }
 
 export function insertRow(db: Database, table: string, data: Record<string, unknown>): void {
@@ -679,13 +760,24 @@ export function deleteRowByRowId(db: Database, table: string, key: string): numb
 	return statement.run(binding).changes;
 }
 
-export function renderTableList(tables: { name: string; rowCount: number }[]): string {
+function formatRowCount(count: TableRowCount): string {
+	switch (count.kind) {
+		case "exact":
+			return `${count.rows} rows`;
+		case "estimate":
+			return `~${count.rows} rows`;
+		case "atLeast":
+			return `${count.rows}+ rows`;
+	}
+}
+
+export function renderTableList(tables: SqliteTableSummary[]): string {
 	if (tables.length === 0) {
 		return "(no tables)";
 	}
 
 	return tables
-		.map(table => truncateToWidth(replaceTabs(`${table.name} (${table.rowCount} rows)`), MAX_RENDER_WIDTH))
+		.map(table => truncateToWidth(replaceTabs(`${table.name} (${formatRowCount(table.count)})`), MAX_RENDER_WIDTH))
 		.join("\n");
 }
 

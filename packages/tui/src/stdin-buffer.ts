@@ -21,6 +21,14 @@ import { EventEmitter } from "events";
 const ESC = "\x1b";
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
+// Paste-mode recovery bounds: a lost/corrupted end marker (ssh/tmux
+// truncation) must not hang input forever or grow memory unboundedly.
+const PASTE_INACTIVITY_TIMEOUT_MS = 1000;
+const PASTE_MAX_BYTES = 64 * 1024 * 1024;
+// A buggy double-report (CSI-u event plus the bare printable for the same
+// keypress) arrives in the same terminal write; a bare char that shows up
+// later than this window is a real keystroke and must not be swallowed.
+const KITTY_PRINTABLE_DEDUP_WINDOW_MS = 25;
 
 /**
  * Check if a string is a complete escape sequence or needs more data
@@ -202,40 +210,41 @@ function parseUnmodifiedKittyPrintableCodepoint(sequence: string): number | unde
 
 function extractCompleteSequences(buffer: string): { sequences: string[]; remainder: string } {
 	const sequences: string[] = [];
+	const length = buffer.length;
 	let pos = 0;
 
-	while (pos < buffer.length) {
-		const remaining = buffer.slice(pos);
-
-		// Try to extract a sequence starting at this position
-		if (remaining.startsWith(ESC)) {
-			// Find the end of this escape sequence
-			let seqEnd = 1;
-			while (seqEnd <= remaining.length) {
-				const candidate = remaining.slice(0, seqEnd);
+	// Index-based scanning: this is the input hot path. Slicing the remaining
+	// buffer (or Array.from-ing it) per iteration would make plain-text bursts
+	// O(n²) — a 100KB non-bracketed paste must stay O(n).
+	while (pos < length) {
+		if (buffer.charCodeAt(pos) === 0x1b) {
+			// Find the end of this escape sequence by growing the candidate.
+			let end = pos + 1;
+			let consumed = false;
+			while (end <= length) {
+				const candidate = buffer.slice(pos, end);
 				const status = isCompleteSequence(candidate);
-
-				if (status === "complete") {
-					sequences.push(candidate);
-					pos += seqEnd;
-					break;
-				} else if (status === "incomplete") {
-					seqEnd++;
-				} else {
-					// Should not happen when starting with ESC
-					sequences.push(candidate);
-					pos += seqEnd;
-					break;
+				if (status === "incomplete") {
+					end++;
+					continue;
 				}
+				// "complete" — or "not-escape", which should not happen when
+				// starting with ESC; both consume the candidate.
+				sequences.push(candidate);
+				pos = end;
+				consumed = true;
+				break;
 			}
 
-			if (seqEnd > remaining.length) {
-				return { sequences, remainder: remaining };
+			if (!consumed) {
+				return { sequences, remainder: buffer.slice(pos) };
 			}
 		} else {
-			// Not an escape sequence - take a single character
-			sequences.push(remaining[0]!);
-			pos++;
+			// Not an escape sequence - take one Unicode scalar, not a UTF-16 code unit.
+			const codePoint = buffer.codePointAt(pos)!;
+			const charLength = codePoint > 0xffff ? 2 : 1;
+			sequences.push(buffer.slice(pos, pos + charLength));
+			pos += charLength;
 		}
 	}
 
@@ -244,10 +253,21 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 
 export type StdinBufferOptions = {
 	/**
-	 * Maximum time to wait for sequence completion (default: 10ms)
-	 * After this time, the buffer is flushed even if incomplete
+	 * Maximum time to wait for sequence completion (default: 75ms).
+	 * After this time, a genuinely incomplete escape is flushed.
 	 */
 	timeout?: number;
+	/**
+	 * Paste-mode inactivity watchdog (default: 1000ms). If no input arrives for
+	 * this long while waiting for the bracketed-paste end marker, the paste is
+	 * assumed truncated: accumulated bytes are delivered and input recovers.
+	 */
+	pasteTimeout?: number;
+	/**
+	 * Paste-mode byte cap (default: 64 MiB). Exceeding it aborts paste mode the
+	 * same way, bounding memory when the end marker never arrives.
+	 */
+	pasteByteLimit?: number;
 };
 
 export type StdinBufferEventMap = {
@@ -263,13 +283,21 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	#buffer: string = "";
 	#timeout?: NodeJS.Timeout;
 	readonly #timeoutMs: number;
+	readonly #pasteTimeoutMs: number;
+	readonly #pasteByteLimit: number;
 	#pasteMode: boolean = false;
-	#pasteBuffer: string = "";
+	#pasteChunks: string[] = [];
+	#pasteOverlap: string = "";
+	#pasteBytes = 0;
+	#pasteWatchdog?: NodeJS.Timeout;
 	#pendingKittyPrintableCodepoint: number | undefined;
+	#pendingKittyPrintableAtMs = 0;
 
 	constructor(options: StdinBufferOptions = {}) {
 		super();
-		this.#timeoutMs = options.timeout ?? 10;
+		this.#timeoutMs = options.timeout ?? 75;
+		this.#pasteTimeoutMs = options.pasteTimeout ?? PASTE_INACTIVITY_TIMEOUT_MS;
+		this.#pasteByteLimit = options.pasteByteLimit ?? PASTE_MAX_BYTES;
 	}
 
 	process(data: string | Buffer): void {
@@ -301,24 +329,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#buffer += str;
 
 		if (this.#pasteMode) {
-			this.#pasteBuffer += this.#buffer;
+			const chunk = this.#buffer;
 			this.#buffer = "";
-
-			const endIndex = this.#pasteBuffer.indexOf(BRACKETED_PASTE_END);
-			if (endIndex !== -1) {
-				const pastedContent = this.#pasteBuffer.slice(0, endIndex);
-				const remaining = this.#pasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
-
-				this.#pasteMode = false;
-				this.#pasteBuffer = "";
-				this.#pendingKittyPrintableCodepoint = undefined;
-
-				this.emit("paste", pastedContent);
-
-				if (remaining.length > 0) {
-					this.process(remaining);
-				}
-			}
+			this.#consumePasteChunk(chunk);
 			return;
 		}
 
@@ -334,25 +347,13 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 			this.#pendingKittyPrintableCodepoint = undefined;
 			this.#buffer = this.#buffer.slice(startIndex + BRACKETED_PASTE_START.length);
-			this.#pasteMode = true;
-			this.#pasteBuffer = this.#buffer;
+			const firstChunk = this.#buffer;
 			this.#buffer = "";
-
-			const endIndex = this.#pasteBuffer.indexOf(BRACKETED_PASTE_END);
-			if (endIndex !== -1) {
-				const pastedContent = this.#pasteBuffer.slice(0, endIndex);
-				const remaining = this.#pasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
-
-				this.#pasteMode = false;
-				this.#pasteBuffer = "";
-				this.#pendingKittyPrintableCodepoint = undefined;
-
-				this.emit("paste", pastedContent);
-
-				if (remaining.length > 0) {
-					this.process(remaining);
-				}
-			}
+			this.#pasteMode = true;
+			this.#pasteChunks = [];
+			this.#pasteOverlap = "";
+			this.#pasteBytes = 0;
+			this.#consumePasteChunk(firstChunk);
 			return;
 		}
 
@@ -374,14 +375,97 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 	}
 
+	/**
+	 * Consume one chunk of paste-mode input. Chunks are accumulated in an array
+	 * and only joined once the end marker arrives, so a large paste delivered in
+	 * many small terminal reads stays O(total) instead of the O(total^2) cost of
+	 * re-concatenating and rescanning the whole buffer on every chunk. A short
+	 * overlap tail (end-marker length - 1) is carried across chunk boundaries so
+	 * a marker split between two reads is still detected without rescanning.
+	 */
+	#consumePasteChunk(chunk: string): void {
+		const probe = this.#pasteOverlap + chunk;
+		if (probe.indexOf(BRACKETED_PASTE_END) === -1) {
+			this.#pasteChunks.push(chunk);
+			this.#pasteBytes += chunk.length;
+			const keep = BRACKETED_PASTE_END.length - 1;
+			this.#pasteOverlap = probe.length > keep ? probe.slice(probe.length - keep) : probe;
+			if (this.#pasteBytes > this.#pasteByteLimit) {
+				this.#abortPaste();
+				return;
+			}
+			this.#armPasteWatchdog();
+			return;
+		}
+
+		// End marker arrived: join once and split at its first occurrence,
+		// matching the prior indexOf-from-start semantics exactly.
+		const flat = this.#pasteChunks.length > 0 ? `${this.#pasteChunks.join("")}${chunk}` : chunk;
+		const endIndex = flat.indexOf(BRACKETED_PASTE_END);
+		const pastedContent = flat.slice(0, endIndex);
+		const remaining = flat.slice(endIndex + BRACKETED_PASTE_END.length);
+
+		this.#clearPasteWatchdog();
+		this.#pasteMode = false;
+		this.#pasteChunks = [];
+		this.#pasteOverlap = "";
+		this.#pasteBytes = 0;
+		this.#pendingKittyPrintableCodepoint = undefined;
+
+		this.emit("paste", pastedContent);
+
+		if (remaining.length > 0) {
+			this.process(remaining);
+		}
+	}
+
+	/** Re-arm the paste-mode inactivity watchdog after each chunk. */
+	#armPasteWatchdog(): void {
+		if (this.#pasteWatchdog) clearTimeout(this.#pasteWatchdog);
+		this.#pasteWatchdog = setTimeout(() => {
+			this.#pasteWatchdog = undefined;
+			this.#abortPaste();
+		}, this.#pasteTimeoutMs);
+	}
+
+	#clearPasteWatchdog(): void {
+		if (this.#pasteWatchdog) {
+			clearTimeout(this.#pasteWatchdog);
+			this.#pasteWatchdog = undefined;
+		}
+	}
+
+	/**
+	 * Recover from a paste whose end marker never arrived (dropped or corrupted
+	 * in transit, or past the byte cap): exit paste mode and deliver the
+	 * accumulated bytes as a paste, so they are neither lost, replayed as
+	 * keystrokes, nor accumulated forever while input appears dead.
+	 */
+	#abortPaste(): void {
+		this.#clearPasteWatchdog();
+		const content = this.#pasteChunks.join("");
+		this.#pasteMode = false;
+		this.#pasteChunks = [];
+		this.#pasteOverlap = "";
+		this.#pasteBytes = 0;
+		this.emit("paste", content);
+	}
+
 	#emitDataSequence(sequence: string): void {
 		const rawCodepoint = sequence.length === 1 ? sequence.codePointAt(0) : undefined;
-		if (rawCodepoint !== undefined && rawCodepoint === this.#pendingKittyPrintableCodepoint) {
+		if (
+			rawCodepoint !== undefined &&
+			rawCodepoint === this.#pendingKittyPrintableCodepoint &&
+			Date.now() - this.#pendingKittyPrintableAtMs <= KITTY_PRINTABLE_DEDUP_WINDOW_MS
+		) {
 			this.#pendingKittyPrintableCodepoint = undefined;
 			return;
 		}
 
 		this.#pendingKittyPrintableCodepoint = parseUnmodifiedKittyPrintableCodepoint(sequence);
+		if (this.#pendingKittyPrintableCodepoint !== undefined) {
+			this.#pendingKittyPrintableAtMs = Date.now();
+		}
 		this.emit("data", sequence);
 	}
 
@@ -406,9 +490,12 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			clearTimeout(this.#timeout);
 			this.#timeout = undefined;
 		}
+		this.#clearPasteWatchdog();
 		this.#buffer = "";
 		this.#pasteMode = false;
-		this.#pasteBuffer = "";
+		this.#pasteChunks = [];
+		this.#pasteOverlap = "";
+		this.#pasteBytes = 0;
 		this.#pendingKittyPrintableCodepoint = undefined;
 	}
 

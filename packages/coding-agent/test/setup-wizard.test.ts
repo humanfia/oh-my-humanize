@@ -1,18 +1,21 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { runOnboardingSetup } from "../src/commands/setup";
-import { Settings } from "../src/config/settings";
-import { SETTINGS_SCHEMA } from "../src/config/settings-schema";
+import { afterEach, describe, expect, it, mock } from "bun:test";
+import { runOnboardingSetup } from "@oh-my-pi/pi-coding-agent/commands/setup";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { SETTINGS_SCHEMA } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import {
 	ALL_SCENES,
 	CURRENT_SETUP_VERSION,
 	markSetupWizardComplete,
+	runSetupWizard,
 	type SetupScene,
 	type SetupSceneHost,
 	selectSetupScenes,
-} from "../src/modes/setup-wizard";
-import { WebSearchTab } from "../src/modes/setup-wizard/scenes/web-search";
-import { initTheme, theme } from "../src/modes/theme/theme";
-import type { InteractiveModeContext } from "../src/modes/types";
+} from "@oh-my-pi/pi-coding-agent/modes/setup-wizard";
+import { WebSearchTab } from "@oh-my-pi/pi-coding-agent/modes/setup-wizard/scenes/web-search";
+import type { SetupWizardComponent } from "@oh-my-pi/pi-coding-agent/modes/setup-wizard/wizard-overlay";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_PREFERENCES } from "@oh-my-pi/pi-coding-agent/web/search/types";
 
 function fakeContextWithConfiguredModel(): InteractiveModeContext {
 	return {
@@ -46,6 +49,15 @@ describe("setup wizard scene selection", () => {
 	it("runs all v1 scenes for a new user", async () => {
 		const scenes = await selectSetupScenes(0, ALL_SCENES, fakeContextWithConfiguredModel(), { isTTY: true });
 		expect(scenes.map(scene => scene.id)).toEqual(ALL_SCENES.map(scene => scene.id));
+	});
+
+	it("keeps CURRENT_SETUP_VERSION in sync with the highest scene minVersion", () => {
+		// main.ts's cold-launch gate sources CURRENT_SETUP_VERSION from the tiny
+		// `setup-version` module to decide whether to load the wizard at all. If a
+		// new scene raises the bar but the constant is not bumped, stale installs
+		// would never see the scene. Guard the invariant the gate relies on.
+		const highestMinVersion = Math.max(...ALL_SCENES.map(scene => scene.minVersion));
+		expect(CURRENT_SETUP_VERSION).toBe(highestMinVersion);
 	});
 
 	it("runs only scenes newer than the stored setup version", async () => {
@@ -103,6 +115,49 @@ describe("setup wizard persistence", () => {
 		const settings = Settings.isolated();
 		await markSetupWizardComplete(settings);
 		expect(settings.get("setupVersion")).toBe(CURRENT_SETUP_VERSION);
+	});
+
+	it("can run a targeted scene without setup-version or welcome-intro side effects", async () => {
+		const settings = Settings.isolated({ setupVersion: 0 });
+		const hideOverlay = mock(() => {});
+		const setFocus = mock((_component: unknown) => {});
+		const requestRender = mock(() => {});
+		const playWelcomeIntro = mock(() => {});
+		let component: SetupWizardComponent | undefined;
+		const scene: SetupScene = {
+			id: "providers",
+			title: "providers",
+			minVersion: 1,
+			mount: host => ({
+				title: "providers",
+				onMount: () => host.finish("done"),
+				render: () => [],
+				invalidate: () => {},
+			}),
+		};
+		const ctx = {
+			settings,
+			playWelcomeIntro,
+			ui: {
+				terminal: { rows: 24 },
+				showOverlay: (nextComponent: SetupWizardComponent) => {
+					component = nextComponent;
+					return { hide: hideOverlay };
+				},
+				setFocus,
+				requestRender,
+			},
+		} as unknown as InteractiveModeContext;
+
+		const pending = runSetupWizard(ctx, [scene], { markComplete: false, playWelcomeIntro: false });
+		component?.handleInput?.("\n");
+		component?.handleInput?.("\n");
+		await pending;
+
+		expect(settings.get("setupVersion")).toBe(0);
+		expect(playWelcomeIntro).not.toHaveBeenCalled();
+		expect(hideOverlay).toHaveBeenCalledTimes(1);
+		expect(setFocus).toHaveBeenCalled();
 	});
 });
 
@@ -174,6 +229,12 @@ describe("setup wizard glyph scene", () => {
 });
 
 describe("setup wizard web search tab", () => {
+	it("exposes every web-search provider preference in the schema-backed TUI list", () => {
+		const schema = SETTINGS_SCHEMA["providers.webSearch"];
+		expect(schema.values).toEqual(SEARCH_PROVIDER_PREFERENCES);
+		expect(schema.ui.options).toEqual(SEARCH_PROVIDER_OPTIONS);
+	});
+
 	it("persists the highlighted provider as the web search preference", async () => {
 		const settings = Settings.isolated();
 		const host = {
@@ -195,6 +256,30 @@ describe("setup wizard web search tab", () => {
 		const expected = SETTINGS_SCHEMA["providers.webSearch"].ui.options[1].value;
 		expect(expected).not.toBe("auto");
 		expect(settings.get("providers.webSearch")).toBe(expected);
+	});
+
+	it("can select the last provider in the setup TUI list", async () => {
+		const settings = Settings.isolated();
+		const host = {
+			ctx: {
+				settings,
+				session: { modelRegistry: { authStorage: { hasAuth: () => false } } },
+			},
+			requestRender: () => {},
+			finish: () => {},
+			setFocus: () => {},
+			restoreFocus: () => {},
+		} as unknown as SetupSceneHost;
+
+		const tab = new WebSearchTab(host);
+		for (let i = 1; i < SEARCH_PROVIDER_OPTIONS.length; i++) {
+			tab.handleInput("\x1b[B");
+		}
+		tab.handleInput("\n");
+		await Bun.sleep(20);
+
+		const lastOption = SEARCH_PROVIDER_OPTIONS[SEARCH_PROVIDER_OPTIONS.length - 1]!;
+		expect(settings.get("providers.webSearch")).toBe(lastOption.value);
 	});
 });
 

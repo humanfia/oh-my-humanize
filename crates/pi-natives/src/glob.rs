@@ -14,9 +14,15 @@
 //! // JS: await native.glob({ pattern: "*.rs", path: "." })
 //! ```
 
-use std::path::Path;
+use std::{
+	cmp::Ordering,
+	collections::BinaryHeap,
+	path::Path,
+	sync::{Arc, Mutex},
+};
 
 use globset::GlobSet;
+use ignore::{ParallelVisitor, ParallelVisitorBuilder, WalkState};
 use napi::{
 	bindgen_prelude::*,
 	threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -81,6 +87,74 @@ struct GlobConfig {
 	use_cache:             bool,
 }
 
+#[derive(Clone)]
+struct RankedGlobMatch {
+	entry: GlobMatch,
+}
+
+impl PartialEq for RankedGlobMatch {
+	fn eq(&self, other: &Self) -> bool {
+		compare_matches_by_rank(&self.entry, &other.entry) == Ordering::Equal
+	}
+}
+
+impl Eq for RankedGlobMatch {}
+
+impl PartialOrd for RankedGlobMatch {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl Ord for RankedGlobMatch {
+	fn cmp(&self, other: &Self) -> Ordering {
+		if match_is_worse(&self.entry, &other.entry) {
+			Ordering::Greater
+		} else if match_is_worse(&other.entry, &self.entry) {
+			Ordering::Less
+		} else {
+			Ordering::Equal
+		}
+	}
+}
+
+fn match_mtime(entry: &GlobMatch) -> f64 {
+	entry.mtime.unwrap_or(0.0)
+}
+
+fn compare_matches_by_rank(a: &GlobMatch, b: &GlobMatch) -> Ordering {
+	match_mtime(b)
+		.total_cmp(&match_mtime(a))
+		.then_with(|| a.path.cmp(&b.path))
+}
+
+fn match_is_worse(a: &GlobMatch, b: &GlobMatch) -> bool {
+	compare_matches_by_rank(a, b) == Ordering::Greater
+}
+
+/// Returns `true` when `entry` was admitted into the bounded top-`limit` heap
+/// (either filling free space or evicting a worse existing entry).
+fn push_bounded_match(
+	heap: &mut BinaryHeap<RankedGlobMatch>,
+	entry: GlobMatch,
+	limit: usize,
+) -> bool {
+	if heap.len() < limit {
+		heap.push(RankedGlobMatch { entry });
+		return true;
+	}
+
+	let Some(worst) = heap.peek() else {
+		return false;
+	};
+	if match_is_worse(&worst.entry, &entry) {
+		heap.pop();
+		heap.push(RankedGlobMatch { entry });
+		return true;
+	}
+	false
+}
+
 fn resolve_symlink_target_type(root: &Path, relative_path: &str) -> Option<FileType> {
 	let target_path = root.join(relative_path);
 	let metadata = std::fs::metadata(target_path).ok()?;
@@ -143,7 +217,9 @@ fn filter_entries(
 		};
 		let mut matched_entry = entry.clone();
 		matched_entry.file_type = effective_file_type;
-		if let Some(callback) = on_match {
+		if !config.sort_by_mtime
+			&& let Some(callback) = on_match
+		{
 			callback.call(Ok(matched_entry.clone()), ThreadsafeFunctionCallMode::NonBlocking);
 		}
 
@@ -153,6 +229,145 @@ fn filter_entries(
 			break;
 		}
 	}
+	Ok(matches)
+}
+
+struct SortedMatchVisitor<'a> {
+	glob_set:    &'a GlobSet,
+	config:      &'a GlobConfig,
+	on_match:    Option<&'a ThreadsafeFunction<GlobMatch>>,
+	top_matches: BinaryHeap<RankedGlobMatch>,
+	shared:      Arc<Mutex<Vec<GlobMatch>>>,
+	error:       Arc<Mutex<Option<String>>>,
+	ct:          &'a task::CancelToken,
+	visited:     usize,
+}
+
+impl Drop for SortedMatchVisitor<'_> {
+	fn drop(&mut self) {
+		if self.top_matches.is_empty() {
+			return;
+		}
+		let drained = std::mem::take(&mut self.top_matches);
+		self
+			.shared
+			.lock()
+			.expect("glob match collection lock poisoned")
+			.extend(drained.into_iter().map(|ranked| ranked.entry));
+	}
+}
+
+impl ParallelVisitor for SortedMatchVisitor<'_> {
+	fn visit(&mut self, entry: std::result::Result<ignore::DirEntry, ignore::Error>) -> WalkState {
+		if self.visited == 0 || self.visited >= 128 {
+			self.visited = 0;
+			if let Err(err) = self.ct.heartbeat() {
+				*self.error.lock().expect("error lock poisoned") = Some(err.to_string());
+				return WalkState::Quit;
+			}
+		}
+		self.visited += 1;
+
+		let Ok(entry) = entry else {
+			return WalkState::Continue;
+		};
+		let Some(mut matched_entry) =
+			fs_cache::collect_entry(&self.config.root, &entry, fs_cache::ScanDetail::Full)
+		else {
+			return WalkState::Continue;
+		};
+		if fs_cache::should_skip_path(
+			Path::new(&matched_entry.path),
+			self.config.mentions_node_modules,
+		) {
+			return WalkState::Continue;
+		}
+		if !self.glob_set.is_match(&matched_entry.path) {
+			return WalkState::Continue;
+		}
+		let Some(effective_file_type) = apply_file_type_filter(&matched_entry, self.config) else {
+			return WalkState::Continue;
+		};
+		matched_entry.file_type = effective_file_type;
+		let streamable = self.on_match.map(|cb| (cb, matched_entry.clone()));
+		// Admission into the per-thread heap over-approximates the global top-N,
+		// so streamed partials are a superset; callers dedup and re-rank.
+		if push_bounded_match(&mut self.top_matches, matched_entry, self.config.max_results)
+			&& let Some((callback, payload)) = streamable
+		{
+			callback.call(Ok(payload), ThreadsafeFunctionCallMode::NonBlocking);
+		}
+		WalkState::Continue
+	}
+}
+
+struct SortedMatchVisitorBuilder<'a> {
+	glob_set: &'a GlobSet,
+	config:   &'a GlobConfig,
+	on_match: Option<&'a ThreadsafeFunction<GlobMatch>>,
+	shared:   Arc<Mutex<Vec<GlobMatch>>>,
+	error:    Arc<Mutex<Option<String>>>,
+	ct:       &'a task::CancelToken,
+}
+
+impl<'a> ParallelVisitorBuilder<'a> for SortedMatchVisitorBuilder<'a> {
+	fn build(&mut self) -> Box<dyn ParallelVisitor + 'a> {
+		Box::new(SortedMatchVisitor {
+			glob_set:    self.glob_set,
+			config:      self.config,
+			on_match:    self.on_match,
+			top_matches: BinaryHeap::with_capacity(self.config.max_results.min(1024)),
+			shared:      Arc::clone(&self.shared),
+			error:       Arc::clone(&self.error),
+			ct:          self.ct,
+			visited:     0,
+		})
+	}
+}
+
+/// Walk the tree in parallel, keeping a bounded top-`max_results` heap per
+/// worker. The union of per-thread heaps always contains the global top-N;
+/// `run_glob` re-sorts and truncates afterwards, so the final ranking is
+/// deterministic (mtime desc, path tiebreak) regardless of walk order.
+fn collect_sorted_matches_uncached(
+	glob_set: &GlobSet,
+	config: &GlobConfig,
+	on_match: Option<&ThreadsafeFunction<GlobMatch>>,
+	ct: &task::CancelToken,
+) -> Result<Vec<GlobMatch>> {
+	let mut builder = fs_cache::build_walker(
+		&config.root,
+		config.include_hidden,
+		config.use_gitignore,
+		!config.mentions_node_modules,
+		false,
+	);
+	let workers = fs_cache::grep_workers();
+	if workers > 0 {
+		builder.threads(workers);
+	}
+	let shared = Arc::new(Mutex::new(Vec::new()));
+	let error = Arc::new(Mutex::new(None));
+	let mut visitor_builder = SortedMatchVisitorBuilder {
+		glob_set,
+		config,
+		on_match,
+		shared: Arc::clone(&shared),
+		error: Arc::clone(&error),
+		ct,
+	};
+	ct.heartbeat()?;
+	builder.build_parallel().visit(&mut visitor_builder);
+
+	let walk_error = error.lock().expect("error lock poisoned").take();
+	if let Some(error) = walk_error {
+		return Err(Error::from_reason(error));
+	}
+
+	let mut matches =
+		std::mem::take(&mut *shared.lock().expect("glob match collection lock poisoned"));
+	matches.sort_by(compare_matches_by_rank);
+	matches.truncate(config.max_results);
 	Ok(matches)
 }
 
@@ -180,7 +395,11 @@ fn run_glob(
 			fs_cache::ScanDetail::Minimal
 		},
 	};
-	let mut matches = if config.use_cache {
+	let streams_bounded_sorted_partials =
+		config.sort_by_mtime && !config.use_cache && config.max_results != usize::MAX;
+	let mut matches = if streams_bounded_sorted_partials {
+		collect_sorted_matches_uncached(&glob_set, &config, on_match, &ct)?
+	} else if config.use_cache {
 		let scan = fs_cache::get_or_scan(&config.root, scan_options, &ct)?;
 		let mut matches = filter_entries(&scan.entries, &glob_set, &config, on_match, &ct)?;
 		// Empty-result recheck: if we got zero matches from a cached scan that's old
@@ -197,14 +416,13 @@ fn run_glob(
 
 	if config.sort_by_mtime {
 		// Sorting mode: rank by mtime descending, then apply max-results truncation.
-		matches.sort_by(|a, b| {
-			let a_mtime = a.mtime.unwrap_or(0.0);
-			let b_mtime = b.mtime.unwrap_or(0.0);
-			b_mtime
-				.partial_cmp(&a_mtime)
-				.unwrap_or(std::cmp::Ordering::Equal)
-		});
+		matches.sort_by(compare_matches_by_rank);
 		matches.truncate(config.max_results);
+		if !streams_bounded_sorted_partials && let Some(callback) = on_match {
+			for matched_entry in &matches {
+				callback.call(Ok(matched_entry.clone()), ThreadsafeFunctionCallMode::NonBlocking);
+			}
+		}
 	}
 	let total_matches = matches.len().min(u32::MAX as usize) as u32;
 	Ok(GlobResult { matches, total_matches })
@@ -215,8 +433,9 @@ fn run_glob(
 /// Resolves the search root, scans entries, applies glob and optional file-type
 /// filters, and optionally streams each accepted match through `on_match`.
 ///
-/// If `sortByMtime` is enabled, all matching entries are collected, sorted by
-/// descending mtime, then truncated to `maxResults`.
+/// If `sortByMtime` is enabled with a finite `maxResults`, uncached scans keep
+/// only the current top results while traversing instead of collecting the full
+/// tree.
 ///
 /// # Errors
 /// Returns an error when the search path cannot be resolved, the path is not a

@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { AgentBusyError, type AgentTelemetryConfig, type Tracer } from "@oh-my-pi/pi-agent-core";
 import { type AssistantMessage, Effort } from "@oh-my-pi/pi-ai";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExtensionActions, LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
+import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
+import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { runSubprocess, SUBAGENT_WARNING_MISSING_YIELD } from "@oh-my-pi/pi-coding-agent/task/executor";
+import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { logger } from "@oh-my-pi/pi-utils";
-import { Settings } from "../../src/config/settings";
-import type { ExtensionActions, LoadExtensionsResult } from "../../src/extensibility/extensions/types";
-import type { CreateAgentSessionResult } from "../../src/sdk";
-import * as sdkModule from "../../src/sdk";
-import type { AgentSession, AgentSessionEvent, PromptOptions } from "../../src/session/agent-session";
-import type { AuthStorage } from "../../src/session/auth-storage";
-import { runSubprocess, SUBAGENT_WARNING_MISSING_YIELD } from "../../src/task/executor";
-import type { AgentDefinition } from "../../src/task/types";
-import { EventBus } from "../../src/utils/event-bus";
 
 function createAssistantStopMessage(text: string): AssistantMessage {
 	return {
@@ -111,7 +111,9 @@ describe("runSubprocess yield reminders", () => {
 		index: 0,
 		id: "subagent-1",
 		settings: Settings.isolated(),
-		modelRegistry: { refresh: async () => {} } as unknown as import("../../src/config/model-registry").ModelRegistry,
+		modelRegistry: {
+			refresh: async () => {},
+		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry,
 		enableLsp: false,
 	};
 
@@ -186,7 +188,7 @@ describe("runSubprocess yield reminders", () => {
 		const createAgentSessionSpy = mockCreateAgentSession(session);
 		const modelRegistry = {
 			refresh: async () => {},
-		} as unknown as import("../../src/config/model-registry").ModelRegistry;
+		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry;
 		const refreshSpy = vi.spyOn(modelRegistry, "refresh");
 
 		await runSubprocess({ ...baseOptions, id: "subagent-skip-refresh", modelRegistry });
@@ -195,7 +197,7 @@ describe("runSubprocess yield reminders", () => {
 		expect(createAgentSessionSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("renders shared task context in subagent system prompt before now", async () => {
+	it("splices the subagent role prompt before the trailing system section", async () => {
 		let userPrompt = "";
 		const session = createMockSession(({ text, emit }) => {
 			userPrompt = text;
@@ -215,7 +217,6 @@ describe("runSubprocess yield reminders", () => {
 		await runSubprocess({
 			...baseOptions,
 			id: "subagent-context-system",
-			context: "Shared task background",
 			task: "Your assignment is below.\nBe thorough and complete fully before yielding.\n\nDo the task.",
 		});
 
@@ -227,11 +228,12 @@ describe("runSubprocess yield reminders", () => {
 		expect(systemPrompt).toHaveLength(4);
 		expect(systemPrompt?.[0]).toBe("system");
 		expect(systemPrompt?.[1]).toBe("project");
-		expect(systemPrompt?.[2]).toMatch(/CONTEXT\n=+\n\nShared task background/);
 		expect(systemPrompt?.[2]).toMatch(/ROLE\n=+\n\ntest/);
+		// The parent-conversation CONTEXT section is gone: subagents get their
+		// background inside the assignment (or a local:// file), never a dump.
+		expect(systemPrompt?.[2]).not.toMatch(/CONTEXT\n=+/);
 		expect(systemPrompt?.[3]).toBe("now");
 		expect(userPrompt).not.toMatch(/CONTEXT\n=+/);
-		expect(userPrompt).not.toContain("Shared task background");
 	});
 
 	it("sends reminder prompt when subagent stops without yield", async () => {
@@ -265,7 +267,6 @@ describe("runSubprocess yield reminders", () => {
 		expect(promptOptions).toHaveLength(2);
 		expect(promptOptions[0]?.attribution).toBe("agent");
 		expect(promptOptions[1]?.attribution).toBe("agent");
-		expect(prompts[1]).toContain("Your last turn ended without a tool call");
 		expect(result.output).toContain('"done": true');
 		expect(result.output.includes("SYSTEM WARNING")).toBe(false);
 	});
@@ -355,7 +356,7 @@ describe("runSubprocess yield reminders", () => {
 		const modelRegistry = {
 			refresh: async () => {},
 			getAvailable: () => [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
-		} as unknown as import("../../src/config/model-registry").ModelRegistry;
+		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry;
 
 		await runSubprocess({
 			...baseOptions,
@@ -374,7 +375,7 @@ describe("runSubprocess yield reminders", () => {
 		const modelRegistry = {
 			refresh: async () => {},
 			getAvailable: () => [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
-		} as unknown as import("../../src/config/model-registry").ModelRegistry;
+		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry;
 
 		const cases = [
 			{ modelOverride: "openai/gpt-4o:low", expectedThinkingLevel: Effort.Low },
@@ -475,6 +476,35 @@ describe("runSubprocess yield reminders", () => {
 		expect(result.abortReason).toBe("Cancelled before start");
 		expect(result.stderr).toBe("Cancelled before start");
 	});
+
+	it("surfaces the assistant abort message instead of 'Cancelled by caller' on an internal turn abort", async () => {
+		// No caller signal and no runtime limit: the subagent's own turn ended with
+		// stopReason "aborted" (e.g. a merged request-signal abort). abortReason is
+		// undefined, so the executor must report the assistant's real errorMessage,
+		// not the generic caller-cancellation fallback. This is also what the eval
+		// agent() bridge re-raises, so a blank/misleading reason here surfaces as an
+		// opaque "bridge call '__agent__' failed".
+		const session = createMockSession(({ emit, state }) => {
+			const aborted: AssistantMessage = {
+				...createAssistantStopMessage(""),
+				stopReason: "aborted",
+				errorMessage: "Request was aborted",
+			};
+			state.messages.push(aborted);
+			emit({ type: "message_end", message: aborted });
+		});
+
+		mockCreateAgentSession(session);
+
+		const result = await runSubprocess({ ...baseOptions, id: "subagent-internal-abort" });
+
+		expect(result.aborted).toBe(true);
+		expect(result.exitCode).toBe(1);
+		expect(result.abortReason).toBe("Request was aborted");
+		expect(result.abortReason).not.toBe("Cancelled by caller");
+		expect(result.error).toBeUndefined();
+		expect(result.stderr).toBe("");
+	});
 	it("uses modelRegistry.authStorage when only options.modelRegistry is provided", async () => {
 		const session = createMockSession(({ emit }) => {
 			emit({
@@ -493,7 +523,7 @@ describe("runSubprocess yield reminders", () => {
 		const modelRegistry = {
 			authStorage: fakeAuthStorage,
 			refresh: async () => {},
-		} as unknown as import("../../src/config/model-registry").ModelRegistry;
+		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry;
 
 		await runSubprocess({ ...baseOptions, id: "subagent-registry-only", modelRegistry });
 
@@ -509,7 +539,7 @@ describe("runSubprocess yield reminders", () => {
 		const modelRegistry = {
 			authStorage: registryStorage,
 			refresh: async () => {},
-		} as unknown as import("../../src/config/model-registry").ModelRegistry;
+		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry;
 
 		const result = await runSubprocess({
 			...baseOptions,
@@ -556,7 +586,7 @@ describe("runSubprocess yield reminders", () => {
 
 		expect(result.aborted).toBe(true);
 		expect(errorSpy).not.toHaveBeenCalledWith("Subagent prompt failed", expect.anything());
-		expect(debugSpy).toHaveBeenCalledWith("Subagent prompt aborted", expect.anything());
+		expect(debugSpy).toHaveBeenCalledWith("Subagent prompt aborted");
 	});
 });
 
@@ -579,7 +609,9 @@ describe("runSubprocess telemetry propagation", () => {
 		index: 0,
 		id: "subagent-telemetry",
 		settings: Settings.isolated(),
-		modelRegistry: { refresh: async () => {} } as unknown as import("../../src/config/model-registry").ModelRegistry,
+		modelRegistry: {
+			refresh: async () => {},
+		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry,
 		enableLsp: false,
 	};
 

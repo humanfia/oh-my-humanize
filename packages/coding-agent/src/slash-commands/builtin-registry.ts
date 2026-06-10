@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getOAuthProviders } from "@oh-my-pi/pi-ai/utils/oauth";
+import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import type { SettingPath, SettingValue } from "../config/settings";
@@ -21,6 +21,7 @@ import {
 } from "../extensibility/plugins/marketplace";
 import { resolveMemoryBackend } from "../memory-backend";
 import type { InteractiveModeContext } from "../modes/types";
+import type { FreshSessionResult } from "../session/agent-session";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
 import { createSessionWorkflowRuntimeHost } from "../workflow/session-runtime";
@@ -30,6 +31,7 @@ import { createMarketplaceManager } from "./helpers/marketplace-manager";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSlashCommand, parseSubcommand, usage } from "./helpers/parse";
 import { handleSshAcp } from "./helpers/ssh";
+import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import { handleWorkflowAcp } from "./helpers/workflow";
@@ -52,6 +54,11 @@ function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
 	ctx.updateEditorTopBorder();
 	ctx.ui.requestRender();
+}
+
+function formatFreshSessionResult(result: FreshSessionResult): string {
+	const stateLabel = result.closedProviderSessions === 1 ? "provider state" : "provider states";
+	return `Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`;
 }
 
 const shutdownHandlerTui = (_command: ParsedSlashCommand, runtime: TuiSlashCommandRuntime): SlashCommandResult => {
@@ -78,6 +85,23 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "setup",
+		aliases: ["providers"],
+		description: "Open provider setup",
+		allowArgs: true,
+		subcommands: [{ name: "providers", description: "Configure sign-in and web search providers" }],
+		handleTui: async (command, runtime) => {
+			const args = command.args.trim().toLowerCase();
+			const opensProviders = args === "" || args === "providers";
+			if (opensProviders) {
+				await runtime.ctx.showProviderSetup();
+			} else {
+				runtime.ctx.showWarning(`Usage: /${command.name} [providers]`);
+			}
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "plan",
 		description: "Toggle plan mode (agent plans before executing)",
 		inlineHint: "[prompt]",
@@ -93,6 +117,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			if (hadArgs && wasPlanModeEnabled) {
 				runtime.ctx.editor.addToHistory(command.text);
 			}
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "plan-review",
+		description: "Re-open the plan review for the latest plan (plan mode only)",
+		handleTui: async (_command, runtime) => {
+			await runtime.ctx.openPlanReview();
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -406,17 +438,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "copy",
-		description: "Copy last agent message to clipboard",
-		subcommands: [
-			{ name: "last", description: "Copy full last agent message" },
-			{ name: "code", description: "Copy last code block" },
-			{ name: "all", description: "Copy all code blocks from last message" },
-			{ name: "cmd", description: "Copy last bash/python command" },
-		],
-		allowArgs: true,
-		handleTui: async (command, runtime) => {
-			const sub = command.args.trim().toLowerCase() || undefined;
-			await runtime.ctx.handleCopyCommand(sub);
+		description: "Pick text or code from the conversation to copy",
+		handleTui: (_command, runtime) => {
+			runtime.ctx.showCopySelector();
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -548,6 +572,25 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (_command, runtime) => {
 			await runtime.ctx.handleUsageCommand();
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "stats",
+		description: "Launch the local stats dashboard",
+		inlineHint: "[--port <port>]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const parsed = parseStatsDashboardArgs(command.args);
+			if ("error" in parsed) return usage(parsed.error, runtime);
+
+			await runtime.output("Syncing session files...");
+			try {
+				const result = await launchStatsDashboard(parsed);
+				await runtime.output(result.message);
+			} catch (error) {
+				await runtime.output(`Stats dashboard failed: ${errorMessage(error)}`);
+			}
+			return commandConsumed();
 		},
 	},
 	{
@@ -793,6 +836,25 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "fresh",
+		description: "Reset provider stream state without changing the local transcript",
+		handle: async (_command, runtime) => {
+			const result = runtime.session.freshSession();
+			if (!result) {
+				await runtime.output(
+					"Wait for the current response to finish or abort it before refreshing provider state.",
+				);
+				return commandConsumed();
+			}
+			await runtime.output(formatFreshSessionResult(result));
+			return commandConsumed();
+		},
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleFreshCommand();
+		},
+	},
+	{
 		name: "drop",
 		description: "Delete the current session and start a new one",
 		handleTui: async (_command, runtime) => {
@@ -891,6 +953,17 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "tan",
+		description: "Run a full background agent on tangential work",
+		inlineHint: "<work>",
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			const work = command.text.slice(`/${command.name}`.length).trim();
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleTanCommand(work);
+		},
+	},
+	{
 		name: "omfg",
 		description: "Forge a TTSR rule from a complaint to stop a recurring behavior",
 		inlineHint: "<complaint>",
@@ -910,15 +983,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.showStatus("Nothing to retry");
 			}
 			runtime.ctx.editor.setText("");
-		},
-	},
-	{
-		name: "background",
-		aliases: ["bg"],
-		description: "Detach UI and continue running in background",
-		handleTui: (_command, runtime) => {
-			runtime.ctx.editor.setText("");
-			runtime.handleBackgroundCommand();
 		},
 	},
 	{
@@ -956,7 +1020,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const verb = (command.args.trim().split(/\s+/)[0] ?? "").toLowerCase() || "view";
-			const backend = resolveMemoryBackend(runtime.settings);
+			const backend = await resolveMemoryBackend(runtime.settings);
 			switch (verb) {
 				case "view": {
 					const payload = await backend.buildDeveloperInstructions(
@@ -1664,10 +1728,13 @@ for (const command of BUILTIN_SLASH_COMMAND_REGISTRY) {
 	}
 }
 
+export const BUILTIN_SLASH_COMMAND_RESERVED_NAMES: ReadonlySet<string> = new Set(BUILTIN_SLASH_COMMAND_LOOKUP.keys());
+
 /** Builtin command metadata used for slash-command autocomplete and help text. */
 export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_REGISTRY.map(
 	command => ({
 		name: command.name,
+		aliases: command.aliases,
 		description: command.description,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,

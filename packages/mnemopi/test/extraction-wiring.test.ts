@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { Mnemopi } from "../src/core/memory";
-import type { MnemopiLlmCompletion } from "../src/core/runtime-options";
+import { Mnemopi } from "@oh-my-pi/pi-mnemopi/core/memory";
+import type { MnemopiLlmCompletion } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
 
 const instances: Mnemopi[] = [];
 
@@ -76,7 +76,7 @@ describe("remember(extract) wires the LLM fact extractor", () => {
 		await expect(memory.flushExtractions()).resolves.toBeUndefined();
 
 		// The memory itself is still durably stored and recallable.
-		const recalled = memory.recall("opaque payload", 5);
+		const recalled = await memory.recall("opaque payload", 5);
 		expect(recalled.some(row => row.id === id)).toBe(true);
 	});
 });

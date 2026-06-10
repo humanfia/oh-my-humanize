@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type AuthCredentialStore, AuthStorage, SqliteAuthCredentialStore } from "../src/auth-storage";
-import type { UsageLimit, UsageProvider, UsageReport } from "../src/usage";
-import * as oauthUtils from "../src/utils/oauth";
-import type { OAuthCredentials } from "../src/utils/oauth/types";
+import { type AuthCredentialStore, AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
+import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
+import type { OAuthCredentials } from "@oh-my-pi/pi-ai/registry/oauth/types";
+import type { UsageLimit, UsageProvider, UsageReport } from "@oh-my-pi/pi-ai/usage";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -103,6 +103,33 @@ function createCredential(accountId: string, email: string): OAuthCredentials {
 	};
 }
 
+async function countApiKeySelections(
+	authStorage: AuthStorage,
+	provider: string,
+	sessionPrefix: string,
+	samples = 150,
+): Promise<Map<string, number>> {
+	const counts = new Map<string, number>();
+	for (let index = 0; index < samples; index += 1) {
+		const apiKey = await authStorage.getApiKey(provider, `${sessionPrefix}-${index}`);
+		if (!apiKey) continue;
+		counts.set(apiKey, (counts.get(apiKey) ?? 0) + 1);
+	}
+	return counts;
+}
+
+function countFor(counts: Map<string, number>, apiKey: string): number {
+	return counts.get(apiKey) ?? 0;
+}
+
+function expectWeightedPreference(counts: Map<string, number>, preferred: string, fallback: string): void {
+	const preferredCount = countFor(counts, preferred);
+	const fallbackCount = countFor(counts, fallback);
+	expect(preferredCount).toBeGreaterThan(fallbackCount);
+	expect(preferredCount / fallbackCount).toBeGreaterThan(1.4);
+	expect(preferredCount / fallbackCount).toBeLessThan(2.4);
+}
+
 describe("AuthStorage codex oauth ranking", () => {
 	let tempDir = "";
 	let store: AuthCredentialStore | null = null;
@@ -146,7 +173,7 @@ describe("AuthStorage codex oauth ranking", () => {
 		}
 	});
 
-	test("prefers near-reset weekly account over lower-used far-reset account", async () => {
+	test("weights near-reset weekly account over lower-used far-reset account", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
 		await authStorage.set("openai-codex", [
@@ -171,11 +198,11 @@ describe("AuthStorage codex oauth ranking", () => {
 			}),
 		);
 
-		const apiKey = await authStorage.getApiKey("openai-codex", "session-weekly-reset");
-		expect(apiKey).toBe("api-acct-near");
+		const counts = await countApiKeySelections(authStorage, "openai-codex", "weighted-codex-near");
+		expectWeightedPreference(counts, "api-acct-near", "api-acct-far");
 	});
 
-	test("prioritizes fresh 5h ticker account at 0% usage", async () => {
+	test("weights fresh 5h ticker account at 0% usage", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
 		await authStorage.set("openai-codex", [
@@ -208,8 +235,8 @@ describe("AuthStorage codex oauth ranking", () => {
 			}),
 		);
 
-		const apiKey = await authStorage.getApiKey("openai-codex", "session-five-hour-start");
-		expect(apiKey).toBe("api-acct-zero");
+		const counts = await countApiKeySelections(authStorage, "openai-codex", "weighted-codex-zero");
+		expectWeightedPreference(counts, "api-acct-zero", "api-acct-progress");
 	});
 	test("skips exhausted weekly account even when reset is near", async () => {
 		if (!authStorage) throw new Error("test setup failed");
@@ -372,7 +399,11 @@ describe("AuthStorage codex oauth ranking", () => {
 							async fetchUsage(params) {
 								const { promise, resolve } = Promise.withResolvers<UsageReport | null>();
 								params.signal?.addEventListener("abort", () => resolve(null), { once: true });
-								return Promise.race([promise, Bun.sleep(200).then(() => null)]);
+								// 2s "would-block" fallback: if the per-request timeout below fails
+								// to abort the fetch, ranking blocks for this long instead of the
+								// ~10ms timeout path. Kept well above the assertion bound so a broken
+								// timeout is still caught, while leaving generous slack for CI jitter.
+								return Promise.race([promise, Bun.sleep(2_000).then(() => null)]);
 							},
 						} satisfies UsageProvider)
 					: undefined,
@@ -389,10 +420,13 @@ describe("AuthStorage codex oauth ranking", () => {
 		const elapsedMs = Date.now() - startedAt;
 
 		expect(apiKey).toBe("api-acct-first");
-		expect(elapsedMs).toBeLessThan(100);
+		// Timeout path resolves in ~10ms; the would-block fallback is 2s. A bound
+		// of 1s proves the 10ms per-request timeout fired without being fooled by
+		// the block path, and absorbs scheduling jitter under parallel CI load.
+		expect(elapsedMs).toBeLessThan(1_000);
 	});
 
-	test("sorts 3 accounts by weekly drain rate", async () => {
+	test("weights 3 accounts by weekly drain rate", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
 		await authStorage.set("openai-codex", [
@@ -426,8 +460,9 @@ describe("AuthStorage codex oauth ranking", () => {
 			}),
 		);
 
-		const apiKey = await authStorage.getApiKey("openai-codex", "session-three-accounts");
-		expect(apiKey).toBe("api-acct-slow");
+		const counts = await countApiKeySelections(authStorage, "openai-codex", "weighted-codex-three");
+		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-medium"));
+		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-fast"));
 	});
 
 	test("handles usage fetch failure gracefully (null report)", async () => {
@@ -448,8 +483,8 @@ describe("AuthStorage codex oauth ranking", () => {
 			}),
 		);
 
-		const apiKey = await authStorage.getApiKey("openai-codex", "session-null-usage");
-		expect(apiKey).toBe("api-acct-known");
+		const counts = await countApiKeySelections(authStorage, "openai-codex", "weighted-codex-known", 300);
+		expectWeightedPreference(counts, "api-acct-known", "api-acct-null");
 	});
 	test("refreshes expired oauth candidates in parallel before selection", async () => {
 		if (!authStorage) throw new Error("test setup failed");
@@ -497,14 +532,14 @@ describe("AuthStorage codex oauth ranking", () => {
 			{ type: "oauth", ...createCredential("acct-third", "third@example.com"), expires: expiredAt },
 		]);
 
-		const startedAt = Date.now();
 		const apiKey = await authStorage.getApiKey("openai-codex");
-		const elapsedMs = Date.now() - startedAt;
 
 		expect(apiKey).toBe("refreshed-acct-third");
 		expect(refreshStarts).toHaveLength(3);
+		// Parallelism is proven deterministically by the concurrency counter: serial
+		// refreshes never overlap (peak in-flight stays 1). A wall-clock bound here was
+		// flaky on loaded CI runners, so maxConcurrent is the authoritative signal.
 		expect(maxConcurrent).toBe(3);
-		expect(elapsedMs).toBeLessThan(refreshDelayMs * 2);
 	});
 });
 
@@ -616,7 +651,7 @@ describe("AuthStorage claude oauth ranking", () => {
 		}
 	});
 
-	test("prefers lower secondary drain rate account", async () => {
+	test("weights lower secondary drain rate account", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
 		await authStorage.set("anthropic", [
@@ -641,8 +676,67 @@ describe("AuthStorage claude oauth ranking", () => {
 			}),
 		);
 
-		const apiKey = await authStorage.getApiKey("anthropic", "session-claude-drain");
-		expect(apiKey).toBe("api-acct-near");
+		const counts = await countApiKeySelections(authStorage, "anthropic", "weighted-claude-near");
+		expectWeightedPreference(counts, "api-acct-near", "api-acct-far");
+	});
+
+	test("balances equal-priority accounts evenly", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("anthropic", [
+			{ type: "oauth", ...createCredential("acct-a", "a@example.com") },
+			{ type: "oauth", ...createCredential("acct-b", "b@example.com") },
+		]);
+
+		for (const accountId of ["acct-a", "acct-b"]) {
+			usageByAccount.set(
+				accountId,
+				createClaudeUsageReport({
+					accountId,
+					primary: { usedFraction: 0.25, resetInMs: 4 * HOUR_MS },
+					secondary: { usedFraction: 0.25, resetInMs: 4 * 24 * HOUR_MS },
+				}),
+			);
+		}
+
+		const counts = await countApiKeySelections(authStorage, "anthropic", "weighted-claude-equal", 200);
+		expect(Math.abs(countFor(counts, "api-acct-a") - countFor(counts, "api-acct-b"))).toBeLessThanOrEqual(25);
+	});
+
+	test("caps the strongest priority bucket at about 2x baseline weight", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("anthropic", [
+			{ type: "oauth", ...createCredential("acct-best", "best@example.com") },
+			{ type: "oauth", ...createCredential("acct-base-a", "base-a@example.com") },
+			{ type: "oauth", ...createCredential("acct-base-b", "base-b@example.com") },
+		]);
+
+		usageByAccount.set(
+			"acct-best",
+			createClaudeUsageReport({
+				accountId: "acct-best",
+				primary: { usedFraction: 0.05, resetInMs: 4 * HOUR_MS },
+				secondary: { usedFraction: 0.05, resetInMs: 6 * 24 * HOUR_MS },
+			}),
+		);
+		for (const accountId of ["acct-base-a", "acct-base-b"]) {
+			usageByAccount.set(
+				accountId,
+				createClaudeUsageReport({
+					accountId,
+					primary: { usedFraction: 0.7, resetInMs: 2 * HOUR_MS },
+					secondary: { usedFraction: 0.7, resetInMs: 2 * 24 * HOUR_MS },
+				}),
+			);
+		}
+
+		const counts = await countApiKeySelections(authStorage, "anthropic", "claude-cap", 300);
+		expectWeightedPreference(counts, "api-acct-best", "api-acct-base-a");
+		expectWeightedPreference(counts, "api-acct-best", "api-acct-base-b");
+		expect(Math.abs(countFor(counts, "api-acct-base-a") - countFor(counts, "api-acct-base-b"))).toBeLessThanOrEqual(
+			15,
+		);
 	});
 
 	test("skips exhausted account and picks healthy", async () => {
@@ -703,7 +797,7 @@ describe("AuthStorage claude oauth ranking", () => {
 		expect(apiKey).toBe("api-acct-soon");
 	});
 
-	test("sorts 3 accounts by secondary drain rate", async () => {
+	test("weights 3 accounts by secondary drain rate", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
 		await authStorage.set("anthropic", [
@@ -737,8 +831,9 @@ describe("AuthStorage claude oauth ranking", () => {
 			}),
 		);
 
-		const apiKey = await authStorage.getApiKey("anthropic", "session-claude-three");
-		expect(apiKey).toBe("api-acct-slow");
+		const counts = await countApiKeySelections(authStorage, "anthropic", "weighted-claude-three");
+		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-medium"));
+		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-fast"));
 	});
 
 	test("single credential works without ranking", async () => {

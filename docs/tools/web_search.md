@@ -90,7 +90,7 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
 - **Provider selection**
   - **Forced provider**: internal callers may pass `provider`; unavailable forced providers fall back to the auto chain instead of hard-failing (`packages/coding-agent/src/web/search/index.ts`). This field is not in the model-facing schema.
   - **Preferred provider**: `setPreferredSearchProvider()` sets a module-global default used by `resolveProviderChain()`. `packages/coding-agent/src/sdk.ts` and `packages/coding-agent/src/modes/controllers/selector-controller.ts` wire this from settings.
-  - **Auto chain order**: `tavily`, `perplexity`, `brave`, `jina`, `kimi`, `anthropic`, `gemini`, `codex`, `zai`, `exa`, `parallel`, `kagi`, `synthetic`, `searxng` (`SEARCH_PROVIDER_ORDER` in `packages/coding-agent/src/web/search/provider.ts`).
+  - **Auto chain order**: `tavily`, `perplexity`, `brave`, `jina`, `kimi`, `anthropic`, `gemini`, `codex`, `zai`, `exa`, `parallel`, `kagi`, `synthetic`, `searxng` (`SEARCH_PROVIDER_ORDER` in `packages/coding-agent/src/web/search/types.ts`).
 - **Provider adapters**
   - **Tavily** — `packages/coding-agent/src/web/search/providers/tavily.ts`
     - Availability: API key from env or `agent.db` via `findCredential()`.
@@ -121,7 +121,11 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
     - `limit` / `num_search_results`: `params.numSearchResults ?? params.limit`, clamped to `1..20`, default `10`.
     - Output: `sources`, `requestId`.
   - **Anthropic** — `packages/coding-agent/src/web/search/providers/anthropic.ts`
-    - Availability: `findAnthropicAuth()` from `@oh-my-pi/pi-ai`.
+    - Availability: `ANTHROPIC_SEARCH_API_KEY` env var, otherwise `authStorage.hasAuth("anthropic")`; search credentials come from `authStorage.getApiKey("anthropic")` when no search-specific key is set.
+    - Env overrides specific to search (do not affect chat completions):
+      - `ANTHROPIC_SEARCH_API_KEY` — highest-priority search auth; overrides `ANTHROPIC_API_KEY` / OAuth / `ANTHROPIC_FOUNDRY_API_KEY` for the search call only.
+      - `ANTHROPIC_SEARCH_BASE_URL` — search-only base URL for either `ANTHROPIC_SEARCH_API_KEY` or fallback Anthropic credentials; overrides `ANTHROPIC_BASE_URL` (and `FOUNDRY_BASE_URL` in Foundry mode); defaults to `https://api.anthropic.com`.
+      - `ANTHROPIC_SEARCH_MODEL` — search model; defaults to `claude-haiku-4-5`.
     - Querying: Claude Messages API with web-search tool enabled.
     - `max_tokens` and `temperature` pass through.
     - `limit` and `num_search_results` are collapsed together before dispatch: `num_results = params.numSearchResults ?? params.limit`.
@@ -145,8 +149,8 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
     - `limit` and `num_search_results` are collapsed together before dispatch.
     - Output may include parsed free-text `answer`, `sources`, `requestId`.
   - **Exa** — `packages/coding-agent/src/web/search/providers/exa.ts`
-    - Availability: always true unless settings explicitly disable `exa.enabled` or `exa.enableSearch`; the adapter can use public MCP even without `EXA_API_KEY`.
-    - Querying: with `EXA_API_KEY`, POST `https://api.exa.ai/search`; otherwise call MCP tool `web_search_exa`.
+    - Availability: env or `agent.db` credential for `exa` admits Exa to the auto chain; settings must not explicitly disable `exa.enabled` or `exa.enableSearch`. Explicit selection (`providers.webSearch: exa`) reaches Exa even without a credential and falls back to public MCP.
+    - Querying: POST `https://api.exa.ai/search` with the resolved Exa API key, otherwise JSON-RPC `tools/call` against `https://mcp.exa.ai/mcp` for remote MCP tool `web_search_exa`.
     - `limit` and `num_search_results` are collapsed together before dispatch.
     - Output: synthesized `answer` from up to 3 result summaries, `sources`, `requestId`.
   - **Parallel** — `packages/coding-agent/src/web/search/providers/parallel.ts`, `packages/coding-agent/src/web/parallel.ts`
@@ -157,9 +161,9 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
     - Output: `sources`, `requestId`.
   - **Kagi** — `packages/coding-agent/src/web/search/providers/kagi.ts`, `packages/coding-agent/src/web/kagi.ts`
     - Availability: env or `agent.db` credential for `kagi`.
-    - Querying: GET `https://kagi.com/api/v0/search?q=<query>&limit=<n>` with `Authorization: Bot <key>`.
+    - Querying: POST `https://kagi.com/api/v1/search` with `Authorization: Bearer <key>` and JSON body `{ query, workflow: "search", limit, filters?: { after } }`. `recency` maps to `filters.after` as a UTC `YYYY-MM-DD` string (`day`/`week`/`month`/`year`).
     - `limit` and `num_search_results` are collapsed together before dispatch, clamped to `1..40`, default `10`.
-    - Output: `sources`, `relatedQuestions`, `requestId`.
+    - Output: `sources` (concatenated `data.search` + `data.video` + `data.news` + `data.infobox`, with video/news/infobox results tagged in the title), `relatedQuestions` (`data.adjacent_question` + `data.related_search` `props.question`), `answer` (`data.direct_answer[0].snippet ?? title`), `requestId` (`meta.trace`).
   - **Synthetic** — `packages/coding-agent/src/web/search/providers/synthetic.ts`
     - Availability: env or `agent.db` credential for `synthetic`.
     - Querying: POST `https://api.synthetic.new/v2/search` with `{ query }`.
@@ -188,7 +192,7 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
   - Many provider adapters accept `AbortSignal`; `WebSearchTool.execute()` passes the tool call signal into `executeSearch()`, which forwards it as `params.signal` to providers and rethrows cancellation during fallback.
 
 ## Limits & Caps
-- Provider auto-order length: 14 providers (`SEARCH_PROVIDER_ORDER` in `packages/coding-agent/src/web/search/provider.ts`).
+- Provider auto-order length: 14 providers (`SEARCH_PROVIDER_ORDER` in `packages/coding-agent/src/web/search/types.ts`).
 - `formatForLLM()` truncates source snippets and citation text to 240 chars (`packages/coding-agent/src/web/search/index.ts`).
 - `formatForLLM()` emits at most 3 search queries, each truncated to 120 chars (`packages/coding-agent/src/web/search/index.ts`).
 - Brave result count: default `10`, max `20` (`DEFAULT_NUM_RESULTS`, `MAX_NUM_RESULTS` in `packages/coding-agent/src/web/search/providers/brave.ts`).
@@ -220,5 +224,5 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
 - Most providers treat `limit` and `num_search_results` as the same number because adapters pass `params.numSearchResults ?? params.limit`. Perplexity is the only implementation that preserves both concepts.
 - The prompt says `recency` is for Brave and Perplexity, but code also implements it for Tavily and SearXNG.
 - The year rewrite in `executeSearch()` is blunt: any `2020`-`2029` substring is replaced with the current year.
-- `packages/coding-agent/src/config/settings-schema.ts` exposes provider preferences for `auto`, `exa`, `brave`, `jina`, `kimi`, `perplexity`, `anthropic`, `zai`, `tavily`, `kagi`, `synthetic`, `parallel`, and `searxng`. Gemini and Codex are in the registry and auto chain but not in that settings enum.
-- Exa availability is optimistic. Unless settings disable it, the provider stays in the chain even without an API key because it can fall back to MCP.
+- `packages/coding-agent/src/config/settings-schema.ts` uses the shared `SEARCH_PROVIDER_PREFERENCES` / `SEARCH_PROVIDER_OPTIONS` metadata, so the settings selector and setup wizard expose `auto` plus every provider in the auto chain.
+- Exa uses `authStorage.getApiKey("exa")`, then `EXA_API_KEY`, then unauthenticated `https://mcp.exa.ai/mcp` fallback.

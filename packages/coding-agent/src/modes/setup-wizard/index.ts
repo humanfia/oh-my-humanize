@@ -1,4 +1,5 @@
 import type { Settings } from "../../config/settings";
+import { CURRENT_SETUP_VERSION } from "../setup-version";
 import type { InteractiveModeContext } from "../types";
 import { glyphSetupScene } from "./scenes/glyph";
 import { providersSetupScene } from "./scenes/providers";
@@ -8,13 +9,13 @@ import { SetupWizardComponent } from "./wizard-overlay";
 
 export type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
 
+export { CURRENT_SETUP_VERSION };
+
 export const ALL_SCENES = [
 	providersSetupScene,
 	glyphSetupScene,
 	themeSetupScene,
 ] as const satisfies readonly SetupScene[];
-
-export const CURRENT_SETUP_VERSION = ALL_SCENES.reduce((max, scene) => Math.max(max, scene.minVersion), 0);
 
 export interface SetupSceneSelectionOptions {
 	resuming?: boolean;
@@ -64,9 +65,15 @@ export async function markSetupWizardComplete(
 	await settings.flush();
 }
 
+export interface RunSetupWizardOptions {
+	markComplete?: boolean;
+	playWelcomeIntro?: boolean;
+}
+
 export async function runSetupWizard(
 	ctx: InteractiveModeContext,
 	scenes: readonly SetupScene[] = ALL_SCENES,
+	options: RunSetupWizardOptions = {},
 ): Promise<void> {
 	if (scenes.length === 0) return;
 	const component = new SetupWizardComponent(ctx, scenes);
@@ -78,11 +85,15 @@ export async function runSetupWizard(
 	});
 	try {
 		await component.run();
-		await markSetupWizardComplete(ctx.settings);
+		if (options.markComplete !== false) {
+			await markSetupWizardComplete(ctx.settings);
+		}
 	} finally {
 		component.dispose();
 		ctx.ui.setFocus(component);
 		overlay.hide();
 	}
-	ctx.playWelcomeIntro();
+	if (options.playWelcomeIntro !== false) {
+		ctx.playWelcomeIntro();
+	}
 }

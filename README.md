@@ -34,6 +34,12 @@ The most capable agent surface that ships. Continuously tuned by real-world use 
 curl -fsSL https://omp.sh/install | sh
 ```
 
+**Homebrew**
+
+```sh
+brew install can1357/tap/omp
+```
+
 **Bun (recommended)**
 
 ```sh
@@ -224,7 +230,7 @@ Stealth's on by default, so pages see a normal user instead of a headless bot. T
 
 - `task` — fan out subagents in parallel, optionally workspace-isolated.
 - `irc` — short prose between live agents in this process.
-- `todo_write` — ordered mutations over the session todo list with phase tracking.
+- `todo` — ordered mutations over the session todo list with phase tracking.
 - `job` — wait on or cancel background jobs.
 - `ask` — structured follow-up questions for interactive runs.
 
@@ -476,12 +482,16 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 | Package                                                   | Description                                                                |
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
 | **[@oh-my-pi/pi-ai](packages/ai)**                        | Multi-provider LLM client with streaming and model/provider integration    |
+| **[@oh-my-pi/pi-catalog](packages/catalog)**              | Model catalog: bundled model database, provider descriptors, and identity  |
 | **[@oh-my-pi/pi-agent-core](packages/agent)**             | Agent runtime with tool calling and state management                       |
 | **[@oh-my-pi/pi-coding-agent](packages/coding-agent)**    | Interactive coding agent CLI and SDK                                       |
 | **[@oh-my-pi/pi-tui](packages/tui)**                      | Terminal UI library with differential rendering                            |
 | **[@oh-my-pi/pi-natives](packages/natives)**              | N-API bindings for grep, shell, image, text, syntax highlighting, and more |
 | **[@oh-my-pi/omp-stats](packages/stats)**                 | Local observability dashboard for AI usage statistics                      |
 | **[@oh-my-pi/pi-utils](packages/utils)**                  | Shared utilities (logging, streams, dirs/env/process helpers)              |
+| **[@oh-my-pi/hashline](packages/hashline)**               | Line-anchored patch language and applier behind the `edit` tool            |
+| **[@oh-my-pi/pi-mnemopi](packages/mnemopi)**              | Local SQLite memory engine for Oh My Pi agents                             |
+| **[@oh-my-pi/pi-snapcompact](packages/snapcompact)**      | SQuAD eval suite for snapcompact bitmap-frame context compression          |
 | **[@oh-my-pi/swarm-extension](packages/swarm-extension)** | Swarm orchestration extension package                                      |
 
 ### Rust Crates

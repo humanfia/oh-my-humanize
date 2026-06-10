@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, test, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { getBundledModel, type Model } from "@oh-my-pi/pi-ai";
+import type { Model } from "@oh-my-pi/pi-ai";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ModelSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/model-selector";
@@ -15,8 +17,7 @@ function createSelector(model: Model, settings: Settings): ModelSelectorComponen
 	const modelRegistry = {
 		getAll: () => [model],
 		getDiscoverableProviders: () => [],
-		getCanonicalModels: () => [],
-		resolveCanonicalModel: () => undefined,
+		getCanonicalModelSelections: () => [],
 	} as unknown as ModelRegistry;
 	const ui = {
 		requestRender: vi.fn(),
@@ -34,7 +35,7 @@ function createSelector(model: Model, settings: Settings): ModelSelectorComponen
 }
 
 function createOllamaCloudModel(id: string): Model {
-	return {
+	return buildModel({
 		id,
 		name: "DeepSeek V4 Pro",
 		api: "ollama-chat",
@@ -45,7 +46,47 @@ function createOllamaCloudModel(id: string): Model {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1_000_000,
 		maxTokens: 8192,
-	};
+	});
+}
+function createContextTestModel(id: string, contextWindow: number): Model {
+	return buildModel({
+		id,
+		name: id,
+		api: "ollama-chat",
+		baseUrl: "https://example.com",
+		reasoning: false,
+		provider: "test",
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow,
+		maxTokens: 1024,
+	});
+}
+
+function createScopedSelector(
+	models: Model[],
+	settings: Settings,
+	onSelect: (model: Model) => void,
+	options?: { temporaryOnly?: boolean; currentContextTokens?: number },
+): ModelSelectorComponent {
+	const modelRegistry = {
+		getAll: () => models,
+		getDiscoverableProviders: () => [],
+		getCanonicalModelSelections: () => [],
+	} as unknown as ModelRegistry;
+	const ui = {
+		requestRender: vi.fn(),
+	} as unknown as TUI;
+	return new ModelSelectorComponent(
+		ui,
+		undefined,
+		settings,
+		modelRegistry,
+		models.map(model => ({ model })),
+		model => onSelect(model),
+		() => {},
+		options,
+	);
 }
 let testTheme = await getThemeByName("dark");
 
@@ -96,6 +137,145 @@ describe("ModelSelector role badge thinking display", () => {
 		expect(menuRendered).toContain("Set as SMOL (Quick)");
 	});
 
+	test("shows compact auto badges for unconfigured role defaults", async () => {
+		installTestTheme();
+		const settings = Settings.isolated({});
+		const haiku = createContextTestModel("claude-haiku-4.5", 128_000);
+		const codex = createContextTestModel("gpt-5.1-codex", 128_000);
+
+		const selector = createScopedSelector([codex, haiku], settings, () => {});
+		await Bun.sleep(0);
+		installTestTheme();
+
+		const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(rendered).toContain("claude-haiku-4.5");
+		expect(rendered).toContain("gpt-5.1-codex");
+		expect(rendered).toContain("[SMOL auto]");
+		expect(rendered).toContain("[SLOW auto]");
+	});
+
+	test("dims and disables models below the current context size", async () => {
+		installTestTheme();
+		const settings = Settings.isolated({});
+		const small = createContextTestModel("a-small", 4096);
+		const large = createContextTestModel("b-large", 128_000);
+		const selected: string[] = [];
+		const selector = createScopedSelector([small, large], settings, model => selected.push(model.id), {
+			temporaryOnly: true,
+			currentContextTokens: 6000,
+		});
+		await Bun.sleep(0);
+		installTestTheme();
+
+		const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(rendered).toContain("a-small");
+		expect(rendered).toContain("context>4.1k");
+
+		selector.handleInput("\n");
+		expect(selected).toEqual(["b-large"]);
+	});
+
+	test("does not open the model menu when every candidate is disabled", async () => {
+		installTestTheme();
+		const settings = Settings.isolated({});
+		const small = createContextTestModel("only-small", 4096);
+		const onSelect = vi.fn();
+		const selector = createScopedSelector([small], settings, onSelect, {
+			currentContextTokens: 6000,
+		});
+		await Bun.sleep(0);
+		installTestTheme();
+
+		const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(rendered).toContain("only-small");
+		expect(rendered).toContain("current context 6k > 4.1k limit");
+
+		selector.handleInput("\n");
+		const afterEnter = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(afterEnter).not.toContain("Action for");
+		expect(onSelect).not.toHaveBeenCalled();
+	});
+
+	test("uses cached models for Enter while offline refresh is still pending", () => {
+		installTestTheme();
+		const settings = Settings.isolated({});
+		const cachedModel = createContextTestModel("cached-fast", 128_000);
+		const refreshGate = Promise.withResolvers<void>();
+		const onSelect = vi.fn();
+		const modelRegistry = {
+			getAll: () => [cachedModel],
+			refresh: vi.fn(() => refreshGate.promise),
+			refreshProvider: vi.fn(async () => {}),
+			getError: () => undefined,
+			getAvailable: () => [cachedModel],
+			getDiscoverableProviders: () => [],
+			getCanonicalModelSelections: () => [],
+		} as unknown as ModelRegistry;
+		const ui = {
+			requestRender: vi.fn(),
+		} as unknown as TUI;
+
+		const selector = new ModelSelectorComponent(
+			ui,
+			undefined,
+			settings,
+			modelRegistry,
+			[],
+			model => onSelect(model.id),
+			() => {},
+			{ temporaryOnly: true },
+		);
+
+		selector.handleInput("\n");
+		expect(onSelect).toHaveBeenCalledWith("cached-fast");
+		expect(modelRegistry.refresh).toHaveBeenCalledTimes(1);
+		refreshGate.resolve();
+	});
+
+	test("keeps the highlighted model when a background refresh reorders the list", async () => {
+		installTestTheme();
+		const settings = Settings.isolated({});
+		const modelBb = createContextTestModel("bb-model", 128_000);
+		const modelCc = createContextTestModel("cc-model", 128_000);
+		const modelAa = createContextTestModel("aa-model", 128_000);
+		let availableModels: Model[] = [modelBb, modelCc];
+		const refreshGate = Promise.withResolvers<void>();
+		const onSelect = vi.fn();
+		const modelRegistry = {
+			getAll: () => availableModels,
+			refresh: vi.fn(() => refreshGate.promise),
+			refreshProvider: vi.fn(async () => {}),
+			getError: () => undefined,
+			getAvailable: () => availableModels,
+			getDiscoverableProviders: () => [],
+			getCanonicalModelSelections: () => [],
+		} as unknown as ModelRegistry;
+		const ui = {
+			requestRender: vi.fn(),
+		} as unknown as TUI;
+
+		const selector = new ModelSelectorComponent(
+			ui,
+			undefined,
+			settings,
+			modelRegistry,
+			[],
+			model => onSelect(model.id),
+			() => {},
+			{ temporaryOnly: true },
+		);
+
+		// Highlight the second entry, then let the pending refresh land a model
+		// that sorts ahead of it and shifts every index.
+		selector.handleInput("\x1b[B");
+		availableModels = [modelAa, modelBb, modelCc];
+		refreshGate.resolve();
+		await Bun.sleep(0);
+
+		selector.handleInput("\n");
+		expect(onSelect).toHaveBeenCalledWith("cc-model");
+	});
+
 	test("refreshes Ollama Cloud using provider id instead of tab label", async () => {
 		installTestTheme();
 		const settings = Settings.isolated({});
@@ -113,8 +293,7 @@ describe("ModelSelector role badge thinking display", () => {
 			getError: () => undefined,
 			getAvailable: () => availableModels,
 			getDiscoverableProviders: () => ["ollama-cloud"],
-			getCanonicalModels: () => [],
-			resolveCanonicalModel: () => undefined,
+			getCanonicalModelSelections: () => [],
 			getProviderDiscoveryState: () => ({
 				provider: "ollama-cloud",
 				status: "idle",
@@ -176,8 +355,7 @@ describe("ModelSelector role badge thinking display", () => {
 			getError: () => undefined,
 			getAvailable: () => availableModels,
 			getDiscoverableProviders: () => ["ollama-cloud"],
-			getCanonicalModels: () => [],
-			resolveCanonicalModel: () => undefined,
+			getCanonicalModelSelections: () => [],
 			getProviderDiscoveryState: () => ({
 				provider: "ollama-cloud",
 				status: "idle",

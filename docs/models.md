@@ -137,6 +137,20 @@ Must define at least one of:
 - `id` required
 - `contextWindow` and `maxTokens` must be positive if provided
 
+### Command-resolved secrets
+
+Provider `apiKey` values and provider/model `headers` values may start with `!` to read a secret from command stdout. The command is run with a 10 s timeout, stdout is trimmed, and empty/failing commands are omitted:
+
+```yaml
+providers:
+  openai:
+    apiKey: "!op read op://dev/openai/api-key"
+    headers:
+      X-Team-Key: "!bw get password omp-team-key"
+```
+
+Successful command outputs are cached for the process lifetime so the command is not re-run for every model.
+
 ## Merge and override order
 
 ModelRegistry pipeline (on refresh):
@@ -242,10 +256,13 @@ If `ollama` is not explicitly configured, registry adds an implicit discoverable
 
 - provider: `ollama`
 - api: `openai-responses`
-- base URL: `OLLAMA_BASE_URL` or `http://127.0.0.1:11434`
+- base URL: `OLLAMA_BASE_URL`, or `OLLAMA_HOST`, or `http://127.0.0.1:11434`
+- context window: `OLLAMA_CONTEXT_LENGTH` if set, otherwise Ollama `/api/show` metadata, otherwise `128000`
 - auth mode: keyless (`auth: none` behavior)
 
 Runtime discovery calls Ollama endpoints and normalizes discovered OpenAI-compatible models to `openai-responses`.
+
+`OLLAMA_CONTEXT_LENGTH` does not configure Ollama's runtime `num_ctx`; set that in Ollama/model configuration separately.
 
 ### Implicit llama.cpp discovery
 
@@ -268,6 +285,8 @@ If `lm-studio` is not explicitly configured, registry adds an implicit discovera
 - auth mode: keyless (`auth: none` behavior)
 
 Runtime discovery fetches models (`GET /models`) and synthesizes model entries with local defaults.
+
+This path also works for local OpenAI-compatible servers that are not LM Studio. For example, if oMLX is bound to Ollama's usual port, set `LM_STUDIO_BASE_URL=http://127.0.0.1:11434/v1` to discover it through the existing `/v1/models` flow. Running oMLX and Ollama side by side requires assigning a different port to one of them. Do not configure oMLX as `ollama`: Ollama discovery uses native `/api/tags` and `/api/show` endpoints, not OpenAI `/v1/models`.
 
 ### Explicit provider discovery
 
@@ -554,9 +573,9 @@ For `anthropic-messages` models the runtime uses a separate `AnthropicCompat` sh
 
 ### Strict tool schemas (`disableStrictTools`)
 
-Anthropic's API supports a `strict` field on tool definitions that forces the model to always follow the provided schema exactly. This is enabled by default for all `anthropic-messages` providers because it guarantees schema conformance in agentic systems.
+Anthropic's API supports a `strict` field on tool definitions that forces the model to always follow the provided schema exactly. OMP enables it by default for a small allowlist of high-frequency built-in `anthropic-messages` tools (`bash`, `python`, `edit`, and `find`) whose schemas fit Anthropic's strict grammar limits; other tools still send normalized schemas but omit `strict`.
 
-Third-party providers that front the Anthropic API (AWS Bedrock, Azure, self-hosted proxies) do not always implement this field and will reject requests that include it. Set `disableStrictTools: true` at the provider level to opt out:
+Third-party providers that front the Anthropic API (AWS Bedrock, Azure, self-hosted proxies) do not always implement this field and will reject requests that include it. Set `disableStrictTools: true` at the provider level to opt out of strict mode for the allowlisted tools:
 
 ```yaml
 providers:
@@ -578,7 +597,7 @@ providers:
           cacheWrite: 3.75
 ```
 
-`disableStrictTools` is a provider-level flag that applies to all models in the provider.
+`disableStrictTools` is a provider-level flag that applies to all models in the provider. It disables the Anthropic `strict` marker only for tools that OMP would otherwise mark strict; it does not change runtime tool argument validation. OMP can automatically retry without strict tools after Anthropic reports a strict-grammar-too-large error before the first streamed token, but proxies that reject the `strict` field for other reasons should set this flag explicitly.
 
 Tool schemas going on the wire are normalized by the unified flow in
 `packages/ai/src/utils/schema/normalize.ts` (Google/CCA/MCP dispatchers
@@ -601,6 +620,18 @@ providers:
     models:
       - id: Qwen/Qwen2.5-Coder-32B-Instruct
         name: Qwen 2.5 Coder 32B (local)
+```
+
+For oMLX or another local OpenAI-compatible server with a discoverable `/v1/models` endpoint, prefer discovery instead of listing models by hand. Set `api` to the endpoint family your server actually exposes: `openai-completions` uses `/v1/chat/completions`; servers that expose `/v1/responses` need `openai-responses` instead.
+
+```yaml
+providers:
+  omlx:
+    baseUrl: http://127.0.0.1:11434/v1
+    auth: none
+    api: openai-completions
+    discovery:
+      type: openai-models-list
 ```
 
 ### Hosted proxy with env-based key

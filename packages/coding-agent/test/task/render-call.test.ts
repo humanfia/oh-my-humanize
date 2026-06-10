@@ -25,90 +25,94 @@ describe("task renderer: streaming call preview", () => {
 		return Bun.stripANSI(component.render(160).join("\n"));
 	}
 
-	// The preview must surface each agent's id + ui description so the user can
-	// see which agents are being dispatched, not a bare "N agents" count.
-	it("lists each task's id and description instead of only a count", () => {
+	// The preview must surface the agent id + ui description so the user can
+	// see what is being dispatched while args stream in.
+	it("shows the agent id, description, and assignment preview", () => {
 		const args: TaskParams = {
 			agent: "reviewer",
-			tasks: [
-				{ id: "ReviewAuth", description: "Audit the auth module", assignment: "..." },
-				{ id: "ReviewDb", description: "Audit the db layer", assignment: "..." },
-			],
+			id: "ReviewAuth",
+			description: "Audit the auth module",
+			assignment: "Review packages/server/src/auth for missing 401 handling.\nReport findings.",
 		};
 		const out = render(args);
 
+		expect(out).toContain("reviewer");
 		expect(out).toContain("ReviewAuth");
 		expect(out).toContain("Audit the auth module");
-		expect(out).toContain("ReviewDb");
-		expect(out).toContain("Audit the db layer");
-		// Count is kept as a compact header, but the old flat "N agents" line is gone.
-		expect(out).toContain("Tasks (2)");
-		expect(out).not.toContain("2 agents");
+		expect(out).toContain("Review packages/server/src/auth for missing 401 handling.");
 	});
 
-	it("renders a partially-streamed entry without a description and missing trailing entry", () => {
+	it("renders partially-streamed args without crashing", () => {
 		const args = {
 			agent: "task",
-			// Trailing entry mimics streaming JSON: id arrived, description not yet,
-			// plus a not-yet-materialized slot.
-			tasks: [{ id: "First", description: "Do the first thing", assignment: "..." }, { id: "Second" }, undefined],
+			id: "First",
+			// description/assignment not yet arrived.
 		} as unknown as TaskParams;
 
 		const out = render(args);
 
 		expect(out).toContain("First");
-		expect(out).toContain("Do the first thing");
-		expect(out).toContain("Second");
-		// Missing-id slot falls back to a positional placeholder rather than crashing.
-		expect(out).toContain("#3");
-		expect(out).toContain("Tasks (3)");
+		expect(out).toContain("task");
 	});
 
-	it("caps the collapsed list and reports the overflow as agents", () => {
-		const tasks = Array.from({ length: 15 }, (_, i) => ({
-			id: `Agent${i + 1}`,
-			description: `Task ${i + 1}`,
-			assignment: "...",
-		}));
-		const args: TaskParams = { agent: "task", tasks };
+	it("always renders the full assignment markdown, collapsed or expanded", () => {
+		const assignmentLines = Array.from({ length: 6 }, (_, i) => `Step ${i + 1}: do the thing.`);
+		const args: TaskParams = {
+			agent: "task",
+			id: "Worker",
+			assignment: assignmentLines.join("\n"),
+		};
 
+		// The assignment is the brief handed to the subagent; it renders as
+		// markdown in full regardless of the expanded toggle.
 		const collapsed = render(args, false);
-		expect(collapsed).toContain("Agent1");
-		expect(collapsed).toContain("Agent12");
-		expect(collapsed).not.toContain("Agent13");
-		expect(collapsed).toContain("3 more agents");
+		expect(collapsed).toContain("Step 1");
+		expect(collapsed).toContain("Step 6");
 
 		const expanded = render(args, true);
-		expect(expanded).toContain("Agent13");
-		expect(expanded).toContain("Agent15");
-		expect(expanded).not.toContain("more agents");
+		expect(expanded).toContain("Step 1");
+		expect(expanded).toContain("Step 6");
 	});
 
-	it("keeps the isolation flag as the final child after the task list", () => {
+	it("surfaces the isolation flag in the header bar", () => {
 		const args: TaskParams = {
 			agent: "task",
 			isolated: true,
-			tasks: [{ id: "Only", description: "Single task", assignment: "..." }],
+			id: "Only",
+			description: "Single task",
+			assignment: "...",
 		};
 		const out = render(args);
 		const lines = out.split("\n");
 
 		expect(out).toContain("Only");
-		expect(out).toContain("Isolated");
-		// Isolation flag is rendered last, after every task entry.
-		expect(lines.at(-1)).toContain("Isolated");
+		// Isolation is surfaced as header meta in the frame's top bar (first line),
+		// not as a trailing child row under the task list.
+		expect(lines[0]).toContain("isolated");
 	});
 
-	// Once the tool produces a result, `renderResult` draws each agent as a
-	// progress/result line. The call preview must drop its own per-agent list
-	// so the non-streaming path doesn't render every task twice.
-	it("suppresses the per-task preview list once a result snapshot exists", () => {
+	it("labels resume calls with the resumed agent id", () => {
+		const args: TaskParams = {
+			resume: "AuthLoader",
+			assignment: "Also check the refresh-token path.",
+		};
+		const out = render(args);
+		const lines = out.split("\n");
+
+		expect(lines[0]).toContain("resume AuthLoader");
+		expect(out).toContain("Also check the refresh-token path.");
+	});
+
+	// Once the tool produces a result, the container suppresses the call entirely
+	// via `mergeCallAndResult` and `renderResult` draws the agent. As a safety
+	// net, `renderCall` also drops its preview when a result snapshot is present,
+	// so the two never stack.
+	it("drops the preview once a result snapshot exists", () => {
 		const args: TaskParams = {
 			agent: "reviewer",
-			tasks: [
-				{ id: "ReviewAuth", description: "Audit the auth module", assignment: "..." },
-				{ id: "ReviewDb", description: "Audit the db layer", assignment: "..." },
-			],
+			id: "ReviewAuth",
+			description: "Audit the auth module",
+			assignment: "Review the auth module.",
 		};
 		const component = taskToolRenderer.renderCall(
 			args,
@@ -117,9 +121,7 @@ describe("task renderer: streaming call preview", () => {
 		);
 		const out = Bun.stripANSI(component.render(160).join("\n"));
 
-		// Header stays as a section label, but the duplicated agent rows are gone.
-		expect(out).toContain("Tasks (2)");
 		expect(out).not.toContain("Audit the auth module");
-		expect(out).not.toContain("Audit the db layer");
+		expect(out).not.toContain("Review the auth module.");
 	});
 });

@@ -10,10 +10,10 @@ import {
 	LocalProtocolHandler,
 	type ProtocolHandler,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { FindTool } from "@oh-my-pi/pi-coding-agent/tools/find";
 import { SearchTool } from "@oh-my-pi/pi-coding-agent/tools/search";
-import { AgentRegistry } from "../../src/registry/agent-registry";
 
 function getResultText(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content
@@ -183,6 +183,20 @@ describe("SearchTool internal URL resolution", () => {
 		expect(text).toContain("Search file contents with a regex across files");
 	});
 
+	it("expands omp://docs to grep embedded documentation files", async () => {
+		const session = createSession();
+		const tool = new SearchTool(session);
+
+		const result = await tool.execute("test-call", {
+			pattern: "Read files, directories, archives",
+			paths: ["omp://docs"],
+		});
+
+		const text = getResultText(result);
+		expect(text).toContain("# omp://tools/read.md");
+		expect(text).toContain("Read files, directories, archives");
+	});
+
 	it("throws when internal URL has no sourcePath", async () => {
 		const session = createSession();
 		const tool = new SearchTool(session);
@@ -237,7 +251,7 @@ describe("SearchTool internal URL resolution", () => {
 		const text = getResultText(result);
 		expect(text).toContain("needle");
 		// No hashline section headers or numbered editable lines for immutable sources.
-		expect(text).not.toMatch(/^¶.*#[0-9A-F]{4}$/m);
+		expect(text).not.toMatch(/^\[[^#\r\n]+#[0-9A-F]{4}\]$/m);
 		expect(text).not.toMatch(/^\*?\s*\d+:/m);
 	});
 
@@ -277,7 +291,7 @@ describe("SearchTool internal URL resolution", () => {
 		const text = getResultText(result);
 		expect(text).toContain("needle");
 		// Mutable local:// sources keep a hashline section header plus numbered match lines.
-		expect(text).toMatch(/^¶.*#[0-9A-F]{4}$/m);
+		expect(text).toMatch(/^\[[^#\r\n]+#[0-9A-F]{4}\]$/m);
 		expect(text).toMatch(/^\*\d+:.*needle/m);
 	});
 
@@ -308,5 +322,51 @@ describe("SearchTool internal URL resolution", () => {
 		expect(tool.execute("test-call", { pattern: "foo", paths: ["artifact://999"] })).rejects.toThrow(
 			"Artifact 999 not found",
 		);
+	});
+
+	it("emits forward-only, deduplicated context lines for adjacent virtual matches", async () => {
+		registerVirtualDocs(new Map([["doc.md", "l1\nneedle a\nl3\nneedle b\nl5\nl6\nl7\nl8\n"]]));
+
+		const session = createSession({
+			settings: Settings.isolated({ "search.contextBefore": 1, "search.contextAfter": 3 }),
+		});
+		const tool = new SearchTool(session);
+
+		const result = await tool.execute("test-call", {
+			pattern: "needle",
+			paths: ["virtual://doc.md"],
+		});
+
+		const text = getResultText(result);
+		const lineNumbers = text
+			.split("\n")
+			.map(line => /^[* ](\d+)\|/.exec(line)?.[1])
+			.filter((n): n is string => n !== undefined)
+			.map(Number);
+		expect(lineNumbers.length).toBeGreaterThan(0);
+		for (let i = 1; i < lineNumbers.length; i++) {
+			expect(lineNumbers[i]).toBeGreaterThan(lineNumbers[i - 1]);
+		}
+		// Context between the two matches appears exactly once.
+		expect(lineNumbers.filter(n => n === 3)).toHaveLength(1);
+	});
+
+	it("reports 'No more results' instead of 'No matches found' when skip is past the end", async () => {
+		await Bun.write(path.join(tmpDir, "a.txt"), "needle in a\n");
+		await Bun.write(path.join(tmpDir, "b.txt"), "needle in b\n");
+
+		const session = createSession();
+		const tool = new SearchTool(session);
+
+		const result = await tool.execute("test-call", {
+			pattern: "needle",
+			paths: ["."],
+			skip: 5,
+		});
+
+		const text = getResultText(result);
+		expect(text).toContain("No more results");
+		expect(text).toContain("2 files total");
+		expect(text).not.toContain("No matches found");
 	});
 });

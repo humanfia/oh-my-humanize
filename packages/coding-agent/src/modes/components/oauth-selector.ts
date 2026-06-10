@@ -1,12 +1,30 @@
-import { getOAuthProviders } from "@oh-my-pi/pi-ai/utils/oauth";
-import type { OAuthProviderInfo } from "@oh-my-pi/pi-ai/utils/oauth/types";
-import { Container, extractPrintableText, fuzzyFilter, matchesKey, Spacer, TruncatedText } from "@oh-my-pi/pi-tui";
+import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
+import type { OAuthProviderInfo } from "@oh-my-pi/pi-ai/oauth/types";
+import {
+	Container,
+	extractPrintableText,
+	fuzzyFilter,
+	matchesKey,
+	ScrollView,
+	Spacer,
+	TruncatedText,
+} from "@oh-my-pi/pi-tui";
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
-import type { AuthStorage } from "../../session/auth-storage";
+import type { AuthStorage, CredentialOriginKind } from "../../session/auth-storage";
 import { DynamicBorder } from "./dynamic-border";
 
 const OAUTH_SELECTOR_MAX_VISIBLE = 10;
+
+/** Compact, human-readable tag for each credential-origin leg. */
+const ORIGIN_LABELS: Record<CredentialOriginKind, string> = {
+	runtime: "--api-key",
+	config: "config",
+	oauth: "login",
+	api_key: "api key",
+	env: "env",
+	fallback: "custom provider",
+};
 /**
  * Component that renders an OAuth provider selector.
  */
@@ -67,8 +85,14 @@ export class OAuthSelectorComponent extends Container {
 		this.#validationGeneration += 1;
 		this.#stopSpinner();
 	}
+	#hasSelectableAuth(providerId: string): boolean {
+		return this.#mode === "logout" ? this.#authStorage.has(providerId) : this.#authStorage.hasAuth(providerId);
+	}
+
 	#loadProviders(): void {
-		this.#allProviders = getOAuthProviders();
+		const providers = getOAuthProviders();
+		this.#allProviders =
+			this.#mode === "logout" ? providers.filter(provider => this.#hasSelectableAuth(provider.id)) : providers;
 		this.#filteredProviders = this.#allProviders;
 	}
 
@@ -79,7 +103,7 @@ export class OAuthSelectorComponent extends Container {
 
 		let pending = 0;
 		for (const provider of this.#allProviders) {
-			if (!this.#authStorage.hasAuth(provider.id)) {
+			if (!this.#hasSelectableAuth(provider.id)) {
 				this.#authState.delete(provider.id);
 				continue;
 			}
@@ -132,21 +156,36 @@ export class OAuthSelectorComponent extends Container {
 		}
 	}
 
+	/**
+	 * Muted provenance suffix (" (env: COPILOT_GITHUB_TOKEN)", " (login)", …) so
+	 * the list distinguishes a real login from an env var aliasing the provider.
+	 */
+	#getSourceLabel(providerId: string): string {
+		const origin = this.#authStorage.getCredentialOrigin(providerId);
+		if (!origin) return "";
+		const detail = origin.kind === "env" && origin.envVar ? `env: ${origin.envVar}` : ORIGIN_LABELS[origin.kind];
+		return theme.fg("muted", ` (${detail})`);
+	}
+
 	#getStatusIndicator(providerId: string): string {
 		const state = this.#authState.get(providerId);
+		const source = this.#getSourceLabel(providerId);
 		if (state === "checking") {
 			const frameCount = theme.spinnerFrames.length;
 			const spinner = frameCount > 0 ? theme.spinnerFrames[this.#spinnerFrame % frameCount] : theme.status.pending;
-			return theme.fg("warning", ` ${spinner} checking`);
+			return theme.fg("warning", ` ${spinner} checking`) + source;
 		}
 		if (state === "invalid") {
-			return theme.fg("error", ` ${theme.status.error} invalid`);
+			return theme.fg("error", ` ${theme.status.error} invalid`) + source;
 		}
 		if (state === "valid") {
-			return theme.fg("success", ` ${theme.status.success} logged in`);
+			return theme.fg("success", ` ${theme.status.enabled} logged in`) + source;
 		}
-		return this.#authStorage.hasAuth(providerId) ? theme.fg("success", ` ${theme.status.success} logged in`) : "";
+		return this.#hasSelectableAuth(providerId)
+			? theme.fg("success", ` ${theme.status.enabled} logged in`) + source
+			: "";
 	}
+
 	#isSearchEnabled(): boolean {
 		return this.#allProviders.length > OAUTH_SELECTOR_MAX_VISIBLE;
 	}
@@ -155,20 +194,18 @@ export class OAuthSelectorComponent extends Container {
 		return this.#isSearchEnabled() || this.#searchQuery.length > 0;
 	}
 
-	#renderStatusLine(total: number): string {
-		const selectedCount = total === 0 ? 0 : this.#selectedIndex + 1;
-		const count =
-			this.#searchQuery.trim() && total !== this.#allProviders.length
-				? `${selectedCount}/${total} of ${this.#allProviders.length}`
-				: `${selectedCount}/${total}`;
-		const suffix = this.#searchQuery.trim() ? `  Search: ${this.#searchQuery}` : "  Type to search";
-		return theme.fg("muted", `  (${count})${suffix}`);
+	#renderStatusLine(_total: number): string {
+		const query = this.#searchQuery.trim();
+		const suffix = query ? `Search: ${this.#searchQuery}` : "Type to search";
+		return theme.fg("muted", `  ${suffix}`);
 	}
 
 	#getProviderSearchText(provider: OAuthProviderInfo): string {
 		let text = `${provider.name} ${provider.id}`;
-		if (this.#authStorage.hasAuth(provider.id)) {
-			text += " logged in authenticated";
+		const origin = this.#authStorage.getCredentialOrigin(provider.id);
+		if (origin) {
+			text += ` logged in authenticated ${ORIGIN_LABELS[origin.kind]}`;
+			if (origin.envVar) text += ` ${origin.envVar}`;
 		}
 		if (!provider.available) {
 			text += " unavailable";
@@ -216,6 +253,7 @@ export class OAuthSelectorComponent extends Container {
 				: Math.max(0, Math.min(this.#selectedIndex - Math.floor(maxVisible / 2), total - maxVisible));
 		const endIndex = Math.min(startIndex + maxVisible, total);
 
+		const rows: string[] = [];
 		for (let i = startIndex; i < endIndex; i++) {
 			const provider = this.#filteredProviders[i];
 			if (!provider) continue;
@@ -232,21 +270,31 @@ export class OAuthSelectorComponent extends Container {
 				const text = isAvailable ? `  ${provider.name}` : theme.fg("dim", `  ${provider.name}`);
 				line = text + statusIndicator;
 			}
-			this.#listContainer.addChild(new TruncatedText(line, 0, 0));
+			rows.push(line);
 		}
 
-		// Scroll/search indicator when list is windowed or searchable
-		if (startIndex > 0 || endIndex < total || this.#shouldRenderSearchStatus()) {
+		if (rows.length > 0) {
+			const sv = new ScrollView(rows, {
+				height: rows.length,
+				scrollbar: "auto",
+				totalRows: total,
+				theme: { track: t => theme.fg("muted", t), thumb: t => theme.fg("accent", t) },
+			});
+			sv.setScrollOffset(startIndex);
+			this.#listContainer.addChild(sv);
+		}
+
+		// Search status line (scrollbar covers overflow indication)
+		if (this.#shouldRenderSearchStatus()) {
 			this.#listContainer.addChild(new TruncatedText(this.#renderStatusLine(total), 0, 0));
 		}
 
-		// Show "no providers" if empty
 		if (total === 0) {
 			const message =
 				this.#allProviders.length === 0
 					? this.#mode === "login"
 						? "No OAuth providers available"
-						: "No OAuth providers logged in. Use /login first."
+						: "No stored provider credentials to log out"
 					: "No matching providers";
 			this.#listContainer.addChild(new TruncatedText(theme.fg("muted", `  ${message}`), 0, 0));
 		}

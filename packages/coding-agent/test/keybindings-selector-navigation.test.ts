@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -86,8 +86,15 @@ async function createHistoryStorage(prompts: string[]): Promise<HistoryStorage> 
 	tempDirs.push(dir);
 	HistoryStorage.resetInstance();
 	const storage = HistoryStorage.open(path.join(dir, "history.db"));
-	for (const prompt of prompts) {
-		await storage.add(prompt);
+	// add() batches writes behind a 100ms AsyncDrain timer. Drive that timer with
+	// fake timers so the flush is instant instead of waiting real wall-clock time.
+	vi.useFakeTimers();
+	try {
+		const writes = prompts.map(prompt => storage.add(prompt));
+		vi.advanceTimersByTime(100);
+		await Promise.all(writes);
+	} finally {
+		vi.useRealTimers();
 	}
 	return storage;
 }
@@ -98,7 +105,7 @@ describe("selector navigation keybindings", () => {
 		const selected: string[] = [];
 		const selector = new SessionSelectorComponent(
 			[createSession("session-a", "Alpha"), createSession("session-b", "Beta")],
-			path => selected.push(path),
+			session => selected.push(session.path),
 			() => {},
 			() => {},
 		);
@@ -169,5 +176,33 @@ describe("selector navigation keybindings", () => {
 		selector.handleInput("\n");
 
 		expect(selected).toEqual(["middle prompt"]);
+	});
+
+	it("supports page and home/end navigation in history search", async () => {
+		setKeybindings(KeybindingsManager.inMemory());
+		const selected: string[] = [];
+		// Added oldest-first; getRecent returns newest-first, so index 0 is "p14", index 14 is "p0".
+		const storage = await createHistoryStorage(Array.from({ length: 15 }, (_, i) => `p${i}`));
+		const selector = new HistorySearchComponent(
+			storage,
+			prompt => selected.push(prompt),
+			() => {},
+		);
+
+		const PAGE_UP = "\x1b[5~";
+		const PAGE_DOWN = "\x1b[6~";
+		const HOME = "\x1b[H";
+		const END = "\x1b[F";
+
+		selector.handleInput(PAGE_DOWN); // index 0 -> 10  (p4)
+		selector.handleInput("\n");
+		selector.handleInput(END); // -> 14, last  (p0)
+		selector.handleInput("\n");
+		selector.handleInput(PAGE_UP); // index 14 -> 4  (p10)
+		selector.handleInput("\n");
+		selector.handleInput(HOME); // -> 0, first  (p14)
+		selector.handleInput("\n");
+
+		expect(selected).toEqual(["p4", "p0", "p10", "p14"]);
 	});
 });

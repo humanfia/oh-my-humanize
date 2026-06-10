@@ -7,8 +7,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type AssistantMessage, getBundledModel, type StopReason, type ToolCall } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, StopReason, ToolCall } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -209,6 +210,7 @@ function createStreamForDiff(
 let tempDir: string;
 const editTool = buildEditTool();
 const seeds = [7, 21, 42, 84, 128];
+const STREAMING_EDIT_RANDOM_STREAM_TIMEOUT_MS = 20_000;
 
 beforeEach(() => {
 	tempDir = path.join(os.tmpdir(), `pi-streaming-edit-${Snowflake.next()}`);
@@ -221,57 +223,65 @@ afterEach(async () => {
 	}
 });
 
-it("does not abort for successful patches across random streams", async () => {
-	await Bun.write(path.join(tempDir, "sample.txt"), "alpha\nbeta\ngamma\n");
-	const diff = "@@\n-beta\n+beta2\n";
+it(
+	"does not abort for successful patches across random streams",
+	async () => {
+		await Bun.write(path.join(tempDir, "sample.txt"), "alpha\nbeta\ngamma\n");
+		const diff = "@@\n-beta\n+beta2\n";
 
-	for (const seed of seeds) {
-		const chunks = chunkStringRandomly(diff, seed);
-		const abortSignalRef: { current?: AbortSignal } = {};
-		const streamFn = createStreamForDiff("sample.txt", chunks, abortSignalRef);
-		const { session, authStorage } = await createSession(tempDir, streamFn, editTool);
+		for (const seed of seeds) {
+			const chunks = chunkStringRandomly(diff, seed);
+			const abortSignalRef: { current?: AbortSignal } = {};
+			const streamFn = createStreamForDiff("sample.txt", chunks, abortSignalRef);
+			const { session, authStorage } = await createSession(tempDir, streamFn, editTool);
 
-		try {
-			await session.prompt("apply patch");
-
-			const lastAssistant = lastAssistantMessage(session.state.messages);
-			expect(lastAssistant?.stopReason).not.toBe("aborted");
-			expect(abortSignalRef.current?.aborted ?? false).toBe(false);
-		} finally {
 			try {
-				await session.dispose();
+				await session.prompt("apply patch");
+
+				const lastAssistant = lastAssistantMessage(session.state.messages);
+				expect(lastAssistant?.stopReason).not.toBe("aborted");
+				expect(abortSignalRef.current?.aborted ?? false).toBe(false);
 			} finally {
-				authStorage.close();
+				try {
+					await session.dispose();
+				} finally {
+					authStorage.close();
+				}
 			}
 		}
-	}
-});
+	},
+	STREAMING_EDIT_RANDOM_STREAM_TIMEOUT_MS,
+);
 
-it("aborts for failing patches across random streams", async () => {
-	await Bun.write(path.join(tempDir, "sample.txt"), "alpha\nbeta\ngamma\n");
-	const diff = "@@\n-omega\n+beta2\n";
+it(
+	"aborts for failing patches across random streams",
+	async () => {
+		await Bun.write(path.join(tempDir, "sample.txt"), "alpha\nbeta\ngamma\n");
+		const diff = "@@\n-omega\n+beta2\n";
 
-	for (const seed of seeds) {
-		const chunks = chunkStringRandomly(diff, seed);
-		const abortSignalRef: { current?: AbortSignal } = {};
-		const streamFn = createStreamForDiff("sample.txt", chunks, abortSignalRef);
-		const { session, authStorage } = await createSession(tempDir, streamFn, editTool);
+		for (const seed of seeds) {
+			const chunks = chunkStringRandomly(diff, seed);
+			const abortSignalRef: { current?: AbortSignal } = {};
+			const streamFn = createStreamForDiff("sample.txt", chunks, abortSignalRef);
+			const { session, authStorage } = await createSession(tempDir, streamFn, editTool);
 
-		try {
-			await session.prompt("apply patch");
-
-			const lastAssistant = lastAssistantMessage(session.state.messages);
-			expect(lastAssistant?.stopReason).toBe("aborted");
-			expect(abortSignalRef.current?.aborted ?? false).toBe(true);
-		} finally {
 			try {
-				await session.dispose();
+				await session.prompt("apply patch");
+
+				const lastAssistant = lastAssistantMessage(session.state.messages);
+				expect(lastAssistant?.stopReason).toBe("aborted");
+				expect(abortSignalRef.current?.aborted ?? false).toBe(true);
 			} finally {
-				authStorage.close();
+				try {
+					await session.dispose();
+				} finally {
+					authStorage.close();
+				}
 			}
 		}
-	}
-});
+	},
+	STREAMING_EDIT_RANDOM_STREAM_TIMEOUT_MS,
+);
 
 it("does not abort when auto-generated peek fails with ENOENT (non-ToolError)", async () => {
 	const checkSpy = vi

@@ -4,7 +4,6 @@ import {
 	extractSegments as nativeExtractSegments,
 	sliceWithWidth as nativeSliceWithWidth,
 	truncateToWidth as nativeTruncateToWidth,
-	visibleWidth as nativeVisibleWidth,
 	wrapTextWithAnsi as nativeWrapTextWithAnsi,
 	type SliceResult,
 } from "@oh-my-pi/pi-natives";
@@ -13,6 +12,66 @@ import { getDefaultTabWidth, getIndentation } from "@oh-my-pi/pi-utils";
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 
 export { getDefaultTabWidth, getIndentation } from "@oh-my-pi/pi-utils";
+
+export type TextSizingScale = 1 | 2 | 3;
+export type TextSizingVerticalAlign = "top" | "bottom" | "center";
+export type TextSizingHorizontalAlign = "left" | "right" | "center";
+
+export interface TextSizingOptions {
+	scale?: TextSizingScale;
+	widthCells?: number;
+	verticalAlign?: TextSizingVerticalAlign;
+	horizontalAlign?: TextSizingHorizontalAlign;
+}
+
+const OSC66_UNSAFE = /[\x00-\x1f\x7f-\x9f]/u;
+const OSC66_UNSAFE_GLOBAL = /[\x00-\x1f\x7f-\x9f]/gu;
+
+function textSizingVerticalAlignValue(align: TextSizingVerticalAlign | undefined): number | undefined {
+	switch (align) {
+		case "top":
+			return 0;
+		case "bottom":
+			return 1;
+		case "center":
+			return 2;
+		default:
+			return undefined;
+	}
+}
+
+function textSizingHorizontalAlignValue(align: TextSizingHorizontalAlign | undefined): number | undefined {
+	switch (align) {
+		case "left":
+			return 0;
+		case "right":
+			return 1;
+		case "center":
+			return 2;
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * Encode a plain-text span using Kitty's OSC 66 text-sizing protocol. The TUI
+ * emits only safe UTF-8 payloads and ST terminators so its ANSI parser and the
+ * terminal agree on span boundaries.
+ */
+export function encodeTextSized(text: string, options: TextSizingOptions = {}): string {
+	const metadata: string[] = [];
+	if (options.scale !== undefined) metadata.push(`s=${options.scale}`);
+	if (options.widthCells !== undefined && Number.isFinite(options.widthCells)) {
+		metadata.push(`w=${Math.max(0, Math.trunc(options.widthCells))}`);
+	}
+	const verticalAlign = textSizingVerticalAlignValue(options.verticalAlign);
+	if (verticalAlign !== undefined) metadata.push(`v=${verticalAlign}`);
+	const horizontalAlign = textSizingHorizontalAlignValue(options.horizontalAlign);
+	if (horizontalAlign !== undefined) metadata.push(`h=${horizontalAlign}`);
+
+	const safeText = OSC66_UNSAFE.test(text) ? text.replace(OSC66_UNSAFE_GLOBAL, " ") : text;
+	return `\x1b]66;${metadata.join(":")};${safeText}\x1b\\`;
+}
 
 export function sliceWithWidth(line: string, startCol: number, length: number, strict?: boolean | null): SliceResult {
 	return nativeSliceWithWidth(line, startCol, length, strict ?? null, getDefaultTabWidth());
@@ -85,44 +144,6 @@ export function padding(n: number): string {
 // Grapheme segmenter (shared instance)
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-const EXTENDED_PICTOGRAPHIC_REGEX = /\p{Extended_Pictographic}/u;
-
-// Matches CSI (`\x1b[…`) and OSC (`\x1b]…` terminated by BEL/ST) escape
-// sequences. Mirrors the standard ansi-regex coverage so visible-span
-// segmentation lines up with the native ANSI scanner.
-const ANSI_ESCAPE_REGEX =
-	/[\u001b\u009b][[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
-
-function pictographicSpanWidth(span: string): number {
-	let width = 0;
-	for (const { segment } of segmenter.segment(span)) {
-		width += EXTENDED_PICTOGRAPHIC_REGEX.test(segment) ? 2 : nativeVisibleWidth(segment, getDefaultTabWidth());
-	}
-	return width;
-}
-
-// Width fallback for strings that mix ANSI styling with ZWJ pictographic
-// emoji. `Intl.Segmenter` would split an escape sequence into individual
-// graphemes, so the native scanner (which only skips ANSI when handed the
-// complete sequence) double-counts the printable SGR bytes. Excise the ANSI
-// spans first — they contribute zero cells — and apply the pictographic
-// grapheme override only to the visible spans, then sum.
-function visibleWidthByGrapheme(str: string): number {
-	let width = 0;
-	let lastIndex = 0;
-	ANSI_ESCAPE_REGEX.lastIndex = 0;
-	for (let match = ANSI_ESCAPE_REGEX.exec(str); match !== null; match = ANSI_ESCAPE_REGEX.exec(str)) {
-		if (match.index > lastIndex) {
-			width += pictographicSpanWidth(str.slice(lastIndex, match.index));
-		}
-		lastIndex = ANSI_ESCAPE_REGEX.lastIndex;
-	}
-	if (lastIndex < str.length) {
-		width += lastIndex === 0 ? pictographicSpanWidth(str) : pictographicSpanWidth(str.slice(lastIndex));
-	}
-	return width;
-}
-
 /**
  * Get the shared grapheme segmenter instance.
  */
@@ -130,33 +151,106 @@ export function getSegmenter(): Intl.Segmenter {
 	return segmenter;
 }
 
-export function visibleWidthRaw(str: string): number {
-	if (!str) {
-		return 0;
-	}
+// Kitty OSC 66 text-sizing spans: `\x1b]66;<meta>;<payload>` terminated by BEL
+// or ST. `Bun.stringWidth` strips the whole span (payload included) to zero
+// cells, but the payload is visible and scales by the `s=` factor, so each is
+// added back so width matches the native truncate/slice/wrap helpers.
+const OSC66_SPAN_REGEX = /\x1b\]66;([^;]*);([\s\S]*?)(?:\x07|\x1b\\)/g;
+const OSC66_PREFIX = "\x1b]66;";
+const ESC = "\x1b";
+const TAB = "\t";
+const LONG_WIDTH_FAST_PATH_MIN = 128;
 
-	// Fast path: printable ASCII has one cell per code unit. Defer every
-	// control/non-ASCII case (tabs, ANSI/OSC, combining marks, CJK) to the
-	// native text engine so all width/slice/wrap helpers share one Unicode
-	// model instead of mixing Bun.stringWidth quirks with Rust truncation.
-	for (let i = 0; i < str.length; i++) {
-		const code = str.charCodeAt(i);
-		if (code < 0x20 || code > 0x7e) {
-			return str.includes("\u200d") ? visibleWidthByGrapheme(str) : nativeVisibleWidth(str, getDefaultTabWidth());
-		}
-	}
-	return str.length;
-}
+// Pin Bun.stringWidth semantics to the native width engine and guard against Bun
+// default drift: strip ANSI/OSC (don't count escape bytes) and treat
+// ambiguous-width East Asian chars as narrow (1 cell), matching `unicode-width`'s
+// non-CJK tables that back truncate/slice/wrap. Hoisted so no per-call alloc.
+const STRING_WIDTH_OPTS = { countAnsiEscapeCodes: false, ambiguousIsNarrow: true } as const;
 
 /**
- * Calculate the visible width of a string in terminal columns.
+ * Visible width of a string in terminal columns, excluding ANSI/OSC escapes.
+ *
+ * `Bun.stringWidth` does the heavy lifting (UAX#11 width tables + ANSI/OSC
+ * stripping); this adds the two corrections it omits — tabs (expanded to
+ * `tabWidth` cells) and OSC 66 text-sizing payloads (scaled by `s=`).
  */
 export function visibleWidth(str: string): number {
 	if (!str) return 0;
-	return visibleWidthRaw(str);
+
+	// Long non-escape text is faster through Bun's native scanner than through
+	// a JS printable-ASCII prepass. Escape-bearing strings stay on the scanner
+	// below so CSI/OSC-heavy render output can still bail out at the first ESC.
+	if (str.length >= LONG_WIDTH_FAST_PATH_MIN && !str.includes(ESC)) {
+		let width = Bun.stringWidth(str, STRING_WIDTH_OPTS);
+		let tabCount = 0;
+		for (let tabIndex = str.indexOf(TAB); tabIndex !== -1; tabIndex = str.indexOf(TAB, tabIndex + 1)) {
+			tabCount++;
+		}
+		if (tabCount > 0) width += tabCount * getDefaultTabWidth();
+		return width;
+	}
+
+	let tabCount = 0;
+	let i = 0;
+	for (; i < str.length; i++) {
+		const code = str.charCodeAt(i);
+		if (code < 0x20 || code > 0x7e) {
+			if (code === 0x09) {
+				tabCount++;
+				continue;
+			}
+			break;
+		}
+	}
+	if (i === str.length) {
+		return tabCount === 0 ? str.length : str.length + tabCount * (getDefaultTabWidth() - 1);
+	}
+
+	if (tabCount === 0) {
+		let tabIndex = str.indexOf(TAB, i + 1);
+		if (tabIndex !== -1) {
+			tabCount = 1;
+			for (tabIndex = str.indexOf(TAB, tabIndex + 1); tabIndex !== -1; tabIndex = str.indexOf(TAB, tabIndex + 1)) {
+				tabCount++;
+			}
+		}
+	} else {
+		for (let tabIndex = str.indexOf(TAB, i + 1); tabIndex !== -1; tabIndex = str.indexOf(TAB, tabIndex + 1)) {
+			tabCount++;
+		}
+	}
+
+	// `Bun.stringWidth` is a JSC builtin (no per-call N-API number box, unlike
+	// the native scanner that traps under Bun 1.3.x GC/N-API load). It strips
+	// CSI/OSC to zero cells and shares the native engine's UAX#11 width tables.
+	let width = Bun.stringWidth(str, STRING_WIDTH_OPTS);
+	if (tabCount > 0) width += tabCount * getDefaultTabWidth();
+
+	// OSC 66: add back each stripped span as `scale * (explicit w ?? payload
+	// width)`. Matched rather than replaced to avoid reallocating the string.
+	if (str.includes(OSC66_PREFIX, i)) {
+		OSC66_SPAN_REGEX.lastIndex = 0;
+		for (let m = OSC66_SPAN_REGEX.exec(str); m !== null; m = OSC66_SPAN_REGEX.exec(str)) {
+			let scale = 1;
+			let explicit: number | undefined;
+			for (const part of m[1].split(":")) {
+				// metadata keys are single chars, e.g. `s=2`, `w=5`
+				if (part.indexOf("=") !== 1) continue;
+				const value = Number.parseInt(part.slice(2), 10);
+				if (!Number.isFinite(value)) continue;
+				if (part[0] === "s") {
+					if (value >= 1 && value <= 7) scale = value;
+				} else if (part[0] === "w" && value > 0) {
+					explicit = value;
+				}
+			}
+			width += scale * (explicit ?? Bun.stringWidth(m[2], STRING_WIDTH_OPTS));
+		}
+	}
+
+	return width;
 }
 
-const THAI_LAO_AM_REGEX = /[\u0e33\u0eb3]/;
 const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
 
 /**
@@ -166,7 +260,7 @@ const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
  * width but avoid stale-cell artifacts in terminal renderers.
  */
 export function normalizeTerminalOutput(str: string): string {
-	if (!THAI_LAO_AM_REGEX.test(str)) return str;
+	if (str.indexOf("\u0e33") === -1 && str.indexOf("\u0eb3") === -1) return str;
 	return str.replace(THAI_LAO_AM_GLOBAL_REGEX, char => (char === "\u0e33" ? "\u0e4d\u0e32" : "\u0ecd\u0eb2"));
 }
 

@@ -1,9 +1,22 @@
-import { beforeAll, describe, expect, it } from "bun:test";
-import { UserMessageComponent } from "../../../src/modes/components/user-message";
-import { initTheme } from "../../../src/modes/theme/theme";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
+import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
+import { getEditorTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
+import { Container } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true });
+	Settings.instance.set("tui.hyperlinks", "always");
 	await initTheme(false);
+});
+
+afterAll(() => {
+	resetSettingsForTest();
 });
 
 function render(text: string): string {
@@ -32,5 +45,87 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 		const raw = render("intro\n```\norchestrate\n```");
 		expect(Bun.stripANSI(raw)).toContain("orchestrate");
 		expect(raw).toContain("orchestrate");
+	});
+
+	it("bolds and underlines image references in the rendered message bubble", () => {
+		const raw = render("please inspect [Image #1] before continuing");
+		expect(Bun.stripANSI(raw)).toContain("[Image #1]");
+		expect(raw).toContain("\x1b[1m");
+		expect(raw).toContain("\x1b[4m");
+	});
+
+	it("wraps image references in file hyperlinks when a blob path is available", () => {
+		const raw = new UserMessageComponent("please inspect [Image #1]", false, ["/tmp/omp-image.png"])
+			.render(80)
+			.join("\n");
+		expect(Bun.stripANSI(raw)).toContain("[Image #1]");
+		expect(raw).toContain("\x1b]8;id=");
+		expect(raw).toContain("file:///tmp/omp-image.png");
+	});
+
+	it("wraps draft editor image references in file hyperlinks when a blob path is available", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.imageLinks = ["/tmp/omp-image.png"];
+		editor.setText("please inspect [Image #1]");
+		const raw = editor.render(80).join("\n");
+		expect(Bun.stripANSI(raw)).toContain("[Image #1]");
+		expect(raw).toContain("\x1b]8;id=");
+		expect(raw).toContain("file:///tmp/omp-image.png");
+	});
+
+	it("rebuilds user messages with image hyperlinks when image links are not precomputed", () => {
+		const chatContainer = new Container();
+		const helpers = new UiHelpers({
+			chatContainer,
+			getUserMessageText: () => "please inspect [Image #1]",
+			sessionManager: {
+				putBlobSync: () => ({
+					hash: "abc123",
+					path: "/tmp/abc123",
+					displayPath: "/tmp/abc123.png",
+					get ref() {
+						return "blob:sha256:abc123";
+					},
+				}),
+			},
+		} as unknown as InteractiveModeContext);
+		const message: AgentMessage = {
+			role: "user",
+			content: [
+				{ type: "text", text: "please inspect [Image #1]" },
+				{ type: "image", data: Buffer.from("image-bytes").toString("base64"), mimeType: "image/png" },
+			],
+			attribution: "user",
+			timestamp: Date.now(),
+		};
+
+		helpers.addMessageToChat(message);
+		const component = chatContainer.children.at(-1);
+		if (!component) throw new Error("Expected user message component to be appended");
+		const raw = component.render(80).join("\n");
+		expect(Bun.stripANSI(raw)).toContain("[Image #1]");
+		expect(raw).toContain("\x1b]8;id=");
+		expect(raw).toContain("file:///tmp/abc123.png");
+	});
+
+	it("highlights paste markers in the draft editor without a hyperlink", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.setText("see [Paste #1, +30 lines] now");
+		const raw = editor.render(80).join("\n");
+		expect(Bun.stripANSI(raw)).toContain("[Paste #1, +30 lines]");
+		// The marker label is bold-wrapped (highlighted), unlike surrounding plain text.
+		expect(raw).toContain("\x1b[1m[Paste #1, +30 lines]");
+		// Paste markers are not clickable, so no OSC-8 hyperlink is emitted (contrast with images).
+		expect(raw).not.toContain("\x1b]8;id=");
+	});
+
+	it("hyperlinks the metadata-bearing image marker format", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.imageLinks = ["/tmp/omp-image.png"];
+		editor.setText("see [Image #1, 800x600] now");
+		const raw = editor.render(80).join("\n");
+		expect(Bun.stripANSI(raw)).toContain("[Image #1, 800x600]");
+		expect(raw).toContain("\x1b]8;id=");
+		expect(raw).toContain("file:///tmp/omp-image.png");
 	});
 });

@@ -1,9 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { extractPrintableText } from "@oh-my-pi/pi-tui/keys";
 import { ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
+import {
+	type CellDimensions,
+	getCellDimensions,
+	getTerminalInfo,
+	setCellDimensions,
+} from "@oh-my-pi/pi-tui/terminal-capabilities";
 
 const stdinIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 const processPlatformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+const stdoutColumnsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+const stdoutRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");
 const stdinSetRawModeDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "setRawMode");
 const originalWslDistroName = Bun.env.WSL_DISTRO_NAME;
 const originalWslInterop = Bun.env.WSL_INTEROP;
@@ -186,8 +195,8 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 		const afterInitial = queryCount();
 
-		// Advance 2s — poll should fire and send another query
-		vi.advanceTimersByTime(2000);
+		// Advance one poll interval — poll should fire and send another query
+		vi.advanceTimersByTime(30_000);
 		expect(queryCount()).toBe(afterInitial + 1);
 
 		// Complete poll's OSC 11 + DA1 (only one DA1 sentinel — keyboard probe is one-shot)
@@ -203,9 +212,38 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 		const afterMode2031 = queryCount();
 
-		// Advance 4s — no additional poll queries should fire
-		vi.advanceTimersByTime(4000);
+		// Advance two more poll intervals — no additional poll queries should fire
+		vi.advanceTimersByTime(60_000);
 		expect(queryCount()).toBe(afterMode2031);
+
+		terminal.stop();
+	});
+
+	it("poll timer stops once DECRQM confirms Mode 2031 support", () => {
+		vi.useFakeTimers();
+		const { terminal, queryCount } = setupTerminal();
+
+		// Complete initial OSC 11 + DA1 cycle (keyboard + OSC 11 sentinels).
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		process.stdin.emit("data", "\x1b[?1;2c");
+
+		// Poll fires at the first interval while Mode 2031 support is still unknown.
+		const afterInitial = queryCount();
+		vi.advanceTimersByTime(30_000);
+		expect(queryCount()).toBe(afterInitial + 1);
+		// Drain the poll's OSC 11 reply so it is no longer pending.
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+
+		// DECRQM confirms Mode 2031 support — push notifications supersede polling,
+		// so the poll must stop (its repeated OSC 11/DA1 writes otherwise clobber
+		// the user's active text selection on every poll).
+		process.stdin.emit("data", "\x1b[?2031;3$y");
+		const afterConfirm = queryCount();
+
+		// Advance well past several poll intervals — no further OSC 11 queries fire.
+		vi.advanceTimersByTime(90_000);
+		expect(queryCount()).toBe(afterConfirm);
 
 		terminal.stop();
 	});
@@ -221,7 +259,7 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		process.stdin.emit("data", "\x1b[?1;2c");
 		const afterInitial = queryCount();
 
-		vi.advanceTimersByTime(4000);
+		vi.advanceTimersByTime(90_000);
 
 		expect(queryCount()).toBe(afterInitial);
 
@@ -297,7 +335,7 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		process.stdin.emit("data", "\x1b]11;rgb:1c1c/1c1c/1c1c\x07");
 
 		// DA1 reply arrives split: the prefix appears as one event and then the StdinBuffer
-		// flush timeout (10ms) elapses before the rest of the response is delivered.
+		// flush timeout (50ms) elapses before the rest of the response is delivered.
 		// xterm-style "VT420 with extensions" response: \x1b[?62;6;7;14;...;52c
 		process.stdin.emit("data", "\x1b[?62");
 		vi.advanceTimersByTime(50);
@@ -351,13 +389,17 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		expect(writes.some(w => w.includes("\x1b[>31u"))).toBe(false);
 		expect(writes).toContain("\x1b[?u\x1b[c");
 
-		// Two DA1 sentinels are in flight at startup (keyboard probe + OSC 11).
-		// Consume them in send-order and verify neither leaks to the input handler.
+		// Five DA1 sentinels are in flight at startup: keyboard probe, OSC 11, and
+		// the DECRQM probes for DEC 2026, 2048, and 2031 (each rides the shared
+		// FIFO). Consume them in send-order and verify none leaks to the input handler.
+		process.stdin.emit("data", "\x1b[?1;2c");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		process.stdin.emit("data", "\x1b[?1;2c");
 		process.stdin.emit("data", "\x1b[?1;2c");
 		process.stdin.emit("data", "\x1b[?1;2c");
 		expect(received).toEqual([]);
 
-		// A third stray DA1 has no owner and must reach the input handler — it is
+		// A sixth stray DA1 has no owner and must reach the input handler — it is
 		// no longer ours to swallow.
 		process.stdin.emit("data", "\x1b[?1;2c");
 		expect(received).toEqual(["\x1b[?1;2c"]);
@@ -394,5 +436,271 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		terminal.stop();
 		const pops = writes.filter(w => w === "\x1b[<u").length;
 		expect(pops).toBe(1);
+	});
+});
+
+describe("ProcessTerminal DECRQM + in-band resize (DEC 2026/2048)", () => {
+	let originalCellDims: CellDimensions;
+
+	beforeEach(() => {
+		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+		Object.defineProperty(process.stdin, "setRawMode", { value: vi.fn(), configurable: true });
+		originalCellDims = { ...getCellDimensions() };
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		restoreProperty(process.stdin, "isTTY", stdinIsTtyDescriptor);
+		restoreProperty(process.stdout, "isTTY", stdoutIsTtyDescriptor);
+		restoreProperty(process.stdin, "setRawMode", stdinSetRawModeDescriptor);
+		restoreProperty(process, "platform", processPlatformDescriptor);
+		restoreProperty(process.stdout, "columns", stdoutColumnsDescriptor);
+		restoreProperty(process.stdout, "rows", stdoutRowsDescriptor);
+		setCellDimensions(originalCellDims);
+	});
+
+	function setup() {
+		const writes: string[] = [];
+		const received: string[] = [];
+		let resizeCount = 0;
+		const reports: Array<{ mode: number; supported: boolean }> = [];
+		vi.spyOn(process, "kill").mockReturnValue(true);
+		vi.spyOn(process.stdin, "resume").mockImplementation(() => process.stdin);
+		vi.spyOn(process.stdin, "pause").mockImplementation(() => process.stdin);
+		vi.spyOn(process.stdin, "setEncoding").mockImplementation(() => process.stdin);
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			writes.push(typeof chunk === "string" ? chunk : chunk.toString());
+			return true;
+		});
+
+		const terminal = new ProcessTerminal();
+		terminal.onPrivateModeReport?.((mode, supported) => reports.push({ mode, supported }));
+		terminal.start(
+			data => received.push(data),
+			() => {
+				resizeCount++;
+			},
+		);
+		return { terminal, writes, received, reports, resizeCount: () => resizeCount };
+	}
+
+	it("queries DECRQM for DEC 2026, 2048, and 2031 at startup", () => {
+		const { terminal, writes } = setup();
+		expect(writes.some(w => w.includes("\x1b[?2026$p"))).toBe(true);
+		expect(writes.some(w => w.includes("\x1b[?2048$p"))).toBe(true);
+		expect(writes.some(w => w.includes("\x1b[?2031$p"))).toBe(true);
+		terminal.stop();
+	});
+
+	it("reports DECRPM statuses 1, 2, and 3 as supported private modes", () => {
+		const { terminal, reports } = setup();
+		process.stdin.emit("data", "\x1b[?2026;1$y");
+		process.stdin.emit("data", "\x1b[?2048;2$y");
+		process.stdin.emit("data", "\x1b[?2031;3$y");
+		expect(reports).toContainEqual({ mode: 2026, supported: true });
+		expect(reports).toContainEqual({ mode: 2048, supported: true });
+		expect(reports).toContainEqual({ mode: 2031, supported: true });
+		terminal.stop();
+	});
+
+	it("reports DECRPM status 4 as unsupported for modes the TUI enables", () => {
+		const { terminal, writes, reports } = setup();
+		process.stdin.emit("data", "\x1b[?2026;4$y");
+		process.stdin.emit("data", "\x1b[?2048;4$y");
+		expect(reports).toContainEqual({ mode: 2026, supported: false });
+		expect(reports).toContainEqual({ mode: 2048, supported: false });
+		expect(writes).not.toContain("\x1b[?2048h");
+		terminal.stop();
+		expect(writes).not.toContain("\x1b[?2048l");
+	});
+
+	it("reports a private mode unsupported when DECRPM status is 0", () => {
+		const { terminal, reports } = setup();
+		process.stdin.emit("data", "\x1b[?2026;0$y");
+		expect(reports).toContainEqual({ mode: 2026, supported: false });
+		terminal.stop();
+	});
+
+	it("enables DEC 2048 only after DECRPM confirms support, and disables it on stop", () => {
+		const { terminal, writes, reports } = setup();
+		expect(writes).not.toContain("\x1b[?2048h");
+		process.stdin.emit("data", "\x1b[?2048;2$y");
+		expect(reports).toContainEqual({ mode: 2048, supported: true });
+		expect(writes).toContain("\x1b[?2048h");
+		terminal.stop();
+		expect(writes).toContain("\x1b[?2048l");
+	});
+
+	it("does not enable DEC 2048 when reported unsupported", () => {
+		const { terminal, writes, reports } = setup();
+		process.stdin.emit("data", "\x1b[?2048;0$y");
+		expect(reports).toContainEqual({ mode: 2048, supported: false });
+		expect(writes).not.toContain("\x1b[?2048h");
+		terminal.stop();
+		expect(writes).not.toContain("\x1b[?2048l");
+	});
+
+	it("falls back to unsupported when the DA1 sentinel beats the DECRPM reply", () => {
+		const { terminal, reports } = setup();
+		// Drain keyboard + osc11 sentinels, then 2026's DA1 (no DECRPM arrived).
+		process.stdin.emit("data", "\x1b[?1;2c");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		expect(reports).toContainEqual({ mode: 2026, supported: false });
+		terminal.stop();
+	});
+
+	it("updates geometry and cell size without resizing when an in-band report is unchanged", () => {
+		Object.defineProperty(process.stdout, "columns", { value: 100, configurable: true });
+		Object.defineProperty(process.stdout, "rows", { value: 30, configurable: true });
+		const { terminal, received, resizeCount } = setup();
+		process.stdin.emit("data", "\x1b[?2048;1$y");
+		process.stdin.emit("data", "\x1b[48;30;100;600;1000t");
+		expect(terminal.rows).toBe(30);
+		expect(terminal.columns).toBe(100);
+		expect(getCellDimensions()).toEqual({ widthPx: 10, heightPx: 20 });
+		expect(resizeCount()).toBe(0);
+		expect(received).toEqual([]);
+		terminal.stop();
+	});
+
+	it("fires resize once when an in-band report changes rows or columns", () => {
+		Object.defineProperty(process.stdout, "columns", { value: 100, configurable: true });
+		Object.defineProperty(process.stdout, "rows", { value: 30, configurable: true });
+		const { terminal, received, resizeCount } = setup();
+		process.stdin.emit("data", "\x1b[?2048;1$y");
+		process.stdin.emit("data", "\x1b[48;31;120;620;1200t");
+		expect(terminal.rows).toBe(31);
+		expect(terminal.columns).toBe(120);
+		expect(getCellDimensions()).toEqual({ widthPx: 10, heightPx: 20 });
+		expect(resizeCount()).toBe(1);
+		expect(received).toEqual([]);
+		terminal.stop();
+	});
+
+	it("tracks OS geometry on resize when the post-resize in-band report is missed", () => {
+		// Real terminals always fire SIGWINCH (process.stdout dims refresh first),
+		// but the matching DEC 2048 report can be dropped or arrive malformed. The
+		// getters must not stay pinned to the stale cached report, or the renderer
+		// reflows at the old width and content never resizes.
+		Object.defineProperty(process.stdout, "columns", { value: 100, configurable: true });
+		Object.defineProperty(process.stdout, "rows", { value: 30, configurable: true });
+		const { terminal, resizeCount } = setup();
+		process.stdin.emit("data", "\x1b[?2048;1$y");
+		process.stdin.emit("data", "\x1b[48;30;100;600;1000t");
+		expect(terminal.columns).toBe(100);
+		expect(terminal.rows).toBe(30);
+
+		// OS resize: stdout dims update + 'resize' fires, no new in-band report.
+		Object.defineProperty(process.stdout, "columns", { value: 160, configurable: true });
+		Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
+		process.stdout.emit("resize");
+
+		expect(resizeCount()).toBe(1);
+		expect(terminal.columns).toBe(160);
+		expect(terminal.rows).toBe(40);
+		terminal.stop();
+	});
+
+	it("reassembles a DECRPM reply split across stdin reads", () => {
+		vi.useFakeTimers();
+		const { terminal, reports } = setup();
+		process.stdin.emit("data", "\x1b[?2048;1");
+		vi.advanceTimersByTime(50);
+		process.stdin.emit("data", "$y");
+		expect(reports).toContainEqual({ mode: 2048, supported: true });
+		terminal.stop();
+	});
+
+	it("reassembles an in-band resize report split past the flush window without leaking the tail", () => {
+		// The reported bug: resizing rapidly keeps the event loop busy, so the
+		// StdinBuffer flush timeout (50ms) fires after the `\x1b[48;…` prefix but
+		// before the terminator. The tail then arrives as bare characters that
+		// leaked into the editor as literal text (e.g. `8;125;1156;1125t`).
+		vi.useFakeTimers();
+		Object.defineProperty(process.stdout, "columns", { value: 100, configurable: true });
+		Object.defineProperty(process.stdout, "rows", { value: 30, configurable: true });
+		const { terminal, received, resizeCount } = setup();
+		process.stdin.emit("data", "\x1b[?2048;1$y"); // in-band active
+
+		process.stdin.emit("data", "\x1b[48;40;160");
+		vi.advanceTimersByTime(50); // flush window elapses mid-report
+		process.stdin.emit("data", ";800;1600t"); // tail arrives as bare chars
+
+		expect(received).toEqual([]);
+		expect(terminal.rows).toBe(40);
+		expect(terminal.columns).toBe(160);
+		expect(resizeCount()).toBe(1);
+		terminal.stop();
+	});
+
+	it("reassembles a well-formed report split at the type field (\\x1b[4 | 8;…t)", () => {
+		// Splitting right after `\x1b[4` is the exact shape from the bug report (ESC
+		// `[` `4` flushed, the rest leaking). Reassembly must catch the bare `\x1b[4`
+		// prefix and still apply the resize for a well-formed 5-field report.
+		vi.useFakeTimers();
+		Object.defineProperty(process.stdout, "columns", { value: 100, configurable: true });
+		Object.defineProperty(process.stdout, "rows", { value: 30, configurable: true });
+		const { terminal, received } = setup();
+		process.stdin.emit("data", "\x1b[?2048;1$y");
+
+		process.stdin.emit("data", "\x1b[4");
+		vi.advanceTimersByTime(50);
+		process.stdin.emit("data", "8;40;125;1156;1125t");
+
+		expect(received).toEqual([]);
+		expect(terminal.rows).toBe(40);
+		expect(terminal.columns).toBe(125);
+		terminal.stop();
+	});
+
+	it("forwards a split report fragment as one escape sequence instead of leaking bare characters", () => {
+		// The reported symptom: a fragment like `8;125;1156;1125t` (the tail of
+		// `\x1b[48;125;1156;1125t`, missing a field) appeared as literal text in the
+		// editor because the tail arrived as individual printable characters. Even
+		// when the reassembled sequence is not a valid resize report, it must reach
+		// the input handler as ONE escape sequence — `extractPrintableText` then
+		// rejects it (it contains ESC), so no characters are inserted.
+		vi.useFakeTimers();
+		const { terminal, received } = setup();
+		process.stdin.emit("data", "\x1b[?2048;1$y"); // in-band active
+
+		process.stdin.emit("data", "\x1b[4");
+		vi.advanceTimersByTime(50);
+		process.stdin.emit("data", "8;125;1156;1125t");
+
+		expect(received).toEqual(["\x1b[48;125;1156;1125t"]);
+		expect(received.every(seq => extractPrintableText(seq) === undefined)).toBe(true);
+		terminal.stop();
+	});
+
+	it("forwards a split kitty key colliding with the in-band prefix instead of swallowing it", () => {
+		// Kitty reports the '0' key (codepoint 48) as `\x1b[48;<mods>u`. If such a
+		// key is split past the flush window while in-band resize is active, the
+		// reassembled sequence is not a resize report and must reach the input
+		// handler — never be dropped as terminal noise.
+		vi.useFakeTimers();
+		const { terminal, received } = setup();
+		process.stdin.emit("data", "\x1b[?2048;1$y"); // in-band active
+
+		process.stdin.emit("data", "\x1b[48;5");
+		vi.advanceTimersByTime(50);
+		process.stdin.emit("data", "u");
+
+		expect(received).toEqual(["\x1b[48;5u"]);
+		terminal.stop();
+	});
+});
+
+describe("OSC 66 text-sizing capability", () => {
+	it("advertises text sizing only for Kitty", () => {
+		// OSC 66 is a Kitty-only protocol; any other terminal must report the
+		// capability as false so the renderer never emits raw escape bytes there.
+		expect(getTerminalInfo("kitty").textSizing).toBe(true);
+		for (const id of ["ghostty", "wezterm", "iterm2", "vscode", "alacritty", "base", "trueColor"] as const) {
+			expect(getTerminalInfo(id).textSizing).toBe(false);
+		}
 	});
 });

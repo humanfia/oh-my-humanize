@@ -163,7 +163,7 @@ export function buildRuleFromMarkdown(
 	},
 ): Rule {
 	const { frontmatter, body } = parseFrontmatter(content, { source: filePath });
-	const { condition, scope } = parseRuleConditionAndScope(frontmatter as RuleFrontmatter);
+	const { condition, astCondition, scope } = parseRuleConditionAndScope(frontmatter as RuleFrontmatter);
 
 	let globs: string[] | undefined;
 	if (Array.isArray(frontmatter.globs)) {
@@ -186,6 +186,7 @@ export function buildRuleFromMarkdown(
 		alwaysApply: frontmatter.alwaysApply === true,
 		description: typeof frontmatter.description === "string" ? frontmatter.description : undefined,
 		condition,
+		astCondition,
 		scope,
 		interruptMode,
 		_source: source,
@@ -212,6 +213,7 @@ export interface ParsedAgentFields {
 	output?: unknown;
 	thinkingLevel?: ThinkingLevel;
 	autoloadSkills?: string[];
+	readSummarize?: boolean;
 	blocking?: boolean;
 }
 
@@ -265,10 +267,11 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const thinkingLevel = parseThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
 	const blocking = parseBoolean(frontmatter.blocking);
+	const readSummarize = parseBoolean(frontmatter.readSummarize);
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
-	return { name, description, tools, spawns, model, output, thinkingLevel, blocking, autoloadSkills };
+	return { name, description, tools, spawns, model, output, thinkingLevel, blocking, autoloadSkills, readSummarize };
 }
 
 async function globIf(

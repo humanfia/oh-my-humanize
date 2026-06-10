@@ -724,6 +724,7 @@ interface FlatIssue {
 	keyword: "type" | "unrecognized" | "other";
 	instancePath: string;
 	expectedTypes: string[];
+	unionBranch: boolean;
 }
 
 /**
@@ -759,12 +760,12 @@ function mapZodExpectedToJsonSchemaType(expected: unknown): string | null {
  */
 function flattenIssues(issues: ReadonlyArray<ZodIssue>): FlatIssue[] {
 	const out: FlatIssue[] = [];
-	const walk = (issue: ZodIssue, prefix: ReadonlyArray<PropertyKey>): void => {
+	const walk = (issue: ZodIssue, prefix: ReadonlyArray<PropertyKey>, unionBranch: boolean): void => {
 		const fullPath = prefix.length === 0 ? issue.path : [...prefix, ...issue.path];
 		if (issue.code === "invalid_type") {
 			const mapped = mapZodExpectedToJsonSchemaType((issue as { expected?: unknown }).expected);
 			if (mapped) {
-				out.push({ keyword: "type", instancePath: pathToPointer(fullPath), expectedTypes: [mapped] });
+				out.push({ keyword: "type", instancePath: pathToPointer(fullPath), expectedTypes: [mapped], unionBranch });
 				return;
 			}
 		}
@@ -775,6 +776,7 @@ function flattenIssues(issues: ReadonlyArray<ZodIssue>): FlatIssue[] {
 					keyword: "unrecognized",
 					instancePath: pathToPointer([...fullPath, key]),
 					expectedTypes: [],
+					unionBranch,
 				});
 			}
 			return;
@@ -782,17 +784,21 @@ function flattenIssues(issues: ReadonlyArray<ZodIssue>): FlatIssue[] {
 		if (issue.code === "invalid_union") {
 			const inner = (issue as unknown as { errors?: ReadonlyArray<ReadonlyArray<ZodIssue>> }).errors;
 			if (inner) {
+				// A union-branch issue only competes with a sibling branch when it
+				// sits at the union node's own path. Issues whose own path is
+				// non-empty live on a deeper field that an already-identified
+				// branch owns, so the singleton-array repair should still apply.
 				for (const branch of inner) {
 					for (const child of branch) {
-						walk(child, fullPath);
+						walk(child, fullPath, child.path.length === 0);
 					}
 				}
 			}
 			return;
 		}
-		out.push({ keyword: "other", instancePath: pathToPointer(fullPath), expectedTypes: [] });
+		out.push({ keyword: "other", instancePath: pathToPointer(fullPath), expectedTypes: [], unionBranch });
 	};
-	for (const issue of issues) walk(issue, []);
+	for (const issue of issues) walk(issue, [], false);
 	return out;
 }
 
@@ -801,7 +807,9 @@ function flattenIssues(issues: ReadonlyArray<ZodIssue>): FlatIssue[] {
  *
  * Two kinds of repair are applied:
  *  - **type**: when a value is a JSON-encoded string and the schema wants
- *    something else, parse it and substitute the parsed value.
+ *    something else, parse it and substitute the parsed value. When a
+ *    non-union schema wants an array but receives a singleton value, wrap that
+ *    value in a one-element array.
  *  - **unrecognized**: when a strict object received an extra key (Zod's
  *    `unrecognized_keys` or JSON Schema's `additionalProperties: false`),
  *    drop that key so re-validation succeeds. This effectively coerces every
@@ -811,6 +819,7 @@ function flattenIssues(issues: ReadonlyArray<ZodIssue>): FlatIssue[] {
  * The function is safe and conservative:
  *   - Only processes "type" and "unrecognized" issues
  *   - Only attempts JSON coercion on string values
+ *   - Only wraps singleton array values for non-union type expectations
  *   - Only accepts parsed results that match the expected type
  *   - Clones the args object before mutation (copy-on-write)
  */
@@ -836,17 +845,26 @@ function coerceArgsFromIssues(args: unknown, issues: FlatIssue[]): { value: unkn
 		if (issue.expectedTypes.length === 0) continue;
 
 		const currentValue = getValueAtPointer(nextArgs, issue.instancePath);
-		if (typeof currentValue !== "string") continue;
-
-		const result = tryParseJsonForTypes(currentValue, issue.expectedTypes);
-		if (!result.changed) continue;
+		const result =
+			typeof currentValue === "string"
+				? tryParseJsonForTypes(currentValue, issue.expectedTypes)
+				: { value: currentValue, changed: false };
+		const coercedValue = result.changed
+			? result.value
+			: issue.expectedTypes.includes("array") &&
+					!issue.unionBranch &&
+					currentValue !== undefined &&
+					!Array.isArray(currentValue)
+				? [currentValue]
+				: undefined;
+		if (coercedValue === undefined) continue;
 
 		if (!owned) {
 			nextArgs = structuredCloneJSON(nextArgs);
 			owned = true;
 			changed = true;
 		}
-		nextArgs = setValueAtPointer(nextArgs, issue.instancePath, result.value);
+		nextArgs = setValueAtPointer(nextArgs, issue.instancePath, coercedValue);
 	}
 
 	return { value: changed ? nextArgs : args, changed };
@@ -900,17 +918,20 @@ function preserveUnknownRootFields(input: unknown, parsed: unknown): unknown {
 
 function flattenJsonSchemaIssues(issues: ReadonlyArray<JsonSchemaValidationIssue>): FlatIssue[] {
 	return issues.map(issue => {
+		const unionBranch = issue.fromUnionBranch === true;
 		if (issue.keyword === "additionalProperties") {
 			return {
 				keyword: "unrecognized",
 				instancePath: pathToPointer(issue.path),
 				expectedTypes: [],
+				unionBranch,
 			};
 		}
 		return {
 			keyword: issue.keyword === "type" ? "type" : "other",
 			instancePath: pathToPointer(issue.path),
 			expectedTypes: issue.expectedTypes ?? [],
+			unionBranch,
 		};
 	});
 }
@@ -956,6 +977,23 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): ToolCall["a
 		throw new Error(`Tool "${toolCall.name}" not found`);
 	}
 	return validateToolArguments(tool, toolCall);
+}
+
+/** Cap per-field string lengths when embedding received args in an error message. */
+const MAX_ERROR_ARG_STRING_LENGTH = 256;
+
+function truncateArgsForError(value: unknown): unknown {
+	if (typeof value === "string") {
+		if (value.length <= MAX_ERROR_ARG_STRING_LENGTH) return value;
+		return `${value.slice(0, MAX_ERROR_ARG_STRING_LENGTH)}… [truncated ${value.length - MAX_ERROR_ARG_STRING_LENGTH} chars]`;
+	}
+	if (Array.isArray(value)) return value.map(truncateArgsForError);
+	if (value !== null && typeof value === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [key, entry] of Object.entries(value)) out[key] = truncateArgsForError(entry);
+		return out;
+	}
+	return value;
 }
 
 /**
@@ -1004,12 +1042,15 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 	// existing tests; the detailed body is informational.
 	const errors = result.messages.join("\n") || "Unknown validation error";
 
+	// Truncate long per-field strings: the full payload (potentially hundreds
+	// of KB for write/edit-class calls) would otherwise round-trip back to the
+	// model inside the tool error.
 	const receivedArgs = changed
 		? {
-				original: originalArgs,
-				normalized: normalizedArgs,
+				original: truncateArgsForError(originalArgs),
+				normalized: truncateArgsForError(normalizedArgs),
 			}
-		: originalArgs;
+		: truncateArgsForError(originalArgs);
 
 	const errorMessage = `Validation failed for tool "${
 		toolCall.name

@@ -3,7 +3,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import * as z from "zod/v4";
-import { type AsyncJob, AsyncJobManager, isBackgroundJobSupportEnabled } from "../async";
+import type { AsyncJob, AsyncJobManager } from "../async";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import jobDescription from "../prompts/tools/job.md" with { type: "text" };
@@ -65,6 +65,19 @@ export interface JobToolDetails {
 	cancelled?: { id: string; status: CancelStatus }[];
 }
 
+/**
+ * A poll snapshot where every watched job is still running and nothing was
+ * cancelled — pure "still waiting" noise once a newer poll exists. The TUI
+ * keeps such a block un-finalized (displaceable) so a follow-up `job` call
+ * replaces it instead of stacking another waiting frame in the transcript.
+ */
+export function isWaitingPollDetails(details: unknown): boolean {
+	const d = details as JobToolDetails | undefined;
+	if (!d || !Array.isArray(d.jobs) || d.jobs.length === 0) return false;
+	if (d.cancelled?.length) return false;
+	return d.jobs.every(job => job?.status === "running");
+}
+
 export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 	readonly name = "job";
 	readonly approval = "read" as const;
@@ -78,11 +91,6 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		this.description = prompt.render(jobDescription);
 	}
 
-	static createIf(session: ToolSession): JobTool | null {
-		if (!isBackgroundJobSupportEnabled(session.settings)) return null;
-		return new JobTool(session);
-	}
-
 	async execute(
 		_toolCallId: string,
 		params: JobParams,
@@ -90,7 +98,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		onUpdate?: AgentToolUpdateCallback<JobToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<JobToolDetails>> {
-		const manager = AsyncJobManager.instance();
+		const manager = this.session.asyncJobManager;
 		if (!manager) {
 			return {
 				content: [{ type: "text", text: "Async execution is disabled; no background jobs are available." }],
@@ -254,7 +262,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 	): JobSnapshot[] {
 		const now = Date.now();
 		return jobs.map(j => {
-			const current = AsyncJobManager.instance()?.getJob(j.id);
+			const current = this.session.asyncJobManager?.getJob(j.id);
 			const latest = current ?? j;
 			return {
 				id: latest.id,
@@ -355,7 +363,7 @@ const PREVIEW_LINE_WIDTH = 80;
 function statusToIcon(status: JobSnapshot["status"]): ToolUIStatus {
 	switch (status) {
 		case "completed":
-			return "success";
+			return "done";
 		case "failed":
 			return "error";
 		case "cancelled":
@@ -396,7 +404,7 @@ export const jobToolRenderer = {
 	inline: true,
 
 	renderCall(args: JobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
-		const text = renderStatusLine({ icon: "pending", title: "Job", description: describeTarget(args) }, uiTheme);
+		const text = renderStatusLine({ icon: "pending", title: describeTarget(args) || "Job" }, uiTheme);
 		return new Text(text, 0, 0);
 	},
 
@@ -410,7 +418,7 @@ export const jobToolRenderer = {
 
 		if (jobs.length === 0) {
 			const fallback = result.content?.find(c => c.type === "text")?.text || "No jobs to process";
-			const header = renderStatusLine({ icon: "warning", title: "Job", description: describeTarget(args) }, uiTheme);
+			const header = renderStatusLine({ icon: "warning", title: describeTarget(args) || "Job" }, uiTheme);
 			return new Text([header, formatEmptyMessage(fallback, uiTheme)].join("\n"), 0, 0);
 		}
 
@@ -433,8 +441,7 @@ export const jobToolRenderer = {
 			{
 				icon: headerIcon,
 				spinnerFrame: counts.running > 0 ? options.spinnerFrame : undefined,
-				title: "Job",
-				description,
+				title: description,
 				meta,
 			},
 			uiTheme,
@@ -455,7 +462,7 @@ export const jobToolRenderer = {
 
 		let cached: RenderCache | undefined;
 		return {
-			render(width: number): string[] {
+			render(width: number): readonly string[] {
 				const expanded = options.expanded;
 				const spinnerFrame = options.spinnerFrame ?? 0;
 				const key = new Hasher().bool(expanded).u32(width).u32(spinnerFrame).digest();
@@ -469,11 +476,14 @@ export const jobToolRenderer = {
 						itemType: "job",
 						renderItem: job => {
 							const lines: string[] = [];
-							const icon = formatStatusIcon(
-								statusToIcon(job.status),
-								uiTheme,
-								job.status === "running" ? options.spinnerFrame : undefined,
-							);
+							const icon =
+								job.status === "completed"
+									? uiTheme.styledSymbol("tool.job", "accent")
+									: formatStatusIcon(
+											statusToIcon(job.status),
+											uiTheme,
+											job.status === "running" ? options.spinnerFrame : undefined,
+										);
 							const typeBadge = formatBadge(job.type, statusToColor(job.status), uiTheme);
 							const idText = uiTheme.fg("muted", job.id);
 							const rawLabelLines = (job.label || "(no label)").split(/\r?\n/);

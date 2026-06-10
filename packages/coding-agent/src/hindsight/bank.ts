@@ -1,5 +1,5 @@
 /**
- * Bank ID derivation, project-tag scoping, and first-use mission setup.
+ * Bank ID derivation, project-tag scoping, and first-use bank setup.
  *
  * Three scoping modes (`HindsightConfig.scoping`):
  *   - `global`              — single shared bank, no per-project filter.
@@ -11,14 +11,18 @@
  * The base bank id is `bankIdPrefix-bankId` (default `omp`). Per-project mode
  * appends `-<project>`; tagged mode leaves the bank untouched and uses tags.
  *
- * Mission setup is idempotent at module level — a missionsSet keeps track of
- * banks we've already POSTed to so each session boundary doesn't fire a fresh
- * `createBank` call. Failures are swallowed: missions are an optimisation, not
- * a precondition for retain/recall.
+ * Bank existence is idempotent at module level — a banksSet keeps track of
+ * banks we've already PUT so each session boundary doesn't fire a fresh
+ * `createBank` call. The PUT is idempotent server-side, so re-firing on a hot
+ * path would only burn round-trips. Failures are swallowed: missing the
+ * mission patch is an optimisation, but the bank ITSELF must exist before
+ * mental-model bootstrap or the first retain, otherwise the very first POST
+ * lands against a missing bank.
  */
 
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
+import * as git from "../utils/git";
 import type { HindsightApi } from "./client";
 import type { HindsightConfig } from "./config";
 
@@ -50,10 +54,24 @@ function baseBankId(config: HindsightConfig): string {
 	return prefix ? `${prefix}-${base}` : base;
 }
 
-/** Best-effort project label from a working-directory path. */
+/**
+ * Best-effort project label from a working-directory path.
+ *
+ * When `directory` lives inside a git repository we resolve the primary
+ * checkout root (or the shared common dir for bare-repo worktrees) via
+ * {@link git.repo.primaryRootSync} and basename that, so every linked
+ * worktree of one repo shares the same `project:<name>` tag.
+ * Outside a repo (or when resolution fails), fall back to the cwd basename.
+ *
+ * Sync only: this runs on the hot path of `computeBankScope`, which is
+ * exposed as a sync API to callers like `backend.ts` and must stay sync.
+ * `git.repo.primaryRootSync` walks `.git`/`commondir` with sync file reads —
+ * no subprocess — so the cost is one or two `stat`s and a small `readFile`.
+ */
 function projectLabel(directory: string): string {
 	if (!directory) return UNKNOWN_PROJECT;
-	return path.basename(directory) || UNKNOWN_PROJECT;
+	const primary = git.repo.primaryRootSync(directory);
+	return path.basename(primary ?? directory) || UNKNOWN_PROJECT;
 }
 
 /**
@@ -93,39 +111,46 @@ export function deriveBankId(config: HindsightConfig, directory: string): string
 }
 
 /**
- * Ensure a bank's reflect/retain mission is set, exactly once per process.
+ * Ensure a bank exists, and patch its reflect/retain mission on first use.
  *
- * Tracked via the supplied set; on overflow we drop the oldest half so the set
- * cannot grow unboundedly across long-lived processes.
+ * Idempotent: skips the PUT when the bank id is already in the supplied set.
+ * The mission body is optional — when `bankMission` is blank we still PUT to
+ * make sure the bank itself is created, so mental-model bootstrap and the
+ * first retain don't land against a non-existent bank.
+ *
+ * The set is capped; on overflow we drop the oldest half so it cannot grow
+ * unboundedly across long-lived processes.
  */
-export async function ensureBankMission(
+export async function ensureBankExists(
 	client: HindsightApi,
 	bankId: string,
 	config: HindsightConfig,
-	missionsSet: Set<string>,
+	banksSet: Set<string>,
 ): Promise<void> {
+	if (banksSet.has(bankId)) return;
+
 	const mission = config.bankMission?.trim();
-	if (!mission) return;
-	if (missionsSet.has(bankId)) return;
+	const retainMission = config.retainMission?.trim();
 
 	try {
 		await client.createBank(bankId, {
-			reflectMission: mission,
-			retainMission: config.retainMission?.trim() || undefined,
+			reflectMission: mission || undefined,
+			retainMission: retainMission || undefined,
 		});
-		missionsSet.add(bankId);
-		if (missionsSet.size > MISSION_SET_CAP) {
-			const keys = [...missionsSet].sort();
+		banksSet.add(bankId);
+		if (banksSet.size > MISSION_SET_CAP) {
+			const keys = [...banksSet].sort();
 			for (const key of keys.slice(0, keys.length >> 1)) {
-				missionsSet.delete(key);
+				banksSet.delete(key);
 			}
 		}
 		if (config.debug) {
-			logger.debug("Hindsight: set mission for bank", { bankId });
+			logger.debug("Hindsight: ensured bank", { bankId, mission: Boolean(mission) });
 		}
 	} catch (err) {
-		// Mission set is best-effort; the bank may not exist yet, or the API may
-		// reject the call. Either way, retain/recall still work, so swallow.
-		logger.debug("Hindsight: ensureBankMission failed", { bankId, error: String(err) });
+		// Bank creation is best-effort; the server may already have it, or the
+		// API may reject the call. Either way, downstream retain/recall calls
+		// will surface a clearer error if the bank really is missing.
+		logger.debug("Hindsight: ensureBankExists failed", { bankId, error: String(err) });
 	}
 }

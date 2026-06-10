@@ -208,7 +208,7 @@ export interface SettingsCallbacks {
 	/** Get current rendered status line for inline preview */
 	getStatusLinePreview?: () => string;
 	/** Called when plugins change */
-	onPluginsChanged?: () => void;
+	onPluginsChanged?: () => void | Promise<void>;
 	/** Called when settings panel is closed */
 	onCancel: () => void;
 }
@@ -631,8 +631,12 @@ export class SettingsSelectorComponent extends Container {
 			return;
 		}
 
-		// Escape at top level cancels
+		// Escape clears an active settings search before closing the panel.
 		if (matchesAppInterrupt(data) && !this.#currentSubmenu) {
+			if (this.#currentList?.hasSearchQuery()) {
+				this.#currentList.clearSearch();
+				return;
+			}
 			this.callbacks.onCancel();
 			return;
 		}

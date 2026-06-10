@@ -10,12 +10,15 @@ export * from "./components/image";
 export * from "./components/input";
 export * from "./components/loader";
 export * from "./components/markdown";
+export * from "./components/scroll-view";
 export * from "./components/select-list";
 export * from "./components/settings-list";
 export * from "./components/spacer";
 export * from "./components/tab-bar";
 export * from "./components/text";
 export * from "./components/truncated-text";
+// DECCARA rectangular-SGR background-fill optimizer
+export * from "./deccara";
 // Editor component interface (for custom editors)
 export type * from "./editor-component";
 // Fuzzy matching
@@ -24,6 +27,8 @@ export * from "./fuzzy";
 export * from "./keybindings";
 // Kitty keyboard protocol helpers
 export * from "./keys";
+// Kitty graphics: Unicode placeholders
+export * from "./kitty-graphics";
 // Mermaid diagram support
 // Input buffering for batch splitting
 export * from "./stdin-buffer";

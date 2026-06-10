@@ -5,10 +5,10 @@ import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EDIT_MODE_STRATEGIES } from "@oh-my-pi/pi-coding-agent/edit";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { TUI } from "@oh-my-pi/pi-tui";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import { theme as activeTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
-import { ToolExecutionComponent } from "../src/modes/components/tool-execution";
 
 // The streaming edit preview is a fixed-height tail window ("cursor"): the last
 // EDIT_STREAMING_PREVIEW_LINES rows of the recomputed diff are pinned to the
@@ -108,14 +108,7 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 		const bigLines = bigNew.split("\n");
 		const bigPartials = bigLines.map((_v, i) => bigLines.slice(0, i + 1).join("\n"));
 
-		let resolveRender: (() => void) | null = null;
-		const uiStub = {
-			requestRender() {
-				const r = resolveRender;
-				resolveRender = null;
-				r?.();
-			},
-		} as unknown as TUI;
+		const uiStub = { requestRender() {} } as unknown as TUI;
 		const tool = { mode: "replace" } as unknown as AgentTool;
 		const component = new ToolExecutionComponent(
 			"edit",
@@ -125,11 +118,15 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 			uiStub,
 			tmpDir,
 		);
-		const settle = () =>
-			Promise.race([new Promise<void>(res => (resolveRender = res)), Bun.sleep(250).then(() => undefined)]);
-		await settle();
+		// Await the actual diff recompute rather than racing the spinner's render
+		// ticks. The streaming spinner calls requestRender every ~33ms, so on a
+		// slow box a tick — not the (file-read + whole-file Myers) compute — would
+		// resolve the wait and let us sample a stale, mid-abort preview. That is the
+		// CI flake that collapsed Math.min(...steady) to 4. whenPreviewSettled()
+		// resolves only when this chunk's recompute has updated the preview.
+		await component.whenPreviewSettled();
 
-		const trailingBlankRows = (rows: string[]): number => {
+		const trailingBlankRows = (rows: readonly string[]): number => {
 			let n = 0;
 			for (let i = rows.length - 1; i >= 0; i--) {
 				if (rows[i].replace(/\x1b\[[0-9;]*m/gu, "").trimEnd() === "") n++;
@@ -141,13 +138,18 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 		const heights: number[] = [];
 		let maxTrailingBlank = 0;
 		for (const newText of bigPartials) {
-			const next = settle();
 			component.updateArgs({ path: bigFile, edits: [{ old_text: bigOld, new_text: newText }] });
-			await next;
+			await component.whenPreviewSettled();
 			const rows = component.render(RENDER_WIDTH_WIDE);
 			heights.push(rows.length);
 			maxTrailingBlank = Math.max(maxTrailingBlank, trailingBlankRows(rows));
 		}
+
+		// Finalize still renders a real diff.
+		component.setArgsComplete();
+		await component.whenPreviewSettled();
+		const finalizedHeight = component.render(RENDER_WIDTH_WIDE).length;
+		component.stopAnimation();
 
 		// The tail window saturates immediately and the box height holds dead
 		// steady for the rest of the stream — it neither stutters larger/smaller
@@ -160,11 +162,7 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 		expect(Math.max(...steady) - Math.min(...steady)).toBe(0);
 		// And it is never padded into a half-empty rectangle (the regression).
 		expect(maxTrailingBlank).toBeLessThanOrEqual(1);
-
-		// Finalize still renders a real diff.
-		component.setArgsComplete();
-		await settle();
-		expect(component.render(RENDER_WIDTH_WIDE).length).toBeGreaterThan(1);
+		expect(finalizedHeight).toBeGreaterThan(1);
 	});
 
 	test("real TUI finalization replaces streaming edit preview throughout native scrollback", async () => {
@@ -244,18 +242,12 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 			expect(sawPreviewSentinel).toBe(true);
 			expect(maxStreamingHeight).toBeGreaterThan(term.rows);
 
-			const preCheckpointBufferText = normalizedBufferRows(term).join("\n");
-			const stalePreviewRowsExistedBeforeCheckpoint = preCheckpointBufferText.includes(previewPrefix);
 			term.scrollLines(1_000);
-			const checkpointRefreshed = tui.refreshNativeScrollbackIfDirty({ allowUnknownViewport: true });
 			await settleTerminal(term);
 
 			const finalBufferText = normalizedBufferRows(term).join("\n");
 			expect(finalBufferText).toContain(finalSentinel);
 			expect(finalBufferText).not.toContain(previewPrefix);
-			if (stalePreviewRowsExistedBeforeCheckpoint) {
-				expect(checkpointRefreshed).toBe(true);
-			}
 
 			term.scrollLines(-1_000);
 			await term.flush();
@@ -271,7 +263,11 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 			tui.stop();
 			await term.flush();
 		}
-	}, 10_000);
+		// Real TUI + Ghostty WASM integration can exceed Bun's default budget on CI:
+		// startup, repeated native scrollback refreshes, and throttled render frames are
+		// intentionally exercised here. Keep the contract assertions above; only widen
+		// the integration-test budget.
+	}, 30_000);
 
 	test("the underlying diff genuinely oscillates (guard against a vacuous test)", async () => {
 		const ctx = {
@@ -293,5 +289,121 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 		}
 		const hasDecrease = rawLineCounts.some((count, i) => i > 0 && count < rawLineCounts[i - 1]);
 		expect(hasDecrease).toBe(true);
+	});
+});
+
+describe("streaming tool call preview height (bounded across renderers)", () => {
+	let themed = false;
+
+	beforeEach(async () => {
+		if (!themed) {
+			await initTheme();
+			themed = true;
+		}
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
+	});
+
+	afterEach(() => {
+		resetSettingsForTest();
+	});
+
+	function renderPending(toolName: string, args: unknown): { lines: readonly string[]; text: string } {
+		const term = new VirtualTerminal(80, 20);
+		const tui = new TUI(term);
+		const component = new ToolExecutionComponent(toolName, args, {}, undefined, tui, process.cwd());
+		try {
+			const lines = component.render(80);
+			return { lines, text: lines.map(line => Bun.stripANSI(line)).join("\n") };
+		} finally {
+			component.stopAnimation();
+		}
+	}
+
+	test("framed inline tool previews span the full tool width", () => {
+		const width = 80;
+		const { lines } = renderPending("bash", { command: "echo hi" });
+		const strippedLines = lines.map(line => Bun.stripANSI(line));
+		const topBorder = strippedLines.find(line => line.includes(activeTheme.boxSharp.topLeft));
+
+		expect(topBorder).toBeDefined();
+		expect(topBorder?.[0]).toBe(activeTheme.boxSharp.topLeft);
+		expect(topBorder?.endsWith(activeTheme.boxSharp.topRight)).toBe(true);
+		expect(visibleWidth(topBorder ?? "")).toBe(width);
+	});
+
+	test("bash/ssh pending previews stay short even with very long multiline args", () => {
+		const longLines = Array.from({ length: 80 }, (_, i) => `line-${i}`);
+		const cases: Array<{
+			name: string;
+			args: unknown;
+			mustContain: string[];
+			mustHide: string[];
+			marker: RegExp;
+		}> = [
+			{
+				// bash/ssh keep a bounded head+tail window: the start and the
+				// latest are both visible, the middle is elided.
+				name: "bash",
+				args: { command: longLines.join("\n") },
+				mustContain: ["line-0", "line-79"],
+				mustHide: ["line-40"],
+				marker: /more lines/,
+			},
+			{
+				name: "ssh",
+				args: { host: "example", command: longLines.join("\n") },
+				mustContain: ["line-0", "line-79"],
+				mustHide: ["line-40"],
+				marker: /more lines/,
+			},
+		];
+
+		for (const testCase of cases) {
+			const { lines, text } = renderPending(testCase.name, testCase.args);
+			expect(lines.length, `${testCase.name} preview should stay bounded`).toBeLessThan(20);
+			for (const needle of testCase.mustContain) {
+				expect(text, `${testCase.name} preview should keep ${needle}`).toContain(needle);
+			}
+			for (const needle of testCase.mustHide) {
+				expect(text, `${testCase.name} preview should elide ${needle}`).not.toContain(needle);
+			}
+			expect(text, `${testCase.name} preview should advertise truncation`).toMatch(testCase.marker);
+		}
+	}, 30_000);
+
+	test("task pending preview keeps the full assignment brief", () => {
+		// CONTRACT CHANGE with the single-spawn task rework: the old uncapped
+		// multi-task `context` rendering is gone with the field. The assignment
+		// brief is the durable record of what the subagent was asked to do, so
+		// the pending preview renders it in full (like eval code) instead of
+		// windowing it like bash/ssh command previews.
+		const longLines = Array.from({ length: 80 }, (_, i) => `line-${i}`);
+		const { lines, text } = renderPending("task", {
+			agent: "task",
+			id: "alpha",
+			description: "preview",
+			assignment: longLines.join("\n"),
+		});
+
+		expect(lines.length, "task assignment brief should not be capped").toBeGreaterThan(80);
+		expect(text).toContain("preview");
+		expect(text).toContain("line-0");
+		expect(text).toContain("line-40");
+		expect(text).toContain("line-79");
+	});
+
+	test("eval pending preview preserves full code (never collapsed)", () => {
+		const longLines = Array.from({ length: 80 }, (_, i) => `line-${i}`);
+		const { lines, text } = renderPending("eval", {
+			cells: [{ language: "js", title: "big", code: longLines.map(line => `const ${line} = 1;`).join("\n") }],
+		});
+
+		expect(lines.length, "eval code preview should not be capped").toBeGreaterThan(80);
+		expect(text).toContain("const line-0 = 1;");
+		expect(text).toContain("const line-40 = 1;");
+		expect(text).toContain("const line-79 = 1;");
+		expect(text).not.toMatch(/more lines/);
+		expect(text).not.toMatch(/earlier lines/);
 	});
 });

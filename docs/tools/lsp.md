@@ -73,7 +73,7 @@
 **Execution**
 - `file: "*"`: `runWorkspaceDiagnostics()` detects project type from root markers and runs one subprocess command: Rust `cargo check --message-format=short`, TypeScript `npx tsc --noEmit`, Go `go build ./...`, Python `pyright`.
 - Concrete file or glob: `resolveDiagnosticTargets()` treats non-globs as one target, otherwise expands a `Bun.Glob` up to `MAX_GLOB_DIAGNOSTIC_TARGETS`.
-- Per file, every matching server runs: custom clients call `lint(file)`; real LSP servers optionally wait for project load, capture `diagnosticsVersion`, `refreshFile()`, then `waitForDiagnostics()` for fresh `publishDiagnostics`.
+- Per file, every matching server runs: custom clients call `lint(file)`; real LSP servers optionally wait for project load, capture `diagnosticsVersion`, `refreshFile()`, then `waitForDiagnostics()` for fresh `publishDiagnostics` (settles on the latest publish; exact-version match accepted immediately).
 - Results are deduplicated by range+message and severity-sorted.
 
 **Output text**
@@ -310,5 +310,5 @@ Same as `definition`, but sends `textDocument/implementation` and reports `imple
 - `reload` does not recreate a client immediately after killing it; the next request triggers reinitialization.
 - `workspace/applyEdit` can apply edits initiated by the server outside the direct tool action result path.
 - `detectLspmux()` can be disabled with `PI_DISABLE_LSPMUX=1`; only `rust-analyzer` is in `DEFAULT_SUPPORTED_SERVERS`.
-- Startup LSP warmup (`discoverStartupLspServers(cwd)` in `sdk.ts`) is gated on `enableLsp && options.hasUI && settings.get("lsp.diagnosticsOnWrite")` — print/RPC/ACP/script sessions skip it and let `getOrCreateClient()` cold-start servers on demand. See `docs/sdk.md` § Startup performance.
+- Startup LSP discovery (`discoverStartupLspServers(cwd)` in `sdk.ts`) runs for `enableLsp && options.hasUI`; the background warmup additionally requires `!settings.get("lsp.lazy")`. `lsp.lazy` defaults to `true`, so by default discovered servers are surfaced with status `"available"` (gray dot in the welcome screen) and cold-start through `getOrCreateClient()` on first use (lsp tool call or edit/write on a matching file type). Print/RPC/ACP/script sessions skip discovery and warmup entirely. See `docs/sdk.md` § Startup performance.
 - `configCache` is per-process and never auto-invalidated; config changes require a fresh process to be observed by `getConfig()` callers.

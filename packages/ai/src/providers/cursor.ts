@@ -3,35 +3,7 @@ import * as fs from "node:fs/promises";
 import http2 from "node:http2";
 import { create, fromBinary, fromJson, type JsonValue, toBinary, toJson } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
-import { $env, extractHttpStatusFromError, sanitizeText } from "@oh-my-pi/pi-utils";
-import { calculateCost } from "../models";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	CursorExecHandlerResult,
-	CursorExecHandlers,
-	CursorMcpCall,
-	CursorShellStreamCallbacks,
-	CursorToolResultHandler,
-	ImageContent,
-	Message,
-	Model,
-	StreamFunction,
-	StreamOptions,
-	TextContent,
-	ThinkingContent,
-	Tool,
-	ToolCall,
-	ToolResultMessage,
-} from "../types";
-import { normalizeSystemPrompts } from "../utils";
-import { AssistantMessageEventStream } from "../utils/event-stream";
-import { parseStreamingJson } from "../utils/json-parse";
-import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
-import { formatErrorMessageWithRetryAfter } from "../utils/retry-after";
-import { toolWireSchema } from "../utils/schema/wire";
-import type { McpToolDefinition } from "./cursor/gen/agent_pb";
+import type { McpToolDefinition } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
 import {
 	AgentClientMessageSchema,
 	AgentConversationTurnStructureSchema,
@@ -128,7 +100,35 @@ import {
 	WriteShellStdinErrorSchema,
 	WriteShellStdinResultSchema,
 	WriteSuccessSchema,
-} from "./cursor/gen/agent_pb";
+} from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
+import { calculateCost } from "@oh-my-pi/pi-catalog/models";
+import { $env, extractHttpStatusFromError, sanitizeText } from "@oh-my-pi/pi-utils";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	CursorExecHandlerResult,
+	CursorExecHandlers,
+	CursorMcpCall,
+	CursorShellStreamCallbacks,
+	CursorToolResultHandler,
+	ImageContent,
+	Message,
+	Model,
+	StreamFunction,
+	StreamOptions,
+	TextContent,
+	ThinkingContent,
+	Tool,
+	ToolCall,
+	ToolResultMessage,
+} from "../types";
+import { normalizeSystemPrompts } from "../utils";
+import { AssistantMessageEventStream } from "../utils/event-stream";
+import { parseStreamingJson } from "../utils/json-parse";
+import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
+import { formatErrorMessageWithRetryAfter } from "../utils/retry-after";
+import { toolWireSchema } from "../utils/schema/wire";
 
 export const CURSOR_API_URL = "https://api2.cursor.sh";
 export const CURSOR_CLIENT_VERSION = "cli-2026.01.09-231024f";
@@ -612,7 +612,7 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 	return stream;
 };
 
-type ToolCallState = ToolCall & { index: number; partialJson?: string; kind: "mcp" | "todo_write" };
+type ToolCallState = ToolCall & { index: number; partialJson?: string; kind: "mcp" | "todo" };
 
 interface BlockState {
 	currentTextBlock: (TextContent & { index: number }) | null;
@@ -1872,7 +1872,7 @@ interface CursorUpdateTodosToolCall {
 	updateTodosToolCall?: { args?: { todos?: CursorTodoItem[] } };
 }
 
-function buildTodoWriteArgs(toolCall: CursorUpdateTodosToolCall): {
+function buildTodoArgs(toolCall: CursorUpdateTodosToolCall): {
 	todos: Array<{ id?: string; content: string; activeForm: string; status: "pending" | "in_progress" | "completed" }>;
 } | null {
 	const todos = toolCall.updateTodosToolCall?.args?.todos;
@@ -2016,16 +2016,16 @@ function processInteractionUpdate(
 				return;
 			}
 
-			const todoArgs = buildTodoWriteArgs(toolCall);
+			const todoArgs = buildTodoArgs(toolCall);
 			if (todoArgs) {
 				const callId = update.message.value.callId || crypto.randomUUID();
 				const block: ToolCallState = {
 					type: "toolCall",
 					id: callId,
-					name: "todo_write",
+					name: "todo",
 					arguments: todoArgs,
 					index: output.content.length,
-					kind: "todo_write",
+					kind: "todo",
 				};
 				output.content.push(block);
 				state.setToolCall(block);
@@ -2048,8 +2048,8 @@ function processInteractionUpdate(
 				if (decodedArgs) {
 					state.currentToolCall.arguments = decodedArgs;
 				}
-			} else if (state.currentToolCall.kind === "todo_write" && toolCall) {
-				const todoArgs = buildTodoWriteArgs(toolCall);
+			} else if (state.currentToolCall.kind === "todo" && toolCall) {
+				const todoArgs = buildTodoArgs(toolCall);
 				if (todoArgs) {
 					state.currentToolCall.arguments = todoArgs;
 				}
@@ -2109,7 +2109,7 @@ function readCursorBlob(blobStore: Map<string, Uint8Array>, blobId: Uint8Array):
 	return data;
 }
 
-const CURSOR_NATIVE_TOOL_NAMES = new Set(["bash", "read", "write", "delete", "ls", "grep", "lsp", "todo_write"]);
+const CURSOR_NATIVE_TOOL_NAMES = new Set(["bash", "read", "write", "delete", "ls", "grep", "lsp", "todo"]);
 
 function buildMcpToolDefinitions(tools: Tool[] | undefined): McpToolDefinition[] {
 	if (!tools || tools.length === 0) {
@@ -2247,7 +2247,7 @@ function findLastUserMessageIndex(messages: Message[]): number {
  * actual model prompt. `turns[]` is UI/display metadata. Without populating
  * this field, multi-turn conversations lose prior context — the model sees
  * only an empty placeholder where historical user turns should be.
- * The last user message is excluded because it is sent in the action.
+ * The active user message is excluded because it is sent in the action.
  */
 /**
  * Build one Cursor system-message JSON blob per ordered system prompt. Emitting separate blobs
@@ -2270,17 +2270,16 @@ function buildRootPromptMessagesJson(
 	messages: Message[],
 	systemPromptIds: Uint8Array[],
 	blobStore: Map<string, Uint8Array>,
+	activeUserMessageIndex = findLastUserMessageIndex(messages),
 ): Uint8Array[] {
 	const entries: Uint8Array[] = [...systemPromptIds];
-	const lastUserIdx = findLastUserMessageIndex(messages);
-
 	const pushJson = (obj: unknown) => {
 		const bytes = new TextEncoder().encode(JSON.stringify(obj));
 		entries.push(storeCursorBlob(blobStore, bytes));
 	};
 
 	for (let i = 0; i < messages.length; i++) {
-		if (i === lastUserIdx) break;
+		if (i === activeUserMessageIndex) break;
 		const msg = messages[i];
 		if (msg.role === "user" || msg.role === "developer") {
 			const content = buildCursorRootPromptContent(msg.content);
@@ -2306,12 +2305,16 @@ function buildRootPromptMessagesJson(
 /**
  * Convert context.messages to Cursor's ConversationTurnStructure blob IDs.
  * Groups messages into turns: each turn is a user message followed by the assistant's response.
- * Excludes the last user message (which goes in the action).
+ * Excludes the active user message (which goes in the action).
  *
  * Each `AgentConversationTurnStructure.user_message`, `steps[]`, and the outer
  * `ConversationStateStructure.turns[]` entry is a blob ID into `blobStore`.
  */
-function buildConversationTurns(messages: Message[], blobStore: Map<string, Uint8Array>): Uint8Array[] {
+function buildConversationTurns(
+	messages: Message[],
+	blobStore: Map<string, Uint8Array>,
+	activeUserMessageIndex = findLastUserMessageIndex(messages),
+): Uint8Array[] {
 	const turns: Uint8Array[] = [];
 
 	// Find turn boundaries - each turn starts with a user message
@@ -2325,15 +2328,10 @@ function buildConversationTurns(messages: Message[], blobStore: Map<string, Uint
 			continue;
 		}
 
-		// Check if this is the last user message (which goes in the action, not turns)
-		let isLastUserMessage = true;
-		for (let j = i + 1; j < messages.length; j++) {
-			if (messages[j].role === "user" || messages[j].role === "developer") {
-				isLastUserMessage = false;
-				break;
-			}
-		}
-		if (isLastUserMessage) {
+		// The active user message goes in the action, not turns. A prior user
+		// followed by assistant/tool-result messages is complete history and
+		// must remain serialized for resume actions.
+		if (i === activeUserMessageIndex) {
 			break;
 		}
 
@@ -2406,24 +2404,35 @@ function buildConversationTurns(messages: Message[], blobStore: Map<string, Uint
 }
 
 /** Exported for tests: decodes Cursor history blobs built from conversation messages. */
-export function buildCursorHistoryForTest(messages: Message[]): {
+export function buildCursorHistoryForTest(
+	messages: Message[],
+	activeUserMessageIndex = findLastUserMessageIndex(messages),
+): {
 	rootPromptMessagesJson: unknown[];
 	turnUserMessagesJson: JsonValue[];
+	turnStepMessagesJson: JsonValue[][];
 } {
 	const blobStore = new Map<string, Uint8Array>();
-	const rootPromptMessagesJson = buildRootPromptMessagesJson(messages, [], blobStore).map(blobId =>
-		JSON.parse(new TextDecoder().decode(readCursorBlob(blobStore, blobId))),
+	const rootPromptMessagesJson = buildRootPromptMessagesJson(messages, [], blobStore, activeUserMessageIndex).map(
+		blobId => JSON.parse(new TextDecoder().decode(readCursorBlob(blobStore, blobId))),
 	);
 	const turnUserMessagesJson: JsonValue[] = [];
-	for (const turnBlobId of buildConversationTurns(messages, blobStore)) {
+	const turnStepMessagesJson: JsonValue[][] = [];
+	for (const turnBlobId of buildConversationTurns(messages, blobStore, activeUserMessageIndex)) {
 		const turn = fromBinary(ConversationTurnStructureSchema, readCursorBlob(blobStore, turnBlobId));
 		if (turn.turn.case !== "agentConversationTurn") {
 			continue;
 		}
 		const userMessage = fromBinary(UserMessageSchema, readCursorBlob(blobStore, turn.turn.value.userMessage));
 		turnUserMessagesJson.push(toJson(UserMessageSchema, userMessage));
+		turnStepMessagesJson.push(
+			turn.turn.value.steps.map(stepBlobId => {
+				const step = fromBinary(ConversationStepSchema, readCursorBlob(blobStore, stepBlobId));
+				return toJson(ConversationStepSchema, step);
+			}),
+		);
 	}
-	return { rootPromptMessagesJson, turnUserMessagesJson };
+	return { rootPromptMessagesJson, turnUserMessagesJson, turnStepMessagesJson };
 }
 function createCursorUserMessage(
 	content: string | (TextContent | ImageContent)[],
@@ -2479,12 +2488,15 @@ function buildGrpcRequest(
 		storeCursorBlob(blobStore, new TextEncoder().encode(json)),
 	);
 
-	const lastMessage = context.messages[context.messages.length - 1];
+	const activeUserMessageIndex = context.messages.length - 1;
+	const activeMessage = context.messages[activeUserMessageIndex];
+	const activeUserMessage =
+		activeMessage?.role === "user" || activeMessage?.role === "developer" ? activeMessage : undefined;
 	let userContent: string | (TextContent | ImageContent)[] | undefined;
 	let userText = "";
 	let hasUserImages = false;
-	if (lastMessage?.role === "user" || lastMessage?.role === "developer") {
-		userContent = lastMessage.content;
+	if (activeUserMessage?.role === "user" || activeUserMessage?.role === "developer") {
+		userContent = activeUserMessage.content;
 		if (typeof userContent === "string") {
 			userText = userContent.trim();
 		} else {
@@ -2508,15 +2520,20 @@ function buildGrpcRequest(
 					},
 	});
 
-	// Build conversation turns from prior messages (excluding the last user message).
-	// This populates the UI-side history view (`turns[]`).
-	const turns = buildConversationTurns(context.messages, blobStore);
+	// Build conversation turns from prior messages, excluding only the active user message
+	// when the request is sending one. Resume actions must preserve trailing tool results.
+	const turns = buildConversationTurns(context.messages, blobStore, activeUserMessage ? activeUserMessageIndex : -1);
 
 	// Build `rootPromptMessagesJson` from prior messages. Cursor's server uses this
 	// field (not `turns[]`) to construct the actual model prompt; if we only send the
 	// system prompt here, multi-turn conversations lose prior context and the model
 	// sees only the current user message.
-	const rootPromptMessagesJson = buildRootPromptMessagesJson(context.messages, systemPromptIds, blobStore);
+	const rootPromptMessagesJson = buildRootPromptMessagesJson(
+		context.messages,
+		systemPromptIds,
+		blobStore,
+		activeUserMessage ? activeUserMessageIndex : -1,
+	);
 
 	// Preserve cached non-history state fields (todos, file states, summaries, etc.)
 	// when the system prompt is unchanged; otherwise start fresh.

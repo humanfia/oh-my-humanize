@@ -68,6 +68,61 @@ describe("boundary-balance repair", () => {
 		expect(warnings.some(w => /delimiter-balance/.test(w))).toBe(true);
 	});
 
+	// Single structural-opener duplication: the range starts one line late and
+	// the payload restates the method-signature opener that survives just above
+	// it (the tui.ts `#planRender(` incident).
+	it("drops a single duplicated structural opener (`planRender(`)", () => {
+		const file = [
+			"class Foo {",
+			"\t/** doc */",
+			"\tplanRender(",
+			"\t\ta: string[],",
+			"\t\tb: boolean,",
+			"\t): Intent {",
+			"\t\treturn x;",
+			"\t}",
+			"}",
+		].join("\n");
+		// `replace 4..6:` covers the params + return-type line, but the payload also
+		// restates the `planRender(` at line 3, which survives — a duplicate open.
+		const diff = [
+			"replace 4..6:",
+			"+\tplanRender(",
+			"+\t\ta: string[],",
+			"+\t\tb: boolean,",
+			"+\t\tc: number,",
+			"+\t): Intent {",
+		].join("\n");
+		const { text, warnings } = apply(file, diff);
+		expect(text).toBe(
+			[
+				"class Foo {",
+				"\t/** doc */",
+				"\tplanRender(",
+				"\t\ta: string[],",
+				"\t\tb: boolean,",
+				"\t\tc: number,",
+				"\t): Intent {",
+				"\t\treturn x;",
+				"\t}",
+				"}",
+			].join("\n"),
+		);
+		expect(text.split("\n").filter(line => line === "\tplanRender(")).toHaveLength(1);
+		expect(warnings.some(w => /delimiter-balance/.test(w))).toBe(true);
+	});
+
+	// A duplicated opener whose imbalance does NOT explain the delta is left alone.
+	it("preserves a duplicated opener when it does not account for the imbalance", () => {
+		const file = ["if (a) {", "\tfoo();", "}", "bar();"].join("\n");
+		// Payload duplicates `if (a) {` but is net +2 braces; dropping the one
+		// opener cannot zero the delta, so nothing is repaired.
+		const diff = ["replace 2..2:", "+if (a) {", "+\tif (b) {", "+\t\tfoo();"].join("\n");
+		const { text, warnings } = apply(file, diff);
+		expect(text).toBe(["if (a) {", "if (a) {", "\tif (b) {", "\t\tfoo();", "}", "bar();"].join("\n"));
+		expect(warnings).toHaveLength(0);
+	});
+
 	// Genuine missing-closer: payload omits the trailing `});`.
 	it("spares the deleted closing line when the payload omits it", () => {
 		const file = ["const handlers = {", "\ta() {", "\t\treturn 1;", "\t},", "};"].join("\n");
@@ -81,6 +136,84 @@ describe("boundary-balance repair", () => {
 			),
 		);
 		expect(warnings.some(w => /delimiter-balance/.test(w))).toBe(true);
+	});
+
+	it("drops duplicated leading and trailing boundary lines around a range replacement", () => {
+		const file = [
+			"func _cmd_travel_homeworld():",
+			"\tvar destination = get_homeworld()",
+			"\ttravel_to(destination)",
+			"\tprint_status()",
+		].join("\n");
+		const diff = [
+			"replace 2..3:",
+			"+func _cmd_travel_homeworld():",
+			"+\tvar destination = find_homeworld()",
+			"+\ttravel_to(destination)",
+			"+\tprint_status()",
+		].join("\n");
+
+		const { text, warnings } = apply(file, diff);
+
+		expect(text).toBe(
+			[
+				"func _cmd_travel_homeworld():",
+				"\tvar destination = find_homeworld()",
+				"\ttravel_to(destination)",
+				"\tprint_status()",
+			].join("\n"),
+		);
+		expect(text.split("\n").filter(line => line === "func _cmd_travel_homeworld():")).toHaveLength(1);
+		expect(text.split("\n").filter(line => line === "\tprint_status()")).toHaveLength(1);
+		expect(warnings.some(warning => /boundary echo/.test(warning))).toBe(true);
+	});
+
+	it("preserves payloads where multi-line boundary echoes cover every line", () => {
+		const file = ["A", "B", "old", "C", "D"].join("\n");
+		const diff = ["replace 3..3:", "+A", "+B", "+C", "+D"].join("\n");
+
+		const { text, warnings } = apply(file, diff);
+
+		expect(text).toBe(["A", "B", "A", "B", "C", "D", "C", "D"].join("\n"));
+		expect(warnings).toHaveLength(0);
+	});
+
+	it("preserves payloads made only of lines matching both replacement neighbors", () => {
+		const file = ["a", "old", "c"].join("\n");
+		const diff = ["replace 2..2:", "+a", "+c"].join("\n");
+
+		const { text, warnings } = apply(file, diff);
+
+		expect(text).toBe(["a", "a", "c", "c"].join("\n"));
+		expect(warnings).toHaveLength(0);
+	});
+
+	// An echo whose dropped edges shift delimiter balance without explaining a
+	// payload/range delta is intentional structural content, not a boundary
+	// mistake: stripping the edges would corrupt the brace structure.
+	it("preserves balance-shifting boundary echoes that do not explain the delta", () => {
+		const file = ["}", "old();", "}"].join("\n");
+		// Payload deliberately opens with the same bare `}` that sits above the
+		// range and closes with the same `}` that sits below it; the payload is
+		// internally balanced (delta 0) while the dropped edges sum to -2 braces.
+		const diff = ["replace 2..2:", "+}", "+if (a) {", "+if (b) {", "+x();", "+}"].join("\n");
+
+		const { text, warnings } = apply(file, diff);
+
+		expect(text).toBe(["}", "}", "if (a) {", "if (b) {", "x();", "}", "}"].join("\n"));
+		expect(warnings).toHaveLength(0);
+	});
+
+	// The common wrapper-echo mistake stays repaired: balance-neutral edges
+	// (opener + closer) that duplicate the surviving neighbors are dropped.
+	it("still drops a balance-neutral wrapper echo", () => {
+		const file = ["function f() {", "old();", "}"].join("\n");
+		const diff = ["replace 2..2:", "+function f() {", "+fresh();", "+}"].join("\n");
+
+		const { text, warnings } = apply(file, diff);
+
+		expect(text).toBe(["function f() {", "fresh();", "}"].join("\n"));
+		expect(warnings.some(warning => /boundary echo/.test(warning))).toBe(true);
 	});
 
 	// Balance-preserving edits are never touched, even when the payload's last

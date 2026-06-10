@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import { type AssistantMessage, Effort, getBundledModel, type Model, writeModelCache } from "@oh-my-pi/pi-ai";
+import { type AssistantMessage, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -66,16 +69,34 @@ function createFallbackAgent(primaryModel: Model, requestedModels: string[]): Ag
 describe("AgentSession retry fallback", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
+	let sharedRegistry: ModelRegistry;
 	let modelRegistry: ModelRegistry;
 	let session: AgentSession | undefined;
 
-	beforeEach(async () => {
+	// The model registry is an immutable fixture whose construction builds a
+	// canonical index over ~2.7k bundled models (~100ms). Build it (and the
+	// auth DB) once for the whole file instead of per-test; reset only the
+	// mutable retry-fallback cooldown state between tests.
+	beforeAll(async () => {
 		tempDir = TempDir.createSync("@pi-retry-fallback-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
 		authStorage.setRuntimeApiKey("openai", "openai-test-key");
 		authStorage.setRuntimeApiKey("google", "google-test-key");
-		modelRegistry = new ModelRegistry(authStorage);
+		sharedRegistry = new ModelRegistry(authStorage);
+	});
+
+	afterAll(() => {
+		authStorage.close();
+		tempDir.removeSync();
+	});
+
+	beforeEach(() => {
+		// Reset to the shared registry (a few tests reassign it to a scoped
+		// instance) and clear cooldown suppressions left by fallback-path tests
+		// (default 5-minute suppression) so state never leaks between tests.
+		modelRegistry = sharedRegistry;
+		modelRegistry.clearSuppressedSelectors();
 	});
 
 	afterEach(async () => {
@@ -83,8 +104,6 @@ describe("AgentSession retry fallback", () => {
 			await session.dispose();
 			session = undefined;
 		}
-		authStorage.close();
-		tempDir.removeSync();
 		vi.restoreAllMocks();
 	});
 
@@ -255,6 +274,87 @@ describe("AgentSession retry fallback", () => {
 		const lastAssistant = getLastAssistantMessage(session);
 		expect(lastAssistant.stopReason).toBe("stop");
 		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered after Google quota retry" });
+	});
+
+	it("keeps retry on the primary model when retry model fallback is disabled", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const fallbackSucceededEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>> = [];
+		const mock = createMockModel({
+			responses: [{ throw: "rate limit exceeded retry-after-ms=200" }, { content: ["Recovered on primary retry"] }],
+		});
+		const agent = new Agent({
+			getApiKey: provider => `${provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") {
+				fallbackAppliedEvents.push(event);
+			}
+			if (event.type === "retry_fallback_succeeded") {
+				fallbackSucceededEvents.push(event);
+			}
+		});
+
+		await session.prompt("Retry rate limit without switching models");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0]).toMatchObject({
+			attempt: 1,
+			maxAttempts: 1,
+			delayMs: 200,
+			errorMessage: "rate limit exceeded retry-after-ms=200",
+		});
+		expect(waitSpy).toHaveBeenCalledWith(200, { signal: expect.any(AbortSignal) });
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
+		expect(fallbackAppliedEvents).toHaveLength(0);
+		expect(fallbackSucceededEvents).toHaveLength(0);
+		expect(session.model?.provider).toBe(primaryModel.provider);
+		expect(session.model?.id).toBe(primaryModel.id);
+		const lastAssistant = getLastAssistantMessage(session);
+		expect(lastAssistant.stopReason).toBe("stop");
+		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered on primary retry" });
 	});
 
 	it("auto-retries preserved OpenAI first-event timeout errors", async () => {
@@ -727,7 +827,7 @@ describe("AgentSession retry fallback", () => {
 		if (!primaryModel) {
 			throw new Error("Expected bundled OpenAI test model to exist");
 		}
-		const cachedModel: Model<"ollama-chat"> = {
+		const cachedModel: Model<"ollama-chat"> = buildModel({
 			id: "deepseek-v4-pro",
 			name: "DeepSeek V4 Pro",
 			api: "ollama-chat",
@@ -738,7 +838,7 @@ describe("AgentSession retry fallback", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 1_000_000,
 			maxTokens: 384_000,
-		};
+		});
 		writeModelCache("ollama-cloud", Date.now(), [cachedModel], true, "", path.join(tempDir.path(), "models.db"));
 		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.json"));
 

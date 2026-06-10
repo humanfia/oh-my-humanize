@@ -4,7 +4,7 @@ exclude = ["crates/brush-core-vendored", "crates/brush-builtins-vendored"]
 resolver = "3"
 
 [workspace.package]
-version = "15.7.6"
+version = "15.10.12"
 edition = "2024"
 license = "MIT"
 authors = ["Can Boluk"]
@@ -274,6 +274,7 @@ image = { version = "0.25", default-features = false, features = [
    "gif",
    "webp",
 ] }
+png = "0.18"
 inferno = { version = "0.12", default-features = false }
 syntect = { version = "5.3", default-features = false, features = [
    "default-syntaxes",

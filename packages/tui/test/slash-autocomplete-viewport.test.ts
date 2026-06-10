@@ -28,15 +28,16 @@ class SlashProvider implements AutocompleteProvider {
 	}
 }
 
-class UnknownViewportTerminal extends VirtualTerminal {
-	isNativeViewportAtBottom(): undefined {
-		return undefined;
-	}
-}
-
 async function settle(term: VirtualTerminal): Promise<void> {
 	await new Promise<void>(resolve => process.nextTick(resolve));
-	await Bun.sleep(120);
+	// Each keystroke arms Editor's autocomplete debounce (100ms) before the
+	// provider is re-queried, and the resulting onAutocompleteUpdate render is
+	// throttled by the TUI's MIN_RENDER_INTERVAL_MS (~33ms). 120ms no longer
+	// covers debounce plus render jitter, so capture could still see the stale
+	// (unfiltered) menu and push the live editor row out of a 6-row viewport
+	// (issue #1979). Stay well above 100+33ms so the post-debounce render lands
+	// before getViewport() runs.
+	await Bun.sleep(250);
 	await term.flush();
 }
 
@@ -46,13 +47,13 @@ describe("slash command autocomplete with unknown native viewport state", () => 
 		const originalWtSession = Bun.env.WT_SESSION;
 		Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
 		Bun.env.WT_SESSION = "wt-test";
-		const term = new UnknownViewportTerminal(40, 8);
+		const term = new VirtualTerminal(40, 8);
 		const tui = new TUI(term);
 		const root = new Container();
 		root.addChild({ invalidate() {}, render: () => ["chat-0", "chat-1", "chat-2", "chat-3", "chat-4", "chat-5"] });
 		const editor = new Editor(defaultEditorTheme);
 		editor.setAutocompleteProvider(new SlashProvider());
-		editor.onAutocompleteUpdate = () => tui.requestRender(false, { allowUnknownViewportMutation: true });
+		editor.onAutocompleteUpdate = () => tui.requestRender();
 		root.addChild(editor);
 		tui.addChild(root);
 		tui.setFocus(editor);
@@ -75,12 +76,93 @@ describe("slash command autocomplete with unknown native viewport state", () => 
 		}
 	});
 
+	it("repaints direct autocomplete shrink on ED3-risk POSIX terminals", async () => {
+		const originalPlatform = process.platform;
+		Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+		let tui: TUI | undefined;
+		try {
+			const term = new VirtualTerminal(40, 8);
+			tui = new TUI(term);
+			const root = new Container();
+			root.addChild({
+				invalidate() {},
+				render: () => ["chat-0", "chat-1", "chat-2", "chat-3", "chat-4", "chat-5", "chat-6"],
+			});
+			const editor = new Editor(defaultEditorTheme);
+			let submitted: string | undefined;
+			editor.setAutocompleteProvider(new SlashProvider());
+			editor.onAutocompleteUpdate = () => {
+				tui?.requestRender();
+			};
+			editor.onSubmit = text => {
+				submitted = text;
+			};
+			root.addChild(editor);
+			tui.addChild(root);
+			tui.setFocus(editor);
+
+			tui.start();
+			await settle(term);
+			for (const char of "/st") {
+				term.sendInput(char);
+				await settle(term);
+			}
+			let viewport = term.getViewport().join("\n");
+			expect(editor.getText()).toBe("/st");
+			expect(viewport).toContain("/st");
+			expect(viewport).not.toContain("/s\n");
+			expect(term.getScrollBuffer()).toEqual([
+				"chat-0",
+				"chat-1",
+				"chat-2",
+				"chat-3",
+				"chat-4",
+				"chat-5",
+				"chat-6",
+				"+--------------------------------------+",
+				"+- /st|                               -+",
+				"> status",
+				"  stats",
+				"  stop",
+				"",
+				"",
+			]);
+
+			term.sendInput("\r");
+			await settle(term);
+			viewport = term.getViewport().join("\n");
+			expect(submitted).toBe("/status");
+			expect(editor.getText()).toBe("");
+			expect(viewport).not.toContain("status");
+			expect(viewport).not.toContain("/st");
+			expect(term.getScrollBuffer()).toEqual([
+				"chat-0",
+				"chat-1",
+				"chat-2",
+				"chat-3",
+				"chat-4",
+				"chat-5",
+				"chat-6",
+				"+--------------------------------------+",
+				"+- |                                  -+",
+				"",
+				"",
+				"",
+				"",
+				"",
+			]);
+		} finally {
+			tui?.stop();
+			Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+		}
+	});
+
 	it("repaints autocomplete updates coalesced with offscreen background mutations", async () => {
 		const originalPlatform = process.platform;
 		const originalWtSession = Bun.env.WT_SESSION;
 		Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
 		Bun.env.WT_SESSION = "wt-test";
-		const term = new UnknownViewportTerminal(40, 6);
+		const term = new VirtualTerminal(40, 6);
 		const tui = new TUI(term);
 		const root = new Container();
 		let transcriptCounter = 0;
@@ -89,7 +171,7 @@ describe("slash command autocomplete with unknown native viewport state", () => 
 		root.addChild(transcript);
 		const editor = new Editor(defaultEditorTheme);
 		editor.setAutocompleteProvider(new SlashProvider());
-		editor.onAutocompleteUpdate = () => tui.requestRender(false, { allowUnknownViewportMutation: true });
+		editor.onAutocompleteUpdate = () => tui.requestRender();
 		root.addChild(editor);
 		tui.addChild(root);
 		tui.setFocus(editor);

@@ -5,7 +5,7 @@
  * and shared quotas across providers.
  */
 import * as z from "zod/v4";
-import type { Provider } from "./types";
+import type { FetchImpl, Provider } from "./types";
 export type UsageUnit = "percent" | "tokens" | "requests" | "usd" | "minutes" | "bytes" | "unknown";
 
 export type UsageStatus = "ok" | "warning" | "exhausted" | "unknown";
@@ -154,7 +154,7 @@ export interface UsageFetchParams {
 
 /** Shared runtime utilities for fetchers. */
 export interface UsageFetchContext {
-	fetch: typeof fetch;
+	fetch: FetchImpl;
 	logger?: UsageLogger;
 	retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -163,16 +163,39 @@ export interface UsageFetchContext {
 export interface UsageProvider {
 	id: Provider;
 	fetchUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null>;
+	/** Parse provider rate-limit response headers (lowercased keys) into a usage report, if supported. */
+	parseRateLimitHeaders?(headers: Record<string, string>, now?: number): UsageReport | null;
 	supports?(params: UsageFetchParams): boolean;
+}
+
+/** Request context used when ranking usage for a specific model. */
+export interface CredentialRankingContext {
+	/** Provider model id, when the caller is selecting a credential for one model. */
+	modelId?: string;
 }
 
 /** Strategy for usage-based credential ranking. Providers implement this to opt into smart credential selection. */
 export interface CredentialRankingStrategy {
 	/** Extract the primary (short) and secondary (long) window limits from a usage report. */
-	findWindowLimits(report: UsageReport): {
+	findWindowLimits(
+		report: UsageReport,
+		context?: CredentialRankingContext,
+	): {
 		primary?: UsageLimit;
 		secondary?: UsageLimit;
 	};
+	/**
+	 * Restrict limits to the ones relevant for the requested model before
+	 * credential-wide exhaustion checks and ranking. Providers with shared
+	 * account-wide quotas can omit this and use all limits.
+	 */
+	scopeLimits?(report: UsageReport, context?: CredentialRankingContext): UsageLimit[];
+	/**
+	 * Return a provider-local backoff scope for the requested model. Providers
+	 * with backend-specific quotas use this so one exhausted model family does
+	 * not block unrelated families on the same OAuth credential.
+	 */
+	blockScope?(context?: CredentialRankingContext): string | undefined;
 	/** Fallback window durations (ms) when limits don't specify durationMs. */
 	windowDefaults: {
 		primaryMs: number;

@@ -1,24 +1,18 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import type { Terminal as XtermTerminalType } from "@xterm/headless";
+import { clearRenderCache, Markdown, renderInlineMarkdown } from "@oh-my-pi/pi-tui/components/markdown";
+import { setTerminalTextSizing, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import { type Component, TUI } from "@oh-my-pi/pi-tui/tui";
+import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { Chalk } from "chalk";
-import { Markdown, renderInlineMarkdown } from "../src/components/markdown.js";
-import { TERMINAL } from "../src/terminal-capabilities.js";
-import { type Component, TUI } from "../src/tui.js";
 import { defaultMarkdownTheme } from "./test-themes.js";
 import { VirtualTerminal } from "./virtual-terminal.js";
 
 // Force full color in CI so ANSI assertions are deterministic
 const chalk = new Chalk({ level: 3 });
 
-function getCellItalic(terminal: VirtualTerminal, row: number, col: number): number {
-	const xterm = (terminal as unknown as { xterm: XtermTerminalType }).xterm;
-	const buffer = xterm.buffer.active;
-	const line = buffer.getLine(buffer.viewportY + row);
-	expect(line, `Missing buffer line at row ${row}`).toBeTruthy();
-	const cell = line!.getCell(col);
-	expect(cell, `Missing cell at row ${row} col ${col}`).toBeTruthy();
-	return cell!.isItalic();
+function getCellItalic(terminal: VirtualTerminal, row: number, col: number): boolean {
+	return terminal.getCellItalic(row, col);
 }
 
 describe("renderInlineMarkdown", () => {
@@ -610,7 +604,7 @@ describe("Markdown component", () => {
 
 			expect(component.markdownLineCount > 0).toBeTruthy();
 			const inputRow = component.markdownLineCount;
-			expect(getCellItalic(terminal, inputRow, 0)).toBe(0);
+			expect(getCellItalic(terminal, inputRow, 0)).toBe(false);
 			tui.stop();
 		});
 	});
@@ -1187,6 +1181,15 @@ describe("Inline color swatches", () => {
 		expect(out.includes(swatchFor("fff"))).toBeTruthy();
 	});
 
+	it("does not swatch 4-digit hashline #TAG snapshot tags", () => {
+		// Hashline tags are 4 hex digits with letters (e.g. #6C5E) and would
+		// otherwise be read as #RGBA colors. Neither prose nor codespans swatch them.
+		const prose = new Markdown("Re-anchor on #6C5E before editing.", 0, 0, defaultMarkdownTheme).render(80).join("");
+		expect(prose.includes("■")).toBe(false);
+		const code = new Markdown("Tag `#6C5E` stays plain.", 0, 0, defaultMarkdownTheme).render(80).join("");
+		expect(code.includes("■")).toBe(false);
+	});
+
 	it("uses the theme's colorSwatch symbol when provided", () => {
 		const themed = { ...defaultMarkdownTheme, symbols: { ...defaultMarkdownTheme.symbols, colorSwatch: "▢" } };
 		const out = new Markdown("Accent #C5FFD6.", 0, 0, themed).render(80).join("\n");
@@ -1236,5 +1239,137 @@ describe("Module-level LRU render cache", () => {
 
 		// Output must be byte-identical — cache is transparent to callers.
 		expect(lines2).toEqual(lines1);
+	});
+
+	it("returns the same array reference from L1 and L2 cache hits", () => {
+		clearRenderCache();
+		const text = "Cache identity sentinel";
+		const width = 80;
+		const markdown = new Markdown(text, 0, 0, defaultMarkdownTheme);
+
+		// L1: same instance, same text, same width → exact same reference.
+		// Reference identity is load-bearing: parents memoize their
+		// concatenation on it (Container/TUI skip work for stable refs).
+		const first = markdown.render(width);
+		expect(markdown.render(width)).toBe(first);
+
+		// L2: a distinct instance with identical inputs shares the module-level
+		// cache entry — same reference, not just equal content.
+		const l2Markdown = new Markdown(text, 0, 0, defaultMarkdownTheme);
+		expect(l2Markdown.render(width)).toBe(first);
+	});
+});
+
+describe("OSC 66 text-sizing headings", () => {
+	const OSC66_INTRO = "\x1b]66;";
+
+	afterEach(() => {
+		// The capability gate is process-global; never let it leak into other suites.
+		setTerminalTextSizing(false);
+	});
+
+	it("keeps H1 as plain ANSI when text-sizing is disabled (default)", () => {
+		expect(TERMINAL.textSizing).toBe(false);
+		const lines = new Markdown("# Hello", 0, 0, defaultMarkdownTheme).render(80);
+		expect(lines.some(line => line.includes(OSC66_INTRO))).toBe(false);
+		expect(lines.some(line => stripVTControlCharacters(line).includes("Hello"))).toBe(true);
+	});
+
+	it("emits a scale-2 OSC 66 span for H1 and reserves its second visual row", () => {
+		setTerminalTextSizing(true);
+		const lines = new Markdown("# Hello", 0, 0, defaultMarkdownTheme).render(80);
+
+		const oscIndex = lines.findIndex(line => line.includes(OSC66_INTRO));
+		expect(oscIndex).toBeGreaterThanOrEqual(0);
+		const oscLine = lines[oscIndex]!;
+		expect(oscLine).toContain("s=2");
+		// The heading text rides inside the OSC 66 payload, so it survives in the
+		// raw bytes (stripVTControlCharacters would drop the whole OSC span).
+		expect(oscLine.includes("Hello")).toBe(true);
+		expect(lines[oscIndex + 1]).toBe("");
+
+		// Native + emit agree: a scale-2 span measures exactly twice the plain
+		// heading width regardless of how the span is internally encoded.
+		expect(visibleWidth(oscLine)).toBe(2 * visibleWidth("Hello"));
+	});
+
+	it("leaves the reserved row after a scale-2 H1 as a cursor-only blank", () => {
+		setTerminalTextSizing(true);
+		const lines = new Markdown("# Hello\n\nBody", 0, 0, defaultMarkdownTheme).render(80);
+		const oscIndex = lines.findIndex(line => line.includes(OSC66_INTRO));
+		expect(oscIndex).toBeGreaterThanOrEqual(0);
+		expect(lines[oscIndex + 1]).toBe("");
+		expect(lines.some(line => stripVTControlCharacters(line).includes("Body"))).toBe(true);
+	});
+
+	it("doubles the measured width for wide/emoji H1 glyphs", () => {
+		setTerminalTextSizing(true);
+		const lines = new Markdown("# 🚀 Hi", 0, 0, defaultMarkdownTheme).render(80);
+
+		const oscLine = lines.find(line => line.includes(OSC66_INTRO));
+		expect(oscLine).toBeTruthy();
+		expect(visibleWidth(oscLine!)).toBe(2 * visibleWidth("🚀 Hi"));
+	});
+
+	it("falls back to ANSI when the doubled H1 width would overflow the render width", () => {
+		setTerminalTextSizing(true);
+		// "Hello" is 5 cells; 2*5 = 10 > 8 render columns, so the OSC path is skipped.
+		const lines = new Markdown("# Hello", 0, 0, defaultMarkdownTheme).render(8);
+		expect(lines.some(line => line.includes(OSC66_INTRO))).toBe(false);
+		expect(lines.some(line => stripVTControlCharacters(line).includes("Hello"))).toBe(true);
+	});
+
+	it("keeps H2 as plain ANSI even when text-sizing is enabled", () => {
+		setTerminalTextSizing(true);
+		const lines = new Markdown("## Sub", 0, 0, defaultMarkdownTheme).render(80);
+		expect(lines.some(line => line.includes(OSC66_INTRO))).toBe(false);
+		expect(lines.some(line => stripVTControlCharacters(line).includes("Sub"))).toBe(true);
+	});
+});
+
+describe("Markdown.render reference stability", () => {
+	// History: render() used to return caller-owned copies because the ask tool
+	// renderer did `md(question).push(...optionLines)` and grew the shared cache
+	// array every frame. The contract is now the opposite — render() hands out
+	// the live cached array by reference (parents memoize on reference identity)
+	// and callers that decorate results must copy first; ask.ts was fixed to
+	// copy. These tests pin the reference-identity contract.
+	afterEach(() => clearRenderCache());
+
+	it("returns the identical reference for repeated renders of an unchanged instance", () => {
+		const md = new Markdown("Question text", 1, 0, defaultMarkdownTheme);
+		const first = md.render(40);
+		expect(md.render(40)).toBe(first);
+		expect(md.render(40)).toBe(first);
+	});
+
+	it("shares one array across instances with identical inputs via the L2 cache", () => {
+		const a = new Markdown("Shared markdown body", 1, 0, defaultMarkdownTheme);
+		const b = new Markdown("Shared markdown body", 1, 0, defaultMarkdownTheme);
+		expect(b.render(40)).toBe(a.render(40));
+	});
+
+	it("returns a new reference with updated content after setText", () => {
+		const md = new Markdown("Before edit", 1, 0, defaultMarkdownTheme);
+		const before = md.render(40);
+		expect(before.some(line => stripVTControlCharacters(line).includes("Before edit"))).toBe(true);
+
+		md.setText("After edit");
+		const after = md.render(40);
+		expect(after).not.toBe(before);
+		expect(after.some(line => stripVTControlCharacters(line).includes("After edit"))).toBe(true);
+		expect(after.some(line => stripVTControlCharacters(line).includes("Before edit"))).toBe(false);
+
+		// Re-render after the change is stable again at the new reference.
+		expect(md.render(40)).toBe(after);
+	});
+
+	it("returns a different reference per width, each with correctly fitted rows", () => {
+		const md = new Markdown("Width sentinel content", 1, 0, defaultMarkdownTheme);
+		const narrow = md.render(30);
+		const wide = md.render(60);
+		expect(wide).not.toBe(narrow);
+		expect(narrow.every(line => visibleWidth(line) <= 30)).toBe(true);
+		expect(wide.every(line => visibleWidth(line) <= 60)).toBe(true);
 	});
 });

@@ -12,7 +12,7 @@ import type {
 	ToolTier,
 } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
-import type { Model, Static, TSchema } from "@oh-my-pi/pi-ai";
+import type { FetchImpl, Model, Static, TSchema } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import type { Rule } from "../../capability/rule";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -21,7 +21,7 @@ import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
-import type { TodoItem } from "../../tools/todo-write";
+import type { TodoItem } from "../../tools/todo";
 
 /** Alias for clarity */
 export type CustomToolUIContext = HookUIContext;
@@ -86,6 +86,8 @@ export interface CustomToolContext {
 	abort(): void;
 	/** Settings instance for the current session. Prefer over the global singleton. */
 	settings?: Settings;
+	/** Fetch implementation for outbound HTTP; defaults to global fetch when omitted. */
+	fetch?: FetchImpl;
 	/** Whether to auto-approve all destructive tool operations (--auto-approve CLI flag) */
 	autoApprove?: boolean;
 }
@@ -101,11 +103,11 @@ export type CustomToolSessionEvent =
 	| {
 			reason: "auto_compaction_start";
 			trigger: "threshold" | "overflow" | "idle" | "incomplete";
-			action: "context-full" | "handoff" | "shake";
+			action: "context-full" | "handoff" | "shake" | "snapcompact";
 	  }
 	| {
 			reason: "auto_compaction_end";
-			action: "context-full" | "handoff" | "shake";
+			action: "context-full" | "handoff" | "shake" | "snapcompact";
 			result: CompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;

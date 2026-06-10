@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getBundledModel } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -12,6 +12,7 @@ import { Snowflake } from "@oh-my-pi/pi-utils";
 
 describe("createAgentSession deferred model pattern resolution", () => {
 	let tempDir: string;
+	const authStoragesToClose: AuthStorage[] = [];
 
 	beforeEach(() => {
 		tempDir = path.join(os.tmpdir(), `pi-sdk-model-selection-${Snowflake.next()}`);
@@ -19,6 +20,10 @@ describe("createAgentSession deferred model pattern resolution", () => {
 	});
 
 	afterEach(() => {
+		for (const authStorage of authStoragesToClose) {
+			authStorage.close();
+		}
+		authStoragesToClose.length = 0;
 		if (tempDir && fs.existsSync(tempDir)) {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -52,10 +57,20 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		});
 	};
 
-	function buildSessionOptions(modelPattern: string) {
+	async function buildSessionOptions(modelPattern: string) {
+		// Pass an explicit ModelRegistry so createAgentSession skips its implicit
+		// ModelRegistry.refreshInBackground() — a network model-discovery pass
+		// (~250ms/session) that contributes nothing here: the model resolves from
+		// the inline extension provider, never from network catalogs. Mirrors the
+		// explicit-registry pattern the resume tests below already rely on.
+		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		authStoragesToClose.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		return {
 			cwd: tempDir,
 			agentDir: tempDir,
+			authStorage,
+			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
 			disableExtensionDiscovery: true,
 			extensions: [providerExtension],
@@ -71,7 +86,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 
 	test("resolves explicit modelPattern after extension providers register", async () => {
 		const { session, modelFallbackMessage } = await createAgentSession(
-			buildSessionOptions("runtime-provider/runtime-model"),
+			await buildSessionOptions("runtime-provider/runtime-model"),
 		);
 
 		expect(session.model).toBeDefined();
@@ -82,7 +97,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 
 	test("does not silently fallback when explicit modelPattern is unresolved", async () => {
 		const { session, modelFallbackMessage } = await createAgentSession(
-			buildSessionOptions("missing-provider/missing-model"),
+			await buildSessionOptions("missing-provider/missing-model"),
 		);
 
 		expect(session.model).toBeUndefined();
@@ -95,7 +110,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		settings.setModelRole("default", "pi/smol:high");
 
 		const { session } = await createAgentSession({
-			...buildSessionOptions("runtime-provider/runtime-reasoning-model"),
+			...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
 			settings,
 		});
 
@@ -146,6 +161,186 @@ describe("createAgentSession deferred model pattern resolution", () => {
 			}
 		} finally {
 			getApiKeySpy.mockRestore();
+			authStorage.close();
+		}
+	});
+
+	test("prefers the provider default over catalog order in the startup fallback", async () => {
+		// Regression: with an Anthropic key but no configured `default` role and no
+		// session/CLI model, the step-4 startup fallback used to pick the first
+		// anthropic model in models.json catalog order (claude-3-5-sonnet-20240620)
+		// instead of the provider's configured default from DEFAULT_MODEL_PER_PROVIDER
+		// (claude-opus-4-6).
+		const providerDefault = getBundledModel("anthropic", "claude-opus-4-6");
+		const catalogFirst = getBundledModel("anthropic", "claude-3-5-sonnet-20240620");
+		if (!providerDefault || !catalogFirst) {
+			throw new Error("Expected bundled anthropic models for fallback regression");
+		}
+
+		const authStorage = await AuthStorage.create(path.join(tempDir, "fallbackauth.db"));
+		authStoragesToClose.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		// No `default` model role configured: forces the step-4 startup fallback.
+		const settings = Settings.isolated();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			authStorage,
+			modelRegistry,
+			settings,
+			sessionManager: SessionManager.inMemory(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			expect(session.model?.provider).toBe("anthropic");
+			expect(session.model?.id).toBe(providerDefault.id);
+			expect(session.model?.id).not.toBe(catalogFirst.id);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("restores role model from extension provider after startup resume", async () => {
+		const defaultModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!defaultModel) {
+			throw new Error("Expected bundled anthropic default model");
+		}
+
+		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth.db"));
+		authStorage.setRuntimeApiKey(defaultModel.provider, "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+
+		const targetSessionFile = path.join(tempDir, "resume-extension.jsonl");
+		const timestamp = "2026-06-01T00:00:00.000Z";
+		await Bun.write(
+			targetSessionFile,
+			`${[
+				{ type: "session", version: 3, id: "resume-ext", timestamp, cwd: tempDir },
+				{
+					type: "model_change",
+					id: "default-model",
+					parentId: null,
+					timestamp,
+					model: `${defaultModel.provider}/${defaultModel.id}`,
+					role: "default",
+				},
+				{
+					type: "model_change",
+					id: "smol-model",
+					parentId: "default-model",
+					timestamp,
+					model: "runtime-provider/runtime-model",
+					role: "smol",
+				},
+			]
+				.map(entry => JSON.stringify(entry))
+				.join("\n")}\n`,
+		);
+		const sessionManager = await SessionManager.open(targetSessionFile, path.join(tempDir, "sessions"));
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			authStorage,
+			modelRegistry,
+			sessionManager,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			extensions: [providerExtension],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+		});
+
+		try {
+			expect(session.model?.provider).toBe("runtime-provider");
+			expect(session.model?.id).toBe("runtime-model");
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
+	test("restores extension role model when saved default cannot be restored before extensions load", async () => {
+		const settingsDefaultModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!settingsDefaultModel) {
+			throw new Error("Expected bundled anthropic default model");
+		}
+
+		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth.db"));
+		authStorage.setRuntimeApiKey(settingsDefaultModel.provider, "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+
+		// Saved default points at a provider that has no usable credentials. The
+		// last active role (`smol`) is supplied by the inline extension and is
+		// only resolvable once provider registrations are processed.
+		const targetSessionFile = path.join(tempDir, "resume-extension-default-missing.jsonl");
+		const timestamp = "2026-06-01T00:00:00.000Z";
+		await Bun.write(
+			targetSessionFile,
+			`${[
+				{ type: "session", version: 3, id: "resume-ext-no-default", timestamp, cwd: tempDir },
+				{
+					type: "model_change",
+					id: "default-model",
+					parentId: null,
+					timestamp,
+					model: "anthropic/not-available",
+					role: "default",
+				},
+				{
+					type: "model_change",
+					id: "smol-model",
+					parentId: "default-model",
+					timestamp,
+					model: "runtime-provider/runtime-model",
+					role: "smol",
+				},
+			]
+				.map(entry => JSON.stringify(entry))
+				.join("\n")}\n`,
+		);
+		const sessionManager = await SessionManager.open(targetSessionFile, path.join(tempDir, "sessions-no-default"));
+
+		const settings = Settings.isolated();
+		settings.setModelRole("default", `${settingsDefaultModel.provider}/${settingsDefaultModel.id}`);
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			authStorage,
+			modelRegistry,
+			sessionManager,
+			settings,
+			disableExtensionDiscovery: true,
+			extensions: [providerExtension],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+		});
+
+		try {
+			expect(session.model?.provider).toBe("runtime-provider");
+			expect(session.model?.id).toBe("runtime-model");
+		} finally {
+			await session.dispose();
 			authStorage.close();
 		}
 	});

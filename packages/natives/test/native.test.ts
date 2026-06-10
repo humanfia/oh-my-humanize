@@ -3,6 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	AstMatchStrictness,
+	astMatch,
 	executeShell,
 	FileType,
 	fuzzyFind,
@@ -14,7 +16,9 @@ import {
 	invalidateFsScanCache,
 	listWorkspace,
 	MacOSPowerAssertion,
+	matchesKey,
 	PtySession,
+	parseKey,
 	summarizeCode,
 	truncateToWidth,
 	visibleWidth,
@@ -148,6 +152,17 @@ describe("pi-natives", () => {
 			expect(summarizeCode({ path: "fixture.ts", code, minBodyLines: 3 }).elided).toBe(true);
 		});
 	});
+	describe("keys", () => {
+		it("matches Ghostty's super+alt Backspace Kitty wire", () => {
+			const ghosttyOptionBackspace = "\x1b[127;11u";
+
+			expect(matchesKey(ghosttyOptionBackspace, "super+alt+backspace", true)).toBe(true);
+			expect(matchesKey(ghosttyOptionBackspace, "alt+super+backspace", true)).toBe(true);
+			expect(matchesKey(ghosttyOptionBackspace, "alt+backspace", true)).toBe(false);
+			expect(parseKey(ghosttyOptionBackspace, true)).toBe("alt+super+backspace");
+		});
+	});
+
 	describe("grep", () => {
 		it("should find patterns in files", async () => {
 			const result = await grep({
@@ -407,6 +422,56 @@ describe("pi-natives", () => {
 			expect(result.matches).toHaveLength(0);
 		});
 
+		it("should stream sorted callbacks for entries admitted to the bounded top-n heap", async () => {
+			const scopedDir = await fs.mkdtemp(path.join(os.tmpdir(), "natives-glob-limit-"));
+			try {
+				const fileCount = 40;
+				const maxResults = 5;
+				const baseMs = Date.now() - fileCount * 2_000;
+				for (let i = 0; i < fileCount; i++) {
+					const filePath = path.join(scopedDir, `file-${String(i).padStart(2, "0")}.txt`);
+					await fs.writeFile(filePath, `${i}\n`);
+					const mtime = new Date(baseMs + i * 1_000);
+					await fs.utimes(filePath, mtime, mtime);
+				}
+
+				const streamed: GlobMatch[] = [];
+				const result = await glob(
+					{
+						pattern: "**/*",
+						path: scopedDir,
+						hidden: true,
+						gitignore: false,
+						sortByMtime: true,
+						maxResults,
+					},
+					(error, match) => {
+						if (error) throw error;
+						if (match?.path) streamed.push(match);
+					},
+				);
+
+				await Bun.sleep(10);
+				expect(result.matches).toHaveLength(maxResults);
+				expect(streamed.length).toBeGreaterThan(0);
+				expect(streamed.length).toBeLessThanOrEqual(fileCount);
+
+				const latestByPath = new Map<string, number>();
+				for (const match of streamed) {
+					const previous = latestByPath.get(match.path) ?? -Infinity;
+					latestByPath.set(match.path, Math.max(previous, match.mtime ?? 0));
+				}
+				const reconstructed = [...latestByPath.entries()]
+					.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+					.slice(0, maxResults)
+					.map(([entryPath]) => entryPath)
+					.sort();
+				expect(reconstructed).toEqual(result.matches.map(match => match.path).sort());
+			} finally {
+				await fs.rm(scopedDir, { recursive: true, force: true });
+			}
+		});
+
 		it("should fast-recheck empty cached results when threshold is reached", async () => {
 			const fileName = "cache-empty-recheck-target.txt";
 			const filePath = path.join(testDir, fileName);
@@ -609,6 +674,46 @@ describe("pi-natives", () => {
 			const assertion = MacOSPowerAssertion.start({ reason: "pi-natives test" });
 			assertion.stop();
 			assertion.stop();
+		});
+	});
+
+	describe("astMatch", () => {
+		it("matches a pattern against an in-memory source string", async () => {
+			const result = await astMatch({
+				source: 'function greet() {\n\tconsole.log("hi");\n}',
+				lang: "ts",
+				patterns: ["console.log($MSG)"],
+				strictness: AstMatchStrictness.Smart,
+				includeMeta: true,
+			});
+			expect(result.totalMatches).toBe(1);
+			expect(result.matches[0]?.text).toBe('console.log("hi")');
+			expect(result.matches[0]?.metaVariables?.MSG).toBe('"hi"');
+		});
+
+		it("enforces metavariable equality within a pattern", async () => {
+			const same = await astMatch({
+				source: "if (x) clearTimeout(x);",
+				lang: "ts",
+				patterns: ["if ($X) clearTimeout($X)"],
+			});
+			const diff = await astMatch({
+				source: "if (x) clearTimeout(y);",
+				lang: "ts",
+				patterns: ["if ($X) clearTimeout($X)"],
+			});
+			expect(same.totalMatches).toBe(1);
+			expect(diff.totalMatches).toBe(0);
+		});
+
+		it("reports parse errors for incomplete source without throwing", async () => {
+			const result = await astMatch({ source: "console.log(", lang: "ts", patterns: ["console.log($A)"] });
+			expect(result.totalMatches).toBe(0);
+			expect(result.parseErrors?.length).toBeGreaterThan(0);
+		});
+
+		it("rejects an empty language", async () => {
+			await expect(astMatch({ source: "const a = 1;", lang: "  ", patterns: ["const $A = $B"] })).rejects.toThrow();
 		});
 	});
 });

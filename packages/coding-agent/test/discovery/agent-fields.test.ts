@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Effort } from "@oh-my-pi/pi-ai";
-import { parseAgentFields } from "../../src/discovery/helpers";
+import { parseAgentFields } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 
 describe("parseAgentFields", () => {
 	test("parses blocking from boolean frontmatter", () => {
@@ -108,5 +108,28 @@ describe("parseAgentFields", () => {
 
 		expect(fields).toBeDefined();
 		expect(fields?.autoloadSkills).toBeUndefined();
+	});
+
+	test("parses readSummarize from boolean frontmatter", () => {
+		expect(parseAgentFields({ name: "explore", description: "desc", readSummarize: false })?.readSummarize).toBe(
+			false,
+		);
+		expect(parseAgentFields({ name: "explore", description: "desc", readSummarize: true })?.readSummarize).toBe(true);
+	});
+
+	test("parses readSummarize from string frontmatter", () => {
+		expect(parseAgentFields({ name: "explore", description: "desc", readSummarize: "false" })?.readSummarize).toBe(
+			false,
+		);
+	});
+
+	test("ignores invalid readSummarize values", () => {
+		expect(
+			parseAgentFields({ name: "explore", description: "desc", readSummarize: "nope" })?.readSummarize,
+		).toBeUndefined();
+	});
+
+	test("returns undefined readSummarize when field absent", () => {
+		expect(parseAgentFields({ name: "explore", description: "desc" })?.readSummarize).toBeUndefined();
 	});
 });

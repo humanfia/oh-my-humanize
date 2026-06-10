@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
-import { type Api, getBundledModel, type Model } from "@oh-my-pi/pi-ai";
-import { generateSessionTitle } from "../src/utils/title-generator";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import { logger } from "@oh-my-pi/pi-utils";
 
 function getModelOrThrow(id: string): Model<Api> {
 	const model = getBundledModel("anthropic", id);
@@ -28,6 +30,9 @@ function createRegistry(model: Model<Api>) {
 	return {
 		getAvailable: () => [model],
 		getApiKey: async () => "test-key",
+		getApiKeyForProvider: async () => "test-key",
+		authStorage: { rotateSessionCredential: async () => false },
+		resolver: () => async () => "test-key",
 	} as never;
 }
 
@@ -66,6 +71,49 @@ describe("title generator", () => {
 		});
 	});
 
+	it("uses the bundled default prompt when no title prompt file is resolved", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "toolCall", id: "call-title", name: "set_title", arguments: { title: "Default Prompt" } }],
+		} as never);
+
+		await generateSessionTitle("Investigate the resolver", createRegistry(model), createSettings(model));
+
+		const request = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[] } | undefined;
+		expect(request?.systemPrompt).toHaveLength(1);
+		expect(request?.systemPrompt?.[0]).toContain("set_title");
+	});
+
+	it("uses the resolved TITLE_SYSTEM.md prompt for online title generation", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const customPrompt = "Generate lowercase colon-delimited session names.";
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "toolCall", id: "call-title", name: "set_title", arguments: { title: "fix:resolver" } }],
+		} as never);
+
+		await generateSessionTitle(
+			"Investigate the resolver",
+			createRegistry(model),
+			createSettings(model),
+			undefined,
+			undefined,
+			undefined,
+			customPrompt,
+		);
+
+		const request = completeSimpleMock.mock.calls[0]?.[1] as
+			| { systemPrompt?: string[]; tools?: Array<{ name?: string }> }
+			| undefined;
+		const options = completeSimpleMock.mock.calls[0]?.[2] as
+			| { toolChoice?: { type?: string; name?: string } }
+			| undefined;
+		expect(request?.systemPrompt).toEqual([customPrompt]);
+		expect(request?.tools?.[0]?.name).toBe("set_title");
+		expect(options?.toolChoice).toEqual({ type: "tool", name: "set_title" });
+	});
+
 	it("falls back to text content when no set_title tool call is returned", async () => {
 		const model = getModelOrThrow("claude-sonnet-4-5");
 		vi.spyOn(ai, "completeSimple").mockResolvedValue({
@@ -80,6 +128,99 @@ describe("title generator", () => {
 		);
 
 		expect(title).toBe("Text Title");
+	});
+
+	it("defers titling for a greeting without invoking the model", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple");
+
+		const title = await generateSessionTitle("hi", createRegistry(model), createSettings(model));
+
+		expect(title).toBeNull();
+		expect(completeSimpleMock).not.toHaveBeenCalled();
+	});
+
+	it("returns null when the model rejects a non-greeting taskless message with the none sentinel", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [
+				{
+					type: "toolCall",
+					id: "call-title",
+					name: "set_title",
+					arguments: { title: "none" },
+				},
+			],
+		} as never);
+
+		const title = await generateSessionTitle(
+			"I have a quick question for you",
+			createRegistry(model),
+			createSettings(model),
+		);
+
+		expect(title).toBeNull();
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("logs and returns null when title credentials are missing", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple");
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const title = await generateSessionTitle(
+			"Investigate the resolver",
+			{
+				getAvailable: () => [model],
+				getApiKey: async () => undefined,
+			} as never,
+			createSettings(model),
+			"session-1",
+		);
+
+		expect(title).toBeNull();
+		expect(completeSimpleMock).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledWith(
+			"title-generator: no API key",
+			expect.objectContaining({
+				sessionId: "session-1",
+				provider: model.provider,
+				id: model.id,
+				reason: "missing-api-key",
+			}),
+		);
+	});
+
+	it("logs and returns null when title credential lookup throws", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple");
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const title = await generateSessionTitle(
+			"Investigate the resolver",
+			{
+				getAvailable: () => [model],
+				getApiKey: async () => {
+					throw new Error("credential lookup failed");
+				},
+			} as never,
+			createSettings(model),
+			"session-2",
+		);
+
+		expect(title).toBeNull();
+		expect(completeSimpleMock).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledWith(
+			"title-generator: error",
+			expect.objectContaining({
+				sessionId: "session-2",
+				provider: model.provider,
+				id: model.id,
+				reason: "exception",
+				error: "credential lookup failed",
+			}),
+		);
 	});
 
 	it("uses a reasoning-safe output budget for reasoning models", async () => {

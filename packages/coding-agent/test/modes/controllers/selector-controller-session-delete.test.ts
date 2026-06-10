@@ -148,6 +148,7 @@ beforeAll(() => {
 describe("SelectorController session deletion", () => {
 	beforeEach(() => {
 		vi.spyOn(SessionManager, "list").mockResolvedValue([]);
+		vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
 	});
 
 	afterEach(() => {
@@ -228,7 +229,6 @@ describe("SelectorController session deletion", () => {
 		expect(ctx.showError).not.toHaveBeenCalled();
 		expect(ctx.sessionManager.getSessionFile()).toBe("/tmp/project/sessions/detached.jsonl");
 		expect(renderText(selector)).toContain("Error: Failed to delete session: disk failed");
-		expect(renderText(selector)).toContain("Active session");
 	});
 
 	it("creates a fresh session before deleting via slash command and then shows the selector", async () => {

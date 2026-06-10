@@ -1,20 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import {
+	type Api,
+	type Context,
 	clearCustomApis,
 	type Message,
 	type Model,
+	type ModelSpec,
 	registerCustomApi,
 	type SimpleStreamOptions,
+	type TextContent,
 } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import {
-	AgentSession,
-	type AgentSessionEvent,
-	ANTHROPIC_TOOL_CALL_BATCH_CAP,
-	resolveToolCallBatchCapForModel,
-} from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
+import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { convertToLlm, wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
@@ -28,6 +30,20 @@ function createAgent(): Agent {
 	});
 }
 
+function getConvertedUserText(message: Message | undefined): string {
+	if (message?.role !== "user") {
+		throw new Error("Expected converted user message");
+	}
+	if (typeof message.content === "string") {
+		return message.content;
+	}
+	const text = message.content.find((content): content is TextContent => content.type === "text");
+	if (!text) {
+		throw new Error("Expected converted text content");
+	}
+	return text.text;
+}
+
 describe("AgentSession message pipeline", () => {
 	const sessions: AgentSession[] = [];
 
@@ -37,43 +53,6 @@ describe("AgentSession message pipeline", () => {
 		for (const session of sessions.splice(0)) {
 			await session.dispose();
 		}
-	});
-
-	it("enables the tool-call batch cap only for Anthropic Claude Opus 4.8 models", () => {
-		const baseModel: Model = {
-			id: "gpt-5",
-			name: "GPT-5",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 200_000,
-			maxTokens: 8_192,
-		};
-		const anthropicOpus48: Model = {
-			...baseModel,
-			id: "claude-opus-4-8",
-			name: "Claude Opus 4.8",
-			api: "anthropic",
-			provider: "anthropic",
-		};
-
-		expect(resolveToolCallBatchCapForModel(anthropicOpus48)).toBe(ANTHROPIC_TOOL_CALL_BATCH_CAP);
-		expect(resolveToolCallBatchCapForModel({ ...anthropicOpus48, id: "claude-opus-4.8" })).toBe(
-			ANTHROPIC_TOOL_CALL_BATCH_CAP,
-		);
-		expect(resolveToolCallBatchCapForModel({ ...anthropicOpus48, id: "claude-opus-4-8-20260530" })).toBe(
-			ANTHROPIC_TOOL_CALL_BATCH_CAP,
-		);
-		expect(resolveToolCallBatchCapForModel({ ...anthropicOpus48, provider: "openrouter" })).toBeUndefined();
-		expect(resolveToolCallBatchCapForModel({ ...anthropicOpus48, id: "claude-sonnet-4-8" })).toBeUndefined();
-		expect(resolveToolCallBatchCapForModel({ ...anthropicOpus48, id: "claude-opus-4-7" })).toBeUndefined();
-		expect(resolveToolCallBatchCapForModel({ ...anthropicOpus48, id: "claude-opus-4-9" })).toBeUndefined();
-		expect(resolveToolCallBatchCapForModel({ ...anthropicOpus48, id: "claude-opus-4-80" })).toBeUndefined();
-		expect(resolveToolCallBatchCapForModel(baseModel)).toBeUndefined();
-		expect(resolveToolCallBatchCapForModel({ ...baseModel, provider: "openai-codex" })).toBeUndefined();
 	});
 
 	it("applies transformContext before convertToLlm", async () => {
@@ -113,6 +92,56 @@ describe("AgentSession message pipeline", () => {
 		expect(transformContext).toHaveBeenCalledWith(inputMessages, abortController.signal);
 		expect(convertToLlm).toHaveBeenCalledWith(transformedMessages);
 		expect(result).toEqual(convertedMessages);
+	});
+
+	it("marks queued user steers without changing the public queue text", async () => {
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+		});
+		sessions.push(session);
+
+		await session.sendUserMessage("raw <steer> &", { deliverAs: "steer" });
+
+		expect(session.getQueuedMessages().steering).toEqual(["raw <steer> &"]);
+		const queued = session.agent.popLastSteer();
+		if (queued?.role !== "user") {
+			throw new Error("Expected queued user steer");
+		}
+		expect(queued.steering).toBe(true);
+		expect(queued.content).toEqual([{ type: "text", text: "raw <steer> &" }]);
+		session.clearQueue();
+	});
+
+	it("keeps stored steering text raw while pre-LLM conversion wraps it", async () => {
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+			transformContext: wrapSteeringForModel,
+			convertToLlm,
+		});
+		sessions.push(session);
+		const raw: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "steer with <xml> & ampersand" }],
+			steering: true,
+			timestamp: 1,
+		};
+		session.agent.appendMessage(raw);
+
+		const converted = await session.convertMessagesToLlm(session.messages);
+
+		expect(session.messages[0]).toBe(raw);
+		expect(raw.content).toEqual([{ type: "text", text: "steer with <xml> & ampersand" }]);
+		const convertedText = getConvertedUserText(converted[0]);
+		expect(convertedText).toContain("<user_interjection>");
+		expect(convertedText).toContain("<message>\nsteer with <xml> & ampersand\n</message>");
+		expect(convertedText).not.toContain("&lt;xml&gt;");
+		expect(convertedText).not.toContain("&amp;");
 	});
 
 	it("composes session payload hooks into direct side-request options", async () => {
@@ -155,7 +184,7 @@ describe("AgentSession message pipeline", () => {
 			return stream;
 		});
 
-		const model = {
+		const model = buildModel({
 			id: "side-model",
 			name: "Side Model",
 			api,
@@ -166,7 +195,7 @@ describe("AgentSession message pipeline", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 4096,
 			maxTokens: 1024,
-		} satisfies Model;
+		} as ModelSpec<Api>) as Model<Api>;
 		const session = new AgentSession({
 			agent: new Agent({
 				initialState: {
@@ -208,7 +237,7 @@ describe("AgentSession message pipeline", () => {
 			return stream;
 		});
 
-		const model = {
+		const model = buildModel({
 			id: "anthropic/claude-sonnet-4",
 			name: "OpenRouter Model",
 			api,
@@ -219,7 +248,7 @@ describe("AgentSession message pipeline", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 4096,
 			maxTokens: 1024,
-		} satisfies Model;
+		} as ModelSpec<Api>) as Model<Api>;
 		const session = new AgentSession({
 			agent: new Agent({
 				initialState: {
@@ -244,6 +273,58 @@ describe("AgentSession message pipeline", () => {
 
 		expect(result.replyText).toBe("Answer");
 		expect(capturedOptions?.openrouterVariant).toBe("nitro");
+	});
+
+	it("obfuscates the system prompt and messages on ephemeral side-channel requests", async () => {
+		const api = "test-ephemeral-secret-redaction";
+		const secret = "EPHEMERAL_SECRET_TOKEN_12345";
+		let capturedContext: Context | undefined;
+		registerCustomApi(api, (_model, context, _options) => {
+			capturedContext = context;
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				const message = createAssistantMessage("Answer");
+				stream.push({ type: "text_delta", contentIndex: 0, delta: "Answer", partial: message });
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		});
+
+		const model = buildModel({
+			id: "side-model-secrets",
+			name: "Side Model Secrets",
+			api,
+			provider: "test-provider",
+			baseUrl: "",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 4096,
+			maxTokens: 1024,
+		} as ModelSpec<Api>) as Model<Api>;
+		const session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: [`system prompt with ${secret}`],
+					messages: [],
+					tools: [],
+				},
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {
+				getApiKey: vi.fn(async () => "key"),
+			} as never,
+			obfuscator: new SecretObfuscator([{ type: "plain", content: secret }]),
+		});
+		sessions.push(session);
+
+		const result = await session.runEphemeralTurn({ promptText: `question about ${secret}` });
+
+		expect(result.replyText).toBe("Answer");
+		expect(capturedContext).toBeDefined();
+		expect(JSON.stringify(capturedContext)).not.toContain(secret);
 	});
 
 	it("records raw SSE diagnostics into the session buffer before request hooks", async () => {

@@ -18,7 +18,7 @@ Performs structural code search using AST matching via native ast-grep.
 
 <output>
 - Grouped matches with file path, byte range, line/column ranges, metavariable captures
-- Match lines are numbered under a file snapshot tag header in hashline mode: `¶src/foo.ts#0a`, `*42:content` for the matched line, ` 43:content` for context
+- Match lines are numbered under a file snapshot tag header in hashline mode: `[src/foo.ts#1A2B]`, `*42:content` for the matched line, ` 43:content` for context
 - Summary counts (`totalMatches`, `filesWithMatches`, `filesSearched`) and parse issues when present
 </output>
 
@@ -36,7 +36,7 @@ Performs structural code search using AST matching via native ast-grep.
 </examples>
 
 <critical>
-- Avoid repo-root scans — narrow `paths` first
+- AVOID repo-root scans — narrow `paths` first
 - Parse issues are query failure, not evidence of absence: repair the pattern or tighten `paths` before concluding "no matches"
-- For broad/open-ended exploration across subsystems, use Task tool with explore subagent first
+- For broad/open-ended exploration across subsystems, you SHOULD use the Task tool with the explore subagent first
 </critical>

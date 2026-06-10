@@ -2,7 +2,7 @@ Finds files and directories using fast pattern matching that works with any code
 
 <instruction>
 - `paths` is required and accepts an array of globs, files, or directories
-- Pass multiple targets as **separate array elements** (`paths: ["a", "b"]`), NEVER as a single comma-joined string (`paths: ["a,b"]` is rejected)
+- Pass multiple targets as **separate array elements** (`paths: ["a", "b"]`).
 - `gitignore` defaults to `true` and hides files matched by `.gitignore`. Set `gitignore: false` to find `.env*`, `*.log`, freshly-created build outputs, or anything else your repo ignores
 - `hidden` defaults to `true`; combine with `gitignore: false` to surface dotfiles that are also gitignored
 - `limit` is clamped to 1-200 (default 200). Narrow the pattern instead of raising the limit
@@ -33,5 +33,4 @@ For open-ended searches requiring multiple rounds of globbing and searching, you
 
 <critical>
 - You MUST use the built-in Find tool for every file-name lookup. NEVER shell out to `find`, `fd`, `locate`, `ls`, or `git ls-files` via Bash — they ignore `.gitignore`, blow past result limits, and waste tokens.
-- If you catch yourself typing `find -name`, `fd`, or `ls **/*.ext` in a Bash command, stop and re-issue the lookup through the Find tool with a glob pattern instead.
 </critical>

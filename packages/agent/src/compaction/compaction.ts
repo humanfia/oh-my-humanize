@@ -7,20 +7,23 @@
 
 import {
 	type AssistantMessage,
-	clampThinkingLevelForModel,
 	Effort,
+	type FetchImpl,
 	type Message,
 	type MessageAttribution,
 	type Model,
+	type Tool,
 	type Usage,
 } from "@oh-my-pi/pi-ai";
+import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { countTokens } from "@oh-my-pi/pi-natives";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
+import { SNAPCOMPACT_FRAME_TOKEN_ESTIMATE } from "@oh-my-pi/snapcompact";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
 import { ThinkingLevel } from "../thinking";
-import type { AgentMessage, AgentTool } from "../types";
+import type { AgentMessage } from "../types";
 import type { CompactionEntry, SessionEntry } from "./entries";
-import { type ConvertToLlm, convertToLlm, createBranchSummaryMessage, createCustomMessage } from "./messages";
+import { type ConvertToLlm, createBranchSummaryMessage, createCustomMessage, defaultConvertToLlm } from "./messages";
 import {
 	buildOpenAiNativeHistory,
 	getPreservedOpenAiRemoteCompactionData,
@@ -43,6 +46,7 @@ import {
 	type FileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
+	stripReadSelector,
 	upsertFileOperations,
 } from "./utils";
 
@@ -72,7 +76,7 @@ function extractFileOperations(
 		if (!prevCompaction.fromExtension && prevCompaction.details) {
 			const details = prevCompaction.details as CompactionDetails;
 			if (Array.isArray(details.readFiles)) {
-				for (const f of details.readFiles) fileOps.read.add(f);
+				for (const f of details.readFiles) fileOps.read.add(stripReadSelector(f));
 			}
 			if (Array.isArray(details.modifiedFiles)) {
 				for (const f of details.modifiedFiles) fileOps.edited.add(f);
@@ -135,7 +139,7 @@ export interface CompactionResult<T = unknown> {
 
 export interface CompactionSettings {
 	enabled: boolean;
-	strategy?: "context-full" | "handoff" | "shake" | "off";
+	strategy?: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
 	thresholdPercent?: number;
 	thresholdTokens?: number;
 	reserveTokens: number;
@@ -308,6 +312,10 @@ export function estimateTokens(message: AgentMessage): number {
 		case "branchSummary":
 		case "compactionSummary": {
 			fragments.push(message.summary);
+			if (message.role === "compactionSummary" && message.images) {
+				// Snapcompact frames render at ≥1568px; providers bill the downscaled cap.
+				extra += message.images.length * SNAPCOMPACT_FRAME_TOKEN_ESTIMATE;
+			}
 			break;
 		}
 		default:
@@ -538,10 +546,11 @@ function effortFromThinkingLevel(level: ThinkingLevel): Effort {
  * - Explicit effort → respect user choice → clamped per model.
  *
  * The clamp routes through `clampThinkingLevelForModel`, which returns
- * `undefined` for models with `compat.supportsReasoningEffort: false`
- * (e.g. `xai-oauth/grok-build`). That `undefined` then flows through to the
- * openai-responses mapper where `modelOmitsReasoningEffort` short-circuits
- * the wire param — no `requireSupportedEffort` throw.
+ * `undefined` for reasoning models without a thinking config — the build-time
+ * encoding of `compat.supportsReasoningEffort: false` (e.g.
+ * `xai-oauth/grok-build`). That `undefined` then flows through to the
+ * openai-responses mapper, which omits the wire param — no
+ * `requireSupportedEffort` throw.
  */
 function resolveCompactionEffort(model: Model, level: ThinkingLevel | undefined): Effort | undefined {
 	if (level === ThinkingLevel.Off) return undefined;
@@ -595,6 +604,8 @@ export interface SummaryOptions {
 	 * `resolveCompactionEffort` for the conversion contract.
 	 */
 	thinkingLevel?: ThinkingLevel;
+	/** Optional fetch implementation threaded into remote compaction calls. */
+	fetch?: FetchImpl;
 }
 
 export async function generateSummary(
@@ -620,7 +631,7 @@ export async function generateSummary(
 
 	// Serialize conversation to text so model doesn't try to continue it
 	// Convert to LLM messages first (handles custom app messages when caller provides a transformer).
-	const llmMessages = (options?.convertToLlm ?? convertToLlm)(currentMessages);
+	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(currentMessages);
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build the prompt with conversation wrapped in tags
@@ -647,6 +658,7 @@ export async function generateSummary(
 				prompt: promptText,
 			},
 			signal,
+			{ fetch: options.fetch },
 		);
 		return remote.summary;
 	}
@@ -685,7 +697,7 @@ export interface HandoffOptions {
 	/** Live agent system prompt — passed verbatim so providers hit the cached prefix. */
 	systemPrompt: string[];
 	/** Live agent tool list — same purpose. Forced to `toolChoice: "none"`. */
-	tools?: AgentTool<any>[];
+	tools?: Tool[];
 	customInstructions?: string;
 	convertToLlm?: ConvertToLlm;
 	initiatorOverride?: MessageAttribution;
@@ -718,7 +730,7 @@ export async function generateHandoff(
 	options: HandoffOptions,
 	signal?: AbortSignal,
 ): Promise<string> {
-	const llmMessages = (options.convertToLlm ?? convertToLlm)(messages);
+	const llmMessages = (options.convertToLlm ?? defaultConvertToLlm)(messages);
 	const requestMessages: Message[] = [
 		...llmMessages,
 		{
@@ -767,7 +779,7 @@ async function generateShortSummary(
 	options?: SummaryOptions,
 ): Promise<string> {
 	const maxTokens = Math.min(512, Math.floor(0.2 * reserveTokens));
-	const llmMessages = (options?.convertToLlm ?? convertToLlm)(recentMessages);
+	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(recentMessages);
 	const conversationText = serializeConversation(llmMessages);
 
 	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
@@ -992,6 +1004,7 @@ export async function compact(
 		// silently falls back to Effort.High — the same defect e07b47ee4 fixed
 		// at the call sites, leaked back in here. See resolveCompactionEffort.
 		thinkingLevel: options?.thinkingLevel,
+		fetch: options?.fetch,
 	};
 
 	let preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined);
@@ -1003,7 +1016,7 @@ export async function compact(
 				? previousRemoteCompaction.replacementHistory
 				: undefined;
 		const remoteHistory = buildOpenAiNativeHistory(
-			(summaryOptions.convertToLlm ?? convertToLlm)(remoteMessages),
+			(summaryOptions.convertToLlm ?? defaultConvertToLlm)(remoteMessages),
 			model,
 			previousReplacementHistory,
 		);
@@ -1015,6 +1028,7 @@ export async function compact(
 					remoteHistory,
 					summaryOptions.remoteInstructions ?? SUMMARIZATION_SYSTEM_PROMPT,
 					signal,
+					{ fetch: summaryOptions.fetch },
 				);
 				preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
 			} catch (err) {
@@ -1119,7 +1133,7 @@ async function generateTurnPrefixSummary(
 ): Promise<string> {
 	const maxTokens = Math.floor(0.5 * reserveTokens); // Smaller budget for turn prefix
 
-	const llmMessages = (options?.convertToLlm ?? convertToLlm)(messages);
+	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(messages);
 	const conversationText = serializeConversation(llmMessages);
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
 	const summarizationMessages = [

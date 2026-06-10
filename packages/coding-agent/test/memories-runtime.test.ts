@@ -46,6 +46,7 @@ function createModelRegistry(model: Model): any {
 		find: vi.fn(() => model),
 		getAll: vi.fn(() => [model]),
 		getApiKey: vi.fn(async () => "test-api-key"),
+		resolver: vi.fn(() => async () => "test-api-key"),
 	};
 }
 
@@ -237,7 +238,7 @@ describe("memories runtime", () => {
 		const constrainedModel: Model = {
 			...fx.model,
 			reasoning: true,
-			thinking: { mode: "effort", minLevel: Effort.High, maxLevel: Effort.XHigh },
+			thinking: { mode: "effort", efforts: [Effort.High, Effort.XHigh] },
 		};
 		fx.session.model = constrainedModel;
 		fx.modelRegistry.find = vi.fn(() => constrainedModel);

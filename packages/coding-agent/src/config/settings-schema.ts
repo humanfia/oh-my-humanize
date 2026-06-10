@@ -23,6 +23,7 @@ import {
 	TINY_TITLE_MODEL_VALUES,
 } from "../tiny/models";
 import { EDIT_MODES } from "../utils/edit-mode";
+import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_PREFERENCES } from "../web/search/types";
 
 /** Unified settings schema - single source of truth for all settings.
  * Unified settings schema - single source of truth for all settings.
@@ -150,7 +151,7 @@ export type AnyUiMetadata = UiBase & {
 
 interface BooleanDef {
 	type: "boolean";
-	default: boolean;
+	default: boolean | undefined;
 	ui?: UiBoolean;
 }
 
@@ -245,7 +246,11 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		message: "Use the `edit` tool instead of awk -i inplace. It provides diff preview and fuzzy matching.",
 	},
 	{
-		pattern: "^\\s*(echo|printf|cat\\s*<<)\\s+.*[^|]>\\s*\\S",
+		// `>` must sit outside quoted regions (so `echo "a -> b"` passes) and be
+		// followed by a plausible filename — including `$VAR` targets; `>|`
+		// (clobber) counts as a redirect; `>&2`/`2>&1` style fd duplication is
+		// not matched.
+		pattern: "^\\s*(echo|printf|cat\\s*<<)\\s+(?:[^\"'>]|\"[^\"]*\"|'[^']*')*(?<!\\|)>{1,2}\\|?\\s*[$\\w./~\"'-]",
 		tool: "write",
 		message: "Use the `write` tool instead of echo/cat redirection. It handles encoding and provides confirmation.",
 	},
@@ -255,7 +260,6 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	// General settings (no UI)
 	// ────────────────────────────────────────────────────────────────────────
-	lastChangelogVersion: { type: "string", default: undefined },
 	setupVersion: { type: "number", default: 0 },
 
 	// Auth broker — credentials proxied through a remote `omp auth-broker serve`
@@ -608,6 +612,24 @@ export const SETTINGS_SCHEMA = {
 			"Maximum height in terminal rows for inline images (default 20). Set to 0 to use only the viewport-based limit (60% of terminal height).",
 	},
 
+	"tui.maxInlineImages": {
+		type: "number",
+		default: 8,
+		description:
+			"Maximum number of inline images kept as live terminal graphics (default 8). Older images fall back to a text placeholder via a full redraw once the limit is exceeded. Set to 0 to keep every image (no limit).",
+	},
+
+	"tui.textSizing": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			label: "Large Headings (Kitty)",
+			description:
+				"Render Markdown H1 headings at 2x scale using Kitty's OSC 66 text-sizing protocol. Only takes effect on Kitty terminals; ignored everywhere else. Off by default.",
+		},
+	},
+
 	"tui.hyperlinks": {
 		type: "enum",
 		values: ["off", "auto", "always"] as const,
@@ -616,7 +638,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			label: "Terminal Hyperlinks",
 			description:
-				"Wrap file paths in OSC 8 hyperlinks for terminal-native click-to-open (auto: detect support; off: never; always: unconditional)",
+				"Wrap paths and URLs in OSC 8 hyperlinks for terminal-native click-to-open (auto: detect support; off: never; always: unconditional)",
 		},
 	},
 	// Display rendering
@@ -641,6 +663,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.smoothStreaming": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "appearance",
+			label: "Smooth Streaming",
+			description: "Reveal assistant text smoothly while streamed chunks arrive",
+		},
+	},
+
 	"display.showTokenUsage": {
 		type: "boolean",
 		default: false,
@@ -655,16 +687,6 @@ export const SETTINGS_SCHEMA = {
 		type: "boolean",
 		default: true, // will be computed based on platform if undefined
 		ui: { tab: "appearance", label: "Show Hardware Cursor", description: "Show terminal cursor for IME support" },
-	},
-
-	clearOnShrink: {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "appearance",
-			label: "Clear on Shrink",
-			description: "Clear empty rows when content shrinks (may cause flicker)",
-		},
 	},
 
 	// ────────────────────────────────────────────────────────────────────────
@@ -700,6 +722,16 @@ export const SETTINGS_SCHEMA = {
 			tab: "model",
 			label: "Repeat Tool Descriptions",
 			description: "Render full tool descriptions in the system prompt instead of a tool name list",
+		},
+	},
+
+	includeModelInPrompt: {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			label: "Include Model In Prompt",
+			description: "Surface the active model identifier in the system prompt so the agent knows which model it is",
 		},
 	},
 
@@ -847,7 +879,7 @@ export const SETTINGS_SCHEMA = {
 
 	"retry.maxRetries": {
 		type: "number",
-		default: 3,
+		default: 10,
 		ui: {
 			tab: "model",
 			label: "Retry Attempts",
@@ -862,7 +894,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"retry.baseDelayMs": { type: "number", default: 2000 },
+	"retry.baseDelayMs": { type: "number", default: 500 },
 	"retry.maxDelayMs": {
 		type: "number",
 		default: 5 * 60 * 1000,
@@ -871,6 +903,15 @@ export const SETTINGS_SCHEMA = {
 			label: "Max Retry Delay",
 			description:
 				"Maximum wait between retries, in ms. When the provider asks us to wait longer than this and no credential or model fallback succeeds, the request fails fast instead of sleeping (e.g. 3-hour Anthropic rate-limit windows).",
+		},
+	},
+	"retry.modelFallback": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			label: "Retry Model Fallback",
+			description: "Allow retry recovery to switch to configured fallback models",
 		},
 	},
 	"retry.fallbackChains": { type: "record", default: {} as Record<string, string[]> },
@@ -1136,13 +1177,13 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.strategy": {
 		type: "enum",
-		values: ["context-full", "handoff", "shake", "off"] as const,
+		values: ["context-full", "handoff", "shake", "snapcompact", "off"] as const,
 		default: "context-full",
 		ui: {
 			tab: "context",
 			label: "Compaction Strategy",
 			description:
-				"Choose in-place context-full maintenance, auto-handoff, surgical shake (drop heavy content), or disable auto maintenance (off)",
+				"Choose in-place context-full maintenance, auto-handoff, surgical shake (drop heavy content), snapcompact (archive history as dense images), or disable auto maintenance (off)",
 			options: [
 				{
 					value: "context-full",
@@ -1154,6 +1195,11 @@ export const SETTINGS_SCHEMA = {
 					value: "shake",
 					label: "Shake",
 					description: "Drop heavy content (tool results + large blocks) in place; recover via artifact",
+				},
+				{
+					value: "snapcompact",
+					label: "Snapcompact",
+					description: "Archive history onto dense bitmap images the model reads back; no LLM call",
 				},
 				{
 					value: "off",
@@ -1285,6 +1331,17 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
+
+	"compaction.supersedeReads": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			label: "Supersede Stale Reads",
+			description: "Prune older read results when the same file is read again (cache-aware, runs every turn)",
+		},
+	},
+
 	// Branch summaries
 	"branchSummary.enabled": {
 		type: "boolean",
@@ -1826,7 +1883,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "editing",
 			label: "Hash Lines",
 			description:
-				"Include snapshot-tag headers and line numbers in read output for hashline edit mode (¶PATH#tag plus LINE:content)",
+				"Include snapshot-tag headers and line numbers in read output for hashline edit mode ([PATH#TAG] plus LINE:content)",
 		},
 	},
 
@@ -1936,6 +1993,17 @@ export const SETTINGS_SCHEMA = {
 		ui: { tab: "editing", label: "LSP", description: "Enable the lsp tool for language server protocol" },
 	},
 
+	"lsp.lazy": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "editing",
+			label: "Lazy LSP Startup",
+			description:
+				"Start language servers on first use (lsp tool or editing a matching file type) instead of at session startup",
+		},
+	},
+
 	"lsp.formatOnWrite": {
 		type: "boolean",
 		default: false,
@@ -2015,6 +2083,20 @@ export const SETTINGS_SCHEMA = {
 		type: "number",
 		default: 4 * 1024 * 1024,
 	},
+	"shellMinimizer.sourceOutlineLevel": {
+		type: "enum",
+		values: ["default", "aggressive"] as const,
+		default: "default",
+		ui: {
+			tab: "editing",
+			label: "Shell Minimizer Source Outline",
+			description: "Source outline mode for cat/read of source files: default or aggressive",
+		},
+	},
+	"shellMinimizer.legacyFilters": {
+		type: "boolean",
+		default: undefined,
+	},
 
 	// Eval (per-backend toggles; add more as new backends ship, e.g. eval.ts)
 	"eval.py": {
@@ -2046,6 +2128,16 @@ export const SETTINGS_SCHEMA = {
 			tab: "editing",
 			label: "Python Kernel Mode",
 			description: "Whether to keep IPython kernel alive across calls",
+		},
+	},
+	"python.interpreter": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "editing",
+			label: "Python Interpreter",
+			description:
+				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
 		},
 	},
 
@@ -2104,7 +2196,7 @@ export const SETTINGS_SCHEMA = {
 	"todo.enabled": {
 		type: "boolean",
 		default: true,
-		ui: { tab: "tools", label: "Todos", description: "Enable the todo_write tool for task tracking" },
+		ui: { tab: "tools", label: "Todos", description: "Enable the todo tool for task tracking" },
 	},
 
 	"todo.reminders": {
@@ -2137,6 +2229,12 @@ export const SETTINGS_SCHEMA = {
 			label: "Create Todos Automatically",
 			description: "Automatically create a comprehensive todo list after the first message",
 		},
+	},
+
+	"bash.enabled": {
+		type: "boolean",
+		default: true,
+		ui: { tab: "tools", label: "Bash", description: "Enable the bash tool for shell command execution" },
 	},
 
 	// Search and AST tools
@@ -2223,8 +2321,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			label: "IRC Timeout",
-			description:
-				"Drop IRC messages whose recipient does not respond within this many milliseconds (0 disables the timeout)",
+			description: "Default timeout for irc wait (and send await:true) in milliseconds; 0 disables the timeout",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "30000", label: "30 seconds" },
@@ -2419,7 +2516,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			label: "Async Execution",
-			description: "Enable async bash commands and background task execution",
+			description: "Enable async bash commands",
 		},
 	},
 
@@ -2464,13 +2561,13 @@ export const SETTINGS_SCHEMA = {
 	// Tool Discovery
 	"tools.discoveryMode": {
 		type: "enum",
-		values: ["off", "mcp-only", "all"] as const,
-		default: "off",
+		values: ["auto", "off", "mcp-only", "all"] as const,
+		default: "auto",
 		ui: {
 			tab: "tools",
 			label: "Tool Discovery",
 			description:
-				"Hide tools behind a search tool to save tokens. 'mcp-only' hides MCP tools; 'all' hides all non-essential built-ins too.",
+				"Hide tools behind a search tool to save tokens. 'auto' hides MCP tools once the tool set has more than 40 tools; 'mcp-only' always hides MCP tools; 'all' hides all non-essential built-ins too.",
 		},
 	},
 
@@ -2759,6 +2856,34 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"task.agentIdleTtlMs": {
+		type: "number",
+		default: 420_000,
+		ui: {
+			tab: "tasks",
+			label: "Agent Idle TTL",
+			description:
+				"How long an idle subagent stays live in memory before being parked to disk (ms). Parked agents are revived automatically when messaged or resumed. 0 keeps idle agents live until exit.",
+		},
+	},
+
+	"task.softRequestBudget": {
+		type: "number",
+		default: 90,
+		ui: {
+			tab: "tasks",
+			label: "Soft Subagent Request Budget",
+			description:
+				"Soft per-subagent request budget (assistant requests per run). Crossing it injects one steering notice asking the subagent to wrap up; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled explore/quick_task agents use a lower built-in budget.",
+			options: [
+				{ value: "0", label: "Disabled" },
+				{ value: "40", label: "40 requests" },
+				{ value: "90", label: "90 requests", description: "Default" },
+				{ value: "150", label: "150 requests" },
+			],
+		},
+	},
+
 	"task.disabledAgents": {
 		type: "array",
 		default: [] as string[],
@@ -2866,65 +2991,13 @@ export const SETTINGS_SCHEMA = {
 	// Provider selection
 	"providers.webSearch": {
 		type: "enum",
-		values: [
-			"auto",
-			"exa",
-			"brave",
-			"jina",
-			"kimi",
-			"zai",
-			"perplexity",
-			"anthropic",
-			"gemini",
-			"codex",
-			"tavily",
-			"kagi",
-			"synthetic",
-			"parallel",
-			"searxng",
-		] as const,
+		values: SEARCH_PROVIDER_PREFERENCES,
 		default: "auto",
 		ui: {
 			tab: "providers",
 			label: "Web Search Provider",
 			description: "Provider for web search tool",
-			options: [
-				{
-					value: "auto",
-					label: "Auto",
-					description: "Preferred web-search provider",
-				},
-				{ value: "exa", label: "Exa", description: "Uses Exa API when EXA_API_KEY is set; falls back to Exa MCP" },
-				{ value: "brave", label: "Brave", description: "Requires BRAVE_API_KEY" },
-				{ value: "jina", label: "Jina", description: "Requires JINA_API_KEY" },
-				{ value: "kimi", label: "Kimi", description: "Requires MOONSHOT_SEARCH_API_KEY or MOONSHOT_API_KEY" },
-				{
-					value: "perplexity",
-					label: "Perplexity",
-					description: "Requires PERPLEXITY_COOKIES or PERPLEXITY_API_KEY",
-				},
-				{
-					value: "anthropic",
-					label: "Anthropic",
-					description: "Claude's native web_search tool (uses Anthropic OAuth or ANTHROPIC_API_KEY)",
-				},
-				{
-					value: "codex",
-					label: "OpenAI",
-					description: "OpenAI's native web_search (uses ChatGPT OAuth via /login openai-codex)",
-				},
-				{
-					value: "gemini",
-					label: "Gemini",
-					description: "Google Search grounding via Gemini (uses google-gemini-cli or google-antigravity OAuth)",
-				},
-				{ value: "zai", label: "Z.AI", description: "Calls Z.AI webSearchPrime MCP" },
-				{ value: "tavily", label: "Tavily", description: "Requires TAVILY_API_KEY" },
-				{ value: "kagi", label: "Kagi", description: "Requires KAGI_API_KEY and Kagi Search API beta access" },
-				{ value: "synthetic", label: "Synthetic", description: "Requires SYNTHETIC_API_KEY" },
-				{ value: "parallel", label: "Parallel", description: "Requires PARALLEL_API_KEY" },
-				{ value: "searxng", label: "SearXNG", description: "Requires SEARXNG_ENDPOINT or searxng.endpoint" },
-			],
+			options: SEARCH_PROVIDER_OPTIONS,
 		},
 	},
 	"providers.image": {
@@ -3073,13 +3146,26 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
-	"providers.parallelFetch": {
-		type: "boolean",
-		default: true,
+	"providers.fetch": {
+		type: "enum",
+		values: ["auto", "native", "trafilatura", "lynx", "parallel", "jina"] as const,
+		default: "auto",
 		ui: {
 			tab: "providers",
-			label: "Parallel Fetch",
-			description: "Use Parallel extract API for URL fetching when credentials are available",
+			label: "Fetch Provider",
+			description: "Reader backend priority for the fetch/read URL tool",
+			options: [
+				{
+					value: "auto",
+					label: "Auto",
+					description: "Priority: native > trafilatura > lynx > parallel > jina",
+				},
+				{ value: "native", label: "Native", description: "In-process HTML→Markdown converter (always available)" },
+				{ value: "trafilatura", label: "Trafilatura", description: "Auto-installs via uv/pip" },
+				{ value: "lynx", label: "Lynx", description: "Requires lynx system package" },
+				{ value: "parallel", label: "Parallel", description: "Requires PARALLEL_API_KEY" },
+				{ value: "jina", label: "Jina", description: "Uses r.jina.ai reader (JINA_API_KEY optional)" },
+			],
 		},
 	},
 	"provider.appendOnlyContext": {
@@ -3090,9 +3176,9 @@ export const SETTINGS_SCHEMA = {
 			tab: "providers",
 			label: "Append-Only Context",
 			description:
-				"Cache system prompt + tool specs and keep an append-only message log so provider prefix caches (DeepSeek, Anthropic) hit at maximum rate. Auto enables for DeepSeek.",
+				"Cache system prompt + tool specs and keep an append-only message log so provider prefix caches (DeepSeek, Xiaomi/SGLang, Anthropic) hit at maximum rate. Auto enables for known prefix-cache providers.",
 			options: [
-				{ value: "auto", label: "Auto", description: "Enable for DeepSeek (recommended)" },
+				{ value: "auto", label: "Auto", description: "Enable for known prefix-cache providers (recommended)" },
 				{ value: "on", label: "On", description: "Always enable append-only context" },
 				{ value: "off", label: "Off", description: "Disable append-only context" },
 			],
@@ -3238,21 +3324,23 @@ type Schema = typeof SETTINGS_SCHEMA;
 export type SettingPath = keyof Schema;
 
 /** Infer the value type for a setting path */
-export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean" }
-	? boolean
-	: Schema[P] extends { type: "string" }
-		? string | undefined
-		: Schema[P] extends { type: "number" }
-			? number
-			: Schema[P] extends { type: "enum"; values: infer V }
-				? V extends readonly string[]
-					? V[number]
-					: never
-				: Schema[P] extends { type: "array"; default: infer D }
-					? D
-					: Schema[P] extends { type: "record"; default: infer D }
+export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean"; default: undefined }
+	? boolean | undefined
+	: Schema[P] extends { type: "boolean" }
+		? boolean
+		: Schema[P] extends { type: "string" }
+			? string | undefined
+			: Schema[P] extends { type: "number" }
+				? number
+				: Schema[P] extends { type: "enum"; values: infer V }
+					? V extends readonly string[]
+						? V[number]
+						: never
+					: Schema[P] extends { type: "array"; default: infer D }
 						? D
-						: never;
+						: Schema[P] extends { type: "record"; default: infer D }
+							? D
+							: never;
 
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
@@ -3308,7 +3396,7 @@ export type TreeFilterMode = SettingValue<"treeFilterMode">;
 
 export interface CompactionSettings {
 	enabled: boolean;
-	strategy: "context-full" | "handoff" | "shake" | "off";
+	strategy: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
 	thresholdPercent: number;
 	thresholdTokens: number;
 	reserveTokens: number;
@@ -3320,6 +3408,7 @@ export interface CompactionSettings {
 	idleEnabled: boolean;
 	idleThresholdTokens: number;
 	idleTimeoutSeconds: number;
+	supersedeReads: boolean;
 }
 
 export interface ContextPromotionSettings {
@@ -3330,6 +3419,7 @@ export interface RetrySettings {
 	maxRetries: number;
 	baseDelayMs: number;
 	maxDelayMs: number;
+	modelFallback: boolean;
 }
 
 export interface MemoriesSettings {
@@ -3441,6 +3531,8 @@ export interface ShellMinimizerSettings {
 	only: string[];
 	except: string[];
 	maxCaptureBytes: number;
+	sourceOutlineLevel: "default" | "aggressive";
+	legacyFilters: boolean | undefined;
 }
 
 /** Map group prefix -> typed settings interface */

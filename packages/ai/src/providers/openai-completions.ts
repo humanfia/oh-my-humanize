@@ -1,3 +1,10 @@
+import type { Effort } from "@oh-my-pi/pi-catalog/effort";
+import { toFirepassWireModelId, toFireworksWireModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
+import { isDeepseekModelIdOrName } from "@oh-my-pi/pi-catalog/identity";
+import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
+import { calculateCost } from "@oh-my-pi/pi-catalog/models";
+import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
+import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import { $env, extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
 import OpenAI, { APIConnectionTimeoutError as OpenAIConnectionTimeoutError } from "openai";
 import type {
@@ -10,8 +17,7 @@ import type {
 	ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions";
 import packageJson from "../../package.json" with { type: "json" };
-import { type Effort, getSupportedEfforts } from "../model-thinking";
-import { calculateCost } from "../models";
+import { getKimiCommonHeaders } from "../registry/oauth/kimi";
 import { getEnvApiKey } from "../stream";
 import {
 	type AssistantMessage,
@@ -20,8 +26,10 @@ import {
 	type Message,
 	type MessageAttribution,
 	type Model,
+	OPENAI_MAX_OUTPUT_TOKENS,
 	type OpenAICompat,
 	type ProviderSessionState,
+	type RawSseEvent,
 	resolveServiceTier,
 	type ServiceTier,
 	type StopReason,
@@ -38,7 +46,6 @@ import {
 import { normalizeSystemPrompts } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import { AssistantMessageEventStream } from "../utils/event-stream";
-import { toFirepassWireModelId, toFireworksWireModelId } from "../utils/fireworks-model-id";
 import {
 	type CapturedHttpErrorResponse,
 	finalizeErrorMessage,
@@ -51,12 +58,10 @@ import {
 	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
 import { parseStreamingJson, parseStreamingJsonThrottled } from "../utils/json-parse";
-import { parseGitHubCopilotApiKey } from "../utils/oauth/github-copilot";
-import { getKimiCommonHeaders } from "../utils/oauth/kimi";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
 import { adaptSchemaForStrict, NO_STRICT, toolWireSchema } from "../utils/schema";
-import { wrapFetchForSseDebug } from "../utils/sse-debug";
+import { notifyRawSseEvent } from "../utils/sse-debug";
 import {
 	getStreamMarkupHealingPattern,
 	type HealedToolCall,
@@ -64,15 +69,19 @@ import {
 	type StreamMarkupHealingEvent,
 } from "../utils/stream-markup-healing";
 import { isForcedToolChoice, mapToOpenAICompletionsToolChoice } from "../utils/tool-choice";
+import { parseAzureDeploymentNameMap } from "./azure-openai-responses";
 import {
 	buildCopilotDynamicHeaders,
 	hasCopilotVisionInput,
 	resolveGitHubCopilotBaseUrl,
 } from "./github-copilot-headers";
-import { detectOpenAICompat, type ResolvedOpenAICompat, resolveOpenAICompat } from "./openai-completions-compat";
 import { createInitialResponsesAssistantMessage } from "./openai-responses-shared";
 import { transformMessages } from "./transform-messages";
-import { joinTextWithImagePlaceholder, NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
+import {
+	isDashscopeCompatibleModeTextOnlyQwen,
+	joinTextWithImagePlaceholder,
+	NON_VISION_IMAGE_PLACEHOLDER,
+} from "./vision-guard";
 
 /**
  * Normalize tool call ID for Mistral.
@@ -255,7 +264,7 @@ type OpenAICompletionsParams = OpenAI.Chat.Completions.ChatCompletionCreateParam
 	top_k?: number;
 	min_p?: number;
 	repetition_penalty?: number;
-	thinking?: { type: "enabled" | "disabled" };
+	thinking?: { type: "enabled" | "disabled"; keep?: "all" };
 	enable_thinking?: boolean;
 	chat_template_kwargs?: { enable_thinking: boolean };
 	reasoning?: { effort?: string } | { enabled: false };
@@ -382,23 +391,18 @@ function getTrailingPartialDeepseekToken(text: string): string {
 const OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE =
 	"OpenAI completions stream timed out while waiting for the first event";
 
-const GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS = 600_000;
-const GLM_CODING_PLAN_MODEL_PATTERN = /^glm-5(?:[.-]|$)/i;
-
-/** Returns the widened OpenAI stream watchdog floor for slow GLM coding-plan reasoning models. */
-export function getOpenAICompletionsStreamIdleTimeoutFallbackMs(
-	model: Model<"openai-completions">,
-): number | undefined {
-	if (!GLM_CODING_PLAN_MODEL_PATTERN.test(model.id)) return undefined;
-	if (model.provider === "zhipu-coding-plan" || model.provider === "zai")
-		return GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS;
-
-	const baseUrl = model.baseUrl.toLowerCase();
-	if (baseUrl.includes("open.bigmodel.cn") || baseUrl.includes("api.z.ai")) {
-		return GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS;
+async function* observeDecodedOpenAICompletionChunks(
+	chunks: AsyncIterable<ChatCompletionChunk>,
+	observer: (event: RawSseEvent) => void,
+): AsyncGenerator<ChatCompletionChunk> {
+	for await (const chunk of chunks) {
+		const data = JSON.stringify(chunk);
+		const event = typeof chunk.object === "string" ? chunk.object : null;
+		const raw = event === null ? [`data: ${data}`] : [`event: ${event}`, `data: ${data}`];
+		// Reconstructed from decoded SDK event; not literal wire bytes.
+		notifyRawSseEvent(observer, { event, data, raw });
+		yield chunk;
 	}
-
-	return undefined;
 }
 
 export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
@@ -418,10 +422,16 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 		const abortTracker = createAbortSourceTracker(options?.signal);
 		const firstEventTimeoutAbortError = new Error(OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE);
 		const { requestAbortController, requestSignal } = abortTracker;
+		const onSseEvent = options?.onSseEvent;
+		const rawSseObserver = onSseEvent ? (event: RawSseEvent) => onSseEvent(event, model) : undefined;
+		// Assigned once the block helpers exist (they are scoped to the `try`);
+		// the catch handler uses it to close any open blocks before emitting the
+		// terminal error so both exit paths obey the same block lifecycle.
+		let finishOpenBlocksOnError: () => void = () => {};
 
 		try {
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-			const idleTimeoutFallbackMs = getOpenAICompletionsStreamIdleTimeoutFallbackMs(model);
+			const idleTimeoutFallbackMs = model.compat.streamIdleTimeoutMs;
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs(idleTimeoutFallbackMs);
 			const firstEventTimeoutMs =
 				options?.streamFirstEventTimeoutMs ?? getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs);
@@ -434,15 +444,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				requestHeaders,
 				getCapturedErrorResponse: captureErrorResponse,
 				clearCapturedErrorResponse,
-			} = await createClient(
-				model,
-				context,
-				apiKey,
-				options?.headers,
-				options?.initiatorOverride,
-				options?.onSseEvent,
-				options?.fetch,
-			);
+			} = await createClient(model, context, apiKey, options?.headers, options?.initiatorOverride, options?.fetch);
 			const premiumRequestsTotal = copilotPremiumRequests;
 			getCapturedErrorResponse = captureErrorResponse;
 			let appliedToolStrictMode: AppliedToolStrictMode = "mixed";
@@ -456,13 +458,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			const createCompletionsStream = async (toolStrictModeOverride?: ToolStrictModeOverride) => {
 				clearCapturedErrorResponse();
 				const effectiveToolStrictModeOverride = disableStrictTools ? "none" : toolStrictModeOverride;
-				const { params, toolStrictMode } = buildParams(
-					model,
-					context,
-					options,
-					baseUrl,
-					effectiveToolStrictModeOverride,
-				);
+				const { params, toolStrictMode } = buildParams(model, context, options, effectiveToolStrictModeOverride);
 				appliedToolStrictMode = toolStrictMode;
 				options?.onPayload?.(params);
 				rawRequestDump = {
@@ -532,14 +528,17 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			}
 			stream.push({ type: "start", partial: output });
 
-			const parseMiniMaxThinkTags = model.provider === "minimax-code" || model.provider === "minimax-code-cn";
 			// Some OpenAI-compatible DeepSeek hosts (including NVIDIA NIM and DeepSeek's
 			// native API) leak chat-template tool-call markers in `delta.content` even
 			// though tool calls are also surfaced structurally. Strip the leaked markers
 			// so users don't see raw `<｜...｜>` tokens.
 			const stripDeepseekChatTemplateTokens =
-				/deepseek/i.test(model.id) && (model.provider === "nvidia" || model.provider === "deepseek");
-			type ToolCallStreamBlock = ToolCall & { partialArgs?: string; streamIndex?: number; lastParseLen?: number };
+				isDeepseekModelIdOrName(model.id) && (model.provider === "nvidia" || model.provider === "deepseek");
+			type ToolCallStreamBlock = ToolCall & {
+				partialArgs?: string | Record<string, unknown>;
+				streamIndex?: number;
+				lastParseLen?: number;
+			};
 			type OpenAIStreamBlock = TextContent | ThinkingContent | ToolCallStreamBlock;
 			const pendingToolCallBlocks: ToolCallStreamBlock[] = [];
 			const toolCallBlockByIndex = new Map<number, ToolCallStreamBlock>();
@@ -552,7 +551,22 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				if (block.partialArgs === undefined) return;
 				const contentIndex = blockIndex(block);
 				if (contentIndex < 0) return;
-				block.arguments = parseStreamingJson(block.partialArgs);
+				// Object-shaped `partialArgs` came from MiniMax-compatible hosts that stream
+				// `function.arguments` as an object. The per-chunk handler holds them with an
+				// empty wire delta (see the object branch below) because emitting each chunk's
+				// `JSON.stringify(rawArgs)` would feed concat-based downstream consumers
+				// (proxy.ts, openai-chat-server, openai-responses-server, anthropic-messages-server)
+				// an invalid concatenation like `{"input":"a"}{"input":"b"}`. Flush the final
+				// merged object as one concat-safe delta now so those consumers reconstruct the
+				// args correctly before observing `toolcall_end`.
+				if (typeof block.partialArgs === "object" && !Array.isArray(block.partialArgs)) {
+					const fullJson = JSON.stringify(block.partialArgs);
+					if (fullJson.length > 0 && fullJson !== "{}") {
+						stream.push({ type: "toolcall_delta", contentIndex, delta: fullJson, partial: output });
+					}
+				}
+				block.arguments =
+					typeof block.partialArgs === "string" ? parseStreamingJson(block.partialArgs) : block.partialArgs;
 				delete block.partialArgs;
 				delete block.lastParseLen;
 				if (block.streamIndex !== undefined) {
@@ -582,13 +596,21 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				}
 				finishToolCallBlock(block);
 			};
+			finishOpenBlocksOnError = () => {
+				if (currentBlock?.type !== "toolCall") finishCurrentBlock(currentBlock);
+				finishPendingToolCallBlocks();
+			};
 			const appendText = (
 				message: AssistantMessage,
 				eventStream: AssistantMessageEventStream,
 				text: string,
 			): void => {
 				if (currentBlock?.type !== "text") {
-					finishCurrentBlock(currentBlock);
+					// Leave toolCall blocks pending across text transitions: chunks after
+					// the first typically carry only `index`, so a finished (de-registered)
+					// call would be reborn as a nameless phantom block when its arguments
+					// resume. The stream-end sweep finalizes pending calls.
+					if (currentBlock?.type !== "toolCall") finishCurrentBlock(currentBlock);
 					currentBlock = { type: "text", text: "" };
 					message.content.push(currentBlock);
 					eventStream.push({ type: "text_start", contentIndex: blockIndex(currentBlock), partial: message });
@@ -611,7 +633,9 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 					currentBlock?.type !== "thinking" ||
 					(signature !== undefined && currentBlock.thinkingSignature !== signature)
 				) {
-					finishCurrentBlock(currentBlock);
+					// Same as appendText: leave toolCall blocks pending so index-only
+					// continuation deltas can still find them.
+					if (currentBlock?.type !== "toolCall") finishCurrentBlock(currentBlock);
 					currentBlock = { type: "thinking", thinking: "", thinkingSignature: signature };
 					message.content.push(currentBlock);
 					eventStream.push({
@@ -668,9 +692,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				}
 			};
 
-			const streamMarkupHealingPattern = getStreamMarkupHealingPattern(model.provider, model.id, {
-				parseThinkingTags: parseMiniMaxThinkTags,
-			});
+			const streamMarkupHealingPattern = getStreamMarkupHealingPattern(model.provider, model.id);
 			const streamMarkupHealing = streamMarkupHealingPattern
 				? new StreamMarkupHealing({ pattern: streamMarkupHealingPattern })
 				: undefined;
@@ -713,7 +735,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				for (const call of calls) emitHealedToolCall(call);
 			};
 
-			for await (const chunk of iterateWithIdleTimeout(openaiStream, {
+			const timedOpenaiStream = iterateWithIdleTimeout(openaiStream, {
 				idleTimeoutMs,
 				firstItemTimeoutMs: firstEventTimeoutMs,
 				firstItemErrorMessage: OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE,
@@ -722,12 +744,22 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				onFirstItemTimeout: () => abortTracker.abortLocally(firstEventTimeoutAbortError),
 				abortSignal: options?.signal,
 				isProgressItem: isOpenAICompletionsProgressChunk,
-			})) {
+			});
+			const observedOpenaiStream = rawSseObserver
+				? observeDecodedOpenAICompletionChunks(timedOpenaiStream, rawSseObserver)
+				: timedOpenaiStream;
+			for await (const chunk of observedOpenaiStream) {
 				if (!chunk || typeof chunk !== "object") continue;
 
 				// OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
 				// and each chunk in a streamed completion carries the same id.
 				output.responseId ||= chunk.id;
+
+				// Aggregators (OpenRouter, Vercel AI Gateway, …) report the upstream
+				// provider that actually served the request via a top-level `provider`
+				// field present on every chunk. Capture the first non-empty value so
+				// callers can attribute routing without re-parsing the raw stream.
+				output.upstreamProvider ||= getOptionalStringProperty(chunk, "provider");
 
 				if (chunk.usage) {
 					output.usage = parseChunkUsage(chunk.usage, model, premiumRequestsTotal);
@@ -836,6 +868,11 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 									partial: output,
 								});
 							} else {
+								// Resuming a pending call after interleaved text/thinking:
+								// close the text/thinking block we drifted into.
+								if (currentBlock !== block && currentBlock && currentBlock.type !== "toolCall") {
+									finishCurrentBlock(currentBlock);
+								}
 								currentBlock = block;
 								if (streamIndex !== undefined && block.streamIndex === undefined) {
 									block.streamIndex = streamIndex;
@@ -846,14 +883,53 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 							if (toolCall.id) block.id = toolCall.id;
 							if (toolCall.function?.name) block.name = toolCall.function.name;
 							let delta = "";
-							if (toolCall.function?.arguments) {
-								delta = toolCall.function.arguments;
-								block.partialArgs = (block.partialArgs ?? "") + toolCall.function.arguments;
-								const throttled = parseStreamingJsonThrottled(block.partialArgs, block.lastParseLen ?? 0);
-								if (throttled) {
-									block.arguments = throttled.value;
-									block.lastParseLen = throttled.parsedLen;
+							// The OpenAI SDK types `function.arguments` as a JSON string, but MiniMax-compatible
+							// hosts stream a fully-formed object instead. Model both shapes so the branches below
+							// narrow honestly rather than widening through `unknown`.
+							const rawArgs = toolCall.function?.arguments as string | Record<string, unknown> | undefined;
+							if (typeof rawArgs === "string") {
+								if (rawArgs.length > 0) {
+									delta = rawArgs;
+									const prev = typeof block.partialArgs === "string" ? block.partialArgs : "";
+									block.partialArgs = prev + rawArgs;
+									const throttled = parseStreamingJsonThrottled(block.partialArgs, block.lastParseLen ?? 0);
+									if (throttled) {
+										block.arguments = throttled.value;
+										block.lastParseLen = throttled.parsedLen;
+									}
 								}
+							} else if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+								// MiniMax-compatible hosts stream `function.arguments` as an object instead of the
+								// OpenAI JSON-string contract. Most chunks carry the complete object in one delta,
+								// but cannot rely on that: replacing per-chunk drops earlier keys (and earlier
+								// string content for the same key) when the host fragments the args across deltas.
+								// Shallow-merge into the accumulated object; for shared string keys, detect
+								// cumulative-vs-delta semantics with `startsWith` so we neither duplicate cumulative
+								// payloads nor lose delta fragments. Degenerates to the previous "last wins"
+								// behaviour for the common single-chunk shape (no prior value to merge with).
+								//
+								// `delta` stays empty here: emitting `JSON.stringify(rawArgs)` per chunk feeds
+								// downstream concat-based accumulators (proxy.ts, openai-chat-server,
+								// openai-responses-server, anthropic-messages-server) an invalid sequence like
+								// `{"input":"a"}{"input":"b"}`. The merged object is flushed as a single
+								// concat-safe delta in `finishToolCallBlock` before `toolcall_end` instead.
+								const prev =
+									block.partialArgs &&
+									typeof block.partialArgs === "object" &&
+									!Array.isArray(block.partialArgs)
+										? (block.partialArgs as Record<string, unknown>)
+										: undefined;
+								const merged: Record<string, unknown> = prev ? { ...prev } : {};
+								for (const [key, value] of Object.entries(rawArgs)) {
+									const prevValue = merged[key];
+									if (typeof prevValue === "string" && typeof value === "string") {
+										merged[key] = value.startsWith(prevValue) ? value : prevValue + value;
+									} else {
+										merged[key] = value;
+									}
+								}
+								block.partialArgs = merged;
+								block.arguments = merged;
 							}
 							stream.push({
 								type: "toolcall_delta",
@@ -938,6 +1014,12 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
+			// Close open blocks first so consumers tracking text_/thinking_/toolcall_
+			// lifecycles never see orphaned starts on the error path. Best-effort: a
+			// throw here must not prevent the terminal error event below.
+			try {
+				finishOpenBlocksOnError();
+			} catch {}
 			for (const block of output.content) delete (block as any).index;
 			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
 			output.stopReason = abortTracker.wasCallerAbort() ? "aborted" : "error";
@@ -965,7 +1047,6 @@ async function createClient(
 	apiKey?: string,
 	extraHeaders?: Record<string, string>,
 	initiatorOverride?: MessageAttribution,
-	onSseEvent?: OpenAICompletionsOptions["onSseEvent"],
 	fetchOverride?: FetchImpl,
 ): Promise<{
 	client: OpenAI;
@@ -1031,7 +1112,11 @@ async function createClient(
 	if (baseUrl?.includes(".openai.azure.com")) {
 		const apiVersion = $env.AZURE_OPENAI_API_VERSION || "2024-10-21";
 		if (!baseUrl.includes("/deployments/")) {
-			baseUrl = `${baseUrl}/deployments/${model.id}`;
+			// Honor AZURE_OPENAI_DEPLOYMENT_NAME_MAP like the responses provider:
+			// deployment names routinely differ from catalog model ids.
+			const deploymentName =
+				parseAzureDeploymentNameMap($env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP).get(model.id) ?? model.id;
+			baseUrl = `${baseUrl}/deployments/${deploymentName}`;
 		}
 		azureDefaultQuery = { "api-version": apiVersion };
 	}
@@ -1064,7 +1149,6 @@ async function createClient(
 		},
 		baseFetch.preconnect ? { preconnect: baseFetch.preconnect } : {},
 	);
-	const debugFetch = onSseEvent ? wrapFetchForSseDebug(wrappedFetch, event => onSseEvent(event, model)) : wrappedFetch;
 	return {
 		client: new OpenAI({
 			apiKey,
@@ -1073,7 +1157,7 @@ async function createClient(
 			maxRetries: 5,
 			defaultHeaders: headers,
 			defaultQuery: azureDefaultQuery,
-			fetch: debugFetch,
+			fetch: wrappedFetch,
 		}),
 		copilotPremiumRequests,
 		baseUrl,
@@ -1089,56 +1173,36 @@ function buildParams(
 	model: Model<"openai-completions">,
 	context: Context,
 	options: OpenAICompletionsOptions | undefined,
-	resolvedBaseUrl?: string,
 	toolStrictModeOverride?: ToolStrictModeOverride,
 ): { params: OpenAICompletionsParams; toolStrictMode: AppliedToolStrictMode } {
-	const compat = getCompat(model, resolvedBaseUrl);
-	// Opencode Zen's gateway (https://opencode.ai/zen/go/v1) gates
-	// `reasoning_content` on the request's thinking state for every model it
-	// fronts (Kimi K2.x, DeepSeek V4, GLM-5.x, Qwen3.x, MiMo, MiniMax, …): it
-	// 400s with `Extra inputs are not permitted` when thinking is off but the
-	// field is supplied (#1071), and 400s with `thinking is enabled but
-	// reasoning_content is missing in assistant tool call message at index N`
-	// (#1484) when thinking is on and the field is absent. `detectOpenAICompat`
-	// only set `requiresReasoningContentForToolCalls` for the DeepSeek family
-	// (and previously for Kimi until #1071 carved out opencode); reactivate it
-	// per request for every opencode model whenever this turn is in thinking
-	// mode so prior tool-call turns replay reasoning_content. Forced-tool
-	// turns are excluded because the later `disableReasoningOnForcedToolChoice`
-	// guard at the bottom of `buildParams` strips thinking from the wire body
-	// for Kimi-style models — keeping the replay on under those conditions
-	// would resurrect the #1071 failure.
-	//
-	// `allowsSyntheticReasoningContentForToolCalls` is forced to `false` on
-	// the same path: the gateway specifically requires `reasoning_content`,
-	// and the default synthetic-friendly behavior would echo whichever field
-	// the upstream streamed (e.g. `reasoning` for many opencode turns),
-	// landing the replay in the wrong key and re-triggering the 400.
-	const isOpenCodeProvider = model.provider === "opencode-go" || model.provider === "opencode-zen";
+	let compat = model.compat;
 	const thinkingEnabledForRequest =
 		Boolean(options?.reasoning) && !options?.disableReasoning && Boolean(model.reasoning);
 	const forcedToolChoiceSuppressesThinking =
 		compat.disableReasoningOnForcedToolChoice &&
 		isForcedToolChoice(mapToOpenAICompletionsToolChoice(options?.toolChoice));
-	if (isOpenCodeProvider && thinkingEnabledForRequest && !forcedToolChoiceSuppressesThinking) {
-		compat.requiresReasoningContentForToolCalls = true;
-		compat.allowsSyntheticReasoningContentForToolCalls = false;
-		compat.reasoningContentField = "reasoning_content";
+	if (compat.whenThinking && thinkingEnabledForRequest && !forcedToolChoiceSuppressesThinking) {
+		compat = compat.whenThinking; // precomputed at model build — pointer swap, no allocation
 	}
-	const isKimiModelId = model.id.includes("moonshotai/kimi") || /(^|\/)kimi[-.]/i.test(model.id);
 	const messages = convertMessages(model, context, compat);
-	maybeAddOpenRouterAnthropicCacheControl(model, messages);
-	const supportsReasoningParams = model.provider !== "github-copilot";
+	maybeAddAnthropicCacheControl(compat, messages);
+	const supportsReasoningParams = compat.supportsReasoningParams;
 
-	// Kimi (including via OpenRouter and Fireworks router-form IDs such as
-	// `accounts/fireworks/routers/kimi-*`) calculates TPM rate limits based on
-	// max_tokens, not actual output. The official Kimi K2 model guidance
-	// (https://docs.fireworks.ai/models/kimi-k2) also requires `max_tokens` for
-	// every call since the family can otherwise emit very long reasoning traces
-	// before the final answer. Always send max_tokens — match the same
-	// Kimi-family regex used by the compat detector.
-	// Note: Direct kimi-code provider is handled by the dedicated Kimi provider in kimi.ts.
-	const effectiveMaxTokens = options?.maxTokens ?? (isKimiModelId ? model.maxTokens : undefined);
+	// Kimi-family models calculate TPM rate limits from max_tokens (not actual
+	// output) and the official guidance requires sending it on every call —
+	// `compat.alwaysSendMaxTokens` carries that detection.
+	const requestedMaxTokens = options?.maxTokens ?? (compat.alwaysSendMaxTokens ? model.maxTokens : undefined);
+	// OpenRouter fans out to upstreams whose output caps differ from the catalog
+	// value (which tracks the highest-cap provider). A max_tokens above the routed
+	// upstream's cap makes OpenRouter silently skip that provider (e.g. Cerebras
+	// GLM-4.7, ~40k) for a higher-cap one, defeating `provider.order`/`only`. Omit
+	// it for OpenRouter so each upstream self-caps and routing is honored — unless
+	// the model always requires max_tokens (Kimi TPM accounting, see above).
+	const omitMaxTokensForRouting = compat.isOpenRouterHost && !compat.alwaysSendMaxTokens;
+	const effectiveMaxTokens =
+		requestedMaxTokens === undefined || omitMaxTokensForRouting
+			? undefined
+			: Math.min(requestedMaxTokens, model.maxTokens, OPENAI_MAX_OUTPUT_TOKENS);
 
 	const requestModelId = resolveOpenAICompletionsModelId(model, options);
 	const params: OpenAICompletionsParams = {
@@ -1156,7 +1220,7 @@ function buildParams(
 		params.store = false;
 	}
 
-	if (effectiveMaxTokens) {
+	if (effectiveMaxTokens && !model.omitMaxOutputTokens) {
 		if (compat.maxTokensField === "max_tokens") {
 			params.max_tokens = effectiveMaxTokens;
 		} else {
@@ -1232,6 +1296,9 @@ function buildParams(
 		// Must explicitly disable since z.ai defaults to thinking enabled.
 		const enabled = options?.reasoning && !options?.disableReasoning;
 		params.thinking = { type: enabled ? "enabled" : "disabled" };
+		if (enabled && compat.thinkingKeep) {
+			params.thinking.keep = compat.thinkingKeep;
+		}
 	} else if (supportsReasoningParams && compat.thinkingFormat === "qwen" && model.reasoning) {
 		// Qwen uses top-level enable_thinking: boolean
 		params.enable_thinking = !!options?.reasoning && !options?.disableReasoning;
@@ -1300,13 +1367,13 @@ function buildParams(
 	}
 
 	// OpenRouter provider routing preferences
-	if (model.baseUrl.includes("openrouter.ai") && compat.openRouterRouting) {
+	if (compat.isOpenRouterHost && compat.openRouterRouting) {
 		params.provider = compat.openRouterRouting;
 	}
 
 	// Vercel AI Gateway provider routing preferences
-	if (model.baseUrl.includes("ai-gateway.vercel.sh") && model.compat?.vercelGatewayRouting) {
-		const routing = model.compat.vercelGatewayRouting;
+	if (compat.isVercelGatewayHost && compat.vercelGatewayRouting) {
+		const routing = compat.vercelGatewayRouting;
 		if (routing.only || routing.order) {
 			const gatewayOptions: Record<string, string[]> = {};
 			if (routing.only) gatewayOptions.only = routing.only;
@@ -1317,6 +1384,11 @@ function buildParams(
 
 	if (compat.extraBody) {
 		Object.assign(params, compat.extraBody);
+		if (model.provider === "fireworks" && params.reasoning_effort !== undefined) {
+			// Fireworks rejects simultaneous DeepSeek-style `thinking` toggles and
+			// OpenAI-style `reasoning_effort`; the effort field carries the user's level.
+			delete params.thinking;
+		}
 	}
 
 	return { params, toolStrictMode };
@@ -1325,6 +1397,11 @@ function buildParams(
 function getOptionalNumberProperty(value: object, key: string): number | undefined {
 	const property = Reflect.get(value, key);
 	return typeof property === "number" ? property : undefined;
+}
+
+function getOptionalStringProperty(value: object, key: string): string | undefined {
+	const property = Reflect.get(value, key);
+	return typeof property === "string" && property.length > 0 ? property : undefined;
 }
 
 function getOptionalObjectProperty(value: object, key: string): object | undefined {
@@ -1410,12 +1487,8 @@ function mapReasoningEffort(
 	return reasoningEffortMap[effort] ?? effort;
 }
 
-function maybeAddOpenRouterAnthropicCacheControl(
-	model: Model<"openai-completions">,
-	messages: ChatCompletionMessageParam[],
-): void {
-	if (model.provider !== "openrouter" || !model.id.startsWith("anthropic/")) return;
-
+function maybeAddAnthropicCacheControl(compat: ResolvedOpenAICompat, messages: ChatCompletionMessageParam[]): void {
+	if (compat.cacheControlFormat !== "anthropic") return;
 	// Anthropic-style caching requires cache_control on a text part. Add a breakpoint
 	// on the last user/assistant message (walking backwards until we find text content).
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -1424,6 +1497,7 @@ function maybeAddOpenRouterAnthropicCacheControl(
 
 		const content = msg.content;
 		if (typeof content === "string") {
+			if (content.trim().length === 0) continue;
 			msg.content = [
 				Object.assign({ type: "text" as const, text: content }, { cache_control: { type: "ephemeral" } }),
 			];
@@ -1432,10 +1506,12 @@ function maybeAddOpenRouterAnthropicCacheControl(
 
 		if (!Array.isArray(content)) continue;
 
-		// Find last text part and add cache_control
+		// Find last non-empty text part and add cache_control. Empty assistant
+		// content is valid for tool-call replay, but Anthropic/OpenRouter reject
+		// empty text blocks once cache_control turns it into structured content.
 		for (let j = content.length - 1; j >= 0; j--) {
 			const part = content[j];
-			if (part?.type === "text") {
+			if (part?.type === "text" && part.text.trim().length > 0) {
 				Object.assign(part, { cache_control: { type: "ephemeral" } });
 				return;
 			}
@@ -1450,6 +1526,12 @@ export function convertMessages(
 ): ChatCompletionMessageParam[] {
 	const params: ChatCompletionMessageParam[] = [];
 
+	const maxNormalizedToolCallIdLength = compat.requiresMistralToolIds
+		? 9
+		: model.provider === "openai"
+			? 40
+			: undefined;
+	const duplicateToolCallIdSuffixPrefix = compat.requiresMistralToolIds ? "dup" : undefined;
 	const normalizeToolCallId = (id: string): string => {
 		if (compat.requiresMistralToolIds) return normalizeMistralToolId(id, true);
 
@@ -1466,7 +1548,13 @@ export function convertMessages(
 		if (model.provider === "openai") return id.length > 40 ? id.slice(0, 40) : id;
 		return id;
 	};
-	const transformedMessages = transformMessages(context.messages, model, id => normalizeToolCallId(id));
+	const transformedMessages = transformMessages(
+		context.messages,
+		model,
+		id => normalizeToolCallId(id),
+		maxNormalizedToolCallIdLength,
+		duplicateToolCallIdSuffixPrefix,
+	);
 
 	const remappedToolCallIds = new Map<string, string[]>();
 	let generatedToolCallIdCounter = 0;
@@ -1547,7 +1635,7 @@ export function convertMessages(
 					content: text,
 				});
 			} else {
-				const supportsImages = model.input.includes("image");
+				const supportsImages = model.input.includes("image") && !isDashscopeCompatibleModeTextOnlyQwen(model);
 				const content: ChatCompletionContentPart[] = [];
 				let omittedImages = false;
 				for (const item of msg.content) {
@@ -1563,6 +1651,8 @@ export function convertMessages(
 							type: "image_url",
 							image_url: {
 								url: `data:${item.mimeType};base64,${item.data}`,
+								// Chat Completions has no "original"; omit it (provider default).
+								...(item.detail && item.detail !== "original" ? { detail: item.detail } : {}),
 							},
 						} satisfies ChatCompletionContentPartImage);
 					} else {
@@ -1605,12 +1695,12 @@ export function convertMessages(
 				if (compat.requiresThinkingAsText) {
 					// Convert thinking blocks to plain text (no tags to avoid model mimicking them)
 					const thinkingText = nonEmptyThinkingBlocks.map(b => b.thinking).join("\n\n");
-					const textContent = assistantMsg.content as Array<{ type: "text"; text: string }> | null;
-					if (textContent) {
-						textContent.unshift({ type: "text", text: thinkingText });
-					} else {
-						assistantMsg.content = [{ type: "text", text: thinkingText }];
-					}
+					// `content` is a plain string at this point (set above) or null —
+					// never an array. Prepend the thinking text to the string form.
+					assistantMsg.content =
+						typeof assistantMsg.content === "string" && assistantMsg.content.length > 0
+							? `${thinkingText}\n\n${assistantMsg.content}`
+							: thinkingText;
 				} else if (compat.requiresReasoningContentForToolCalls) {
 					// Use the streamed signature when the backend accepts whichever
 					// recognized field name was emitted (allowsSynthetic=true). Backends
@@ -1790,7 +1880,7 @@ export function convertMessages(
 					.filter(c => c.type === "text")
 					.map(c => (c as TextContent).text)
 					.join("\n");
-				const supportsImages = model.input.includes("image");
+				const supportsImages = model.input.includes("image") && !isDashscopeCompatibleModeTextOnlyQwen(model);
 				const hasImages = toolMsg.content.some(c => c.type === "image");
 				const omittedImages = hasImages && !supportsImages;
 
@@ -1957,23 +2047,4 @@ function mapStopReason(reason: ChatCompletionChunk.Choice["finish_reason"] | str
 				errorMessage: `Provider finish_reason: ${reason}`,
 			};
 	}
-}
-
-/**
- * Detect compatibility settings from provider and baseUrl for known providers.
- * Provider takes precedence over URL-based detection since it's explicitly configured.
- * Returns a fully resolved OpenAICompat object with all fields set.
- */
-export function detectCompat(model: Model<"openai-completions">): ResolvedOpenAICompat {
-	return detectOpenAICompat(model);
-}
-
-/**
- * Get resolved compatibility settings for a model.
- * Uses explicit model.compat if provided, otherwise auto-detects from provider/URL.
- * @param model - The model configuration
- * @param resolvedBaseUrl - Optional resolved base URL (e.g., after GitHub Copilot proxy-ep resolution).
- */
-function getCompat(model: Model<"openai-completions">, resolvedBaseUrl?: string): ResolvedOpenAICompat {
-	return resolveOpenAICompat(model, resolvedBaseUrl);
 }

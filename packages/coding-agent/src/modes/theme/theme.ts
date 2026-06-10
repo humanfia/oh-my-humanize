@@ -10,8 +10,9 @@ import {
 	supportsLanguage as nativeSupportsLanguage,
 } from "@oh-my-pi/pi-natives";
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
-import { adjustHsv, getCustomThemesDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { adjustHsv, colorLuma, getCustomThemesDir, isEnoent, logger, relativeLuminance } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { LRUCache } from "lru-cache/raw";
 import * as z from "zod/v4";
 // Embed theme JSON files at build time
 import darkThemeJson from "./dark.json" with { type: "json" };
@@ -42,6 +43,7 @@ export type SymbolKey =
 	| "status.running"
 	| "status.shadowed"
 	| "status.aborted"
+	| "status.done"
 	// Navigation
 	| "nav.cursor"
 	| "nav.selected"
@@ -94,6 +96,7 @@ export type SymbolKey =
 	| "icon.pause"
 	| "icon.loop"
 	| "icon.folder"
+	| "icon.search"
 	| "icon.scratchFolder"
 	| "icon.file"
 	| "icon.git"
@@ -126,6 +129,8 @@ export type SymbolKey =
 	| "icon.extensionInstruction"
 	// STT
 	| "icon.mic"
+	// Compaction divider
+	| "icon.camera"
 	// Thinking Levels
 	| "thinking.minimal"
 	| "thinking.low"
@@ -136,6 +141,9 @@ export type SymbolKey =
 	// Checkboxes
 	| "checkbox.checked"
 	| "checkbox.unchecked"
+	// Radio (single-choice)
+	| "radio.selected"
+	| "radio.unselected"
 	// Text Formatting
 	| "format.bullet"
 	| "format.dash"
@@ -192,7 +200,30 @@ export type SymbolKey =
 	| "tab.tools"
 	| "tab.memory"
 	| "tab.tasks"
-	| "tab.providers";
+	| "tab.providers"
+	// Tool identity icons
+	| "tool.write"
+	| "tool.edit"
+	| "tool.bash"
+	| "tool.ssh"
+	| "tool.lsp"
+	| "tool.gh"
+	| "tool.webSearch"
+	| "tool.exa"
+	| "tool.browser"
+	| "tool.eval"
+	| "tool.debug"
+	| "tool.mcp"
+	| "tool.job"
+	| "tool.task"
+	| "tool.todo"
+	| "tool.memory"
+	| "tool.ask"
+	| "tool.resolve"
+	| "tool.review"
+	| "tool.inspectImage"
+	| "tool.goal"
+	| "tool.irc";
 
 type SymbolMap = Record<SymbolKey, string>;
 
@@ -208,6 +239,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"status.running": "⟳",
 	"status.shadowed": "◌",
 	"status.aborted": "⏹",
+	"status.done": "•",
 	// Navigation
 	"nav.cursor": "❯",
 	"nav.selected": "➤",
@@ -260,6 +292,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.pause": "⏸",
 	"icon.loop": "↻",
 	"icon.folder": "📁",
+	"icon.search": "🔍",
 	"icon.scratchFolder": "🗑",
 	"icon.file": "📄",
 	"icon.git": "⎇",
@@ -292,16 +325,21 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.extensionInstruction": "📘",
 	// STT
 	"icon.mic": "🎤",
+	// Compaction divider
+	"icon.camera": "📷",
 	// Thinking levels
 	"thinking.minimal": "◔ min",
 	"thinking.low": "◑ low",
 	"thinking.medium": "◒ med",
 	"thinking.high": "◕ high",
 	"thinking.xhigh": "◉ xhigh",
-	"thinking.autoPending": "▣?",
+	"thinking.autoPending": "⟳",
 	// Checkboxes
 	"checkbox.checked": "☑",
 	"checkbox.unchecked": "☐",
+	// Radio (single-choice)
+	"radio.selected": "◉",
+	"radio.unselected": "○",
 	// Formatting
 	"format.bullet": "•",
 	"format.dash": "—",
@@ -359,6 +397,29 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tab.memory": "🧠",
 	"tab.tasks": "📦",
 	"tab.providers": "🌐",
+	// Tool identity icons (per-tool signature glyph on the success header)
+	"tool.write": "✎",
+	"tool.edit": "✎",
+	"tool.bash": "❯",
+	"tool.ssh": "⇄",
+	"tool.lsp": "💡",
+	"tool.gh": "⎇",
+	"tool.webSearch": "⌕",
+	"tool.exa": "🔭",
+	"tool.browser": "🌐",
+	"tool.eval": "▶",
+	"tool.debug": "🐞",
+	"tool.mcp": "🔌",
+	"tool.job": "⚙",
+	"tool.task": "⇶",
+	"tool.todo": "☑",
+	"tool.memory": "🧠",
+	"tool.ask": "?",
+	"tool.resolve": "✓",
+	"tool.review": "◉",
+	"tool.inspectImage": "🖼",
+	"tool.goal": "◎",
+	"tool.irc": "✉",
 };
 
 const NERD_SYMBOLS: SymbolMap = {
@@ -383,6 +444,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"status.shadowed": "◐",
 	// pick:  | alt:  
 	"status.aborted": "\uf04d",
+	// pick: • | alt: ● ·
+	"status.done": "•",
 	// Navigation
 	// pick:  | alt:  
 	"nav.cursor": "\uf054",
@@ -481,6 +544,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.loop": "\uf021",
 	// pick:  | alt:  
 	"icon.folder": "\uf115",
+	"icon.search": "\uf002",
 	// pick:  | alt:
 	"icon.scratchFolder": "\uf014",
 	// pick:  | alt:  
@@ -541,6 +605,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.extensionInstruction": "\uf02d",
 	// STT - fa-microphone
 	"icon.mic": "\uf130",
+	// Compaction divider - fa-camera-retro
+	"icon.camera": "\uf083",
 	// Thinking Levels - emoji labels
 	// pick: 🤨 min | alt:  min  min
 	"thinking.minimal": "\u{F0E7} min",
@@ -552,13 +618,18 @@ const NERD_SYMBOLS: SymbolMap = {
 	"thinking.high": "\u{F111} high",
 	// pick: 🧠 xhi | alt:  xhi  xhi
 	"thinking.xhigh": "\u{F06D} xhi",
-	// pick: 󰞋 (nf-md-help_box) | alt:  [?]
-	"thinking.autoPending": "\u{f078b}",
+	// pick:  (fa-circle-o-notch) | alt: 󰂼 (nf-md-cached) ⟳
+	"thinking.autoPending": "\uf1ce",
 	// Checkboxes
 	// pick:  | alt:  
 	"checkbox.checked": "\uf14a",
 	// pick:  | alt: 
 	"checkbox.unchecked": "\uf096",
+	// Radio (single-choice)
+	// pick:  (fa-dot-circle-o) | alt:  ◉
+	"radio.selected": "\uf192",
+	// pick:  (fa-circle-o) | alt:  ○
+	"radio.unselected": "\uf10c",
 	// pick:  | alt:   •
 	"format.bullet": "\uf111",
 	// pick: – | alt: — ― -
@@ -623,6 +694,29 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tab.memory": "󰧑",
 	"tab.tasks": "󰐱",
 	"tab.providers": "󰖟",
+	// Tool identity icons (per-tool signature glyph on the success header)
+	"tool.write": "\uEA7F",
+	"tool.edit": "\uEA73",
+	"tool.bash": "\uEBCA",
+	"tool.ssh": "\uEB3A",
+	"tool.lsp": "\uEA61",
+	"tool.gh": "\uEA84",
+	"tool.webSearch": "\uEB01",
+	"tool.exa": "\uEB68",
+	"tool.browser": "\uEAAE",
+	"tool.eval": "\uEBAF",
+	"tool.debug": "\uEAD8",
+	"tool.mcp": "\uEB2D",
+	"tool.job": "\uEBA2",
+	"tool.task": "\uEA7E",
+	"tool.todo": "\uEAB3",
+	"tool.memory": "\uEACE",
+	"tool.ask": "\uEAC7",
+	"tool.resolve": "\uEBB1",
+	"tool.review": "\uEA70",
+	"tool.inspectImage": "\uEAEA",
+	"tool.goal": "\uEBF8",
+	"tool.irc": "\uF086",
 };
 
 const ASCII_SYMBOLS: SymbolMap = {
@@ -637,6 +731,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"status.running": "[~]",
 	"status.shadowed": "[/]",
 	"status.aborted": "[-]",
+	"status.done": "*",
 	// Navigation
 	"nav.cursor": ">",
 	"nav.selected": "->",
@@ -689,6 +784,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.pause": "||",
 	"icon.loop": "loop",
 	"icon.folder": "[D]",
+	"icon.search": "[/]",
 	"icon.scratchFolder": "[T]",
 	"icon.file": "[F]",
 	"icon.git": "git:",
@@ -721,16 +817,20 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.extensionInstruction": "IN",
 	// STT
 	"icon.mic": "MIC",
+	// Compaction divider
+	"icon.camera": "[o]",
 	// Thinking Levels
 	"thinking.minimal": "[min]",
 	"thinking.low": "[low]",
 	"thinking.medium": "[med]",
 	"thinking.high": "[high]",
 	"thinking.xhigh": "[xhi]",
-	"thinking.autoPending": "[?]",
+	"thinking.autoPending": "[~]",
 	// Checkboxes
 	"checkbox.checked": "[x]",
 	"checkbox.unchecked": "[ ]",
+	"radio.selected": "(o)",
+	"radio.unselected": "( )",
 	"format.bullet": "*",
 	"format.dash": "-",
 	"format.bracketLeft": "[",
@@ -787,6 +887,29 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tab.memory": "[Y]",
 	"tab.tasks": "[K]",
 	"tab.providers": "[P]",
+	// Tool identity icons (per-tool signature glyph on the success header)
+	"tool.write": "+f",
+	"tool.edit": "~",
+	"tool.bash": "$",
+	"tool.ssh": "ssh",
+	"tool.lsp": "lsp",
+	"tool.gh": "gh",
+	"tool.webSearch": "web",
+	"tool.exa": "exa",
+	"tool.browser": "[w]",
+	"tool.eval": ">_",
+	"tool.debug": "dbg",
+	"tool.mcp": "<>",
+	"tool.job": "job",
+	"tool.task": ">>>",
+	"tool.todo": "[x]",
+	"tool.memory": "mem",
+	"tool.ask": "[?]",
+	"tool.resolve": "[v]",
+	"tool.review": "rev",
+	"tool.inspectImage": "[i]",
+	"tool.goal": "(o)",
+	"tool.irc": "irc",
 };
 
 const SYMBOL_PRESETS: Record<SymbolPreset, SymbolMap> = {
@@ -1277,6 +1400,16 @@ export class Theme {
 	#bgColors: Record<ThemeBg, string>;
 	#symbols: SymbolMap;
 	#spinnerFramesOverrides: Partial<Record<SpinnerType, string[]>>;
+	/**
+	 * Perceptual luma (0..1) of the status-line background — used to classify the
+	 * theme light/dark. Undefined when it can't be resolved. Classified against the
+	 * status line (the surface session accents render on) rather than the chat bubble
+	 * (`userMessageBg`), which some themes (e.g. `porcelain`) style dark on an
+	 * otherwise-light theme.
+	 */
+	readonly statusLineLuminance: number | undefined;
+	/** WCAG relative luminance of the status-line background — basis for accent contrast. */
+	readonly #statusLineContrastLuminance: number | undefined;
 
 	constructor(
 		fgColors: Record<ThemeColor, string | number>,
@@ -1286,6 +1419,8 @@ export class Theme {
 		symbolOverrides: Partial<Record<SymbolKey, string>>,
 		spinnerFramesOverrides: Partial<Record<SpinnerType, string[]>> = {},
 	) {
+		this.statusLineLuminance = colorLuma(bgColors.statusLineBg);
+		this.#statusLineContrastLuminance = relativeLuminance(bgColors.statusLineBg);
 		this.#fgColors = {} as Record<ThemeColor, string>;
 		for (const [key, value] of Object.entries(fgColors) as [ThemeColor, string | number][]) {
 			this.#fgColors[key] = fgAnsi(value, mode);
@@ -1305,6 +1440,19 @@ export class Theme {
 			}
 		}
 		this.#spinnerFramesOverrides = spinnerFramesOverrides;
+	}
+
+	/** True when the active theme has a light status-line background. */
+	get isLight(): boolean {
+		return this.statusLineLuminance !== undefined && this.statusLineLuminance > 0.5;
+	}
+
+	/**
+	 * Surface luminance to size session accents against on light themes; undefined on
+	 * dark themes so accents stay vivid. Pass straight to `getSessionAccentHex`.
+	 */
+	get accentSurfaceLuminance(): number | undefined {
+		return this.isLight ? this.#statusLineContrastLuminance : undefined;
 	}
 
 	fg(color: ThemeColor, text: string): string {
@@ -1442,6 +1590,7 @@ export class Theme {
 			running: this.#symbols["status.running"],
 			shadowed: this.#symbols["status.shadowed"],
 			aborted: this.#symbols["status.aborted"],
+			done: this.#symbols["status.done"],
 		};
 	}
 
@@ -1549,6 +1698,7 @@ export class Theme {
 			extensionContextFile: this.#symbols["icon.extensionContextFile"],
 			extensionInstruction: this.#symbols["icon.extensionInstruction"],
 			mic: this.#symbols["icon.mic"],
+			camera: this.#symbols["icon.camera"],
 		};
 	}
 
@@ -1567,6 +1717,13 @@ export class Theme {
 		return {
 			checked: this.#symbols["checkbox.checked"],
 			unchecked: this.#symbols["checkbox.unchecked"],
+		};
+	}
+
+	get radio() {
+		return {
+			selected: this.#symbols["radio.selected"],
+			unselected: this.#symbols["radio.unselected"],
 		};
 	}
 
@@ -2312,13 +2469,8 @@ export function isLightTheme(themeName?: string): boolean {
 	}
 	try {
 		const resolved = resolveVarRefs(themeJson.colors.userMessageBg, themeJson.vars ?? {});
-		if (typeof resolved !== "string" || !resolved.startsWith("#") || resolved.length !== 7) return false;
-		const r = parseInt(resolved.slice(1, 3), 16) / 255;
-		const g = parseInt(resolved.slice(3, 5), 16) / 255;
-		const b = parseInt(resolved.slice(5, 7), 16) / 255;
-		// Relative luminance (ITU-R BT.709)
-		const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-		return luminance > 0.5;
+		const luminance = colorLuma(resolved);
+		return luminance !== undefined && luminance > 0.5;
 	} catch {
 		return false;
 	}
@@ -2390,16 +2542,53 @@ function getHighlightColors(t: Theme): NativeHighlightColors {
 }
 
 /**
+ * Memoized native syntax highlight. Returns the joined ANSI string, or `null`
+ * when the native tokenizer throws so callers can apply their own fallback.
+ *
+ * Keyed on `(lang, code)` and reset whenever the active `theme` instance
+ * changes — the ANSI colors are baked into the highlighted output, so a theme
+ * switch (which always reassigns `theme`) must invalidate every entry.
+ *
+ * Why this exists: animated tool blocks (eval/bash) repaint their box on every
+ * ~33ms border-shimmer frame, and markdown re-lexes on every streamed delta.
+ * Without memoization each frame can re-tokenize an unchanged code body through
+ * the Rust FFI — ~26ms for 100 lines, ~40ms for 150 — consuming or overrunning
+ * the 33ms frame budget and starving the spinner/render timers (the "TUI freeze").
+ */
+const HIGHLIGHT_CACHE_MAX = 256;
+const highlightCache = new LRUCache<string, string>({ max: HIGHLIGHT_CACHE_MAX });
+let highlightCacheTheme: Theme | undefined;
+
+function highlightCached(code: string, validLang: string | undefined): string | null {
+	if (highlightCacheTheme !== theme) {
+		highlightCache.clear();
+		highlightCacheTheme = theme;
+	}
+	const key = `${validLang ?? ""}\x00${code}`;
+	const hit = highlightCache.get(key);
+	if (hit !== undefined) {
+		return hit;
+	}
+	let highlighted: string;
+	try {
+		highlighted = nativeHighlightCode(code, validLang, getHighlightColors(theme));
+	} catch {
+		return null;
+	}
+	highlightCache.set(key, highlighted);
+	return highlighted;
+}
+
+/**
  * Highlight code with syntax coloring based on file extension or language.
  * Returns array of highlighted lines.
  */
 export function highlightCode(code: string, lang?: string): string[] {
 	const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
-	try {
-		return nativeHighlightCode(code, validLang, getHighlightColors(theme)).split("\n");
-	} catch {
-		return code.split("\n");
-	}
+	const highlighted = highlightCached(code, validLang);
+	// Always return a fresh array: callers (e.g. renderCodeCell) push extra lines
+	// onto the result, which would corrupt the cached string otherwise.
+	return (highlighted ?? code).split("\n");
 }
 
 export function getSymbolTheme(): SymbolTheme {
@@ -2444,11 +2633,9 @@ export function getMarkdownTheme(): MarkdownTheme {
 		resolveMermaidAscii,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
-			try {
-				return nativeHighlightCode(code, validLang, getHighlightColors(theme)).split("\n");
-			} catch {
-				return code.split("\n").map(line => theme.fg("mdCodeBlock", line));
-			}
+			const highlighted = highlightCached(code, validLang);
+			if (highlighted !== null) return highlighted.split("\n");
+			return code.split("\n").map(line => theme.fg("mdCodeBlock", line));
 		},
 	};
 	cachedMarkdownTheme = markdownTheme;

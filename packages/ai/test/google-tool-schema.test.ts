@@ -2,9 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { convertTools } from "@oh-my-pi/pi-ai/providers/google-shared";
 import type { Model, TJsonSchema, Tool } from "@oh-my-pi/pi-ai/types";
 import { normalizeSchemaForCCA, normalizeSchemaForGoogle } from "@oh-my-pi/pi-ai/utils/schema";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 function createModel(id: string): Model<"google-gemini-cli"> {
-	return {
+	return buildModel({
 		id,
 		name: id,
 		api: "google-gemini-cli",
@@ -20,7 +21,7 @@ function createModel(id: string): Model<"google-gemini-cli"> {
 		},
 		contextWindow: 200000,
 		maxTokens: 8192,
-	};
+	});
 }
 
 describe("Cloud Code Assist Claude tool schema conversion", () => {
@@ -63,6 +64,37 @@ describe("Cloud Code Assist Claude tool schema conversion", () => {
 			type: "object",
 			properties: {
 				env: {
+					type: "object",
+					properties: {},
+				},
+			},
+		});
+	});
+
+	it("strips schema keywords inside a property literally named properties", () => {
+		// Regression: the Resend MCP `create_contact` tool exposes a property
+		// literally named `properties`. The walker must not treat that property's
+		// value schema as a properties map — otherwise nested `propertyNames` /
+		// `additionalProperties` keywords leak to the CCA wire and get rejected
+		// with `Unknown name "propertyNames"` (HTTP 400).
+		const schema = {
+			type: "object",
+			properties: {
+				properties: {
+					description: "Custom property key-value pairs",
+					type: "object",
+					propertyNames: { type: "string" },
+					additionalProperties: { type: "string" },
+					properties: {},
+				},
+			},
+		} as unknown;
+
+		expect(normalizeSchemaForCCA(schema)).toEqual({
+			type: "object",
+			properties: {
+				properties: {
+					description: "Custom property key-value pairs",
 					type: "object",
 					properties: {},
 				},
@@ -186,7 +218,7 @@ describe("Cloud Code Assist Claude tool schema conversion", () => {
 		});
 		expect(JSON.stringify(declaration.parameters)).not.toContain('"anyOf"');
 	});
-	it("collapses mixed unions for todo_write-style nullable content fields", () => {
+	it("collapses mixed unions for todo-style nullable content fields", () => {
 		const parameters = {
 			type: "object",
 			properties: {
@@ -203,7 +235,7 @@ describe("Cloud Code Assist Claude tool schema conversion", () => {
 				},
 			},
 		} as TJsonSchema;
-		const tools: Tool[] = [{ name: "todo_write", description: "Todo tool", parameters }];
+		const tools: Tool[] = [{ name: "todo", description: "Todo tool", parameters }];
 		const model = createModel("claude-sonnet-4-5");
 
 		const declaration = convertTools(tools, model)?.[0]?.functionDeclarations[0] as Record<string, unknown>;

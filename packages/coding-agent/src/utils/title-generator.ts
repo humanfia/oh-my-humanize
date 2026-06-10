@@ -6,11 +6,12 @@ import * as path from "node:path";
 import { type Api, type AssistantMessage, completeSimple, type Model, type Tool } from "@oh-my-pi/pi-ai";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
+
 import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import titleSystemPrompt from "../prompts/system/title-system.md" with { type: "text" };
 import { ONLINE_TINY_TITLE_MODEL_KEY } from "../tiny/models";
-import { formatTitleUserMessage, normalizeGeneratedTitle } from "../tiny/text";
+import { formatTitleUserMessage, isLowSignalTitleInput, normalizeGeneratedTitle } from "../tiny/text";
 import { tinyTitleClient } from "../tiny/title-client";
 
 const TITLE_SYSTEM_PROMPT = prompt.render(titleSystemPrompt);
@@ -31,7 +32,8 @@ const setTitleTool: Tool = {
 		properties: {
 			title: {
 				type: "string",
-				description: "A concise 3-6 word title for the session.",
+				description:
+					'The generated session title, or exactly "none" when the message carries no concrete task yet.',
 			},
 		},
 		required: ["title"],
@@ -135,6 +137,7 @@ export async function raceFirstNonNull<T>(
  *   to produce request metadata (e.g. user_id for session attribution). Using a
  *   resolver instead of a pre-evaluated value ensures the metadata's account_uuid
  *   reflects the credential actually selected for this request.
+ * @param customSystemPrompt Optional title-specific system prompt override
  */
 export async function generateSessionTitle(
 	firstMessage: string,
@@ -143,16 +146,46 @@ export async function generateSessionTitle(
 	sessionId?: string,
 	currentModel?: Model<Api>,
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined,
+	customSystemPrompt?: string,
 ): Promise<string | null> {
+	// Defer titling for greetings / acknowledgements / empty input. The default
+	// tiny title model can't reliably decline trivial input, so this happens
+	// deterministically before any model is invoked; the caller retries on the
+	// next user message while the session stays unnamed.
+	if (isLowSignalTitleInput(firstMessage)) {
+		logger.debug("title-generator: skipped low-signal input", { sessionId, reason: "low-signal" });
+		return null;
+	}
+
+	const titleSystemPrompt = customSystemPrompt?.trim() || undefined;
 	const tinyModel = settings.get("providers.tinyModel");
 	if (tinyModel === ONLINE_TINY_TITLE_MODEL_KEY) {
-		return generateTitleOnline(firstMessage, registry, settings, sessionId, currentModel, metadataResolver);
+		return generateTitleOnline(
+			firstMessage,
+			registry,
+			settings,
+			sessionId,
+			currentModel,
+			metadataResolver,
+			undefined,
+			titleSystemPrompt,
+		);
 	}
 
 	const onlineAbortController = new AbortController();
-	const localTitle = tinyTitleClient.generate(tinyModel, firstMessage).then(
+	const localTitlePromise = titleSystemPrompt
+		? tinyTitleClient.generate(tinyModel, firstMessage, { systemPrompt: titleSystemPrompt })
+		: tinyTitleClient.generate(tinyModel, firstMessage);
+	const localTitle = localTitlePromise.then(
 		title => title || null,
-		() => null,
+		err => {
+			logger.warn("title-generator: local model error", {
+				sessionId,
+				model: tinyModel,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return null;
+		},
 	);
 	const startOnline = (): Promise<string | null> =>
 		generateTitleOnline(
@@ -163,6 +196,7 @@ export async function generateSessionTitle(
 			currentModel,
 			metadataResolver,
 			onlineAbortController.signal,
+			titleSystemPrompt,
 		);
 
 	return raceFirstNonNull(localTitle, startOnline, TITLE_LOCAL_FALLBACK_DELAY_MS, () => {
@@ -178,52 +212,54 @@ export async function generateTitleOnline(
 	currentModel?: Model<Api>,
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined,
 	signal?: AbortSignal,
+	customSystemPrompt?: string,
 ): Promise<string | null> {
 	const model = getTitleModel(registry, settings, currentModel);
 	if (!model) {
-		logger.debug("title-generator: no title model found");
+		logger.warn("title-generator: no title model found", { sessionId, reason: "no-title-model" });
 		return null;
 	}
 
+	const titleSystemPrompt = customSystemPrompt?.trim() || undefined;
+	const systemPrompt = titleSystemPrompt ?? TITLE_SYSTEM_PROMPT;
 	const userMessage = formatTitleUserMessage(firstMessage);
-
-	const apiKey = await registry.getApiKey(model, sessionId);
-	if (!apiKey) {
-		logger.debug("title-generator: no API key for smol model", {
-			provider: model.provider,
-			id: model.id,
-		});
-		return null;
-	}
-	// Resolve metadata after getApiKey so the session-sticky credential for this
-	// request is already recorded; metadataResolver can then return the correct
-	// account_uuid rather than the snapshot-at-call-site value.
-	const metadata = metadataResolver?.(model.provider);
-
-	// Title generation is a 3-6 word task, but some reasoning backends ignore
-	// disableReasoning. Keep the normal cheap budget for non-reasoning models
-	// while reserving enough output room for reasoning models to still emit
-	// the forced tool call after any unavoidable thinking tokens.
-	const maxTokens = model.reasoning ? Math.max(TITLE_MAX_TOKENS, REASONING_SAFE_MAX_TOKENS) : TITLE_MAX_TOKENS;
-	const request = {
-		model: `${model.provider}/${model.id}`,
-		systemPrompt: TITLE_SYSTEM_PROMPT,
-		userMessage,
-		maxTokens,
+	const modelName = `${model.provider}/${model.id}`;
+	const modelContext = {
+		sessionId,
+		provider: model.provider,
+		id: model.id,
+		model: modelName,
 	};
-	logger.debug("title-generator: request", request);
+	logger.debug("title-generator: start", modelContext);
 
 	try {
+		const apiKey = await registry.getApiKey(model, sessionId);
+		if (!apiKey) {
+			logger.warn("title-generator: no API key", { ...modelContext, reason: "missing-api-key" });
+			return null;
+		}
+		// Resolve metadata after getApiKey so the session-sticky credential for this
+		// request is already recorded; metadataResolver can then return the correct
+		// account_uuid rather than the snapshot-at-call-site value.
+		const metadata = metadataResolver?.(model.provider);
+
+		// Title generation is a 3-7 word task, but some reasoning backends ignore
+		// disableReasoning. Keep the normal cheap budget for non-reasoning models
+		// while reserving enough output room for reasoning models to still emit
+		// the forced tool call after any unavoidable thinking tokens.
+		const maxTokens = model.reasoning ? Math.max(TITLE_MAX_TOKENS, REASONING_SAFE_MAX_TOKENS) : TITLE_MAX_TOKENS;
+		logger.debug("title-generator: request", { ...modelContext, maxTokens });
+
 		const response = await completeSimple(
 			model,
 			{
-				systemPrompt: [request.systemPrompt],
-				messages: [{ role: "user", content: request.userMessage, timestamp: Date.now() }],
+				systemPrompt: [systemPrompt],
+				messages: [{ role: "user", content: userMessage, timestamp: Date.now() }],
 				tools: [setTitleTool],
 			},
 			{
-				apiKey,
-				maxTokens: request.maxTokens,
+				apiKey: registry.resolver(model.provider, { sessionId, baseUrl: model.baseUrl, modelId: model.id }),
+				maxTokens,
 				disableReasoning: true,
 				toolChoice: { type: "tool", name: SET_TITLE_TOOL_NAME },
 				metadata,
@@ -232,8 +268,9 @@ export async function generateTitleOnline(
 		);
 
 		if (response.stopReason === "error") {
-			logger.debug("title-generator: response error", {
-				model: request.model,
+			logger.warn("title-generator: response error", {
+				...modelContext,
+				reason: "provider-response-error",
 				stopReason: response.stopReason,
 				errorMessage: response.errorMessage,
 			});
@@ -242,8 +279,18 @@ export async function generateTitleOnline(
 
 		const title = normalizeGeneratedTitle(extractGeneratedTitle(response.content));
 
-		logger.debug("title-generator: response", {
-			model: request.model,
+		if (!title) {
+			logger.debug("title-generator: no title returned", {
+				...modelContext,
+				reason: "model-returned-none",
+				usage: response.usage,
+				stopReason: response.stopReason,
+			});
+			return null;
+		}
+
+		logger.debug("title-generator: success", {
+			...modelContext,
 			title,
 			usage: response.usage,
 			stopReason: response.stopReason,
@@ -251,8 +298,9 @@ export async function generateTitleOnline(
 
 		return title;
 	} catch (err) {
-		logger.debug("title-generator: error", {
-			model: request.model,
+		logger.warn("title-generator: error", {
+			...modelContext,
+			reason: "exception",
 			error: err instanceof Error ? err.message : String(err),
 		});
 		return null;

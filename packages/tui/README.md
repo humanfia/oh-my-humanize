@@ -62,7 +62,7 @@ All components implement:
 
 ```typescript
 interface Component {
-	render(width: number): string[];
+	render(width: number): readonly string[];
 	handleInput?(data: string): void;
 	invalidate?(): void;
 }
@@ -70,7 +70,7 @@ interface Component {
 
 | Method               | Description                                                                                                                                                        |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `render(width)`      | Returns an array of strings, one per line. Each line **must not exceed `width`** or the TUI will error. Use `truncateToWidth()` or manual wrapping to ensure this. |
+| `render(width)`      | Returns an array of strings, one per line. Each line **must not exceed `width`** or the TUI will error. Use `truncateToWidth()` or manual wrapping to ensure this. The result is component-owned and immutable to callers; return the same array reference when unchanged (enables renderer memoization) and a new array when content changed. |
 | `handleInput?(data)` | Called when the component has focus and receives keyboard input. The `data` string contains raw terminal input (may include ANSI escape sequences).                |
 | `invalidate?()`      | Called to clear any cached render state. Components should re-render from scratch on the next `render()` call.                                                     |
 
@@ -513,7 +513,7 @@ The TUI uses three rendering strategies:
 2. **Width Changed or Change Above Viewport**: Clear screen and full re-render
 3. **Normal Update**: Move cursor to first changed line, clear to end, render changed lines
 
-All updates are wrapped in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for atomic, flicker-free rendering.
+All updates are wrapped in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for atomic, flicker-free rendering unless `PI_NO_SYNC_OUTPUT=1` is set. The opt-out removes only the DEC 2026 wrapper; paint writes still guard terminal autowrap to avoid pending-wrap cursor artifacts.
 
 ## Terminal Interface
 
@@ -538,7 +538,7 @@ interface Terminal {
 **Built-in implementations:**
 
 - `ProcessTerminal` - Uses `process.stdin/stdout`
-- `VirtualTerminal` - For testing (uses `@xterm/headless`)
+- `VirtualTerminal` - For testing (uses ghostty-web)
 
 ## Utilities
 
@@ -590,7 +590,7 @@ class MyInteractiveComponent implements Component {
 		}
 	}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		return this.items.map((item, i) => {
 			const prefix = i === this.selectedIndex ? "> " : "  ";
 			return truncateToWidth(prefix + item, width);
@@ -614,7 +614,7 @@ class MyComponent implements Component {
 		this.text = text;
 	}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		// Option 1: Truncate long lines
 		return [truncateToWidth(this.text, width)];
 
@@ -656,7 +656,7 @@ class CachedComponent implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		if (this.cachedLines && this.cachedWidth === width) {
 			return this.cachedLines;
 		}

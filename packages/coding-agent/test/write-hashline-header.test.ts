@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Patch, Patcher } from "@oh-my-pi/hashline";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getFileSnapshotStore } from "@oh-my-pi/pi-coding-agent/edit/file-snapshot-store";
+import { canonicalSnapshotKey, getFileSnapshotStore } from "@oh-my-pi/pi-coding-agent/edit/file-snapshot-store";
 import { HashlineFilesystem } from "@oh-my-pi/pi-coding-agent/edit/hashline/filesystem";
 import { writethroughNoop } from "@oh-my-pi/pi-coding-agent/lsp";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -30,7 +30,7 @@ function resultText(result: { content: { type: string; text?: string }[] }): str
 		.join("\n");
 }
 
-const HASHLINE_HEADER_LINE = /^¶(\S+)#([0-9A-F]{4})$/;
+const HASHLINE_HEADER_LINE = /^\[([^#\r\n]+)#([0-9A-F]{4})\]$/;
 
 describe("write tool hashline header", () => {
 	let tmpDir: string;
@@ -47,7 +47,7 @@ describe("write tool hashline header", () => {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	});
 
-	it("insert heads a fresh ¶path#TAG header that maps to the written content", async () => {
+	it("inserts a fresh [path#TAG] header that maps to the written content", async () => {
 		const filePath = path.join(tmpDir, "module.ts");
 		const session = createSession(tmpDir);
 		const tool = new WriteTool(session);
@@ -65,7 +65,7 @@ describe("write tool hashline header", () => {
 
 		// The tag must address a snapshot whose content matches what we wrote so a
 		// follow-up edit can land without an extra `read` round-trip.
-		const snapshot = getFileSnapshotStore(session).byHash(filePath, tag!);
+		const snapshot = getFileSnapshotStore(session).byHash(canonicalSnapshotKey(filePath), tag!);
 		expect(snapshot).not.toBeNull();
 		expect(snapshot?.text).toBe(content);
 	});
@@ -111,7 +111,7 @@ describe("write tool hashline header", () => {
 
 		const result = await tool.execute("call-1", { path: filePath, content });
 		const text = resultText(result);
-		expect(text.startsWith("¶")).toBe(false);
+		expect(text.startsWith("[")).toBe(false);
 		expect(text).toBe(`Successfully wrote ${content.length} bytes to ${path.relative(tmpDir, filePath)}`);
 	});
 });

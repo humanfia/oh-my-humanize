@@ -6,7 +6,7 @@
  */
 import * as path from "node:path";
 import * as url from "node:url";
-import type { TSchema } from "@oh-my-pi/pi-ai";
+import { isDefinitiveOAuthFailure, type TSchema } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
@@ -472,23 +472,24 @@ export class MCPManager {
 			const cachedTools = new Map<string, MCPToolDefinition[]>();
 			const pendingTasks = connectionTasks.filter(task => task.tracked.status === "pending");
 
-			if (pendingTasks.length > 0) {
-				if (this.toolCache) {
-					await Promise.all(
-						pendingTasks.map(async task => {
-							const cached = await this.toolCache?.get(task.name, task.config);
-							if (cached) {
-								cachedTools.set(task.name, cached);
-							}
-						}),
-					);
-				}
-
-				const pendingWithoutCache = pendingTasks.filter(task => !cachedTools.has(task.name));
-				if (pendingWithoutCache.length > 0) {
-					await Promise.allSettled(pendingWithoutCache.map(task => task.tracked.promise));
-				}
+			if (pendingTasks.length > 0 && this.toolCache) {
+				await Promise.all(
+					pendingTasks.map(async task => {
+						const cached = await this.toolCache?.get(task.name, task.config);
+						if (cached) {
+							cachedTools.set(task.name, cached);
+						}
+					}),
+				);
 			}
+
+			// Pending tasks without cached tools used to be awaited synchronously here,
+			// which gated the entire UI on the slowest server's per-request timeout
+			// (issue #2100: a single unresponsive MCP server blocked startup for the
+			// full 30 s `OMP_MCP_TIMEOUT_MS`). Leave them in flight — the background
+			// `void toolsPromise.then(...)` chain above registers their tools and
+			// fires `#onToolsChanged` once the connect finishes, or logs the failure
+			// after `allowBackgroundLogging` flips below.
 
 			for (const task of connectionTasks) {
 				const { name } = task;
@@ -1184,29 +1185,48 @@ export class MCPManager {
 							await this.#authStorage.set(credentialId, refreshedCredential);
 							credential = refreshedCredential;
 						} catch (refreshError) {
-							logger.warn("MCP OAuth refresh failed, using existing token", {
-								credentialId,
-								error: refreshError,
-							});
+							const errorMsg = refreshError instanceof Error ? refreshError.message : String(refreshError);
+							if (isDefinitiveOAuthFailure(errorMsg)) {
+								// `invalid_grant` / `invalid_token` / 401 from the token endpoint means
+								// the server has retired this credential — keeping the stale access
+								// token would just re-fail with 401 on every MCP request and leave a
+								// poisoned row in agent.db that survives restarts. Drop it now so the
+								// next connect attempt surfaces a clean "needs reauth" failure and
+								// the user can recover with `/mcp reauth <server>` (or `/mcp unauth`
+								// to forget the server entirely).
+								logger.warn("MCP OAuth refresh failed definitively; cleared credential", {
+									credentialId,
+									error: errorMsg,
+								});
+								await this.#authStorage.remove(credentialId);
+								credential = undefined;
+							} else {
+								logger.warn("MCP OAuth refresh failed, using existing token", {
+									credentialId,
+									error: refreshError,
+								});
+							}
 						}
 					}
 
-					if (resolved.type === "http" || resolved.type === "sse") {
-						resolved = {
-							...resolved,
-							headers: {
-								...resolved.headers,
-								Authorization: `Bearer ${credential.access}`,
-							},
-						};
-					} else {
-						resolved = {
-							...resolved,
-							env: {
-								...resolved.env,
-								OAUTH_ACCESS_TOKEN: credential.access,
-							},
-						};
+					if (credential?.type === "oauth") {
+						if (resolved.type === "http" || resolved.type === "sse") {
+							resolved = {
+								...resolved,
+								headers: {
+									...resolved.headers,
+									Authorization: `Bearer ${credential.access}`,
+								},
+							};
+						} else {
+							resolved = {
+								...resolved,
+								env: {
+									...resolved.env,
+									OAUTH_ACCESS_TOKEN: credential.access,
+								},
+							};
+						}
 					}
 				}
 			} catch (error) {

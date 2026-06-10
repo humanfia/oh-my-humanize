@@ -3,7 +3,7 @@
  *
  * Thin wrapper that adapts shared Kagi API utilities to SearchResponse shape.
  */
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
 import type { SearchResponse } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
 import { KagiApiError, searchWithKagi } from "../../kagi";
@@ -12,6 +12,8 @@ import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, toSearchSources } from "./utils";
 
+type SearchParamsWithFetch = SearchParams & { fetch?: FetchImpl };
+
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 40;
 
@@ -19,9 +21,11 @@ const MAX_NUM_RESULTS = 40;
 export async function searchKagi(params: {
 	query: string;
 	num_results?: number;
+	recency?: SearchParams["recency"];
 	signal?: AbortSignal;
 	authStorage: AuthStorage;
 	sessionId?: string;
+	fetch?: FetchImpl;
 }): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 
@@ -30,8 +34,10 @@ export async function searchKagi(params: {
 			params.query,
 			{
 				limit: numResults,
+				recency: params.recency,
 				sessionId: params.sessionId,
 				signal: params.signal,
+				fetch: params.fetch,
 			},
 			params.authStorage,
 		);
@@ -41,6 +47,7 @@ export async function searchKagi(params: {
 			sources: toSearchSources(result.sources, numResults),
 			relatedQuestions: result.relatedQuestions.length > 0 ? result.relatedQuestions : undefined,
 			requestId: result.requestId,
+			answer: result.answer,
 		};
 	} catch (err) {
 		if (err instanceof KagiApiError) {
@@ -63,13 +70,17 @@ export class KagiProvider extends SearchProvider {
 		return authStorage.hasAuth("kagi");
 	}
 
-	search(params: SearchParams): Promise<SearchResponse> {
+	search(params: SearchParamsWithFetch): Promise<SearchResponse> {
+		const fetchImpl = params.fetch;
+
 		return searchKagi({
 			query: params.query,
 			num_results: params.numSearchResults ?? params.limit,
+			recency: params.recency,
 			signal: params.signal,
 			authStorage: params.authStorage,
 			sessionId: params.sessionId,
+			fetch: fetchImpl,
 		});
 	}
 }

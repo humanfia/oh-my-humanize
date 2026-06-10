@@ -8,8 +8,9 @@
  * here once.
  */
 
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ANTHROPIC_THINKING } from "../stream";
-import type { Context, Model, SimpleStreamOptions } from "../types";
+import type { Context, Model, ModelSpec, SimpleStreamOptions } from "../types";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { createProviderErrorMessage } from "./error-message";
 import { streamAnthropic, streamOpenAICompletions } from "./register-builtins";
@@ -44,6 +45,9 @@ export function streamOpenAIAnthropicShim(
 ): AssistantMessageEventStream {
 	const stream = new AssistantMessageEventStream();
 	const format = options?.format ?? config.defaultFormat;
+	// The resolver form of `apiKey` is resolved upstream in `streamSimple`;
+	// this shim only ever receives a static bearer string.
+	const apiKey = typeof options?.apiKey === "string" ? options.apiKey : undefined;
 
 	(async () => {
 		try {
@@ -53,7 +57,7 @@ export function streamOpenAIAnthropicShim(
 			};
 
 			if (format === "anthropic") {
-				const anthropicModel: Model<"anthropic-messages"> = {
+				const anthropicModel = buildModel({
 					id: model.id,
 					name: model.name,
 					api: "anthropic-messages",
@@ -65,7 +69,7 @@ export function streamOpenAIAnthropicShim(
 					reasoning: model.reasoning,
 					input: model.input,
 					cost: model.cost,
-				};
+				} as ModelSpec<"anthropic-messages">);
 
 				const reasoningEffort = options?.reasoning;
 				const thinkingEnabled = !!reasoningEffort && model.reasoning;
@@ -74,14 +78,14 @@ export function streamOpenAIAnthropicShim(
 					: undefined;
 
 				const innerStream = streamAnthropic(anthropicModel, context, {
-					apiKey: options?.apiKey,
+					apiKey,
 					temperature: options?.temperature,
 					topP: options?.topP,
 					topK: options?.topK,
 					minP: options?.minP,
 					presencePenalty: options?.presencePenalty,
 					repetitionPenalty: options?.repetitionPenalty,
-					maxTokens: options?.maxTokens ?? Math.min(model.maxTokens, 32000),
+					maxTokens: options?.maxTokens ?? model.maxTokens,
 					signal: options?.signal,
 					headers: mergedHeaders,
 					sessionId: options?.sessionId,
@@ -98,12 +102,17 @@ export function streamOpenAIAnthropicShim(
 				}
 			} else {
 				const openaiModel: Model<"openai-completions"> = config.openaiBaseUrl
-					? { ...model, baseUrl: config.openaiBaseUrl, headers: mergedHeaders }
+					? buildModel({
+							...model,
+							baseUrl: config.openaiBaseUrl,
+							headers: mergedHeaders,
+							compat: model.compatConfig,
+						} as ModelSpec<"openai-completions">)
 					: model;
 
 				const reasoningEffort = options?.reasoning;
 				const innerStream = streamOpenAICompletions(openaiModel, context, {
-					apiKey: options?.apiKey,
+					apiKey,
 					temperature: options?.temperature,
 					topP: options?.topP,
 					topK: options?.topK,

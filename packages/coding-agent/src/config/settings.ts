@@ -17,6 +17,7 @@ import * as path from "node:path";
 import {
 	getAgentDbPath,
 	getAgentDir,
+	getLastChangelogVersionPath,
 	getProjectDir,
 	isEnoent,
 	logger,
@@ -25,7 +26,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
-import type { ModelRole } from "../config/model-registry";
+import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
 import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "../modes/theme/theme";
 import { AgentStorage } from "../session/agent-storage";
@@ -63,6 +64,8 @@ export interface SettingsOptions {
 	inMemory?: boolean;
 	/** Initial overrides */
 	overrides?: Partial<Record<SettingPath, unknown>>;
+	/** Extra config.yml-style overlays loaded after global/project settings */
+	configFiles?: string[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -72,7 +75,7 @@ export interface SettingsOptions {
 /**
  * Get a nested value from an object by path segments.
  */
-function getByPath(obj: RawSettings, segments: string[]): unknown {
+function getByPath(obj: RawSettings, segments: readonly string[]): unknown {
 	let current: unknown = obj;
 	for (const segment of segments) {
 		if (current === null || current === undefined || typeof current !== "object") {
@@ -82,6 +85,10 @@ function getByPath(obj: RawSettings, segments: string[]): unknown {
 	}
 	return current;
 }
+
+const SETTING_PATH_SEGMENTS: Record<SettingPath, readonly string[]> = Object.fromEntries(
+	(Object.keys(SETTINGS_SCHEMA) as SettingPath[]).map(settingPath => [settingPath, settingPath.split(".")]),
+) as unknown as Record<SettingPath, readonly string[]>;
 
 /**
  * Set a nested value in an object by path segments.
@@ -111,10 +118,12 @@ type PathScopedStringArrayEntry = {
 	providers?: unknown;
 };
 
+function expandTilde(p: string): string {
+	return p === "~" ? os.homedir() : p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
+}
+
 function normalizePathPrefix(prefix: string): string {
-	const expanded =
-		prefix === "~" ? os.homedir() : prefix.startsWith("~/") ? path.join(os.homedir(), prefix.slice(2)) : prefix;
-	return path.resolve(expanded);
+	return path.resolve(expandTilde(prefix));
 }
 
 function pathMatchesPrefix(cwd: string, prefix: string): boolean {
@@ -188,17 +197,25 @@ export class Settings {
 	#agentDir: string;
 	#storage: AgentStorage | null = null;
 
+	#configFiles: string[] = [];
 	/** Global settings from config.yml */
 	#global: RawSettings = {};
 	/** Project settings from .claude/settings.yml etc */
 	#project: RawSettings = {};
+	/** Extra config.yml-style overlays passed by CLI */
+	#configOverlay: RawSettings = {};
 	/** Runtime overrides (not persisted) */
 	#overrides: RawSettings = {};
 	/** Merged view (global + project + overrides) */
 	#merged: RawSettings = {};
+	/** Cached resolved values from the merged view, including defaults/path scoping */
+	#resolvedCache = new Map<SettingPath, unknown>();
 
 	/** Paths modified during this session (for partial save) */
 	#modified = new Set<string>();
+
+	/** Legacy `lastChangelogVersion` captured from config.yml during migration (now a marker file). */
+	#legacyLastChangelogVersion?: string;
 
 	/** Pending save (debounced) */
 	#saveTimer?: NodeJS.Timeout;
@@ -211,6 +228,7 @@ export class Settings {
 		this.#cwd = path.normalize(options.cwd ?? getProjectDir());
 		this.#agentDir = path.normalize(options.agentDir ?? getAgentDir());
 		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, "config.yml");
+		this.#configFiles = options.configFiles?.map(file => path.resolve(this.#cwd, expandTilde(file))) ?? [];
 		this.#persist = !options.inMemory;
 
 		if (options.overrides) {
@@ -240,11 +258,14 @@ export class Settings {
 		return promise.then(
 			instance => {
 				globalInstance = instance;
+				clearBoundSettingsMethods();
 				globalInstancePromise = Promise.resolve(instance);
 				return instance;
 			},
 			error => {
 				globalInstance = null;
+				globalInstancePromise = null;
+				clearBoundSettingsMethods();
 				throw error;
 			},
 		);
@@ -280,13 +301,23 @@ export class Settings {
 	 * Returns the merged value from global + project + overrides, or the default.
 	 */
 	get<P extends SettingPath>(path: P): SettingValue<P> {
-		const segments = path.split(".");
-		const value = getByPath(this.#merged, segments);
-		if (value !== undefined) {
-			const pathScopedValue = resolvePathScopedStringArray(path, value, this.#cwd);
-			return (pathScopedValue ?? value) as SettingValue<P>;
+		if (this.#resolvedCache.has(path)) {
+			return this.#resolvedCache.get(path) as SettingValue<P>;
 		}
-		return getDefault(path);
+
+		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
+		const resolved =
+			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
+		this.#resolvedCache.set(path, resolved);
+		return resolved as SettingValue<P>;
+	}
+
+	/**
+	 * Whether `path` has an explicitly configured value (global config, project
+	 * config, or runtime override) rather than falling back to the schema default.
+	 */
+	isConfigured(path: SettingPath): boolean {
+		return getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]) !== undefined;
 	}
 
 	/**
@@ -300,6 +331,7 @@ export class Settings {
 		setByPath(this.#global, segments, value);
 		this.#modified.add(path);
 		this.#rebuildMerged();
+		const next = this.get(path);
 		this.#queueSave();
 
 		// Trigger hook if exists
@@ -307,21 +339,25 @@ export class Settings {
 		if (hook) {
 			hook(value, prev);
 		}
+		this.#fireEffectiveSettingChanged(path, next, prev);
 	}
 
 	/**
 	 * Apply runtime overrides (not persisted).
 	 */
 	override<P extends SettingPath>(path: P, value: SettingValue<P>): void {
+		const prev = this.get(path);
 		const segments = path.split(".");
 		setByPath(this.#overrides, segments, value);
 		this.#rebuildMerged();
+		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
 	}
 
 	/**
 	 * Clear a runtime override.
 	 */
 	clearOverride(path: SettingPath): void {
+		const prev = this.get(path);
 		const segments = path.split(".");
 		let current = this.#overrides;
 		for (let i = 0; i < segments.length - 1; i++) {
@@ -331,6 +367,14 @@ export class Settings {
 		}
 		delete current[segments[segments.length - 1]];
 		this.#rebuildMerged();
+		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
+	}
+
+	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
+		if (Object.is(value, prev)) return;
+		if (path === "statusLine.sessionAccent") {
+			statusLineSessionAccentSignal.fire();
+		}
 	}
 
 	/**
@@ -359,10 +403,35 @@ export class Settings {
 		cloned.#storage = this.#storage;
 		cloned.#global = structuredClone(this.#global);
 		cloned.#project = this.#persist ? await cloned.#loadProjectSettings() : structuredClone(this.#project);
+		cloned.#configFiles = [...this.#configFiles];
+		cloned.#configOverlay = structuredClone(this.#configOverlay);
 		cloned.#overrides = structuredClone(this.#overrides);
 		cloned.#rebuildMerged();
 		cloned.#fireAllHooks();
 		return cloned;
+	}
+
+	/**
+	 * Re-scope this instance to a new working directory *in place*: reload the
+	 * project layer (`.claude/settings.yml` etc.) from `cwd`, re-resolve
+	 * path-scoped settings against it, and re-fire side-effect hooks (theme,
+	 * symbols, tab width, …). Global settings and runtime overrides are preserved.
+	 *
+	 * Unlike {@link cloneForCwd}, this mutates the live instance, so every holder
+	 * (the `settings` proxy, the active session, controllers) observes the new
+	 * project scope without swapping references — used when the process changes
+	 * directory mid-run (`/move`, cross-project resume). No-op when `cwd` is
+	 * already the current scope.
+	 */
+	async reloadForCwd(cwd: string): Promise<void> {
+		const normalized = path.normalize(cwd);
+		if (normalized === this.#cwd) return;
+		this.#cwd = normalized;
+		if (this.#persist) {
+			this.#project = await this.#loadProjectSettings();
+		}
+		this.#rebuildMerged();
+		this.#fireAllHooks();
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -503,9 +572,11 @@ export class Settings {
 			this.#storage = await AgentStorage.open(getAgentDbPath(this.#agentDir));
 			await this.#migrateFromLegacy();
 			this.#global = await this.#loadYaml(this.#configPath!);
+			await this.#seedLastChangelogVersionMarker();
 		}
 
 		this.#project = await projectPromise;
+		this.#configOverlay = await this.#loadConfigOverlays();
 
 		// Build merged view (global → project → overrides; project wins over global)
 		this.#rebuildMerged();
@@ -541,6 +612,43 @@ export class Settings {
 		} catch {
 			return {};
 		}
+	}
+
+	async #loadConfigOverlays(): Promise<RawSettings> {
+		let merged: RawSettings = {};
+		for (const filePath of this.#configFiles) {
+			merged = this.#deepMerge(merged, await this.#loadOverlayYaml(filePath));
+		}
+		return merged;
+	}
+
+	/**
+	 * Strict loader for explicit `--config` overlays: unlike `#loadYaml`,
+	 * missing or malformed files are hard errors so a typo'd path cannot
+	 * silently fall back to the persistent settings.
+	 */
+	async #loadOverlayYaml(filePath: string): Promise<RawSettings> {
+		let content: string;
+		try {
+			content = await Bun.file(filePath).text();
+		} catch (error) {
+			throw new Error(
+				isEnoent(error)
+					? `Config overlay not found: ${filePath}`
+					: `Failed to read config overlay ${filePath}: ${String(error)}`,
+			);
+		}
+		let parsed: unknown;
+		try {
+			parsed = YAML.parse(content);
+		} catch (error) {
+			throw new Error(`Failed to parse config overlay ${filePath}: ${String(error)}`);
+		}
+		if (parsed === null || parsed === undefined) return {};
+		if (typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error(`Config overlay must be a YAML mapping: ${filePath}`);
+		}
+		return this.#migrateRawSettings(parsed as RawSettings);
 	}
 
 	async #migrateFromLegacy(): Promise<void> {
@@ -595,6 +703,16 @@ export class Settings {
 			raw.steeringMode = raw.queueMode;
 			delete raw.queueMode;
 		}
+
+		// lastChangelogVersion moved out of config.yml into the
+		// <agentDir>/last-changelog-version marker file so version bumps no
+		// longer dirty user-tracked configs. Capture for marker seeding (see
+		// #seedLastChangelogVersionMarker), then strip the key — the next
+		// config save drops it from disk.
+		if (typeof raw.lastChangelogVersion === "string") {
+			this.#legacyLastChangelogVersion ??= raw.lastChangelogVersion;
+		}
+		delete raw.lastChangelogVersion;
 
 		// ask.timeout: ms -> seconds (if value > 1000, it's old ms format)
 		if (raw.ask && typeof (raw.ask as Record<string, unknown>).timeout === "number") {
@@ -689,6 +807,17 @@ export class Settings {
 			}
 		}
 
+		// providers.parallelFetch (boolean) replaced by the providers.fetch reader
+		// priority enum. The new default ("auto") supersedes both old values —
+		// Parallel is now a deep fallback in the auto chain rather than the first
+		// choice — so drop the legacy key (flat and nested) and let the enum
+		// default apply.
+		const providersObj = raw.providers as Record<string, unknown> | undefined;
+		if (providersObj && "parallelFetch" in providersObj) {
+			delete providersObj.parallelFetch;
+		}
+		delete raw["providers.parallelFetch"];
+
 		// Map legacy `memories.enabled` boolean to the explicit `memory.backend`
 		// enum if the latter hasn't been set yet. Idempotent: subsequent
 		// migrations are no-ops once memory.backend is materialised.
@@ -744,6 +873,27 @@ export class Settings {
 		}
 
 		return raw;
+	}
+
+	/**
+	 * One-time migration: seed the last-changelog-version marker file from the
+	 * legacy config.yml key. An existing marker always wins — it is the newer
+	 * source of truth.
+	 */
+	async #seedLastChangelogVersionMarker(): Promise<void> {
+		const legacy = this.#legacyLastChangelogVersion;
+		if (!legacy) return;
+		const markerPath = getLastChangelogVersionPath(this.#agentDir);
+		try {
+			if ((await Bun.file(markerPath).text()).trim()) return;
+		} catch (error) {
+			if (!isEnoent(error)) return;
+		}
+		try {
+			await Bun.write(markerPath, legacy);
+		} catch (error) {
+			logger.warn("Settings: failed to seed last-changelog-version marker", { error: String(error) });
+		}
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -805,7 +955,9 @@ export class Settings {
 
 	#rebuildMerged(): void {
 		this.#merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#project);
+		this.#merged = this.#deepMerge(this.#merged, this.#configOverlay);
 		this.#merged = this.#deepMerge(this.#merged, this.#overrides);
+		this.#resolvedCache.clear();
 	}
 
 	#fireAllHooks(): void {
@@ -849,6 +1001,45 @@ export class Settings {
 
 type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>) => void;
 
+/**
+ * Minimal change-notification primitive backing the exported `on*Changed`
+ * subscriptions. Holds a listener set, hands out unsubscribe closures, and
+ * isolates errors so a single throwing listener can't abort the rest or bubble
+ * out of `Settings.set()`.
+ *
+ * @typeParam A - argument tuple forwarded to each listener on `fire`.
+ */
+class SettingSignal<A extends unknown[] = []> {
+	#listeners = new Set<(...args: A) => void>();
+
+	constructor(private readonly label: string) {}
+
+	/** Subscribe `cb`; returns an unsubscribe function. */
+	on(cb: (...args: A) => void): () => void {
+		this.#listeners.add(cb);
+		return () => {
+			this.#listeners.delete(cb);
+		};
+	}
+
+	/**
+	 * Invoke every listener with `args`. Iterates a snapshot so a listener may
+	 * (un)subscribe mid-fire without re-entrancy — the Hindsight backend
+	 * re-registers the fresh state's listener on every rebuild — and wraps each
+	 * call so a throwing listener is logged and skipped instead of aborting the
+	 * rest.
+	 */
+	fire(...args: A): void {
+		for (const cb of [...this.#listeners]) {
+			try {
+				cb(...args);
+			} catch (err) {
+				logger.warn(`Settings: ${this.label} hook failed`, { error: String(err) });
+			}
+		}
+	}
+}
+
 const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"theme.dark": value => {
 		if (typeof value === "string") {
@@ -881,24 +1072,46 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	},
 	"provider.appendOnlyContext": value => {
 		if (typeof value === "string") {
-			for (const cb of appendOnlyModeCallbacks) cb(value);
+			appendOnlyModeSignal.fire(value);
 		}
 	},
+	"hindsight.bankId": () => hindsightScopeSignal.fire(),
+	"hindsight.bankIdPrefix": () => hindsightScopeSignal.fire(),
+	"hindsight.scoping": () => hindsightScopeSignal.fire(),
 };
-/** Callbacks invoked when `provider.appendOnlyContext` changes at runtime. */
-const appendOnlyModeCallbacks = new Set<(value: string) => void>();
+/** Fires when `provider.appendOnlyContext` changes at runtime. */
+const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.appendOnlyContext");
 
 /**
  * Subscribe to append-only mode setting changes.
  * Returns an unsubscribe function. Multiple sessions (main + subagents)
  * can register independently without overwriting each other.
  */
-export function onAppendOnlyModeChanged(cb: (value: string) => void): () => void {
-	appendOnlyModeCallbacks.add(cb);
-	return () => {
-		appendOnlyModeCallbacks.delete(cb);
-	};
-}
+export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
+
+/** Fires when `statusLine.sessionAccent` changes at runtime. */
+const statusLineSessionAccentSignal = new SettingSignal("statusLine.sessionAccent");
+
+/**
+ * Subscribe to session-accent setting changes.
+ * Returns an unsubscribe function. Callers should re-read settings in the callback.
+ */
+export const onStatusLineSessionAccentChanged = (cb: () => void) => statusLineSessionAccentSignal.on(cb);
+
+/** Fires when any `hindsight.bankId` / `bankIdPrefix` / `scoping` value changes. */
+const hindsightScopeSignal = new SettingSignal("hindsight scope");
+
+/**
+ * Subscribe to changes in the Hindsight bank-scoping settings. Lets the
+ * Hindsight backend rebuild the active `HindsightSessionState` when the
+ * operator switches `hindsight.bankId`, `hindsight.bankIdPrefix`, or
+ * `hindsight.scoping` mid-session so subsequent retain/recall calls land in
+ * the new bank instead of the one selected at session start.
+ *
+ * Returns an unsubscribe function. The callback receives no arguments — the
+ * caller is expected to re-read the relevant settings via `Settings.get`.
+ */
+export const onHindsightScopeChanged = (cb: () => void) => hindsightScopeSignal.on(cb);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Global Singleton
@@ -906,6 +1119,13 @@ export function onAppendOnlyModeChanged(cb: (value: string) => void): () => void
 
 let globalInstance: Settings | null = null;
 let globalInstancePromise: Promise<Settings> | null = null;
+let boundSettingsInstance: Settings | null = null;
+let boundSettingsMethods = new Map<PropertyKey, unknown>();
+
+function clearBoundSettingsMethods(): void {
+	boundSettingsInstance = null;
+	boundSettingsMethods = new Map<PropertyKey, unknown>();
+}
 
 export function isSettingsInitialized(): boolean {
 	return globalInstance !== null;
@@ -918,6 +1138,7 @@ export function isSettingsInitialized(): boolean {
 export function resetSettingsForTest(): void {
 	globalInstance = null;
 	globalInstancePromise = null;
+	clearBoundSettingsMethods();
 }
 
 /**
@@ -929,9 +1150,17 @@ export const settings = new Proxy({} as Settings, {
 		if (!globalInstance) {
 			throw new Error("Settings not initialized. Call Settings.init() first.");
 		}
-		const value = (globalInstance as unknown as Record<string | symbol, unknown>)[prop];
+		if (boundSettingsInstance !== globalInstance) {
+			clearBoundSettingsMethods();
+			boundSettingsInstance = globalInstance;
+		}
+		const value = (globalInstance as unknown as Record<PropertyKey, unknown>)[prop];
 		if (typeof value === "function") {
-			return value.bind(globalInstance);
+			const cached = boundSettingsMethods.get(prop);
+			if (cached) return cached;
+			const bound = value.bind(globalInstance);
+			boundSettingsMethods.set(prop, bound);
+			return bound;
 		}
 		return value;
 	},

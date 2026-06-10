@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/pi-mnemopi",
-	"version": "15.7.6",
+	"version": "15.10.12",
 	"description": "Local SQLite memory engine for Oh My Pi agents",
 	"homepage": "https://omp.sh",
 	"author": "Can Boluk",
@@ -40,6 +40,7 @@
 	},
 	"dependencies": {
 		"@oh-my-pi/pi-ai": "catalog:",
+		"@oh-my-pi/pi-catalog": "catalog:",
 		"@oh-my-pi/pi-utils": "catalog:",
 		"fastembed": "catalog:",
 		"lru-cache": "catalog:",
@@ -64,6 +65,10 @@
 			"types": "./src/core/index.ts",
 			"import": "./src/core/index.ts"
 		},
+		"./core/beam": {
+			"types": "./src/core/beam/index.ts",
+			"import": "./src/core/beam/index.ts"
+		},
 		"./beam": {
 			"types": "./src/core/beam/index.ts",
 			"import": "./src/core/beam/index.ts"
@@ -79,6 +84,11 @@
 		"./cli": {
 			"types": "./src/cli.ts",
 			"import": "./src/cli.ts"
-		}
+		},
+		"./*": {
+			"types": "./src/*.ts",
+			"import": "./src/*.ts"
+		},
+		"./*.js": "./src/*.ts"
 	}
 }

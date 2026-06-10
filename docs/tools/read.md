@@ -10,7 +10,7 @@
   - `packages/coding-agent/src/tools/archive-reader.ts` — detect `archive.ext:inner/path`, index archives, list/read entries.
   - `packages/coding-agent/src/tools/sqlite-reader.ts` — detect SQLite targets, parse selectors, render tables.
   - `packages/coding-agent/src/tools/fetch.ts` — URL parsing, fetch/render pipeline, URL cache/artifacts.
-  - `packages/coding-agent/src/internal-urls/router.ts` — resolve `agent://`, `artifact://`, `local://`, `mcp://`, `memory://`, `omp://`, `rule://`, `skill://`.
+  - `packages/coding-agent/src/internal-urls/router.ts` — resolve `agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `rule://`, `skill://`, and `vault://`.
   - `packages/coding-agent/src/edit/notebook.ts` — convert `.ipynb` to editable `# %% [...] cell:N` text.
   - `packages/coding-agent/src/utils/file-display-mode.ts` — decide hashline vs line-number vs raw display.
   - `packages/coding-agent/src/workspace-tree.ts` — render directory trees.
@@ -196,7 +196,7 @@ URL selectors are parsed separately in `packages/coding-agent/src/tools/fetch.ts
 
 ### Internal URLs
 - `read` does not resolve these itself; it delegates to `session.internalRouter.resolve()`.
-- Registered protocols are outside this file, but the router in `packages/coding-agent/src/internal-urls/router.ts` is built for `agent://`, `artifact://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `rule://`, and `skill://`.
+- Registered protocols are outside this file, but the router in `packages/coding-agent/src/internal-urls/router.ts` is built for `agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `rule://`, and `skill://`.
 - `#handleInternalUrl()` behavior:
   - parses the URL with `parseInternalUrl()` so colons inside the host segment are legal
   - for `agent://`, treats non-root path extraction or `?q=` extraction as a special no-pagination mode
@@ -249,7 +249,7 @@ Notes: ...
   - Uses `session.internalRouter` for internal URLs.
   - Uses `session.allocateOutputArtifact()` for cached/truncated URL output.
 - Background work / cancellation
-  - Most branches honor `AbortSignal`; the tool itself is marked `nonAbortable = true`, but helper paths still call `throwIfAborted(signal)`.
+  - Only the deterministic disk reads are non-abortable: plain-file line/range reads (`streamLinesFromFile`, multi-range) and directory listings (`#readDirectory`) are called with `undefined` instead of the `AbortSignal`, so an interrupt mid-read can't surface a misleading "Operation aborted" on a read that would have finished instantly. Every other branch keeps the signal and its helpers call `throwIfAborted(signal)` to stop promptly: URL/internal-URL reads (network), archive, sqlite, document conversion, image decode, structural summary, conflict scan, and the suffix-glob path resolution.
 
 ## Limits & Caps
 - Shared text truncation defaults from `packages/coding-agent/src/session/streaming-output.ts`:

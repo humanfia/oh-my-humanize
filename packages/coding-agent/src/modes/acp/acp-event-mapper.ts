@@ -8,7 +8,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { resolveToCwd } from "../../tools/path-utils";
-import type { TodoStatus } from "../../tools/todo-write";
+import type { TodoStatus } from "../../tools/todo";
 
 interface MessageProgress {
 	textEmitted: boolean;
@@ -67,6 +67,16 @@ interface NewPathContainer {
 
 interface CommandContainer {
 	command?: unknown;
+}
+
+interface EvalCellContainer {
+	cells?: unknown;
+}
+
+interface EvalCellLike {
+	language?: unknown;
+	title?: unknown;
+	code?: unknown;
 }
 
 interface PatternContainer {
@@ -138,7 +148,7 @@ export function mapToolKind(toolName: string): ToolKind {
 			return "search";
 		case "web_search":
 			return "fetch";
-		case "todo_write":
+		case "todo":
 			return "think";
 		default:
 			return "other";
@@ -205,7 +215,7 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 				update.locations = locations;
 			}
 			const notifications = [toSessionNotification(sessionId, update)];
-			const planUpdate = mapTodoWriteResultToPlanUpdate(event);
+			const planUpdate = mapTodoResultToPlanUpdate(event);
 			if (planUpdate) {
 				notifications.push(toSessionNotification(sessionId, planUpdate));
 			}
@@ -326,13 +336,13 @@ function mapTodoStatus(status: TodoStatus): "pending" | "in_progress" | "complet
 	return todoStatusMap[status];
 }
 
-function mapTodoWriteResultToPlanUpdate(
+function mapTodoResultToPlanUpdate(
 	event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>,
 ): SessionUpdate | undefined {
-	if (event.toolName !== "todo_write" || event.isError) {
+	if (event.toolName !== "todo" || event.isError) {
 		return undefined;
 	}
-	const phases = extractTodoWritePhases(event.result);
+	const phases = extractTodoPhases(event.result);
 	if (!Array.isArray(phases)) {
 		return undefined;
 	}
@@ -346,7 +356,7 @@ function mapTodoWriteResultToPlanUpdate(
 	};
 }
 
-function extractTodoWritePhases(result: unknown): unknown {
+function extractTodoPhases(result: unknown): unknown {
 	if (typeof result !== "object" || result === null || !("details" in result)) {
 		return undefined;
 	}
@@ -435,11 +445,43 @@ function getToolExecutionEndArgs(
 }
 
 function buildToolStartContent(toolName: string, args: unknown): ToolCallContent[] {
-	if (!isCommandToolName(toolName)) {
-		return [];
+	const text = buildToolStartText(toolName, args);
+	return text ? [textToolCallContent(text)] : [];
+}
+
+function buildToolStartText(toolName: string, args: unknown): string | undefined {
+	if (isCommandToolName(toolName)) {
+		const command = extractStringProperty<CommandContainer>(args, "command");
+		return command ? limitText(`$ ${command}`) : undefined;
 	}
-	const command = extractStringProperty<CommandContainer>(args, "command");
-	return command ? [textToolCallContent(`$ ${command}`)] : [];
+	if (toolName === "eval") {
+		return buildEvalStartText(args);
+	}
+	return undefined;
+}
+
+function buildEvalStartText(args: unknown): string | undefined {
+	if (typeof args !== "object" || args === null || Array.isArray(args)) {
+		return undefined;
+	}
+	const cells = (args as EvalCellContainer).cells;
+	if (!Array.isArray(cells) || cells.length === 0) {
+		return undefined;
+	}
+	const lines: string[] = [];
+	for (const cell of cells) {
+		if (typeof cell !== "object" || cell === null || Array.isArray(cell)) {
+			continue;
+		}
+		const language = extractStringProperty<EvalCellLike>(cell, "language") ?? "?";
+		const title = extractStringProperty<EvalCellLike>(cell, "title");
+		const code = extractStringProperty<EvalCellLike>(cell, "code");
+		if (!code) {
+			continue;
+		}
+		lines.push(title ? `[${language}] ${title}` : `[${language}]`, code);
+	}
+	return lines.length > 0 ? limitText(lines.join("\n")) : undefined;
 }
 
 function mergeToolUpdateContent(startContent: ToolCallContent[], resultContent: ToolCallContent[]): ToolCallContent[] {
@@ -465,6 +507,14 @@ function isCommandToolName(toolName: string): boolean {
 }
 
 function buildToolTitle(toolName: string, args: unknown, intent: string | undefined): string {
+	if (isCommandToolName(toolName)) {
+		const commandText = buildToolStartText(toolName, args);
+		if (commandText) return commandText;
+	}
+	if (toolName === "eval") {
+		const evalText = buildEvalStartText(args);
+		if (evalText) return evalText;
+	}
 	const trimmedIntent = intent?.trim();
 	if (trimmedIntent) {
 		return trimmedIntent;

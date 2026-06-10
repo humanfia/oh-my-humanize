@@ -15,9 +15,10 @@ import {
 	tryEnforceStrictSchema,
 	upgradeJsonSchemaTo202012,
 } from "@oh-my-pi/pi-ai/utils/schema";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 function createGoogleCliModel(id: string): Model<"google-gemini-cli"> {
-	return {
+	return buildModel({
 		id,
 		name: id,
 		api: "google-gemini-cli",
@@ -33,7 +34,7 @@ function createGoogleCliModel(id: string): Model<"google-gemini-cli"> {
 		},
 		contextWindow: 200000,
 		maxTokens: 8192,
-	};
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +729,18 @@ describe("stripResidualCombiners", () => {
 		expect(normalized.anyOf).toBeUndefined();
 		expect(normalized.oneOf).toBeUndefined();
 	});
+
+	it("drops array-only keys when mixed-type collapse picks string from anyOf fixpoint", () => {
+		const stripped = stripResidualCombiners({
+			anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+			description: "pr number, url, or branch",
+		}) as Record<string, unknown>;
+
+		expect(stripped.type).toBe("string");
+		expect(stripped.items).toBeUndefined();
+		expect(stripped.anyOf).toBeUndefined();
+		expect(stripped.description).toBe("pr number, url, or branch");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -952,6 +965,36 @@ describe("normalizeSchemaForCCA", () => {
 			properties: {},
 		});
 	});
+
+	it("strips array-only keys when mixed-type collapse picks a non-array type", () => {
+		// Regression: anyOf [{type:"string"}, {type:"array", items:{type:"string"}}]
+		// collapsed to {type:"string", items:{type:"string"}} which is invalid.
+		// The fix filters mergedVariantFields against the chosen type's allowed keys.
+		const normalized = normalizeSchemaForCCA({
+			anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+			description: "pr number, url, or branch",
+		});
+
+		expect(normalized).toEqual({
+			type: "string",
+			description: "pr number, url, or branch",
+		});
+	});
+
+	it("strips sibling type-specific keys copied from parent when mixed-type collapse picks opposing type", () => {
+		// Edge case: parent has a sibling `items` outside the anyOf,
+		// and the chosen type is string. The sibling must be stripped.
+		const normalized = normalizeSchemaForCCA({
+			anyOf: [{ type: "string" }, { type: "array", items: { type: "number" } }],
+			items: { type: "string" },
+			description: "pr number, url, or branch",
+		});
+
+		expect(normalized).toEqual({
+			type: "string",
+			description: "pr number, url, or branch",
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -968,5 +1011,39 @@ describe("circular schema safety", () => {
 
 		expect(() => normalizeSchemaForGoogle(circular)).not.toThrow();
 		expect(() => sanitizeSchemaForStrictMode(circular)).not.toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// DAG-shared subtrees and frozen inputs (normalizeSchemaNode enter/exit)
+// ---------------------------------------------------------------------------
+
+describe("DAG-shared subtree normalization", () => {
+	it("normalizes a subschema object reused across two properties instead of blanking the second occurrence", () => {
+		const shared = { type: "string", description: "shared leaf" };
+		const schema = {
+			type: "object",
+			properties: { a: shared, b: shared },
+		};
+
+		const result = normalizeSchemaForGoogle(schema) as {
+			properties: { a: Record<string, unknown>; b: Record<string, unknown> };
+		};
+		expect(result.properties.a).toEqual({ type: "string", description: "shared leaf" });
+		expect(result.properties.b).toEqual({ type: "string", description: "shared leaf" });
+	});
+
+	it("does not throw on a frozen input schema", () => {
+		const shared = Object.freeze({ type: "number" });
+		const schema = Object.freeze({
+			type: "object",
+			properties: Object.freeze({ x: shared, y: shared }),
+		});
+
+		const result = normalizeSchemaForGoogle(schema) as {
+			properties: { x: Record<string, unknown>; y: Record<string, unknown> };
+		};
+		expect(result.properties.x).toEqual({ type: "number" });
+		expect(result.properties.y).toEqual({ type: "number" });
 	});
 });

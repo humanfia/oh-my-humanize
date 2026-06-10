@@ -10,18 +10,16 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import * as z from "zod/v4";
-import { AsyncJobManager } from "../async";
 import { type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
-import { shimmerEnabled } from "../modes/theme/shimmer";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from "../session/client-bridge";
-import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
-import { CachedOutputBlock } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
@@ -30,9 +28,10 @@ import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-intera
 import { checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
+import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
-import { formatToolWorkingDirectory, replaceTabs } from "./render-utils";
+import { capPreviewLines, formatToolWorkingDirectory, replaceTabs } from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
@@ -288,6 +287,35 @@ function formatExitCodeNotice(exitCode: number): string {
 	return `Command exited with code ${exitCode}`;
 }
 
+const RAW_OUTPUT_ARTIFACT_PREFIX = "[raw output: artifact://";
+const RAW_OUTPUT_ARTIFACT_SUFFIX = "]";
+
+function stripRawOutputArtifactNotice(text: string): { text: string; artifactId?: string } {
+	const trimmed = text.trimEnd();
+	const lineStart = trimmed.lastIndexOf("\n");
+	const candidateStart = lineStart === -1 ? 0 : lineStart + 1;
+	if (
+		!trimmed.startsWith(RAW_OUTPUT_ARTIFACT_PREFIX, candidateStart) ||
+		!trimmed.endsWith(RAW_OUTPUT_ARTIFACT_SUFFIX)
+	) {
+		return { text };
+	}
+
+	const idStart = candidateStart + RAW_OUTPUT_ARTIFACT_PREFIX.length;
+	const idEnd = trimmed.length - RAW_OUTPUT_ARTIFACT_SUFFIX.length;
+	if (idStart === idEnd) return { text };
+	for (let i = idStart; i < idEnd; i++) {
+		const code = trimmed.charCodeAt(i);
+		if (code < 48 || code > 57) return { text };
+	}
+
+	const artifactId = trimmed.slice(idStart, idEnd);
+	return {
+		text: trimmed.slice(0, lineStart === -1 ? 0 : lineStart).trimEnd(),
+		artifactId,
+	};
+}
+
 /**
  * Strip the trailing occurrence of `notice` (plus a single surrounding newline
  * on each side) so the TUI can echo the value via a styled footer label
@@ -382,17 +410,26 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 	 */
 	#throwIfUnfinished(result: BashResult | BashInteractiveResult, timeoutSec: number, outputText: string): void {
 		if (result.cancelled) {
-			throw new ToolError(normalizeResultOutput(result) || "Command aborted");
+			// executeBash output already carries a `[Command cancelled]` notice from
+			// the sink; PTY/bridge interactive output does not, so annotate it here.
+			const out = normalizeResultOutput(result);
+			const annotated = isInteractiveResult(result) && out ? `${out}\n\n[Command aborted]` : out;
+			throw new ToolError(annotated || "Command aborted");
 		}
 		if (isInteractiveResult(result) && result.timedOut) {
-			throw new ToolError(normalizeResultOutput(result) || `Command timed out after ${timeoutSec} seconds`);
+			const out = normalizeResultOutput(result);
+			throw new ToolError(
+				out
+					? `${out}\n\n[Command timed out after ${timeoutSec} seconds]`
+					: `Command timed out after ${timeoutSec} seconds`,
+			);
 		}
 		if (result.exitCode === undefined) {
 			throw new ToolError(`${outputText}\n\nCommand failed: missing exit status`);
 		}
 	}
 
-	#buildCompletedResult(
+	async #buildCompletedResult(
 		result: BashResult | BashInteractiveResult,
 		timeoutSec: number,
 		options: {
@@ -401,7 +438,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			terminalId?: string;
 			wallTimeMs?: number;
 		} = {},
-	): AgentToolResult<BashToolDetails> {
+	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
 		const failedExit = exitCode !== undefined && exitCode !== 0;
 
@@ -435,7 +472,17 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		if (failedExit) {
 			details.exitCode = exitCode;
 		}
-		const resultBuilder = toolResult(details).text(outputText).truncationFromSummary(result, { direction: "tail" });
+		// Final defense at the tool-result boundary: no bash path (client bridge,
+		// head-retention spill, minimizer miss) may emit more than
+		// ~DEFAULT_MAX_BYTES inline. No-op for already-bounded output.
+		const cappedOutputText = await enforceInlineByteCap(outputText, {
+			label: "bash output",
+			saveArtifact: full => saveBashOriginalArtifact(this.session, full),
+		});
+
+		const resultBuilder = toolResult(details)
+			.text(cappedOutputText)
+			.truncationFromSummary(result, { direction: "tail" });
 		if (failedExit) resultBuilder.error();
 		return resultBuilder.done();
 	}
@@ -489,7 +536,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
 		startBackgrounded: boolean;
 	}): ManagedBashJobHandle {
-		const manager = AsyncJobManager.instance();
+		const manager = this.session.asyncJobManager;
 		if (!manager) {
 			throw new ToolError("Background job manager unavailable for this session.");
 		}
@@ -523,7 +570,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
 					const wallTimeMs = performance.now() - wallTimeStart;
-					const finalResult = this.#buildCompletedResult(result, options.timeoutSec, {
+					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
 						requestedTimeoutSec: options.requestedTimeoutSec,
 						notices: options.notices ?? [],
 						wallTimeMs,
@@ -641,7 +688,10 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		// script can't pull the entire script into the "cwd" capture.
 		if (!cwd) {
 			const cdMatch = command.match(/^cd[ \t]+((?:[^&\\\n\r]|\\.)+?)[ \t]*&&[ \t]*/);
-			if (cdMatch) {
+			// Skip extraction when the path needs shell expansion ($VAR, $(...),
+			// backticks) — resolveToCwd only expands `~`, so routing those through
+			// cwd would reject commands the shell itself handles fine.
+			if (cdMatch && !/[$`(]/.test(cdMatch[1])) {
 				cwd = cdMatch[1].trim().replace(/^["']|["']$/g, "");
 				command = command.slice(cdMatch[0].length);
 			}
@@ -693,6 +743,12 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			cwd = await expandInternalUrls(cwd, { ...internalUrlOptions, noEscape: true });
 		}
 
+		// Best-effort cache invalidation: drop github-cache rows for any issue/PR
+		// number touched by a mutating `gh` subcommand inside this bash call so
+		// subsequent issue:// / pr:// reads pick up the post-mutation state
+		// instead of the cached pre-mutation snapshot.
+		invalidateGithubCacheForBashCommand(command);
+
 		const commandCwd = cwd ? resolveToCwd(cwd, this.session.cwd) : this.session.cwd;
 		let cwdStat: fs.Stats;
 		try {
@@ -716,7 +772,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		if (timeoutClampNotice) pendingNotices.push(timeoutClampNotice);
 
 		if (asyncRequested) {
-			if (!AsyncJobManager.instance()) {
+			if (!this.session.asyncJobManager) {
 				throw new ToolError("Async job manager unavailable for this session.");
 			}
 			const job = this.#startManagedBashJob({
@@ -737,8 +793,24 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			});
 		}
 
-		const autoBgManager = AsyncJobManager.instance();
-		if (this.#autoBackgroundEnabled && !pty && autoBgManager) {
+		// The client-bridge terminal provides a live terminal card in the editor;
+		// when available it wins over auto-backgrounding (both are opt-in, and
+		// auto-background would otherwise silently disable the terminal route).
+		const clientBridge = this.session.getClientBridge?.();
+		const bridgeTerminalAvailable = Boolean(
+			clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty,
+		);
+
+		const autoBgManager = this.session.asyncJobManager;
+		// At the running-job cap, fall through to direct foreground execution
+		// instead of failing every bash call until a slot frees up.
+		if (
+			this.#autoBackgroundEnabled &&
+			!pty &&
+			!bridgeTerminalAvailable &&
+			autoBgManager &&
+			!autoBgManager.atCapacity
+		) {
 			const autoBackgroundWaitMs = this.#resolveAutoBackgroundWaitMs(timeoutMs);
 			const startBackgrounded = autoBackgroundWaitMs === 0;
 			const job = this.#startManagedBashJob({
@@ -759,21 +831,23 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					notices: pendingNotices,
 				});
 			}
+			// Suppress the completion delivery up front so a job finishing while we
+			// foreground-wait cannot also be injected by the delivery loop. Lifted
+			// via resumeDeliveries() if we end up backgrounding after all.
+			autoBgManager.acknowledgeDeliveries([job.jobId]);
 			const waitResult = await this.#waitForManagedBashJob(job, autoBackgroundWaitMs, signal);
 			if (waitResult.kind === "completed") {
-				autoBgManager.acknowledgeDeliveries([job.jobId]);
 				return waitResult.result;
 			}
 			if (waitResult.kind === "failed") {
-				autoBgManager.acknowledgeDeliveries([job.jobId]);
 				throw waitResult.error;
 			}
 			if (waitResult.kind === "aborted") {
 				autoBgManager.cancel(job.jobId);
-				autoBgManager.acknowledgeDeliveries([job.jobId]);
 				throw new ToolAbortError(job.getLatestText() || "Command aborted");
 			}
 			job.setBackgrounded(true);
+			autoBgManager.resumeDeliveries([job.jobId]);
 			return this.#buildBackgroundStartResult(job.jobId, job.label, job.getLatestText(), timeoutSec, {
 				requestedTimeoutSec,
 				notices: pendingNotices,
@@ -782,7 +856,6 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 
 		// Route through the client terminal when the client advertises the terminal capability.
 		// Skip when pty=true (PTY needs the local terminal UI).
-		const clientBridge = this.session.getClientBridge?.();
 		if (clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) {
 			const bridgeWallTimeStart = performance.now();
 			const handle = await clientBridge.createTerminal({
@@ -959,6 +1032,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 
 		const interactiveUi = canUseInteractiveBashPty(pty, ctx) ? ctx?.ui : undefined;
+		if (pty && !interactiveUi) {
+			pendingNotices.push("pty requested but unavailable in this environment; ran without a terminal");
+		}
 		const wallTimeStart = performance.now();
 		const result: BashResult | BashInteractiveResult = interactiveUi
 			? await runInteractiveBashPty(interactiveUi, {
@@ -983,13 +1059,22 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				});
 		const wallTimeMs = performance.now() - wallTimeStart;
 		if (result.cancelled) {
+			const out = normalizeResultOutput(result);
+			// PTY output carries no cancel/timeout notice of its own; annotate so
+			// the model can tell an abort from a plain failure.
+			const message = isInteractiveResult(result) && out ? `${out}\n\n[Command aborted]` : out || "Command aborted";
 			if (signal?.aborted) {
-				throw new ToolAbortError(normalizeResultOutput(result) || "Command aborted");
+				throw new ToolAbortError(message);
 			}
-			throw new ToolError(normalizeResultOutput(result) || "Command aborted");
+			throw new ToolError(message);
 		}
 		if (isInteractiveResult(result) && result.timedOut) {
-			throw new ToolError(normalizeResultOutput(result) || `Command timed out after ${timeoutSec} seconds`);
+			const out = normalizeResultOutput(result);
+			throw new ToolError(
+				out
+					? `${out}\n\n[Command timed out after ${timeoutSec} seconds]`
+					: `Command timed out after ${timeoutSec} seconds`,
+			);
 		}
 		return this.#buildCompletedResult(result, timeoutSec, {
 			requestedTimeoutSec,
@@ -1029,6 +1114,7 @@ export interface ShellRendererConfig<TArgs> {
 	resolveCommand?: (args: TArgs | undefined) => string | undefined;
 	resolveCwd?: (args: TArgs | undefined) => string | undefined;
 	resolveEnv?: (args: TArgs | undefined) => Record<string, string> | undefined;
+	showHeader?: boolean;
 }
 
 function getPartialJson<TArgs>(args: TArgs | undefined): string | undefined {
@@ -1080,20 +1166,27 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	return {
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const title = config.resolveTitle(args, options);
 			const cmdLines = formatBashCommandLines(renderArgs, uiTheme);
-			const header = renderStatusLine({ icon: "pending", title }, uiTheme);
+			const header =
+				config.showHeader === false
+					? undefined
+					: renderStatusLine({ icon: "pending", title: config.resolveTitle(args, options) }, uiTheme);
 			const outputBlock = new CachedOutputBlock();
-			return {
-				render: (width: number): string[] =>
+			return markFramedBlockComponent({
+				render: (width: number): readonly string[] =>
 					outputBlock.render(
-						{ header, state: "pending", sections: [{ lines: cmdLines }], width, animate: true },
+						{
+							header,
+							state: "pending",
+							sections: [{ lines: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded }) }],
+							width,
+						},
 						uiTheme,
 					),
 				invalidate: () => {
 					outputBlock.invalidate();
 				},
-			};
+			});
 		},
 
 		renderResult(
@@ -1109,14 +1202,44 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const renderArgs = toBashRenderArgs(args, config);
 			const cmdLines = args ? formatBashCommandLines(renderArgs, uiTheme) : undefined;
 			const isError = result.isError === true;
-			const icon = options.isPartial ? "pending" : isError ? "error" : "success";
-			const title = config.resolveTitle(args, options);
-			const header = renderStatusLine({ icon, title }, uiTheme);
+			const isPartial = options.isPartial === true;
+			const success = !isPartial && !isError;
+			const header =
+				config.showHeader === false
+					? undefined
+					: renderStatusLine(
+							success
+								? {
+										iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+										title: config.resolveTitle(args, options),
+									}
+								: {
+										icon: isPartial ? "pending" : "error",
+										title: config.resolveTitle(args, options),
+									},
+							uiTheme,
+						);
 			const details = result.details;
 			const outputBlock = new CachedOutputBlock();
 
-			return {
-				render: (width: number): string[] => {
+			// Per-instance cache for the expensive inner lines computation. Mirrors
+			// the eval-renderer pattern (`eval-render.ts:709-752`): without this,
+			// every TUI repaint (one per keystroke when a long transcript is on
+			// screen) re-runs `split` / `replaceTabs` / `truncateToVisualLines` over
+			// the whole stored output for every bash row in scrollback. With a
+			// 50KB-tail bash result times hundreds of rows, that re-rendering is
+			// what pinned the main thread in issue #2081 and made keystrokes feel
+			// like the CPU was at 100%. The cache key includes every render input
+			// that materially affects the produced lines.
+			let cachedWidth: number | undefined;
+			let cachedPreviewLines: number | undefined;
+			let cachedExpanded: boolean | undefined;
+			let cachedRawOutput: string | undefined;
+			let cachedIsPartial: boolean | undefined;
+			let cachedLines: readonly string[] | undefined;
+
+			return markFramedBlockComponent({
+				render: (width: number): readonly string[] => {
 					// REACTIVE: read mutable options at render time
 					const { renderContext } = options;
 					const expanded = renderContext?.expanded ?? options.expanded;
@@ -1126,9 +1249,24 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					// Strip the LLM-facing notice appended by wrappedExecute so we don't
 					// double-print it alongside the styled warning line below.
 					const rawOutput = renderContext?.output ?? result.content?.find(c => c.type === "text")?.text ?? "";
+
+					const isPartial = options.isPartial === true;
+
+					if (
+						cachedLines !== undefined &&
+						cachedWidth === width &&
+						cachedPreviewLines === previewLines &&
+						cachedExpanded === expanded &&
+						cachedRawOutput === rawOutput &&
+						cachedIsPartial === isPartial
+					) {
+						return cachedLines;
+					}
 					const strippedOutput = stripOutputNotice(rawOutput, details?.meta);
 					const withoutExit = stripExitCodeNotice(strippedOutput, details?.exitCode);
-					const output = stripWallTimeNotice(withoutExit, details?.wallTimeMs);
+					const withoutWall = stripWallTimeNotice(withoutExit, details?.wallTimeMs);
+					const rawOutputArtifact = stripRawOutputArtifactNotice(withoutWall);
+					const output = rawOutputArtifact.text;
 					const displayOutput = output.trimEnd();
 					const showingFullOutput = expanded && renderContext?.isFullOutput === true;
 
@@ -1146,6 +1284,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								? `Timeout: ${timeoutSeconds}s (requested ${requestedTimeoutSeconds}s clamped)`
 								: `Timeout: ${timeoutSeconds}s`,
 						);
+					}
+					if (rawOutputArtifact.artifactId) {
+						statsParts.push(`Artifact: ${rawOutputArtifact.artifactId}`);
 					}
 					if (isError && typeof details?.exitCode === "number") {
 						statsParts.push(`Exit: ${details.exitCode}`);
@@ -1197,24 +1338,39 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					if (timeoutLine) outputLines.push(timeoutLine);
 					if (warningLine) outputLines.push(warningLine);
 
-					return outputBlock.render(
+					const framed = outputBlock.render(
 						{
 							header,
-							state: options.isPartial ? "pending" : isError ? "error" : "success",
+							state: isPartial ? "pending" : isError ? "error" : "success",
 							sections: [
-								{ lines: cmdLines ?? [] },
+								{
+									lines: isPartial ? capPreviewLines(cmdLines ?? [], uiTheme, { expanded }) : (cmdLines ?? []),
+								},
 								{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
 							],
 							width,
-							animate: options.isPartial && shimmerEnabled(),
 						},
 						uiTheme,
 					);
+
+					cachedWidth = width;
+					cachedPreviewLines = previewLines;
+					cachedExpanded = expanded;
+					cachedRawOutput = rawOutput;
+					cachedIsPartial = isPartial;
+					cachedLines = framed;
+					return framed;
 				},
 				invalidate: () => {
 					outputBlock.invalidate();
+					cachedLines = undefined;
+					cachedWidth = undefined;
+					cachedPreviewLines = undefined;
+					cachedExpanded = undefined;
+					cachedRawOutput = undefined;
+					cachedIsPartial = undefined;
 				},
-			};
+			});
 		},
 		mergeCallAndResult: true,
 		inline: true,
@@ -1226,4 +1382,5 @@ export const bashToolRenderer = createShellRenderer<BashRenderArgs>({
 	resolveCommand: args => args?.command,
 	resolveCwd: args => args?.cwd,
 	resolveEnv: args => args?.env,
+	showHeader: false,
 });

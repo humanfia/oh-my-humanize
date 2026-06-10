@@ -7,7 +7,7 @@ import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import { getServersForFile, loadConfig } from "@oh-my-pi/pi-coding-agent/lsp/config";
-import { applyWorkspaceEdit } from "@oh-my-pi/pi-coding-agent/lsp/edits";
+import { applyTextEditsToString, applyWorkspaceEdit } from "@oh-my-pi/pi-coding-agent/lsp/edits";
 import { renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
 import type {
 	CodeAction,
@@ -31,6 +31,7 @@ import {
 	hasGlobPattern,
 	resolveDiagnosticTargets,
 	resolveSymbolColumn,
+	uriToFile,
 } from "@oh-my-pi/pi-coding-agent/lsp/utils";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -140,6 +141,376 @@ process.abort();
 			expect(await markerExists(path.join(markerDir, "exit"))).toBe(true);
 			expect(await markerExists(path.join(markerDir, "sigterm"))).toBe(false);
 		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("advertises workspace folder support during LSP initialization", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-folders-");
+		try {
+			const initPath = path.join(tempDir.path(), "initialize.json");
+			const serverPath = path.join(tempDir.path(), "server.ts");
+			await Bun.write(
+				serverPath,
+				`
+const initPath = process.argv[2];
+const decoder = new TextDecoder();
+let buffer = "";
+
+function send(message) {
+	const content = JSON.stringify(message);
+	process.stdout.write(\`Content-Length: \${Buffer.byteLength(content, "utf8")}\\r\\n\\r\\n\${content}\`);
+}
+
+for await (const chunk of Bun.stdin.stream()) {
+	buffer += decoder.decode(chunk, { stream: true });
+	while (true) {
+		const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+		if (headerEnd === -1) break;
+
+		const header = buffer.slice(0, headerEnd);
+		const match = /Content-Length: (\\d+)/i.exec(header);
+		if (!match) process.exit(2);
+
+		const contentLength = Number(match[1]);
+		const contentStart = headerEnd + 4;
+		const contentEnd = contentStart + contentLength;
+		if (buffer.length < contentEnd) break;
+
+		const message = JSON.parse(buffer.slice(contentStart, contentEnd));
+		buffer = buffer.slice(contentEnd);
+
+		if (message.method === "initialize") {
+			await Bun.write(initPath, JSON.stringify(message.params));
+			send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+		} else if (message.method === "shutdown") {
+			send({ jsonrpc: "2.0", id: message.id, result: null });
+		} else if (message.method === "exit") {
+			process.exit(0);
+		}
+	}
+}
+`,
+			);
+
+			const server: ServerConfig = {
+				command: process.execPath,
+				args: [serverPath, initPath],
+				fileTypes: ["rs"],
+				rootMarkers: [],
+			};
+
+			await lspClient.getOrCreateClient(server, tempDir.path(), 1_000);
+			const params = (await Bun.file(initPath).json()) as {
+				capabilities?: { workspace?: { workspaceFolders?: unknown } };
+				workspaceFolders?: unknown;
+			};
+
+			expect(params.capabilities?.workspace?.workspaceFolders).toBe(true);
+			expect(params.workspaceFolders).toEqual([
+				{ uri: fileToUri(tempDir.path()), name: path.basename(tempDir.path()) },
+			]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("answers workspace/workspaceFolders requests with the current folder set", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-folders-request-");
+		try {
+			const responsePath = path.join(tempDir.path(), "folders-response.json");
+			const serverPath = path.join(tempDir.path(), "server.ts");
+			await Bun.write(
+				serverPath,
+				`
+const responsePath = process.argv[2];
+const decoder = new TextDecoder();
+let buffer = "";
+
+function send(message) {
+	const content = JSON.stringify(message);
+	process.stdout.write(\`Content-Length: \${Buffer.byteLength(content, "utf8")}\\r\\n\\r\\n\${content}\`);
+}
+
+for await (const chunk of Bun.stdin.stream()) {
+	buffer += decoder.decode(chunk, { stream: true });
+	while (true) {
+		const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+		if (headerEnd === -1) break;
+
+		const header = buffer.slice(0, headerEnd);
+		const match = /Content-Length: (\\d+)/i.exec(header);
+		if (!match) process.exit(2);
+
+		const contentLength = Number(match[1]);
+		const contentStart = headerEnd + 4;
+		const contentEnd = contentStart + contentLength;
+		if (buffer.length < contentEnd) break;
+
+		const message = JSON.parse(buffer.slice(contentStart, contentEnd));
+		buffer = buffer.slice(contentEnd);
+
+		if (message.method === "initialize") {
+			send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+			send({ jsonrpc: "2.0", id: 9001, method: "workspace/workspaceFolders" });
+		} else if (message.id === 9001) {
+			await Bun.write(responsePath, JSON.stringify(message));
+		} else if (message.method === "shutdown") {
+			send({ jsonrpc: "2.0", id: message.id, result: null });
+		} else if (message.method === "exit") {
+			process.exit(0);
+		}
+	}
+}
+`,
+			);
+
+			const server: ServerConfig = {
+				command: process.execPath,
+				args: [serverPath, responsePath],
+				fileTypes: ["rs"],
+				rootMarkers: [],
+			};
+
+			await lspClient.getOrCreateClient(server, tempDir.path(), 1_000);
+			const deadline = Date.now() + 1_000;
+			while (!fs.existsSync(responsePath) && Date.now() < deadline) {
+				await Bun.sleep(20);
+			}
+			const response = (await Bun.file(responsePath).json()) as {
+				error?: { code: number };
+				result?: unknown;
+			};
+
+			expect(response.error).toBeUndefined();
+			expect(response.result).toEqual([{ uri: fileToUri(tempDir.path()), name: path.basename(tempDir.path()) }]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("opens rust-analyzer Cargo workspace files before polling workspace readiness", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rust-workspace-");
+		try {
+			const sourcePath = path.join(tempDir.path(), "src", "main.rs");
+			const serverPath = path.join(tempDir.path(), "server.ts");
+			const eventLogPath = path.join(tempDir.path(), "events.log");
+			const statusCountPath = path.join(tempDir.path(), "status-count.txt");
+			await Bun.write(path.join(tempDir.path(), "Cargo.toml"), '[package]\nname = "fixture"\nversion = "0.0.0"\n');
+			await Bun.write(sourcePath, "fn greet() {}\nfn main() { greet(); }\n");
+			await Bun.write(
+				serverPath,
+				`
+const eventLogPath = process.argv[2];
+const statusCountPath = process.argv[3];
+const definitionUri = process.argv[4];
+const decoder = new TextDecoder();
+let buffer = "";
+let statusRequests = 0;
+let eventLog = "";
+
+function send(message) {
+	const content = JSON.stringify(message);
+	process.stdout.write(\`Content-Length: \${Buffer.byteLength(content, "utf8")}\\r\\n\\r\\n\${content}\`);
+}
+
+for await (const chunk of Bun.stdin.stream()) {
+	buffer += decoder.decode(chunk, { stream: true });
+	while (true) {
+		const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+		if (headerEnd === -1) break;
+
+		const header = buffer.slice(0, headerEnd);
+		const match = /Content-Length: (\\d+)/i.exec(header);
+		if (!match) process.exit(2);
+
+		const contentLength = Number(match[1]);
+		const contentStart = headerEnd + 4;
+		const contentEnd = contentStart + contentLength;
+		if (buffer.length < contentEnd) break;
+
+		const message = JSON.parse(buffer.slice(contentStart, contentEnd));
+		buffer = buffer.slice(contentEnd);
+
+		if (message.method === "initialize") {
+			send({ jsonrpc: "2.0", id: message.id, result: { capabilities: { definitionProvider: true } } });
+			send({ jsonrpc: "2.0", method: "$/progress", params: { token: "workspace", value: { kind: "begin" } } });
+			send({ jsonrpc: "2.0", method: "$/progress", params: { token: "workspace", value: { kind: "end" } } });
+		} else if (message.method === "rust-analyzer/analyzerStatus") {
+			statusRequests++;
+			eventLog += "status\\n";
+			await Bun.write(eventLogPath, eventLog);
+			await Bun.write(statusCountPath, String(statusRequests));
+			if (statusRequests === 1) {
+				continue;
+			}
+			const result = statusRequests < 3 ? "No workspaces" : "Workspaces:\\nLoaded 1 package across 1 workspace.";
+			send({ jsonrpc: "2.0", id: message.id, result });
+		} else if (message.method === "textDocument/didOpen") {
+			eventLog += "open\\n";
+			await Bun.write(eventLogPath, eventLog);
+		} else if (message.method === "textDocument/definition") {
+			send({
+				jsonrpc: "2.0",
+				id: message.id,
+				result: [{ uri: definitionUri, range: { start: { line: 0, character: 3 }, end: { line: 0, character: 8 } } }],
+			});
+		} else if (message.method === "shutdown") {
+			send({ jsonrpc: "2.0", id: message.id, result: null });
+		} else if (message.method === "exit") {
+			process.exit(0);
+		}
+	}
+}
+`,
+			);
+
+			const server: ServerConfig = {
+				command: "rust-analyzer",
+				resolvedCommand: process.execPath,
+				args: [serverPath, eventLogPath, statusCountPath, fileToUri(sourcePath)],
+				fileTypes: ["rs"],
+				rootMarkers: [],
+				// Shrink the workspace-ready polling window so the test exercises the
+				// timeout→retry→ready sequence without waiting out the 2s production settle.
+				// The status-request timeout stays generous to avoid racing the subprocess.
+				workspaceReadyTimings: { timeoutMs: 5_000, pollMs: 10, settleMs: 20, statusRequestTimeoutMs: 150 },
+			};
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "rust-analyzer": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["rust-analyzer", server]]);
+
+			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const result = await tool.execute("rust-wait-test", {
+				action: "definition",
+				file: sourcePath,
+				line: 2,
+				symbol: "greet",
+				timeout: 10,
+			});
+			const output = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			const eventLog = (await Bun.file(eventLogPath).text()).trim().split("\n");
+			expect(output).toContain("Found 1 definition(s)");
+			expect(eventLog[0]).toBe("open");
+			expect(eventLog.filter(line => line === "status").length).toBeGreaterThanOrEqual(3);
+			expect(Number(await Bun.file(statusCountPath).text())).toBeGreaterThanOrEqual(3);
+		} finally {
+			vi.restoreAllMocks();
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("skips rust-analyzer workspace polling for standalone Rust files", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rust-standalone-");
+		try {
+			const sourcePath = path.join(tempDir.path(), "foo.rs");
+			const serverPath = path.join(tempDir.path(), "server.ts");
+			const eventLogPath = path.join(tempDir.path(), "events.log");
+			await Bun.write(sourcePath, 'fn greet() -> &\'static str { "hi" }\n');
+			await Bun.write(
+				serverPath,
+				`
+const eventLogPath = process.argv[2];
+const definitionUri = process.argv[3];
+const decoder = new TextDecoder();
+let buffer = "";
+let eventLog = "";
+
+function send(message) {
+	const content = JSON.stringify(message);
+	process.stdout.write(\`Content-Length: \${Buffer.byteLength(content, "utf8")}\\r\\n\\r\\n\${content}\`);
+}
+
+for await (const chunk of Bun.stdin.stream()) {
+	buffer += decoder.decode(chunk, { stream: true });
+	while (true) {
+		const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+		if (headerEnd === -1) break;
+
+		const header = buffer.slice(0, headerEnd);
+		const match = /Content-Length: (\\d+)/i.exec(header);
+		if (!match) process.exit(2);
+
+		const contentLength = Number(match[1]);
+		const contentStart = headerEnd + 4;
+		const contentEnd = contentStart + contentLength;
+		if (buffer.length < contentEnd) break;
+
+		const message = JSON.parse(buffer.slice(contentStart, contentEnd));
+		buffer = buffer.slice(contentEnd);
+
+		if (message.method === "initialize") {
+			send({ jsonrpc: "2.0", id: message.id, result: { capabilities: { definitionProvider: true } } });
+		} else if (message.method === "rust-analyzer/analyzerStatus") {
+			eventLog += "status\\n";
+			await Bun.write(eventLogPath, eventLog);
+			send({ jsonrpc: "2.0", id: message.id, result: "No workspaces" });
+		} else if (message.method === "textDocument/didOpen") {
+			eventLog += "open\\n";
+			await Bun.write(eventLogPath, eventLog);
+		} else if (message.method === "textDocument/definition") {
+			send({
+				jsonrpc: "2.0",
+				id: message.id,
+				result: [{ uri: definitionUri, range: { start: { line: 0, character: 3 }, end: { line: 0, character: 8 } } }],
+			});
+		} else if (message.method === "shutdown") {
+			send({ jsonrpc: "2.0", id: message.id, result: null });
+		} else if (message.method === "exit") {
+			process.exit(0);
+		}
+	}
+}
+`,
+			);
+
+			const server: ServerConfig = {
+				command: "rust-analyzer",
+				resolvedCommand: process.execPath,
+				args: [serverPath, eventLogPath, fileToUri(sourcePath)],
+				fileTypes: ["rs"],
+				rootMarkers: [],
+			};
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "rust-analyzer": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["rust-analyzer", server]]);
+
+			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const started = Date.now();
+			const result = await tool.execute("rust-standalone-test", {
+				action: "definition",
+				file: sourcePath,
+				line: 1,
+				symbol: "greet",
+				timeout: 10,
+			});
+			const elapsed = Date.now() - started;
+			const output = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+			const eventLog = (await Bun.file(eventLogPath).text()).trim().split("\n");
+
+			expect(output).toContain("Found 1 definition(s)");
+			expect(eventLog).toContain("open");
+			expect(eventLog).not.toContain("status");
+			expect(elapsed).toBeLessThan(2_000);
+		} finally {
+			vi.restoreAllMocks();
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
@@ -429,6 +800,7 @@ process.abort();
 				pendingRequests: new Map(),
 				messageBuffer: new Uint8Array(),
 				isReading: false,
+				status: "ready",
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -632,6 +1004,7 @@ process.abort();
 				pendingRequests: new Map(),
 				messageBuffer: new Uint8Array(),
 				isReading: false,
+				status: "ready",
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -733,6 +1106,7 @@ process.abort();
 				pendingRequests: new Map(),
 				messageBuffer: new Uint8Array(),
 				isReading: false,
+				status: "ready",
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -793,6 +1167,7 @@ process.abort();
 				pendingRequests: new Map(),
 				messageBuffer: new Uint8Array(),
 				isReading: false,
+				status: "ready",
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -862,6 +1237,7 @@ process.abort();
 				pendingRequests: new Map(),
 				messageBuffer: new Uint8Array(),
 				isReading: false,
+				status: "ready",
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -931,6 +1307,7 @@ process.abort();
 				pendingRequests: new Map(),
 				messageBuffer: new Uint8Array(),
 				isReading: false,
+				status: "ready",
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -988,6 +1365,7 @@ process.abort();
 				pendingRequests: new Map(),
 				messageBuffer: new Uint8Array(),
 				isReading: false,
+				status: "ready",
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -1136,6 +1514,67 @@ process.abort();
 			tempDir.removeSync();
 		}
 	});
+
+	it("applies equal-position inserts in array order", () => {
+		// LSP spec: multiple inserts at the same position land in the order they
+		// appear in the edits array (import + reference insertions rely on this).
+		const result = applyTextEditsToString("abc", [
+			{ range: { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } }, newText: "X" },
+			{ range: { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } }, newText: "Y" },
+		]);
+		expect(result).toBe("aXYbc");
+	});
+
+	it("validates every file's edits before writing any workspace-edit file", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-atomic-validate-");
+		try {
+			const okPath = path.join(tempDir.path(), "ok.ts");
+			const badPath = path.join(tempDir.path(), "bad.ts");
+			const okContent = "export const ok = 1;\n";
+			await Bun.write(okPath, okContent);
+			await Bun.write(badPath, "export const bad = 2;\n");
+
+			const workspaceEdit: WorkspaceEdit = {
+				changes: {
+					[fileToUri(okPath)]: [
+						{
+							range: { start: { line: 0, character: 13 }, end: { line: 0, character: 15 } },
+							newText: "changed",
+						},
+					],
+					[fileToUri(badPath)]: [
+						// Overlapping edits — must reject the whole workspace edit.
+						{
+							range: { start: { line: 0, character: 0 }, end: { line: 0, character: 10 } },
+							newText: "x",
+						},
+						{
+							range: { start: { line: 0, character: 5 }, end: { line: 0, character: 12 } },
+							newText: "y",
+						},
+					],
+				},
+			};
+
+			await expect(applyWorkspaceEdit(workspaceEdit, tempDir.path())).rejects.toThrow(/overlapping LSP edits/);
+			// The valid file must be untouched: validation runs before any write.
+			expect(fs.readFileSync(okPath, "utf8")).toBe(okContent);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("round-trips file URIs containing percent and hash characters", () => {
+		const tricky = path.join("/tmp", "omp uri", "100% #1.ts");
+		const uri = fileToUri(tricky);
+		// Percent-encoded so the server cannot misparse a fragment or escape.
+		expect(uri).not.toContain("#");
+		expect(uri).not.toContain(" ");
+		expect(uriToFile(uri)).toBe(tricky);
+		// Lax servers sending unencoded paths are tolerated.
+		expect(uriToFile("file:///tmp/omp uri/plain.ts")).toBe("/tmp/omp uri/plain.ts");
+	});
+
 	it("resolves $-prefixed identifiers past compound matches", async () => {
 		// Pre-fix, BARE_IDENTIFIER_RE rejected leading `$`, so requireWordBoundary
 		// was false and `resolveSymbolColumn(_, _, "$store")` returned the column
@@ -1258,5 +1697,135 @@ process.abort();
 		} finally {
 			tempDir.removeSync();
 		}
+	});
+
+	it("sendRequest respects an explicit timeoutMs and reports it in the error", async () => {
+		// Synthesise a minimal in-memory LSP client and never resolve the request
+		// so the per-request timer is the only thing that can fire.
+		const client: LspClient = {
+			name: "test-lsp",
+			cwd: process.cwd(),
+			config: { command: "test-lsp", fileTypes: [".ts"], rootMarkers: [] },
+			proc: { stdin: { write() {}, flush: async () => {} } } as unknown as LspClient["proc"],
+			requestId: 0,
+			diagnostics: new Map(),
+			diagnosticsVersion: 0,
+			openFiles: new Map(),
+			pendingRequests: new Map(),
+			messageBuffer: new Uint8Array(),
+			isReading: false,
+			status: "ready",
+			lastActivity: Date.now(),
+			writeQueue: Promise.resolve(),
+			activeProgressTokens: new Set(),
+			projectLoaded: Promise.resolve(),
+			resolveProjectLoaded: () => {},
+		};
+		await expect(lspClient.sendRequest(client, "test/method", {}, undefined, 25)).rejects.toThrow(/after 25ms/);
+	});
+
+	it("sendRequest uses the signal as the deadline when no explicit timeout is set", async () => {
+		// With a signal but no explicit timeoutMs, the per-request 30s default
+		// MUST NOT fire — the signal owns the deadline. Otherwise `timeout: 60`
+		// on the LSP tool got truncated to 30000ms.
+		const client: LspClient = {
+			name: "test-lsp",
+			cwd: process.cwd(),
+			config: { command: "test-lsp", fileTypes: [".ts"], rootMarkers: [] },
+			proc: { stdin: { write() {}, flush: async () => {} } } as unknown as LspClient["proc"],
+			requestId: 0,
+			diagnostics: new Map(),
+			diagnosticsVersion: 0,
+			openFiles: new Map(),
+			pendingRequests: new Map(),
+			messageBuffer: new Uint8Array(),
+			isReading: false,
+			status: "ready",
+			lastActivity: Date.now(),
+			writeQueue: Promise.resolve(),
+			activeProgressTokens: new Set(),
+			projectLoaded: Promise.resolve(),
+			resolveProjectLoaded: () => {},
+		};
+		const signal = AbortSignal.timeout(20);
+		await expect(lspClient.sendRequest(client, "test/method", {}, signal)).rejects.toThrow();
+		// If the per-request 30s timer had fired, the message would say "after 30000ms".
+		// We assert the negative: the rejection came from the signal, not the timer.
+		try {
+			await lspClient.sendRequest(client, "test/method", {}, AbortSignal.timeout(20));
+		} catch (err) {
+			expect(String(err)).not.toContain("30000ms");
+		}
+	});
+
+	it("rename_file skips the LSP loop when no configured server handles the file extension", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-irrelevant-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "notes.md");
+			const destFile = path.join(tempDir.path(), "renamed.md");
+			await Bun.write(sourceFile, "# heading\n");
+
+			// Only a TS server is configured; .md should not trigger any willRenameFiles.
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "test-ts": { command: "test-ts", fileTypes: [".ts"], rootMarkers: [] } },
+				idleTimeoutMs: undefined,
+			});
+			const sendSpy = vi.spyOn(lspClient, "sendRequest");
+			const notifySpy = vi.spyOn(lspClient, "sendNotification");
+			const getClientSpy = vi.spyOn(lspClient, "getOrCreateClient");
+
+			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const result = await tool.execute("rename-md", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			expect(sendSpy).not.toHaveBeenCalled();
+			expect(notifySpy).not.toHaveBeenCalled();
+			expect(getClientSpy).not.toHaveBeenCalled();
+			expect(fs.existsSync(sourceFile)).toBe(false);
+			expect(fs.existsSync(destFile)).toBe(true);
+			const output = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+			expect(output).toContain("Renamed");
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("status distinguishes configured servers from started clients", async () => {
+		// `loadConfig` claims rust-analyzer + tsls are configured, but only
+		// tsls has actually been spawned. Status must reflect that — claiming
+		// rust-analyzer is 'active' when the process never started was the
+		// original bug.
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+			servers: {
+				"rust-analyzer": { command: "rust-analyzer", fileTypes: [".rs"], rootMarkers: ["Cargo.toml"] },
+				"typescript-language-server": {
+					command: "typescript-language-server",
+					fileTypes: [".ts"],
+					rootMarkers: ["tsconfig.json"],
+				},
+			},
+			idleTimeoutMs: undefined,
+		});
+		vi.spyOn(lspClient, "getActiveClients").mockReturnValue([
+			{ name: "typescript-language-server", status: "ready", fileTypes: [".ts"] },
+		]);
+
+		const tool = new LspTool({ cwd: process.cwd() } as ToolSession);
+		const result = await tool.execute("status-test", { action: "status" });
+		const output = result.content
+			.filter(block => block.type === "text")
+			.map(block => block.text)
+			.join("\n");
+
+		expect(output).toContain("rust-analyzer (configured, not started)");
+		expect(output).toContain("typescript-language-server (ready)");
 	});
 });

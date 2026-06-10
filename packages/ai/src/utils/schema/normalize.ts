@@ -11,6 +11,7 @@ import { dereferenceJsonSchema } from "./dereference";
 import { upgradeJsonSchemaTo202012 } from "./draft";
 import { areJsonValuesEqual, mergePropertySchemas } from "./equality";
 import {
+	ALL_CCA_TYPE_SPECIFIC_KEYS,
 	CLOUD_CODE_ASSIST_SHARED_SCHEMA_KEYS,
 	CLOUD_CODE_ASSIST_TYPE_SPECIFIC_KEYS,
 	COMBINATOR_KEYS,
@@ -51,7 +52,6 @@ export interface NormalizeSchemaOptions {
 
 interface NormalizeSchemaWalkOptions extends NormalizeSchemaOptions {
 	insideProperties: boolean;
-	epoch: number;
 }
 
 interface ResidualIncompatibilityChecks {
@@ -218,13 +218,27 @@ function applyDescriptionSpill(
 
 function normalizeSchemaNode(value: unknown, options: NormalizeSchemaWalkOptions): unknown {
 	if (Array.isArray(value)) {
-		if (!once(value, options.epoch)) return [];
-		return value.map(entry => normalizeSchemaNode(entry, options));
+		if (!enter(value)) return [];
+		try {
+			return value.map(entry => normalizeSchemaNode(entry, options));
+		} finally {
+			exit(value);
+		}
 	}
 	if (!isJsonObject(value)) {
 		return value;
 	}
-	if (!once(value, options.epoch)) return {};
+	// `enter`/`exit` path-tracking (not a visited-set): DAG-shared subtrees are
+	// normalized at every occurrence; only true cycles short-circuit to `{}`.
+	if (!enter(value)) return {};
+	try {
+		return normalizeSchemaObjectNode(value, options);
+	} finally {
+		exit(value);
+	}
+}
+
+function normalizeSchemaObjectNode(value: JsonObject, options: NormalizeSchemaWalkOptions): unknown {
 	let obj = options.normalizeFieldNames && !options.insideProperties ? applySnakeCaseRenames(value) : value;
 	if (options.collapseNullFields && !options.insideProperties) {
 		obj = preHandleNullFields(obj);
@@ -280,7 +294,7 @@ function normalizeSchemaNode(value: unknown, options: NormalizeSchemaWalkOptions
 			if (options.stripNullableKeyword && key === "nullable") continue;
 			result[key] = normalizeSchemaNode(entry, {
 				...options,
-				insideProperties: key === "properties",
+				insideProperties: !options.insideProperties && key === "properties",
 			});
 		}
 		applyDescriptionSpill(result, spill, options);
@@ -302,7 +316,7 @@ function normalizeSchemaNode(value: unknown, options: NormalizeSchemaWalkOptions
 		}
 		result[key] = normalizeSchemaNode(entry, {
 			...options,
-			insideProperties: key === "properties",
+			insideProperties: !options.insideProperties && key === "properties",
 		});
 	}
 
@@ -501,12 +515,32 @@ function collapseMixedTypeCombinerVariants(schema: JsonObject, combiner: "anyOf"
 	if (variantTypes.length < 2 || variantTypes.every(type => type === "object")) {
 		return schema;
 	}
-
 	const nextSchema = copySchemaWithout(schema, combiner);
 	const nonNullTypes = variantTypes.filter(t => t !== "null");
-	nextSchema.type = nonNullTypes[0] ?? variantTypes[0];
+	const chosenType: string = nonNullTypes[0] ?? variantTypes[0];
+	nextSchema.type = chosenType;
+	const chosenTypeAllowedKeys = CLOUD_CODE_ASSIST_TYPE_SPECIFIC_KEYS[chosenType] ?? {};
+
+	// Strip sibling keys that were copied from the parent and belong to a
+	// different type (e.g. `items` sibling on a now-string-typed schema).
+	for (const key in nextSchema) {
+		if (!Object.hasOwn(nextSchema, key)) continue;
+		if (key === "type") continue;
+		if (
+			Object.hasOwn(ALL_CCA_TYPE_SPECIFIC_KEYS, key) &&
+			!Object.hasOwn(chosenTypeAllowedKeys, key) &&
+			!Object.hasOwn(CLOUD_CODE_ASSIST_SHARED_SCHEMA_KEYS, key)
+		) {
+			delete nextSchema[key];
+		}
+	}
+
 	for (const key in mergedVariantFields) {
 		if (!Object.hasOwn(mergedVariantFields, key)) continue;
+		// Drop type-specific keys that don't belong to the chosen type
+		if (!Object.hasOwn(chosenTypeAllowedKeys, key) && !Object.hasOwn(CLOUD_CODE_ASSIST_SHARED_SCHEMA_KEYS, key)) {
+			continue;
+		}
 		const value = mergedVariantFields[key];
 		const existingValue = nextSchema[key];
 		if (existingValue !== undefined && !areJsonValuesEqual(existingValue, value)) {
@@ -774,7 +808,6 @@ export function normalizeSchema(value: unknown, options: NormalizeSchemaOptions)
 	let normalized = normalizeSchemaNode(dereferenced, {
 		...options,
 		insideProperties: false,
-		epoch: epochNext(),
 	});
 	if (options.stripResidualCombinersFixpoint) {
 		normalized = stripResidualCombiners(normalized);

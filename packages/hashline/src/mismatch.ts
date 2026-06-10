@@ -6,8 +6,8 @@
  * plus a couple of lines of surrounding context. The {@link MismatchError}
  * formats this into a message at construction time.
  */
-import { formatNumberedLine, HL_FILE_HASH_EXAMPLES, HL_FILE_HASH_SEP, HL_FILE_PREFIX } from "./format";
-import { MISMATCH_CONTEXT } from "./messages";
+import { HL_FILE_HASH_EXAMPLES, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format";
+import { formatAnchoredContext } from "./messages";
 
 const LINE_REF_RE = /^\s*[>+\-*]*\s*(\d+)(?::.*)?\s*$/;
 /** Format the required-shape diagnostic shown when a line reference is malformed. */
@@ -15,7 +15,7 @@ export function formatFullAnchorRequirement(raw?: string): string {
 	const received = raw === undefined ? "" : ` Received ${JSON.stringify(raw)}.`;
 	return (
 		`a bare line number from read/search output plus the section header content-hash tag ` +
-		`(for example ${HL_FILE_PREFIX}src/foo.ts${HL_FILE_HASH_SEP}${HL_FILE_HASH_EXAMPLES[0]} and line "160")${received}`
+		`(for example ${HL_FILE_PREFIX}src/foo.ts${HL_FILE_HASH_SEP}${HL_FILE_HASH_EXAMPLES[0]}${HL_FILE_SUFFIX} and line "160")${received}`
 	);
 }
 
@@ -44,17 +44,6 @@ export interface MismatchDetails {
 	 * to `true` for backward compatibility with direct callers.
 	 */
 	hashRecognized?: boolean;
-}
-
-function getMismatchDisplayLines(anchorLines: readonly number[], fileLines: string[]): number[] {
-	const displayLines = new Set<number>();
-	for (const line of anchorLines) {
-		if (line < 1 || line > fileLines.length) continue;
-		const lo = Math.max(1, line - MISMATCH_CONTEXT);
-		const hi = Math.min(fileLines.length, line + MISMATCH_CONTEXT);
-		for (let lineNum = lo; lineNum <= hi; lineNum++) displayLines.add(lineNum);
-	}
-	return [...displayLines].sort((a, b) => a - b);
 }
 
 /**
@@ -99,12 +88,12 @@ export class MismatchError extends Error {
 		if (!hashRecognized) {
 			return [
 				`Edit rejected${pathText}: hash ${HL_FILE_HASH_SEP}${details.expectedFileHash} is not from this session.`,
-				`The current file hashes to ${HL_FILE_HASH_SEP}${details.actualFileHash}. Re-read the file with \`read\` to copy a current ${HL_FILE_PREFIX}path${HL_FILE_HASH_SEP}tag header — never invent the tag and never reuse one from a prior session.`,
+				`The current file hashes to ${HL_FILE_HASH_SEP}${details.actualFileHash}. Re-read the file with \`read\` to copy a current ${HL_FILE_PREFIX}path${HL_FILE_HASH_SEP}tag${HL_FILE_SUFFIX} header — never invent the tag and never reuse one from a prior session.`,
 			];
 		}
 		return [
 			`Edit rejected${pathText}: file changed between read and edit.`,
-			`Section is bound to ${HL_FILE_HASH_SEP}${details.expectedFileHash}, but the current file hashes to ${HL_FILE_HASH_SEP}${details.actualFileHash}. If a prior edit in this session modified this file, copy the ${HL_FILE_PREFIX}path${HL_FILE_HASH_SEP}newhash header from that edit's response; otherwise re-read the file with \`read\` to refresh the tag before retrying.`,
+			`Section is bound to ${HL_FILE_HASH_SEP}${details.expectedFileHash}, but the current file hashes to ${HL_FILE_HASH_SEP}${details.actualFileHash}. If a prior edit in this session modified this file, copy the ${HL_FILE_PREFIX}path${HL_FILE_HASH_SEP}newhash${HL_FILE_SUFFIX} header from that edit's response; otherwise re-read the file with \`read\` to refresh the tag before retrying.`,
 		];
 	}
 
@@ -113,19 +102,10 @@ export class MismatchError extends Error {
 	}
 
 	static formatMessage(details: MismatchDetails): string {
-		const anchorSet = new Set(details.anchorLines ?? []);
 		const lines = MismatchError.rejectionHeader(details);
-		const displayLines = getMismatchDisplayLines(details.anchorLines ?? [], details.fileLines);
-		if (displayLines.length === 0) return lines.join("\n");
-		lines.push("");
-		let previous = -1;
-		for (const lineNum of displayLines) {
-			if (previous !== -1 && lineNum > previous + 1) lines.push("...");
-			previous = lineNum;
-			const text = details.fileLines[lineNum - 1] ?? "";
-			const marker = anchorSet.has(lineNum) ? "*" : " ";
-			lines.push(`${marker}${formatNumberedLine(lineNum, text)}`);
-		}
+		const context = formatAnchoredContext(details.anchorLines ?? [], details.fileLines);
+		if (context.length === 0) return lines.join("\n");
+		lines.push("", ...context);
 		return lines.join("\n");
 	}
 }

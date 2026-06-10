@@ -15,6 +15,7 @@ export interface SubcommandDef {
 /** Declarative builtin slash command metadata used by autocomplete and help UI. */
 export interface BuiltinSlashCommand {
 	name: string;
+	aliases?: string[];
 	description: string;
 	/** Subcommands for dropdown completion (e.g. /mcp add, /mcp list). */
 	subcommands?: SubcommandDef[];
@@ -32,7 +33,11 @@ export interface ParsedSlashCommand {
 /**
  * Result returned by a slash-command handler.
  *
- * - `void` / `undefined` — command was handled and consumed; no further input.
+ * - `undefined` (and the implicit `void` return) — command was handled and
+ *   consumed; no further input. Handlers may simply omit a `return` rather than
+ *   building `{ consumed: true }`; `void` is accepted in the handler signatures
+ *   below so the contract typechecks under TypeScript 5.x (which does not
+ *   coerce `() => void` to `() => T | undefined`) as well as 6.x / tsgo.
  * - `{ consumed: true }` — explicit equivalent of the above (ACP shape).
  * - `{ prompt: string }` — command handled, pass `prompt` through as the new
  *   user input (e.g. `/force <tool> <prompt>` keeps `<prompt>` as the message).
@@ -69,20 +74,17 @@ export interface SlashCommandRuntime {
 
 /**
  * Runtime visible to TUI-only handlers (`handleTui`). Carries the interactive
- * mode context plus the background-detach hook. Intentionally narrower than
- * `SlashCommandRuntime` so existing callers can keep building it from just
- * `{ ctx, handleBackgroundCommand }`; when the TUI dispatcher needs to invoke
- * a `handle` (no `handleTui` override), it synthesizes a `SlashCommandRuntime`
- * from `ctx`.
+ * mode context. Intentionally narrower than `SlashCommandRuntime` so existing
+ * callers can keep building it from just `{ ctx }`; when the TUI dispatcher
+ * needs to invoke a `handle` (no `handleTui` override), it synthesizes a
+ * `SlashCommandRuntime` from `ctx`.
  */
 export interface TuiSlashCommandRuntime {
 	ctx: InteractiveModeContext;
-	handleBackgroundCommand: () => void;
 }
 
 /** Unified slash-command spec consumed by both TUI and ACP dispatchers. */
 export interface SlashCommandSpec extends BuiltinSlashCommand {
-	aliases?: string[];
 	/** When false, the dispatcher refuses to handle invocations that include arguments. */
 	allowArgs?: boolean;
 	/**
@@ -102,20 +104,33 @@ export interface SlashCommandSpec extends BuiltinSlashCommand {
 	/**
 	 * Text/ACP-mode handler. The same body is invoked from the ACP dispatcher
 	 * and, via the TUI adapter, when no `handleTui` override is provided.
+	 *
+	 * Expressed as a union of two function types — one returning a
+	 * `SlashCommandResult`, one returning `void` — so handlers that simply
+	 * `return` (or omit the return) typecheck under TypeScript 5.x as well as
+	 * 6.x / tsgo. TS 5.x does not coerce a `() => void` value into a
+	 * `() => T | undefined` slot, so the two return shapes must be siblings
+	 * rather than a `T | void` union inside one function type (which Biome's
+	 * `noConfusingVoidType` also rejects).
 	 */
-	handle?: (
-		command: ParsedSlashCommand,
-		runtime: SlashCommandRuntime,
-	) => Promise<SlashCommandResult> | SlashCommandResult;
+	handle?:
+		| ((
+				command: ParsedSlashCommand,
+				runtime: SlashCommandRuntime,
+		  ) => SlashCommandResult | Promise<SlashCommandResult>)
+		| ((command: ParsedSlashCommand, runtime: SlashCommandRuntime) => void | Promise<void>);
 	/**
 	 * TUI-only handler that supersedes `handle` when both are present. Use for
 	 * selectors, wizards, dashboards, and anything else that requires
-	 * `InteractiveModeContext`.
+	 * `InteractiveModeContext`. See `handle` for the rationale behind the
+	 * function-type union shape.
 	 */
-	handleTui?: (
-		command: ParsedSlashCommand,
-		runtime: TuiSlashCommandRuntime,
-	) => Promise<SlashCommandResult> | SlashCommandResult;
+	handleTui?:
+		| ((
+				command: ParsedSlashCommand,
+				runtime: TuiSlashCommandRuntime,
+		  ) => SlashCommandResult | Promise<SlashCommandResult>)
+		| ((command: ParsedSlashCommand, runtime: TuiSlashCommandRuntime) => void | Promise<void>);
 }
 
 /** Result returned by `executeAcpBuiltinSlashCommand`. */

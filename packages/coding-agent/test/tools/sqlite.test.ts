@@ -3,11 +3,17 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import "../../src/tools/renderers";
-import { Settings } from "../../src/config/settings";
-import { ReadTool } from "../../src/tools/read";
-import { parseSqlitePathCandidates, parseSqliteSelector, renderTable } from "../../src/tools/sqlite-reader";
-import { WriteTool } from "../../src/tools/write";
+import "@oh-my-pi/pi-coding-agent/tools/renderers";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import {
+	listTables,
+	parseSqlitePathCandidates,
+	parseSqliteSelector,
+	renderTable,
+	renderTableList,
+} from "@oh-my-pi/pi-coding-agent/tools/sqlite-reader";
+import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 
 type ToolTextResult = {
 	content: Array<{ type: string; text?: string }>;
@@ -323,6 +329,29 @@ describe("SQLite tool support", () => {
 		).rejects.toThrow(/readonly/i);
 	});
 
+	it("caps raw ?q= queries at the row limit and surfaces a LIMIT hint", async () => {
+		const db = new Database(sqlitePath);
+		try {
+			db.run("CREATE TABLE big (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
+			const insert = db.prepare("INSERT INTO big (value) VALUES (?)");
+			const fill = db.transaction(() => {
+				for (let i = 1; i <= 1200; i++) {
+					insert.run(`val_${i}_end`);
+				}
+			});
+			fill();
+		} finally {
+			db.close();
+		}
+
+		const result = await readTool.execute("sqlite-raw-row-cap", { path: `${sqlitePath}?q=SELECT * FROM big` });
+		const text = getText(result);
+
+		expect(text).toContain("val_1000_end");
+		expect(text).not.toContain("val_1001_end");
+		expect(text).toContain("Output capped at 1000 rows");
+	});
+
 	it("rejects table names that do not exist instead of interpolating them", async () => {
 		await expect(
 			readTool.execute("sqlite-injection-table", { path: `${sqlitePath}:users;DROP TABLE users;` }),
@@ -416,5 +445,83 @@ describe("SQLite tool support", () => {
 				content: "{ bogus: 1 }",
 			}),
 		).rejects.toThrow(/no column named 'bogus'/i);
+	});
+});
+
+describe("SQLite table listing row counts", () => {
+	let tmpDir: string;
+	let dbPath: string;
+
+	beforeEach(async () => {
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "sqlite-count-test-"));
+		dbPath = path.join(tmpDir, "counts.db");
+	});
+
+	afterEach(async () => {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	});
+
+	function seed(rowsPerTable: { big: number; small: number }): void {
+		const db = new Database(dbPath);
+		try {
+			db.run("CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT NOT NULL)");
+			db.run("CREATE TABLE small (id INTEGER PRIMARY KEY)");
+			const bigStmt = db.prepare("INSERT INTO big (v) VALUES (?)");
+			for (let i = 0; i < rowsPerTable.big; i++) bigStmt.run("x");
+			const smallStmt = db.prepare("INSERT INTO small DEFAULT VALUES");
+			for (let i = 0; i < rowsPerTable.small; i++) smallStmt.run();
+		} finally {
+			db.close();
+		}
+	}
+
+	function analyze(): void {
+		const db = new Database(dbPath);
+		try {
+			db.run("ANALYZE");
+		} finally {
+			db.close();
+		}
+	}
+
+	it("counts small tables exactly", () => {
+		seed({ big: 10, small: 2 });
+		const db = new Database(dbPath, { readonly: true });
+		try {
+			const rendered = renderTableList(listTables(db, { probeCap: 100 }));
+			expect(rendered).toContain("big (10 rows)");
+			expect(rendered).toContain("small (2 rows)");
+		} finally {
+			db.close();
+		}
+	});
+
+	it("reports the planner estimate for tables larger than the probe cap", () => {
+		seed({ big: 10, small: 2 });
+		analyze();
+		const db = new Database(dbPath, { readonly: true });
+		try {
+			// probeCap=5: big (estimate 10) exceeds it and is reported as an estimate
+			// without scanning; small (estimate 2) is counted exactly.
+			const rendered = renderTableList(listTables(db, { probeCap: 5 }));
+			expect(rendered).toContain("big (~10 rows)");
+			expect(rendered).toContain("small (2 rows)");
+		} finally {
+			db.close();
+		}
+	});
+
+	it("reports a lower bound when an unanalyzed table exceeds the probe cap", () => {
+		seed({ big: 10, small: 2 });
+		const db = new Database(dbPath, { readonly: true });
+		try {
+			// No ANALYZE, so no estimate exists; the bounded probe stops at the cap
+			// and reports a lower bound instead of scanning the whole table.
+			const rendered = renderTableList(listTables(db, { probeCap: 3 }));
+			expect(rendered).toContain("big (3+ rows)");
+			expect(rendered).toContain("small (2 rows)");
+		} finally {
+			db.close();
+		}
 	});
 });

@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { type AzureOpenAIResponsesOptions, streamAzureOpenAIResponses } from "../src/providers/azure-openai-responses";
-import type { Context, Model, Tool } from "../src/types";
+import {
+	type AzureOpenAIResponsesOptions,
+	streamAzureOpenAIResponses,
+} from "@oh-my-pi/pi-ai/providers/azure-openai-responses";
+import type { Context, FetchImpl, Model, ModelSpec, Tool } from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
-const originalFetch = global.fetch;
-
-const azureModel: Model<"azure-openai-responses"> = {
+const azureModel: Model<"azure-openai-responses"> = buildModel({
 	id: "gpt-5-mini",
 	name: "GPT-5 Mini",
 	api: "azure-openai-responses",
@@ -15,7 +17,7 @@ const azureModel: Model<"azure-openai-responses"> = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 400000,
 	maxTokens: 128000,
-};
+});
 
 function createAbortedSignal(): AbortSignal {
 	const controller = new AbortController();
@@ -76,7 +78,6 @@ async function captureAzurePayload(
 }
 
 afterEach(() => {
-	global.fetch = originalFetch;
 	vi.restoreAllMocks();
 });
 
@@ -95,10 +96,11 @@ describe("azure openai responses streaming", () => {
 	});
 
 	it("uses developer role for Azure Responses reasoning model system prompts", async () => {
-		const reasoningModel: Model<"azure-openai-responses"> = {
+		const reasoningModel: Model<"azure-openai-responses"> = buildModel({
 			...azureModel,
 			reasoning: true,
-		};
+			compat: azureModel.compatConfig,
+		} as ModelSpec<"azure-openai-responses">);
 		const payload = await captureAzurePayload(
 			{
 				systemPrompt: ["Reasoning instruction", "Second instruction"],
@@ -172,7 +174,7 @@ describe("azure openai responses streaming", () => {
 	});
 
 	it("surfaces nested response.failed provider errors", async () => {
-		global.fetch = vi.fn(async () =>
+		const fetchMock: FetchImpl = vi.fn(async () =>
 			createSseResponse([
 				{
 					type: "response.failed",
@@ -181,12 +183,12 @@ describe("azure openai responses streaming", () => {
 					},
 				},
 			]),
-		) as unknown as typeof fetch;
+		);
 
 		const result = await streamAzureOpenAIResponses(
 			azureModel,
 			{ messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }] },
-			{ apiKey: "test-key", azureBaseUrl: azureModel.baseUrl, azureApiVersion: "v1" },
+			{ apiKey: "test-key", azureBaseUrl: azureModel.baseUrl, azureApiVersion: "v1", fetch: fetchMock },
 		).result();
 
 		expect(result.stopReason).toBe("error");
@@ -194,7 +196,7 @@ describe("azure openai responses streaming", () => {
 	});
 
 	it("surfaces response.failed incomplete reasons", async () => {
-		global.fetch = vi.fn(async () =>
+		const fetchMock: FetchImpl = vi.fn(async () =>
 			createSseResponse([
 				{
 					type: "response.failed",
@@ -203,12 +205,12 @@ describe("azure openai responses streaming", () => {
 					},
 				},
 			]),
-		) as unknown as typeof fetch;
+		);
 
 		const result = await streamAzureOpenAIResponses(
 			azureModel,
 			{ messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }] },
-			{ apiKey: "test-key", azureBaseUrl: azureModel.baseUrl, azureApiVersion: "v1" },
+			{ apiKey: "test-key", azureBaseUrl: azureModel.baseUrl, azureApiVersion: "v1", fetch: fetchMock },
 		).result();
 
 		expect(result.stopReason).toBe("error");
@@ -216,7 +218,7 @@ describe("azure openai responses streaming", () => {
 	});
 
 	it("surfaces response.completed failed status_details errors", async () => {
-		global.fetch = vi.fn(async () =>
+		const fetchMock: FetchImpl = vi.fn(async () =>
 			createSseResponse([
 				{
 					type: "response.completed",
@@ -228,12 +230,12 @@ describe("azure openai responses streaming", () => {
 					},
 				},
 			]),
-		) as unknown as typeof fetch;
+		);
 
 		const result = await streamAzureOpenAIResponses(
 			azureModel,
 			{ messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }] },
-			{ apiKey: "test-key", azureBaseUrl: azureModel.baseUrl, azureApiVersion: "v1" },
+			{ apiKey: "test-key", azureBaseUrl: azureModel.baseUrl, azureApiVersion: "v1", fetch: fetchMock },
 		).result();
 
 		expect(result.stopReason).toBe("error");

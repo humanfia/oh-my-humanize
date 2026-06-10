@@ -4,7 +4,7 @@ import { AUTO_HANDOFF_THRESHOLD_FOCUS, generateHandoff, renderHandoffPrompt } fr
 import type { AssistantMessage, Model, ToolCall } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { Effort } from "@oh-my-pi/pi-ai";
-import { getBundledModel } from "@oh-my-pi/pi-ai/models";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 function createAssistantMessage(content: AssistantMessage["content"]): AssistantMessage {
 	return {
@@ -41,8 +41,7 @@ afterEach(() => {
 describe("handoff helpers", () => {
 	test("renders custom focus into the handoff prompt", () => {
 		const rendered = renderHandoffPrompt("preserve failing test name");
-		expect(rendered).toContain("Write a handoff document");
-		expect(rendered).toContain("Additional focus: preserve failing test name");
+		expect(rendered).toContain("preserve failing test name");
 	});
 
 	test("exports the threshold focus text used by auto-handoff", () => {
@@ -108,7 +107,6 @@ describe("handoff helpers", () => {
 		if (promptBlock?.type !== "text") {
 			throw new Error("Expected text handoff prompt block");
 		}
-		expect(promptBlock.text).toContain("Write a handoff document");
-		expect(promptBlock.text).toContain("Additional focus: preserve failing test name");
+		expect(promptBlock.text).toContain("preserve failing test name");
 	});
 });

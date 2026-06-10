@@ -5,7 +5,7 @@
  * MIT License - Copyright (c) 2025 opentui
  */
 
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { StdinBuffer } from "@oh-my-pi/pi-tui/stdin-buffer";
 
 describe("StdinBuffer", () => {
@@ -22,6 +22,13 @@ describe("StdinBuffer", () => {
 		});
 	});
 
+	afterEach(() => {
+		// Kill pending flush/watchdog timers: a stale timer from a prior test's
+		// buffer would otherwise emit into the current test's emittedSequences
+		// (the data listener closes over the reassigned module variable).
+		buffer.destroy();
+	});
+
 	// Helper to process data through the buffer
 	function processInput(data: string | Buffer): void {
 		buffer.process(data);
@@ -31,6 +38,11 @@ describe("StdinBuffer", () => {
 		it("should handle unicode characters", () => {
 			processInput("hello \u4e16\u754c");
 			expect(emittedSequences).toEqual(["h", "e", "l", "l", "o", " ", "\u4e16", "\u754c"]);
+		});
+
+		it("emits surrogate-pair code points as one text sequence", () => {
+			processInput("🙂");
+			expect(emittedSequences).toEqual(["🙂"]);
 		});
 	});
 
@@ -124,6 +136,21 @@ describe("StdinBuffer", () => {
 		});
 	});
 
+	describe("Kitty Printable Dedup Window", () => {
+		it("swallows the immediate bare duplicate of a kitty printable", () => {
+			// Buggy double-report: CSI-u event plus the bare char in one write.
+			processInput("\x1b[97ua");
+			expect(emittedSequences).toEqual(["\x1b[97u"]);
+		});
+
+		it("does not swallow a real keystroke after the dedup window expires", async () => {
+			processInput("\x1b[97u");
+			await Bun.sleep(50);
+			processInput("a");
+			expect(emittedSequences).toEqual(["\x1b[97u", "a"]);
+		});
+	});
+
 	describe("Mouse Events", () => {
 		it("should handle mouse press event", () => {
 			processInput("\x1b[<0;10;5M");
@@ -203,6 +230,35 @@ describe("StdinBuffer", () => {
 			const longSeq = `\x1b[${"1;".repeat(50)}H`;
 			processInput(longSeq);
 			expect(emittedSequences).toEqual([longSeq]);
+		});
+	});
+
+	describe("Large Plain-Text Bursts", () => {
+		it("splits a large non-bracketed burst into per-character events quickly", () => {
+			// Pins the O(n) scan: the prior per-iteration slice/Array.from made
+			// this O(n²) — a 64KB burst would blow the test timeout.
+			const content = "0123456789abcdef".repeat(4096); // 64 KB
+			processInput(content);
+			expect(emittedSequences.length).toBe(content.length);
+			expect(emittedSequences[0]).toBe("0");
+			expect(emittedSequences[emittedSequences.length - 1]).toBe("f");
+		});
+
+		it("keeps escape parsing and surrogate pairs intact inside a burst", () => {
+			processInput("abc🙂\x1b[A\u{1f389}def\x1b[<35;20;5m\x1b");
+			expect(emittedSequences).toEqual([
+				"a",
+				"b",
+				"c",
+				"🙂",
+				"\x1b[A",
+				"\u{1f389}",
+				"d",
+				"e",
+				"f",
+				"\x1b[<35;20;5m",
+			]);
+			expect(buffer.getBuffer()).toBe("\x1b");
 		});
 	});
 
@@ -304,6 +360,101 @@ describe("StdinBuffer", () => {
 
 			expect(emittedPaste).toEqual(["Hello \u4e16\u754c \u{1f389}"]);
 			expect(emittedSequences).toEqual([]);
+		});
+
+		it("assembles paste when the end marker is split across chunks", () => {
+			processInput("\x1b[200~hello world\x1b[201");
+			expect(emittedPaste).toEqual([]);
+
+			processInput("~");
+			expect(emittedPaste).toEqual(["hello world"]);
+			expect(emittedSequences).toEqual([]);
+		});
+
+		it("assembles paste when the start and end markers arrive one byte at a time", () => {
+			for (const ch of "\x1b[200~ab\x1b[201~") {
+				processInput(ch);
+			}
+			expect(emittedPaste).toEqual(["ab"]);
+			expect(emittedSequences).toEqual([]);
+		});
+
+		it("preserves trailing input after a boundary-split end marker", () => {
+			processInput("\x1b[200~paste\x1b");
+			processInput("[201~x");
+			expect(emittedPaste).toEqual(["paste"]);
+			expect(emittedSequences).toEqual(["x"]);
+		});
+
+		it("does not end the paste on a partial end-marker prefix in the body", () => {
+			// Body contains the first five bytes of the end marker but no `~`.
+			processInput("\x1b[200~before\x1b[201");
+			expect(emittedPaste).toEqual([]);
+
+			processInput("after\x1b[201~");
+			expect(emittedPaste).toEqual(["before\x1b[201after"]);
+			expect(emittedSequences).toEqual([]);
+		});
+
+		it("reconstructs a large paste delivered in many small chunks", () => {
+			const content = "0123456789abcdef".repeat(8192); // 128 KB
+			processInput("\x1b[200~");
+			for (let i = 0; i < content.length; i += 64) {
+				processInput(content.slice(i, i + 64));
+			}
+			processInput("\x1b[201~");
+
+			expect(emittedPaste).toEqual([content]);
+			expect(emittedSequences).toEqual([]);
+		});
+	});
+
+	describe("Paste Recovery", () => {
+		it("recovers from a lost end marker via the inactivity watchdog", async () => {
+			buffer = new StdinBuffer({ timeout: 10, pasteTimeout: 20 });
+			const pastes: string[] = [];
+			const data: string[] = [];
+			buffer.on("paste", d => pastes.push(d));
+			buffer.on("data", s => data.push(s));
+
+			buffer.process("\x1b[200~lost marker content");
+			expect(pastes).toEqual([]);
+
+			await Bun.sleep(60);
+			expect(pastes).toEqual(["lost marker content"]);
+
+			// Input is alive again after recovery.
+			buffer.process("a");
+			expect(data).toEqual(["a"]);
+		});
+
+		it("re-arms the watchdog while paste chunks keep arriving", async () => {
+			buffer = new StdinBuffer({ timeout: 10, pasteTimeout: 50 });
+			const pastes: string[] = [];
+			buffer.on("paste", d => pastes.push(d));
+
+			buffer.process("\x1b[200~part1 ");
+			await Bun.sleep(20);
+			buffer.process("part2");
+			await Bun.sleep(20);
+			expect(pastes).toEqual([]); // still inside the re-armed window
+
+			buffer.process("\x1b[201~");
+			expect(pastes).toEqual(["part1 part2"]);
+		});
+
+		it("aborts paste mode when the byte cap is exceeded", () => {
+			buffer = new StdinBuffer({ timeout: 10, pasteByteLimit: 8 });
+			const pastes: string[] = [];
+			const data: string[] = [];
+			buffer.on("paste", d => pastes.push(d));
+			buffer.on("data", s => data.push(s));
+
+			buffer.process("\x1b[200~0123456789abcdef");
+			expect(pastes).toEqual(["0123456789abcdef"]);
+
+			buffer.process("x");
+			expect(data).toEqual(["x"]);
 		});
 	});
 

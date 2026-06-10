@@ -20,6 +20,8 @@ import { loadMnemopiConfig, type MnemopiBackendConfig } from "@oh-my-pi/pi-codin
 import {
 	getMnemopiScopedDbPaths,
 	getMnemopiSessionState,
+	loadMnemopi,
+	loadMnemopiCore,
 	MnemopiSessionState,
 	setMnemopiSessionState,
 } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
@@ -28,6 +30,10 @@ import { MemoryEditTool } from "@oh-my-pi/pi-coding-agent/tools/memory-edit";
 import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall";
 import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
 import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
+
+// Mnemopi is lazy-loaded at runtime; preload it so the sync construction in
+// registerMnemopiState() and getMnemopiScopedDbPaths() can resolve the module.
+await Promise.all([loadMnemopi(), loadMnemopiCore()]);
 
 const TEST_SESSION_ID = "test-session-id";
 let registeredState: HindsightSessionState | undefined;
@@ -100,7 +106,7 @@ function registerState(client: HindsightApi, settings?: Settings, opts: Register
 			getHindsightSessionState: () => registeredState,
 			...opts.sessionOverrides,
 		} as never,
-		missionsSet: new Set(),
+		banksSet: new Set(),
 		lastRetainedTurn: 0,
 		hasRecalledForFirstTurn: false,
 	});
@@ -519,6 +525,84 @@ describe("Mnemopi backend lifecycle", () => {
 		registeredMnemopiState = undefined;
 	});
 
+	it("exposes direct mnemopi runtime status and search/save results", async () => {
+		const config = makeMnemopiConfig({
+			scoping: "per-project-tagged",
+			bank: "project-alpha",
+			globalBank: "default",
+			retainBank: "project-alpha",
+			recallBanks: ["project-alpha", "default"],
+		});
+		const state = registerMnemopiState(config, { cwd: "/work/project-alpha" });
+		const session = state.session;
+		setMnemopiSessionState(session, state);
+
+		const save = await mnemopiBackend.save!(
+			{ agentDir: path.dirname(config.dbPath), cwd: "/work/project-alpha", session },
+			{
+				content: "the user prefers dark mode in their editor",
+				source: "test-source",
+				context: "editor preferences",
+				importance: 0.8,
+			},
+		);
+		expect(save).toMatchObject({ backend: "mnemopi", stored: 1, ids: [expect.any(String)] });
+
+		const status = await mnemopiBackend.status!({
+			agentDir: path.dirname(config.dbPath),
+			cwd: "/work/project-alpha",
+			session,
+		});
+		expect(status).toMatchObject({
+			backend: "mnemopi",
+			active: true,
+			writable: true,
+			searchable: true,
+			retainBank: "project-alpha",
+		});
+		expect(status.recallBanks).toEqual(expect.arrayContaining(["project-alpha", "default"]));
+
+		const search = await mnemopiBackend.search!(
+			{ agentDir: path.dirname(config.dbPath), cwd: "/work/project-alpha", session },
+			"dark mode",
+		);
+		expect(search.backend).toBe("mnemopi");
+		expect(search.count).toBeGreaterThan(0);
+		expect(search.items[0]).toMatchObject({
+			content: expect.stringContaining("dark mode"),
+			source: "test-source",
+			score: expect.any(Number),
+		});
+	});
+
+	it("reports aborted searches and save-without-id failures", async () => {
+		const state = registerMnemopiState();
+		const session = state.session;
+		setMnemopiSessionState(session, state);
+
+		const controller = new AbortController();
+		controller.abort();
+		await expect(
+			mnemopiBackend.search!({ agentDir: "/tmp/agent", cwd: "/tmp", session }, "anything", {
+				signal: controller.signal,
+			}),
+		).resolves.toMatchObject({
+			backend: "mnemopi",
+			count: 0,
+			message: "Search aborted.",
+		});
+
+		const rememberSpy = vi.spyOn(state, "rememberScoped").mockReturnValue(undefined);
+		await expect(
+			mnemopiBackend.save!({ agentDir: "/tmp/agent", cwd: "/tmp", session }, { content: "memory without id" }),
+		).resolves.toMatchObject({
+			backend: "mnemopi",
+			stored: 0,
+			message: "Mnemopi did not return a stored memory id.",
+		});
+		rememberSpy.mockRestore();
+	});
+
 	it("derives valid project banks from the absolute project root", async () => {
 		const root = path.join(tmpdir(), `mnemopi-bank-${Date.now()}`);
 		const alphaCwd = path.join(root, "a", "api");
@@ -761,7 +845,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		await MemoryRetainTool.createIf(makeSession(settings))!.execute("call-memory-edit-store", {
 			items: [{ content }],
 		});
-		const id = registeredMnemopiState?.recallResultsScoped(query)[0]?.id;
+		const id = (await registeredMnemopiState?.recallResultsScoped(query))?.[0]?.id;
 		expect(id).toBeString();
 		return id!;
 	}
@@ -779,7 +863,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		});
 
 		expect((result.content[0] as { text: string }).text).toContain("updated");
-		const recalled = registeredMnemopiState!.recallResultsScoped("accent color");
+		const recalled = await registeredMnemopiState!.recallResultsScoped("accent color");
 		expect(recalled.map(memory => memory.content)).toContain("editor accent color is green");
 	});
 
@@ -794,7 +878,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		});
 
 		expect((result.content[0] as { text: string }).text).toContain("deleted");
-		const recalled = registeredMnemopiState!.recallResultsScoped("deployment note");
+		const recalled = await registeredMnemopiState!.recallResultsScoped("deployment note");
 		expect(recalled.map(memory => memory.content)).not.toContain("temporary deployment note can be deleted");
 	});
 
@@ -809,7 +893,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		});
 
 		expect((result.content[0] as { text: string }).text).toContain("invalidated");
-		const recalled = registeredMnemopiState!.recallResultsScoped("api key rotation");
+		const recalled = await registeredMnemopiState!.recallResultsScoped("api key rotation");
 		expect(recalled.map(memory => memory.content)).not.toContain("stale api key rotation policy");
 	});
 

@@ -6,10 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { scheduler } from "node:timers/promises";
 import { Agent, AgentBusyError, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type AssistantMessage, getBundledModel, type Message, type ToolCall } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Message, ToolCall } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -24,6 +26,19 @@ import * as z from "zod/v4";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 // Mock stream that mimics AssistantMessageEventStream
+
+// AgentSession schedules its TTSR retry and context-promotion continuations
+// through `scheduler.wait(delayMs, { signal })` (node:timers/promises), with
+// blind 50ms/100ms "settle" delays. Tests that drive a continuation to
+// completion would otherwise pay that wall-clock time on every run. This spy
+// collapses the blind delay to a single macrotask hop (`scheduler.wait(0)`)
+// while preserving the real abort-signal semantics, so the continuation still
+// fires only after the aborted/overflowed turn has been recorded. Each test
+// that opts in must run inside a block whose afterEach restores mocks.
+const originalSchedulerWait = scheduler.wait.bind(scheduler);
+function collapseSchedulerSettleDelays(): void {
+	vi.spyOn(scheduler, "wait").mockImplementation((_delayMs, options) => originalSchedulerWait(0, options));
+}
 
 describe("AgentSession concurrent prompt guard", () => {
 	let session: AgentSession;
@@ -101,7 +116,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			if (predicate()) return;
-			await Bun.sleep(10);
+			await Bun.sleep(1);
 		}
 
 		throw new Error("Timed out waiting for condition");
@@ -131,12 +146,198 @@ describe("AgentSession concurrent prompt guard", () => {
 		await waitFor(() => session.isStreaming);
 
 		// steer should work while streaming
-		expect(() => session.steer("Steering message")).not.toThrow();
+		await session.steer("Steer while streaming");
 		expect(session.queuedMessageCount).toBe(1);
 
 		// Cleanup
 		await session.abort();
 		await firstPrompt.catch(() => {});
+	});
+
+	it("interrupts active work and immediately sends queued steering messages", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const callMessages: Message[][] = [];
+
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+			},
+			convertToLlm,
+			streamFn: (_model, context, options) => {
+				const callIndex = callMessages.length;
+				callMessages.push([...context.messages]);
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					if (callIndex > 0) {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Handled steer") });
+					}
+				});
+				options?.signal?.addEventListener(
+					"abort",
+					() => {
+						stream.push({
+							type: "error",
+							reason: "aborted",
+							error: createAssistantMessage("Interrupted"),
+						});
+					},
+					{ once: true },
+				);
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated();
+		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-interrupt-flush.db"));
+		authStorages.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models-interrupt-flush.yml"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+		});
+
+		const firstPrompt = session.prompt("First message").catch(() => {});
+		await waitFor(() => session.isStreaming && callMessages.length === 1);
+
+		await session.steer("Send this now");
+		expect(session.getQueuedMessages().steering).toEqual(["Send this now"]);
+
+		await session.interruptAndFlushQueuedMessages({ reason: "Interrupted by user" });
+		await firstPrompt;
+
+		expect(callMessages).toHaveLength(2);
+		expect(
+			callMessages[1]?.some(message => {
+				if (typeof message.content === "string") {
+					return message.content.includes("Send this now");
+				}
+
+				return message.content.some(content => content.type === "text" && content.text.includes("Send this now"));
+			}),
+		).toBe(true);
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+	});
+
+	it("delivers queued steering after interrupting mid-tool execution (queue survives external abort)", async () => {
+		// Regression: pressing Enter with a queued steer while a tool was running
+		// aborted the run, but the post-abort steering poll inside executeToolCalls
+		// drained the queue into the dying run — the message landed in history and
+		// interruptAndFlushQueuedMessages saw an empty queue, so it never resumed.
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const callMessages: Message[][] = [];
+		let toolStarted = false;
+
+		const blockingTool: AgentTool = {
+			name: "mock_blocker",
+			label: "Mock Blocker",
+			description: "Blocks until aborted",
+			parameters: z.object({}),
+			execute: async (_id, _args, signal) => {
+				toolStarted = true;
+				const { promise, resolve } = Promise.withResolvers<void>();
+				if (signal?.aborted) resolve();
+				else signal?.addEventListener("abort", () => resolve(), { once: true });
+				await promise;
+				return { content: [{ type: "text" as const, text: "tool aborted" }] };
+			},
+		};
+
+		const toolCallContent: ToolCall = {
+			type: "toolCall",
+			id: "call_steer_flush_001",
+			name: "mock_blocker",
+			arguments: {},
+		};
+
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [blockingTool] },
+			convertToLlm,
+			streamFn: (_model, context, options) => {
+				const callIndex = callMessages.length;
+				callMessages.push([...context.messages]);
+				const stream = new AssistantMessageEventStream();
+				const signal = options?.signal;
+				queueMicrotask(() => {
+					if (signal?.aborted) {
+						// Post-abort model call inside the dying run.
+						stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Interrupted") });
+						return;
+					}
+					if (callIndex === 0) {
+						const partial: AssistantMessage = {
+							...createAssistantMessage(""),
+							content: [toolCallContent],
+							stopReason: "toolUse",
+						};
+						stream.push({ type: "start", partial });
+						stream.push({ type: "toolcall_start", contentIndex: 0, partial });
+						stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: toolCallContent, partial });
+						stream.push({ type: "done", reason: "toolUse", message: partial });
+						return;
+					}
+					const done = createAssistantMessage("Handled steer");
+					stream.push({ type: "start", partial: done });
+					stream.push({ type: "done", reason: "stop", message: done });
+					signal?.addEventListener(
+						"abort",
+						() => {
+							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Interrupted") });
+						},
+						{ once: true },
+					);
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated();
+		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-steer-tool-abort.db"));
+		authStorages.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models-steer-tool-abort.yml"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+		});
+
+		const firstPrompt = session.prompt("First message").catch(() => {});
+		await waitFor(() => toolStarted);
+
+		await session.steer("Send this now");
+		expect(session.getQueuedMessages().steering).toEqual(["Send this now"]);
+
+		await session.interruptAndFlushQueuedMessages({ reason: "Interrupted by user" });
+		await firstPrompt;
+
+		// The resumed run's model call must carry the steer message.
+		const lastCall = callMessages[callMessages.length - 1];
+		expect(
+			lastCall?.some(message => {
+				if (typeof message.content === "string") return message.content.includes("Send this now");
+				return message.content.some(content => content.type === "text" && content.text.includes("Send this now"));
+			}),
+		).toBe(true);
+
+		// The agent actually resumed and produced a response after the steer.
+		const lastAssistant = [...agent.state.messages]
+			.reverse()
+			.find((m): m is AssistantMessage => m.role === "assistant");
+		expect(lastAssistant?.content).toEqual([{ type: "text", text: "Handled steer" }]);
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
 	});
 
 	it("should allow followUp() while streaming", async () => {
@@ -147,7 +348,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await waitFor(() => session.isStreaming);
 
 		// followUp should work while streaming
-		expect(() => session.followUp("Follow-up message")).not.toThrow();
+		await session.followUp("Follow-up while streaming");
 		expect(session.queuedMessageCount).toBe(1);
 
 		// Cleanup
@@ -266,7 +467,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(session.isStreaming).toBe(false);
 
 		// Second prompt should work
-		await expect(session.prompt("Second message")).resolves.toBeUndefined();
+		await expect(session.prompt("Second message")).resolves.toBe(true);
 	});
 	it("queues extension follow-up user messages on an idle session without starting a turn", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
@@ -548,6 +749,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			settings,
 			modelRegistry,
 			agentId: "acp-session-b",
+			asyncJobManager,
 		});
 		session = new AgentSession({
 			agent: agentA,
@@ -594,13 +796,14 @@ describe("AgentSession TTSR resume gate", () => {
 		if (tempDir && fs.existsSync(tempDir)) {
 			fs.rmSync(tempDir, { recursive: true });
 		}
+		vi.restoreAllMocks();
 	});
 
 	async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			if (predicate()) return;
-			await Bun.sleep(10);
+			await Bun.sleep(1);
 		}
 
 		throw new Error("Timed out waiting for condition");
@@ -673,6 +876,7 @@ describe("AgentSession TTSR resume gate", () => {
 	}
 
 	it("prompt() blocks until TTSR interrupt continuation completes", async () => {
+		collapseSchedulerSettleDelays();
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		let streamCallCount = 0;
 		let continuationCompleted = false;
@@ -730,6 +934,177 @@ describe("AgentSession TTSR resume gate", () => {
 		expect(continuationCompleted).toBe(true);
 		expect(streamCallCount).toBeGreaterThanOrEqual(2);
 		expect(session.isStreaming).toBe(false);
+	});
+
+	it("labels aborted tool placeholders with the TTSR rule reason", async () => {
+		collapseSchedulerSettleDelays();
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		let streamCallCount = 0;
+
+		const ttsrManager = new TtsrManager({
+			enabled: true,
+			contextMode: "discard",
+			interruptMode: "always",
+			repeatMode: "once",
+			repeatGap: 10,
+		});
+		ttsrManager.addRule(testRule);
+
+		const toolCallContent: ToolCall = {
+			type: "toolCall",
+			id: "call_ttsr_abort_reason",
+			name: "mock_edit",
+			arguments: { snippet: "let val = result.unwrap(" },
+		};
+
+		const makeToolCallMsg = (stopReason: "toolUse" | "aborted" = "toolUse"): AssistantMessage => ({
+			role: "assistant",
+			content: [toolCallContent],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "mock",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason,
+			timestamp: Date.now(),
+		});
+
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			streamFn: (_model, _context, options) => {
+				streamCallCount++;
+				const stream = new AssistantMessageEventStream();
+				const signal = options?.signal;
+				if (streamCallCount === 1) {
+					queueMicrotask(() => {
+						const partial = makeToolCallMsg();
+						if (signal) {
+							signal.addEventListener(
+								"abort",
+								() => {
+									stream.push({
+										type: "error",
+										reason: "aborted",
+										error: makeToolCallMsg("aborted"),
+									});
+								},
+								{ once: true },
+							);
+						}
+						stream.push({ type: "start", partial });
+						stream.push({ type: "toolcall_start", contentIndex: 0, partial });
+						stream.push({
+							type: "toolcall_delta",
+							contentIndex: 0,
+							delta: 'let val = result.unwrap("oops")',
+							partial,
+						});
+					});
+				} else {
+					pushContinuationStream(stream, () => {});
+				}
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated();
+		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-abort-reason.db"));
+		authStorages.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, ttsrManager });
+
+		await session.prompt("Write some Rust code");
+
+		const toolResult = sessionManager
+			.getEntries()
+			.find(
+				entry =>
+					entry.type === "message" &&
+					entry.message.role === "toolResult" &&
+					entry.message.toolCallId === toolCallContent.id,
+			);
+		expect(toolResult?.type).toBe("message");
+		const text =
+			toolResult?.type === "message" && toolResult.message.role === "toolResult"
+				? (toolResult.message.content.find((part): part is { type: "text"; text: string } => part.type === "text")
+						?.text ?? "")
+				: "";
+		expect(text).toContain("Tool execution was aborted: TTSR matched rule: no-unwrap");
+		expect(text).not.toContain("Request was aborted");
+	});
+
+	it("relativizes the rule file path in the TTSR interrupt injection (no absolute leak)", async () => {
+		collapseSchedulerSettleDelays();
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		let streamCallCount = 0;
+
+		const sessionManager = SessionManager.inMemory();
+		const cwd = sessionManager.getCwd();
+		const ruleAbsPath = path.join(cwd, ".omp", "rules", "no-unwrap.md");
+		const expectedRel = path.relative(cwd, ruleAbsPath);
+		const rule: Rule = {
+			name: "no-unwrap",
+			path: ruleAbsPath,
+			content: "Do not use .unwrap()",
+			condition: ["\\.unwrap\\("],
+			_source: { provider: "test", providerName: "test", path: ruleAbsPath, level: "project" },
+		};
+
+		const ttsrManager = new TtsrManager({
+			enabled: true,
+			contextMode: "discard",
+			interruptMode: "always",
+			repeatMode: "once",
+			repeatGap: 10,
+		});
+		ttsrManager.addRule(rule);
+
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			streamFn: (_model, _context, options) => {
+				streamCallCount++;
+				const stream = new AssistantMessageEventStream();
+				if (streamCallCount === 1) {
+					pushAbortableTtsrStream(stream, options?.signal);
+				} else {
+					pushContinuationStream(stream, () => {});
+				}
+				return stream;
+			},
+		});
+
+		const settings = Settings.isolated();
+		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-rel.db"));
+		authStorages.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, ttsrManager });
+
+		await session.prompt("Write some Rust code");
+
+		const injection = sessionManager
+			.getEntries()
+			.find(e => e.type === "custom_message" && e.customType === "ttsr-injection");
+		expect(injection?.type).toBe("custom_message");
+		const content = injection?.type === "custom_message" ? injection.content : undefined;
+		expect(typeof content).toBe("string");
+		const text = content as string;
+		// The rendered interrupt the model receives references the rule by a
+		// project-relative path, never the absolute home path.
+		expect(text).toContain('reason="rule_violation"');
+		expect(text).toContain(`path="${expectedRel}"`);
+		expect(text).not.toContain(ruleAbsPath);
 	});
 
 	it("prompt() blocks until TTSR deferred continuation completes", async () => {
@@ -881,6 +1256,7 @@ describe("AgentSession TTSR resume gate", () => {
 	});
 
 	it("prompt() waits for TTSR continuation with tool calls to finish", async () => {
+		collapseSchedulerSettleDelays();
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		let streamCallCount = 0;
 		let toolExecutionFinished = false;
@@ -1241,6 +1617,7 @@ describe("AgentSession TTSR resume gate", () => {
 	});
 
 	it("prompt() waits for context-promotion continuation to finish", async () => {
+		collapseSchedulerSettleDelays();
 		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-promo.db"));
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("openai-codex", "test-key");

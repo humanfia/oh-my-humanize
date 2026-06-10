@@ -861,7 +861,9 @@
           html += '<div class="tool-diff">';
           for (const line of diffLines) {
             const cls = line.match(/^\+/) ? 'diff-added' : line.match(/^-/) ? 'diff-removed' : 'diff-context';
-            html += '<div class="' + cls + '">' + escapeHtml(replaceTabs(line)) + '</div>';
+            // Blank gap rows mark non-contiguous regions; show a unicode ellipsis.
+            const display = line.trim().length === 0 ? '\u2026' : replaceTabs(line);
+            html += '<div class="' + cls + '">' + escapeHtml(display) + '</div>';
           }
           html += '</div>';
         } else if (result) {
@@ -981,8 +983,8 @@
         return out;
       }
 
-      function renderTodoWrite(name, args, result, ctx) {
-        let html = toolHead('todo_write');
+      function renderTodo(name, args, result, ctx) {
+        let html = toolHead('todo');
         const ops = Array.isArray(args.ops) ? args.ops : null;
         if (ops) {
           html += '<div class="tool-args">';
@@ -1021,18 +1023,18 @@
       }
 
       function renderTask(name, args, result, ctx) {
-        const agent = str(args.agent) || '?';
-        const tasks = Array.isArray(args.tasks) ? args.tasks : [];
-        const badges = ['agent=' + agent, tasks.length + ' subtask' + (tasks.length === 1 ? '' : 's')];
+        const badges = [];
+        if (args.resume) badges.push('resume=' + str(args.resume));
+        else badges.push('agent=' + (str(args.agent) || '?'));
+        if (args.id) badges.push('id=' + str(args.id));
         if (args.isolated) badges.push('isolated');
         let html = toolHead('task', '', badges);
-        if (tasks.length) {
+        const description = str(args.description);
+        const assignment = str(args.assignment);
+        if (description || assignment) {
           html += '<div class="tool-args">';
-          for (const t of tasks) {
-            const id = t?.id ? escapeHtml(String(t.id)) : '?';
-            const desc = t?.description ? escapeHtml(String(t.description)) : '';
-            html += '<div class="tool-arg"><span class="tool-arg-key">' + id + '</span> ' + desc + '</div>';
-          }
+          if (description) html += '<div class="tool-arg"><span class="tool-arg-key">' + escapeHtml(description) + '</span></div>';
+          if (assignment) html += '<div class="tool-arg">' + escapeHtml(assignment) + '</div>';
           html += '</div>';
         }
         if (result) {
@@ -1477,13 +1479,38 @@
       }
 
       function renderIrc(name, args, result, ctx) {
-        const op = str(args.op) || '?';
+        const details = result && result.details ? result.details : null;
+        const op = str(args.op) || (details && str(details.op)) || '?';
         const badges = [op];
-        if (args.to) badges.push('to=' + args.to);
-        if (args.awaitReply === false) badges.push('no-reply');
+        if (args.to) badges.push('to=' + str(args.to));
+        if (op === 'wait' && args.from) badges.push('from=' + str(args.from));
+        if (args.await) badges.push('await');
+        if (args.peek) badges.push('peek');
         let html = toolHead('irc', '', badges);
         if (args.message) html += '<div class="tool-output"><div>' + escapeHtml(String(args.message)) + '</div></div>';
-        if (result) {
+        let renderedDetails = false;
+        if (details && Array.isArray(details.receipts) && details.receipts.length) {
+          html += '<div class="tool-args">';
+          for (const receipt of details.receipts) {
+            const outcome = escapeHtml(String(receipt.outcome)) + (receipt.error ? ' — ' + escapeHtml(String(receipt.error)) : '');
+            html += '<div class="tool-arg"><span class="tool-arg-key">' + escapeHtml(String(receipt.to)) + '</span> ' + outcome + '</div>';
+          }
+          html += '</div>';
+          renderedDetails = true;
+        }
+        if (details && details.waited) {
+          html += '<div class="tool-output"><div>' + escapeHtml(String(details.waited.from)) + ': ' + escapeHtml(String(details.waited.body)) + '</div></div>';
+          renderedDetails = true;
+        }
+        if (details && Array.isArray(details.inbox) && details.inbox.length) {
+          html += '<div class="tool-args">';
+          for (const msg of details.inbox) {
+            html += '<div class="tool-arg"><span class="tool-arg-key">' + escapeHtml(String(msg.from)) + '</span> ' + escapeHtml(String(msg.body)) + '</div>';
+          }
+          html += '</div>';
+          renderedDetails = true;
+        }
+        if (!renderedDetails && result) {
           const output = ctx.getResultText();
           if (output) html += formatExpandableOutput(output, 8);
         }
@@ -1520,7 +1547,7 @@
         search: renderSearch,
         find: renderFind,
         lsp: renderLsp,
-        todo_write: renderTodoWrite,
+        todo: renderTodo,
         task: renderTask,
         web_search: renderWebSearch,
         fetch: renderFetch,

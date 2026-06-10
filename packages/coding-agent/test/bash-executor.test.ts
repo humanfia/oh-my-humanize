@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { executeBash } from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
+import { resetSettingsForTest, Settings, type ShellMinimizerSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { buildMinimizerOptions, executeBash } from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
 import { DEFAULT_MAX_BYTES } from "@oh-my-pi/pi-coding-agent/session/streaming-output";
 import * as shellSnapshot from "@oh-my-pi/pi-coding-agent/utils/shell-snapshot";
 import type { Shell } from "@oh-my-pi/pi-natives";
@@ -14,10 +14,25 @@ import * as piNatives from "@oh-my-pi/pi-natives";
 const ARTIFACT_HEAD_BYTES_DEFAULT = 20 * 1024;
 const BACKGROUND_COMPLETION_RACE_MS = 750;
 const KILL_MARKER_DELAY_SECONDS = "0.4";
-const KILL_MARKER_ASSERTION_WAIT_MS = 900;
+const KILL_MARKER_DELAY_MS = 400;
+// We prove a killed process never wrote its marker by observing until the
+// wall-clock instant the marker WOULD have appeared (spawn + delay) plus a
+// margin. Anchoring the deadline to a pre-spawn timestamp — instead of blindly
+// sleeping a fixed amount after executeBash returns — keeps the wait bounded
+// without shrinking the kill-propagation margin: the timeout/abort fires at
+// ~100ms, well before the 400ms marker write, so the margin between kill and
+// write is unchanged; only the redundant observation tail goes away.
+const KILL_MARKER_OBSERVE_MARGIN_MS = 300;
 
 function makeTempDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "omp-bash-exec-"));
+}
+
+/** Spin-wait until the wall-clock deadline, polling rather than blind-sleeping. */
+async function waitUntil(deadlineMs: number): Promise<void> {
+	while (Date.now() < deadlineMs) {
+		await Bun.sleep(20);
+	}
 }
 
 describe("executeBash", () => {
@@ -37,6 +52,39 @@ describe("executeBash", () => {
 		}
 	});
 
+	it("omits minimizer options when the feature is disabled", () => {
+		const group: ShellMinimizerSettings = {
+			enabled: false,
+			settingsPath: undefined,
+			only: [],
+			except: [],
+			maxCaptureBytes: 4096,
+			sourceOutlineLevel: "default",
+			legacyFilters: undefined,
+		};
+		expect(buildMinimizerOptions(group)).toBeUndefined();
+	});
+
+	it("forwards source outline and legacy filter settings to native minimizer options", () => {
+		const group: ShellMinimizerSettings = {
+			enabled: true,
+			settingsPath: "minimizer.toml",
+			only: ["git"],
+			except: ["docker"],
+			maxCaptureBytes: 1234,
+			sourceOutlineLevel: "aggressive",
+			legacyFilters: true,
+		};
+		expect(buildMinimizerOptions(group)).toEqual({
+			enabled: true,
+			settingsPath: "minimizer.toml",
+			only: ["git"],
+			except: ["docker"],
+			maxCaptureBytes: 1234,
+			sourceOutlineLevel: "aggressive",
+			legacyFilters: true,
+		});
+	});
 	it("returns non-zero exit codes without cancellation", async () => {
 		const result = await executeBash("exit 7", { cwd: tempDir, timeout: 5000 });
 		expect(result.exitCode).toBe(7);
@@ -78,6 +126,162 @@ describe("executeBash", () => {
 			env: { PI_TEST_ENV: "hello" },
 		});
 		expect(result.output.trim()).toBe("0:hello");
+	});
+
+	it("runs non-bash shellPath commands through the configured shell", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-shellpath-"));
+		const marker = path.join(shellDir, "fake-shell-ran");
+		const markerEscaped = marker.replace(/'/g, "'\\''");
+		const fakeShell = path.join(shellDir, "fake-shell");
+		fs.writeFileSync(
+			fakeShell,
+			`#!/bin/sh
+printf '%s\\n' "$*" > '${markerEscaped}'
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "-c" ]; then
+		shift
+		exec /bin/sh -c "$1"
+	fi
+	shift
+done
+exit 64
+`,
+		);
+		fs.chmodSync(fakeShell, 0o755);
+		Settings.instance.set("shellPath", fakeShell);
+
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: fakeShell,
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: tempDir,
+			},
+			prefix: undefined,
+		});
+
+		try {
+			const result = await executeBash("printf 'shell-ok\\n'", {
+				cwd: tempDir,
+				timeout: 5000,
+				sessionKey: "custom-shell-path",
+				useUserShell: true,
+			});
+
+			expect(result.cancelled).toBe(false);
+			expect(result.exitCode).toBe(0);
+			expect(result.output.trim()).toBe("shell-ok");
+			expect(fs.readFileSync(marker, "utf8")).toContain("-l -c");
+		} finally {
+			fs.rmSync(shellDir, { recursive: true, force: true });
+		}
+	});
+
+	it("uses executable SHELL for user-shell shortcut commands", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const originalShell = Bun.env.SHELL;
+		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-env-shell-"));
+		const marker = path.join(shellDir, "env-shell-ran");
+		const markerEscaped = marker.replace(/'/g, "'\\''");
+		const fakeShell = path.join(shellDir, "fish");
+		fs.writeFileSync(
+			fakeShell,
+			`#!/bin/sh
+printf '%s\\n' "$*" > '${markerEscaped}'
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "-c" ]; then
+		shift
+		exec /bin/sh -c "$1"
+	fi
+	shift
+done
+exit 64
+`,
+		);
+		fs.chmodSync(fakeShell, 0o755);
+		Bun.env.SHELL = fakeShell;
+
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: "/bin/bash",
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: tempDir,
+				SHELL: "/bin/bash",
+			},
+			prefix: undefined,
+		});
+
+		try {
+			const result = await executeBash("printf 'env-shell-ok\\n'", {
+				cwd: tempDir,
+				timeout: 5000,
+				sessionKey: "env-user-shell",
+				useUserShell: true,
+			});
+
+			expect(result.cancelled).toBe(false);
+			expect(result.exitCode).toBe(0);
+			expect(result.output.trim()).toBe("env-shell-ok");
+			expect(fs.readFileSync(marker, "utf8")).toContain("-l -c");
+			expect(fs.readFileSync(marker, "utf8")).not.toContain("-i");
+		} finally {
+			if (originalShell === undefined) {
+				delete Bun.env.SHELL;
+			} else {
+				Bun.env.SHELL = originalShell;
+			}
+			fs.rmSync(shellDir, { recursive: true, force: true });
+		}
+	});
+
+	it("loads zshrc aliases for user-shell shortcut commands", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const zshPath = ["/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh", "/opt/homebrew/bin/zsh"].find(candidate =>
+			fs.existsSync(candidate),
+		);
+		if (!zshPath) {
+			return;
+		}
+
+		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-zsh-shellpath-"));
+		fs.writeFileSync(path.join(shellDir, ".zshrc"), "alias pi_shell_alias='printf zsh-alias-ok\\\\n'\n");
+		Settings.instance.set("shellPath", zshPath);
+
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: zshPath,
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: shellDir,
+			},
+			prefix: undefined,
+		});
+
+		try {
+			const result = await executeBash("pi_shell_alias", {
+				cwd: tempDir,
+				timeout: 5000,
+				sessionKey: "zsh-shell-path",
+				useUserShell: true,
+			});
+
+			expect(result.cancelled).toBe(false);
+			expect(result.exitCode).toBe(0);
+			expect(result.output.trim()).toBe("zsh-alias-ok");
+		} finally {
+			fs.rmSync(shellDir, { recursive: true, force: true });
+		}
 	});
 
 	it("invokes onChunk with command output", async () => {
@@ -532,6 +736,7 @@ describe("executeBash", () => {
 		const markerEscaped = marker.replace(/'/g, "'\\''");
 
 		// Command creates marker after a short delay, but we timeout before then.
+		const start = Date.now();
 		const result = await executeBash(`sleep ${KILL_MARKER_DELAY_SECONDS} && echo done > '${markerEscaped}'`, {
 			cwd: tempDir,
 			timeout: 100,
@@ -539,10 +744,9 @@ describe("executeBash", () => {
 
 		expect(result.cancelled).toBe(true);
 
-		// Wait longer than the command would have needed to create the marker.
-		await Bun.sleep(KILL_MARKER_ASSERTION_WAIT_MS);
-
-		// If process was killed (not orphaned), marker should NOT exist
+		// Observe past the instant the marker would have been written had the
+		// process survived. If it was killed (not orphaned), it never appears.
+		await waitUntil(start + KILL_MARKER_DELAY_MS + KILL_MARKER_OBSERVE_MARGIN_MS);
 		expect(fs.existsSync(marker)).toBe(false);
 	});
 
@@ -552,6 +756,7 @@ describe("executeBash", () => {
 		const marker = path.join(tempDir, "marker-bg.txt");
 		const markerEscaped = marker.replace(/'/g, "'\\''");
 
+		const start = Date.now();
 		const result = await executeBash(
 			`{ sleep ${KILL_MARKER_DELAY_SECONDS}; echo done > '${markerEscaped}'; } & sleep 10`,
 			{
@@ -562,7 +767,7 @@ describe("executeBash", () => {
 
 		expect(result.cancelled).toBe(true);
 
-		await Bun.sleep(KILL_MARKER_ASSERTION_WAIT_MS);
+		await waitUntil(start + KILL_MARKER_DELAY_MS + KILL_MARKER_OBSERVE_MARGIN_MS);
 		expect(fs.existsSync(marker)).toBe(false);
 	});
 
@@ -570,11 +775,15 @@ describe("executeBash", () => {
 		if (process.platform === "win32") return;
 
 		const marker = path.join(tempDir, "marker-bg-abort.txt");
+		const release = path.join(tempDir, "marker-bg-abort.release");
+		const started = path.join(tempDir, "marker-bg-abort.started");
 		const markerEscaped = marker.replace(/'/g, "'\\''");
+		const releaseEscaped = release.replace(/'/g, "'\\''");
+		const startedEscaped = started.replace(/'/g, "'\\''");
 		const controller = new AbortController();
 
 		const promise = executeBash(
-			`{ sleep ${KILL_MARKER_DELAY_SECONDS}; echo done > '${markerEscaped}'; } & sleep 10`,
+			`{ touch '${startedEscaped}'; while [ ! -f '${releaseEscaped}' ]; do sleep 0.05; done; echo done > '${markerEscaped}'; } & sleep 10`,
 			{
 				cwd: tempDir,
 				timeout: 10000,
@@ -582,14 +791,24 @@ describe("executeBash", () => {
 			},
 		);
 
-		await Bun.sleep(100);
+		const startDeadline = Date.now() + 4000;
+		while (!fs.existsSync(started) && Date.now() < startDeadline) {
+			await Bun.sleep(2);
+		}
+		expect(fs.existsSync(started)).toBe(true);
 		controller.abort();
 		const result = await promise;
 
 		expect(result.cancelled).toBe(true);
 		expect(result.output).toContain("Command cancelled");
 
-		await Bun.sleep(KILL_MARKER_ASSERTION_WAIT_MS);
+		// The backgrounded subshell only writes its marker once `release` exists.
+		// If abort failed to kill the process group, the orphan is still polling
+		// for `release` every 50ms — touching it makes a survivor react within one
+		// poll. A short settle first lets the kill signal propagate before we probe.
+		await Bun.sleep(100);
+		fs.writeFileSync(release, "");
+		await Bun.sleep(200);
 		expect(fs.existsSync(marker)).toBe(false);
 	});
 
@@ -601,6 +820,7 @@ describe("executeBash", () => {
 		const controller = new AbortController();
 
 		// Command creates marker after a short delay.
+		const start = Date.now();
 		const promise = executeBash(`sleep ${KILL_MARKER_DELAY_SECONDS} && echo done > '${markerEscaped}'`, {
 			cwd: tempDir,
 			timeout: 10000,
@@ -615,10 +835,9 @@ describe("executeBash", () => {
 		expect(result.cancelled).toBe(true);
 		expect(result.output).toContain("Command cancelled");
 
-		// Wait longer than the command would have needed to create the marker.
-		await Bun.sleep(KILL_MARKER_ASSERTION_WAIT_MS);
-
-		// If process was killed (not orphaned), marker should NOT exist
+		// Observe past the instant the marker would have been written had the
+		// process survived. If it was killed (not orphaned), it never appears.
+		await waitUntil(start + KILL_MARKER_DELAY_MS + KILL_MARKER_OBSERVE_MARGIN_MS);
 		expect(fs.existsSync(marker)).toBe(false);
 	});
 });

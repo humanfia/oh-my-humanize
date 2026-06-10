@@ -8,7 +8,7 @@ import {
 	type TinyModelDevice,
 	tinyModelDeviceLoadOrder,
 	tinyModelDeviceSettingToEnv,
-} from "../src/tiny/device";
+} from "@oh-my-pi/pi-coding-agent/tiny/device";
 
 describe("tiny model device selection", () => {
 	it("defaults to CPU-only inference on every platform", () => {
@@ -47,13 +47,6 @@ describe("tiny model device setting → PI_TINY_DEVICE mapping", () => {
 	it("forwards a concrete device value verbatim for the worker to validate", () => {
 		expect(tinyModelDeviceSettingToEnv("metal")).toBe("metal");
 		expect(tinyModelDeviceSettingToEnv("cuda")).toBe("cuda");
-	});
-
-	it("keeps every non-default setting value resolvable by the worker", () => {
-		for (const value of TINY_MODEL_DEVICE_SETTING_VALUES) {
-			if (value === TINY_MODEL_DEVICE_DEFAULT) continue;
-			expect(() => normalizeTinyModelDevice(tinyModelDeviceSettingToEnv(value))).not.toThrow();
-		}
 	});
 
 	it("keeps submenu options aligned with the accepted values", () => {

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type AssistantMessage, getBundledModel, type TextContent, type ToolCall } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, TextContent, ToolCall } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -10,7 +11,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { TodoWriteTool } from "@oh-my-pi/pi-coding-agent/tools";
+import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import * as z from "zod/v4";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
@@ -116,7 +117,7 @@ describe("AgentSession eager todo enforcement", () => {
 			getSessionSpawns: () => "*",
 			settings,
 		};
-		const todoWriteTool = new TodoWriteTool(toolSession);
+		const todoTool = new TodoTool(toolSession);
 		const mockBashTool: AgentTool = {
 			name: "bash",
 			label: "Bash",
@@ -130,7 +131,7 @@ describe("AgentSession eager todo enforcement", () => {
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
-				tools: [todoWriteTool, mockBashTool],
+				tools: [todoTool, mockBashTool],
 				messages: [],
 			},
 			convertToLlm,
@@ -162,7 +163,7 @@ describe("AgentSession eager todo enforcement", () => {
 		});
 
 		const toolRegistry = new Map<string, AgentTool>([
-			[todoWriteTool.name, todoWriteTool as unknown as AgentTool],
+			[todoTool.name, todoTool as unknown as AgentTool],
 			[mockBashTool.name, mockBashTool],
 		]);
 
@@ -189,9 +190,9 @@ describe("AgentSession eager todo enforcement", () => {
 
 		expect(observedCalls).toHaveLength(1);
 		expect(observedCalls[0]).toEqual({
-			toolChoice: "todo_write",
-			toolNames: ["todo_write", "bash"],
-			messageRoles: ["user", "user"],
+			toolChoice: "todo",
+			toolNames: ["todo", "bash"],
+			messageRoles: ["developer", "user"],
 			messageTexts: [expect.any(String), "list all work trees"],
 			lastMessageRole: "user",
 			lastMessageText: "list all work trees",
@@ -203,7 +204,7 @@ describe("AgentSession eager todo enforcement", () => {
 
 	it("initializes todos once, then continues within the same user turn", async () => {
 		scriptedResponses = [
-			createToolCallAssistantMessage("todo_write", {
+			createToolCallAssistantMessage("todo", {
 				ops: [
 					{
 						op: "init",
@@ -219,9 +220,9 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(streamCallCount).toBe(2);
 		expect(observedCalls).toHaveLength(2);
 		expect(observedCalls[0]).toEqual({
-			toolChoice: "todo_write",
-			toolNames: ["todo_write", "bash"],
-			messageRoles: ["user", "user"],
+			toolChoice: "todo",
+			toolNames: ["todo", "bash"],
+			messageRoles: ["developer", "user"],
 			messageTexts: [expect.any(String), "list all work trees"],
 			lastMessageRole: "user",
 			lastMessageText: "list all work trees",
@@ -239,7 +240,7 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(observedCalls).toHaveLength(1);
 		expect(observedCalls[0]).toEqual({
 			toolChoice: undefined,
-			toolNames: ["todo_write", "bash"],
+			toolNames: ["todo", "bash"],
 			messageRoles: ["user"],
 			messageTexts: ["list all work trees?"],
 			lastMessageRole: "user",
@@ -253,7 +254,7 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(observedCalls).toHaveLength(1);
 		expect(observedCalls[0]).toEqual({
 			toolChoice: undefined,
-			toolNames: ["todo_write", "bash"],
+			toolNames: ["todo", "bash"],
 			messageRoles: ["user"],
 			messageTexts: ["list all work trees!"],
 			lastMessageRole: "user",
@@ -265,7 +266,7 @@ describe("AgentSession eager todo enforcement", () => {
 		// First prompt: eager todo fires
 		await session.prompt("refactor the parser module");
 		expect(observedCalls).toHaveLength(1);
-		expect(observedCalls[0]?.toolChoice).toBe("todo_write");
+		expect(observedCalls[0]?.toolChoice).toBe("todo");
 
 		// Second prompt: eager todo must NOT fire
 		observedCalls.length = 0;
@@ -273,7 +274,7 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(observedCalls).toHaveLength(1);
 		expect(observedCalls[0]).toEqual({
 			toolChoice: undefined,
-			toolNames: ["todo_write", "bash"],
+			toolNames: ["todo", "bash"],
 			messageRoles: expect.arrayContaining(["user"]),
 			messageTexts: expect.arrayContaining(["actually skip that, just fix the typo"]),
 			lastMessageRole: "user",

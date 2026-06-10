@@ -48,13 +48,12 @@ describe("EventController idle compaction teardown", () => {
 		const runIdleCompaction = vi.fn();
 		const context = {
 			isInitialized: true,
-			isBackgrounded: false,
 			loadingAnimation: undefined,
 			streamingComponent: undefined,
 			streamingMessage: undefined,
 			pendingTools: new Map<string, unknown>(),
 			flushPendingModelSwitch: async () => {},
-			ui: { requestRender: vi.fn(), setEagerNativeScrollbackRebuild: vi.fn() },
+			ui: { requestRender: vi.fn() },
 			chatContainer: { removeChild: vi.fn() },
 			statusContainer: { clear: vi.fn() },
 			statusLine: { invalidate: vi.fn() },

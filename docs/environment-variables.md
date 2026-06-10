@@ -43,6 +43,7 @@ These are consumed via `getEnvApiKey()` (`packages/ai/src/stream.ts`) unless not
 | `FIREWORKS_API_KEY`             | Fireworks auth                                   | Using Fireworks models                                         |                                                                                                     |
 | `FIREPASS_API_KEY`              | Fire Pass auth                                   | Using Fire Pass models                                         |                                                                                                     |
 | `TOGETHER_API_KEY`              | Together auth                                    | Using `together` provider                                      |                                                                                                     |
+| `AIMLAPI_API_KEY`               | AIML API auth                                   | Using `aimlapi` provider                                       | OpenAI-compatible AIML API endpoint at `https://api.aimlapi.com/v1`                                  |
 | `HUGGINGFACE_HUB_TOKEN`         | Hugging Face auth                                | Using `huggingface` provider                                   | Primary Hugging Face token env var                                                                  |
 | `HF_TOKEN`                      | Hugging Face auth                                | Using `huggingface` provider                                   | Fallback when `HUGGINGFACE_HUB_TOKEN` is unset                                                      |
 | `SYNTHETIC_API_KEY`             | Synthetic auth                                   | Using Synthetic models                                         |                                                                                                     |
@@ -81,13 +82,13 @@ These are consumed via `getEnvApiKey()` (`packages/ai/src/stream.ts`) unless not
 | `WAFER_SERVERLESS_API_KEY`      | Wafer Serverless auth                            | Using `wafer-serverless` provider                              | Pay-as-you-go Wafer SKU; validated against `https://pass.wafer.ai/v1/models`                        |
 | `GITLAB_TOKEN`                  | GitLab Duo auth                                  | Using `gitlab-duo` provider                                    |                                                                                                     |
 
-### GitHub/Copilot token chains
+### GitHub/Copilot tokens
 
-| Variable               | Used for                                         | Chain                                                |
-| ---------------------- | ------------------------------------------------ | ---------------------------------------------------- |
-| `COPILOT_GITHUB_TOKEN` | GitHub Copilot provider auth                     | `COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` |
-| `GH_TOKEN`             | Copilot fallback; GitHub API auth in web scraper | In web scraper: `GITHUB_TOKEN` → `GH_TOKEN`          |
-| `GITHUB_TOKEN`         | Copilot fallback; GitHub API auth in web scraper | In web scraper: checked before `GH_TOKEN`            |
+| Variable               | Used for                                         | Notes                                      |
+| ---------------------- | ------------------------------------------------ | ------------------------------------------ |
+| `COPILOT_GITHUB_TOKEN` | GitHub Copilot provider auth                     | Generic GitHub tokens are not used here    |
+| `GH_TOKEN`             | GitHub API auth in web scraper                   | Web scraper fallback after `GITHUB_TOKEN`  |
+| `GITHUB_TOKEN`         | GitHub API auth in web scraper                   | Web scraper checks this before `GH_TOKEN`  |
 
 ### Auth broker / auth gateway (remote credential vault)
 
@@ -97,6 +98,8 @@ When the broker is enabled, the local SQLite credential store is bypassed and al
 | ----------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `OMP_AUTH_BROKER_URL`   | Base URL of the remote auth-broker (e.g. `https://broker.tailnet:8765`); selects broker mode | Resolving credentials through a broker; also required by `omp auth-gateway serve` (the gateway is itself a broker client) | Wins over `auth.broker.url` in `config.yml`. When set with no resolvable token, `resolveAuthBrokerConfig()` hard-errors instead of falling back to local SQLite.                           |
 | `OMP_AUTH_BROKER_TOKEN` | Bearer token sent on every broker endpoint except `/v1/healthz`                              | `OMP_AUTH_BROKER_URL` is set and no token is available from `auth.broker.token` or `<config-dir>/auth-broker.token`       | Resolution: this env → `auth.broker.token` (`$ENV_NAME` indirection supported) → `<config-dir>/auth-broker.token` (mode `0600`). `<config-dir>` is `~/.omp/` (respecting `PI_CONFIG_DIR`). |
+| `OMP_AUTH_BROKER_SNAPSHOT_TTL_MS` | Freshness window for the encrypted local broker snapshot cache | Optional in broker mode | Default `3600000` (1 h). Freshness is based on broker `snapshot.generatedAt`; `0` disables cache reads/writes and forces the old blocking fetch every startup. |
+| `OMP_AUTH_BROKER_SNAPSHOT_CACHE` | Path to the encrypted local broker snapshot cache | Optional in broker mode | Defaults to `~/.omp/cache/auth-broker-snapshot.enc` (or XDG cache equivalent). Useful for tests, ephemeral hosts, or relocating the `0600` cache file. |
 
 The gateway has no dedicated env vars — it inherits `OMP_AUTH_BROKER_*`. Its own inbound bearer token lives at `<config-dir>/auth-gateway.token` and is managed via `omp auth-gateway token`.
 
@@ -111,7 +114,11 @@ When `CLAUDE_CODE_USE_FOUNDRY` is enabled, Anthropic requests switch to Foundry 
 - Base URL resolves from `FOUNDRY_BASE_URL` (fallback remains model/default base URL if unset).
 - API key resolution for provider `anthropic` becomes:
   `ANTHROPIC_FOUNDRY_API_KEY` → `ANTHROPIC_OAUTH_TOKEN` → `ANTHROPIC_API_KEY`.
-- `ANTHROPIC_CUSTOM_HEADERS` is parsed as comma/newline-separated `key: value` pairs and merged into request headers.
+- `ANTHROPIC_CUSTOM_HEADERS` is parsed as comma/newline-separated `key: value`
+  pairs and merged into request headers. They are also forwarded when
+  `ANTHROPIC_BASE_URL` points to a non-Anthropic host (e.g. a corporate API
+  gateway), so enterprise gateways requiring proprietary auth headers work
+  without enabling Foundry mode.
 - TLS client/server material can be injected from env values:
   `NODE_EXTRA_CA_CERTS`, `CLAUDE_CODE_CLIENT_CERT`, `CLAUDE_CODE_CLIENT_KEY`.
   Each accepts either:
@@ -123,7 +130,7 @@ When `CLAUDE_CODE_USE_FOUNDRY` is enabled, Anthropic requests switch to Foundry 
 | `CLAUDE_CODE_USE_FOUNDRY`   | Boolean-like string (`1`, `true`, `yes`, `on`) | Enables Foundry mode for Anthropic provider                                   |
 | `FOUNDRY_BASE_URL`          | URL string                                     | Anthropic endpoint base URL in Foundry mode                                   |
 | `ANTHROPIC_FOUNDRY_API_KEY` | Token string                                   | Used for `Authorization: Bearer <token>`                                      |
-| `ANTHROPIC_CUSTOM_HEADERS`  | Header list string                             | Extra headers; format `header-a: value, header-b: value` or newline-separated |
+| `ANTHROPIC_CUSTOM_HEADERS`  | Header list string                             | Extra headers; format `header-a: value, header-b: value` or newline-separated. Also forwarded outside Foundry whenever `ANTHROPIC_BASE_URL` is non-Anthropic. |
 | `NODE_EXTRA_CA_CERTS`       | PEM path or inline PEM                         | Extra CA chain for server certificate validation                              |
 | `CLAUDE_CODE_CLIENT_CERT`   | PEM path or inline PEM                         | mTLS client certificate                                                       |
 | `CLAUDE_CODE_CLIENT_KEY`    | PEM path or inline PEM                         | mTLS client private key (must be paired with cert)                            |
@@ -242,22 +249,28 @@ SearXNG also reads the equivalent `searxng.endpoint`, `searxng.token`, `searxng.
 
 ### Anthropic web search auth chain
 
-Anthropic web search uses `findAnthropicAuth()` from `packages/ai/src/utils/anthropic-auth.ts` in this order:
+`searchAnthropic()` resolves credentials in this order:
 
-1. `ANTHROPIC_SEARCH_API_KEY` (+ optional `ANTHROPIC_SEARCH_BASE_URL`)
-2. `ANTHROPIC_FOUNDRY_API_KEY` when `CLAUDE_CODE_USE_FOUNDRY` is enabled
-3. Anthropic OAuth credentials from `agent.db` (must not expire within 5-minute buffer)
-4. Anthropic API-key credentials from `agent.db`
-5. Generic Anthropic env fallback: provider key (`ANTHROPIC_FOUNDRY_API_KEY` in Foundry mode, otherwise `ANTHROPIC_OAUTH_TOKEN`/`ANTHROPIC_API_KEY`) + optional `ANTHROPIC_BASE_URL` (`FOUNDRY_BASE_URL` when Foundry mode is enabled)
+1. `ANTHROPIC_SEARCH_API_KEY`
+2. `authStorage.getApiKey("anthropic")` fallback credentials (runtime/config overrides, stored API-key credentials, stored OAuth credentials, then generic Anthropic env fallback: `ANTHROPIC_FOUNDRY_API_KEY` in Foundry mode, otherwise `ANTHROPIC_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`)
+
+For either credential path, base URL resolution is:
+
+1. `ANTHROPIC_SEARCH_BASE_URL`
+2. `FOUNDRY_BASE_URL` when `CLAUDE_CODE_USE_FOUNDRY` is enabled
+3. `ANTHROPIC_BASE_URL`
+4. `https://api.anthropic.com`
 
 Related vars:
 
-| Variable                    | Default / behavior                                   |
-| --------------------------- | ---------------------------------------------------- |
-| `ANTHROPIC_SEARCH_API_KEY`  | Highest-priority explicit search key                 |
-| `ANTHROPIC_SEARCH_BASE_URL` | Defaults to `https://api.anthropic.com` when omitted |
-| `ANTHROPIC_SEARCH_MODEL`    | Defaults to `claude-haiku-4-5`                       |
-| `ANTHROPIC_BASE_URL`        | Generic fallback base URL for tier-4 auth path       |
+| Variable                    | Default / behavior                                                                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_SEARCH_API_KEY`  | API key used exclusively for the Anthropic web search provider. Highest-priority search auth; overrides `ANTHROPIC_API_KEY` / OAuth / Foundry for search calls without affecting chat completions. |
+| `ANTHROPIC_SEARCH_BASE_URL` | Base URL used exclusively for the Anthropic web search provider. Applied to either `ANTHROPIC_SEARCH_API_KEY` or fallback Anthropic credentials; overrides `ANTHROPIC_BASE_URL` (and `FOUNDRY_BASE_URL` in Foundry mode) for search calls. |
+| `ANTHROPIC_SEARCH_MODEL`    | Search model override. Defaults to `claude-haiku-4-5`.                                                                                                                                             |
+| `ANTHROPIC_BASE_URL`        | Generic fallback base URL for Anthropic requests when no search-specific base URL is set.                                                                                                          |
+
+Use `ANTHROPIC_SEARCH_BASE_URL` (optionally with `ANTHROPIC_SEARCH_API_KEY`) to keep chat routed through an enterprise gateway (`ANTHROPIC_BASE_URL` or `CLAUDE_CODE_USE_FOUNDRY=true`) while pointing web search at a direct Anthropic endpoint, or vice versa.
 
 ### Perplexity OAuth flow behavior flag
 
@@ -301,6 +314,7 @@ Extra conditional behavior:
 | `PI_TASK_MAX_OUTPUT_BYTES`   | Max captured output bytes per subagent (default `500000`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `PI_TASK_MAX_OUTPUT_LINES`   | Max captured output lines per subagent (default `5000`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `PI_TIMING`                  | If set (any non-empty value), prints a hierarchical timing-span tree to **stderr** via `logger.printTimings()`. In interactive mode the tree prints once the agent is ready (before the TUI starts); in print mode it prints after the whole prompt batch completes. Print-mode prompts are wrapped in `print:prompt:initial` / `print:prompt:next` spans so each user message shows up as its own row. `PI_TIMING=x` exits the process with code 0 right after printing in interactive mode (use to measure cold startup only). `PI_TIMING=full` lists every module-load entry instead of just the top N. |
+| `PI_DEBUG_STARTUP`           | If set (any non-empty value), streams one synchronous `[startup] <phase>:start` / `:done` marker line to **stderr** as each startup phase begins/ends — including command-module imports (`cli:load:<name>`) and the native addon extraction/`dlopen` (`native:*`). Unlike `PI_TIMING` (which prints only once startup completes), the markers survive a hard hang: the last line on stderr names the phase the process is stuck in. Combine with `PI_TIMING` freely; markers and the span tree share the same phase names.                                                                                |
 | `PI_PACKAGE_DIR`             | Overrides package asset base dir resolution (`docs/`, `examples/`, `CHANGELOG.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `PI_DISABLE_LSPMUX`          | If `1`, disables lspmux detection/integration and forces direct LSP server spawning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `PI_RPC_EMIT_TITLE`          | Boolean-like flag enabling title events in RPC mode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -309,7 +323,9 @@ Extra conditional behavior:
 | `SMITHERY_API_KEY`           | Smithery API key for managed MCP auth lookup                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `PUPPETEER_EXECUTABLE_PATH`  | Browser tool Chromium executable override                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `LM_STUDIO_BASE_URL`         | Default implicit LM Studio discovery base URL override (`http://127.0.0.1:1234/v1` if unset)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `OLLAMA_BASE_URL`            | Default implicit Ollama discovery base URL override (`http://127.0.0.1:11434` if unset)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `OLLAMA_BASE_URL`            | Default implicit Ollama discovery base URL override (`OLLAMA_HOST` if unset, then `http://127.0.0.1:11434`)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `OLLAMA_HOST`                | Ollama host used for implicit Ollama discovery when `OLLAMA_BASE_URL` is unset; accepts Ollama-style values such as `127.0.0.1:11434` or `http://host:11434`                                                                                                                                                                                                                                                                                                                                                                                     |
+| `OLLAMA_CONTEXT_LENGTH`      | Positive integer context-window override for implicit Ollama discovery; affects OMP context budgeting only and does not change Ollama's runtime `num_ctx`                                                                                                                                                                                                                                                                                                                                                                                           |
 | `LLAMA_CPP_BASE_URL`         | Default implicit Llama.cpp discovery base URL override (`http://127.0.0.1:8080` if unset)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `PI_EDIT_VARIANT`            | Forces edit tool variant when valid (`patch`, `replace`, `hashline`, `apply_patch`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `PI_FORCE_IMAGE_PROTOCOL`    | Forces supported image protocol (`kitty`, `iterm2`/`iterm`, `sixel`, `none`) where used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -362,7 +378,7 @@ These are read as runtime signals; they are usually set by the terminal/OS rathe
 | `COLORFGBG`                                                                                                        | Terminal background light/dark auto-detection             |
 | `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TERMINAL_EMULATOR`                                                        | Terminal identity in system prompt/context                |
 | `KDE_FULL_SESSION`, `XDG_CURRENT_DESKTOP`, `DESKTOP_SESSION`, `XDG_SESSION_DESKTOP`, `GDMSESSION`, `WINDOWMANAGER` | Desktop/window-manager detection in system prompt/context |
-| `KITTY_WINDOW_ID`, `TMUX_PANE`, `TERM_SESSION_ID`, `WT_SESSION`                                                    | Stable per-terminal session breadcrumb IDs                |
+| `TMUX_PANE`, `CMUX_SURFACE_ID`, `KITTY_WINDOW_ID`, `TERM_SESSION_ID`, `WT_SESSION`                                 | Stable per-terminal session breadcrumb IDs                |
 | `SHELL`, `ComSpec`, `TERM_PROGRAM`, `TERM`                                                                         | System info diagnostics                                   |
 | `APPDATA`, `XDG_CONFIG_HOME`                                                                                       | lspmux config path resolution                             |
 | `HOME`                                                                                                             | Path shortening in MCP command UI                         |
@@ -376,9 +392,9 @@ These are read as runtime signals; they are usually set by the terminal/OS rathe
 | `PI_NOTIFICATIONS`        | `off` / `0` / `false` suppress desktop notifications                                  |
 | `PI_TUI_WRITE_LOG`        | If set, logs TUI writes to file                                                       |
 | `PI_HARDWARE_CURSOR`      | If `1`, enables hardware cursor mode                                                  |
-| `PI_CLEAR_ON_SHRINK`      | If `1`, clears empty rows when content shrinks                                        |
+| `PI_NO_SYNC_OUTPUT`       | If `1`, disables DEC 2026 synchronized-output wrappers while keeping TUI autowrap guards |
+| `PI_NO_DECCARA`           | If set (truthy), disables Kitty DECCARA rectangular-SGR background fills (forces padded-string rendering) |
 | `PI_DEBUG_REDRAW`         | If `1`, enables redraw debug logging                                                  |
-| `PI_TUI_DEBUG`            | If `1`, enables deep TUI debug dump path                                              |
 | `PI_FORCE_IMAGE_PROTOCOL` | Forces terminal image protocol detection (`kitty`, `iterm2`/`iterm`, `sixel`, `none`) |
 
 ---

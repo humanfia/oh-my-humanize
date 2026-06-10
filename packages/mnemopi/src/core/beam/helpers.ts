@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { generateId as generateTimedId, sha256Hex16, stableMemoryId } from "../../util/ids";
-import { cosineSimilarity as vectorCosineSimilarity } from "../vector-math";
+import { currentEmbeddingModel, embed } from "../embeddings";
+import { getMnemopiRuntimeOptions, withMnemopiRuntimeOptions } from "../runtime-options";
+import { buildExactVectorIndex, searchExactVectorIndex } from "../vector-index";
 import type { BeamMemoryState, JsonValue, Metadata } from "./types";
 
 export type Vector = number[];
@@ -549,16 +551,10 @@ export function inMemoryVecSearch(db: Database, queryEmbedding: readonly number[
 				LIMIT 10000
 			`)
 			.all() as Record<string, unknown>[];
-		const results: VectorDistanceResult[] = [];
-		for (const row of rows) {
-			const vec = decodeVector(String(row.embedding_json ?? ""));
-			if (vec === null) continue;
-			const sim = vectorCosineSimilarity(queryEmbedding, vec);
-			if (sim === 0 && (queryEmbedding.every(n => n === 0) || vec.every(n => n === 0))) continue;
-			results.push({ rowid: Number(row.rowid), distance: 1 - sim });
-		}
-		results.sort((a, b) => a.distance - b.distance || a.rowid - b.rowid);
-		return results.slice(0, Math.max(0, Math.trunc(k)));
+		const index = buildExactVectorIndex(
+			rows.map(row => ({ id: Number(row.rowid), vector: decodeVector(String(row.embedding_json ?? "")) })),
+		);
+		return searchExactVectorIndex(index, queryEmbedding, k).map(hit => ({ rowid: hit.id, distance: 1 - hit.score }));
 	} catch {
 		return [];
 	}
@@ -583,16 +579,10 @@ export function workingMemoryVecSearch(
 				LIMIT ?
 			`)
 			.all(now.toISOString(), limit) as Record<string, unknown>[];
-		const results: WorkingVectorResult[] = [];
-		for (const row of rows) {
-			const vec = decodeVector(String(row.embedding_json ?? ""));
-			if (vec === null) continue;
-			const sim = vectorCosineSimilarity(queryEmbedding, vec);
-			if (sim === 0 && (queryEmbedding.every(n => n === 0) || vec.every(n => n === 0))) continue;
-			results.push({ id: String(row.id), sim });
-		}
-		results.sort((a, b) => b.sim - a.sim || a.id.localeCompare(b.id));
-		return results.slice(0, Math.max(0, Math.trunc(k)));
+		const index = buildExactVectorIndex(
+			rows.map(row => ({ id: String(row.id), vector: decodeVector(String(row.embedding_json ?? "")) })),
+		);
+		return searchExactVectorIndex(index, queryEmbedding, k).map(hit => ({ id: hit.id, sim: hit.score }));
 	} catch {
 		return [];
 	}
@@ -918,3 +908,58 @@ export {
 	quantizeInt8,
 } from "../binary-vectors";
 export { sha256Hex16 };
+
+/** Identifies one freshly stored memory whose embedding still needs to be derived. */
+export interface EmbedItem {
+	readonly memoryId: string;
+	readonly content: string;
+}
+
+async function runEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]): Promise<void> {
+	try {
+		const matrix = await embed(items.map(item => item.content));
+		if (matrix === null) return;
+		const model = currentEmbeddingModel();
+		const insertEmbedding = beam.db.prepare(
+			"INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)",
+		);
+		const insertMany = beam.db.transaction((rows: readonly EmbedItem[]) => {
+			for (let i = 0; i < rows.length; i += 1) {
+				const vector = matrix[i];
+				const item = rows[i];
+				if (vector === undefined || item === undefined) continue;
+				insertEmbedding.run(item.memoryId, JSON.stringify(Array.from(vector)), model);
+			}
+		});
+		insertMany(items);
+	} catch {
+		// Background embedding generation is best-effort: a failing provider, a closed DB
+		// during shutdown, or a transient API error must never disrupt the synchronous
+		// remember()/consolidate() that scheduled it. Production recall silently degrades
+		// to FTS-only for the affected rows, which is the same shape as a misconfigured
+		// provider.
+	}
+}
+
+/**
+ * Schedule background embedding generation for one or more freshly stored memories.
+ *
+ * Mirrors the `scheduleFactExtraction` pattern in `beam/store.ts`: `remember()`,
+ * `rememberBatch()`, and `consolidateToEpisodic()` are synchronous, but `embed()` is
+ * async (it may hit an HTTP provider), so the task is fired-and-forgotten and tracked
+ * on `beam.pendingExtractions` so tests and graceful shutdown can drain it via
+ * `flushExtractions()`. The active runtime options (provider, model, API URL/key) are
+ * captured here and re-entered inside the task because the `AsyncLocalStorage` scope
+ * set by `Mnemopi.#withRuntimeOptions` has already exited by the time the task runs.
+ */
+export function scheduleEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]): void {
+	const cleaned = items.filter(item => item.content.trim() !== "");
+	if (cleaned.length === 0) return;
+	const runtimeOptions = getMnemopiRuntimeOptions();
+	const task = withMnemopiRuntimeOptions(runtimeOptions, () => runEmbedding(beam, cleaned));
+	const pending = beam.pendingExtractions;
+	if (pending !== undefined) {
+		pending.add(task);
+		void task.finally(() => pending.delete(task));
+	}
+}

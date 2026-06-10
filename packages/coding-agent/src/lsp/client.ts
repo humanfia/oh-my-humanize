@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { isEnoent, logger, ptree, untilAborted } from "@oh-my-pi/pi-utils";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { applyWorkspaceEdit } from "./edits";
@@ -20,6 +21,10 @@ import { detectLanguageId, fileToUri } from "./utils";
 const clients = new Map<string, LspClient>();
 const clientLocks = new Map<string, Promise<LspClient>>();
 const fileOperationLocks = new Map<string, Promise<void>>();
+
+/** Negative cache of recent init failures so a broken server fails fast instead of re-spawning per call. */
+const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
+const initFailures = new Map<string, { at: number; message: string }>();
 
 // Idle timeout configuration (disabled by default)
 let idleTimeoutMs: number | null = null;
@@ -147,6 +152,7 @@ const CLIENT_CAPABILITIES = {
 			failureHandling: "textOnlyTransactional",
 		},
 		configuration: true,
+		workspaceFolders: true,
 		symbol: {
 			dynamicRegistration: false,
 			symbolKind: {
@@ -172,47 +178,67 @@ const CLIENT_CAPABILITIES = {
 // LSP Message Protocol
 // =============================================================================
 
-/**
- * Parse a single LSP message from a buffer.
- * Returns the parsed message and remaining buffer, or null if incomplete.
- */
-function parseMessage(
-	buffer: Buffer,
-): { message: LspJsonRpcResponse | LspJsonRpcNotification; remaining: Buffer } | null {
-	// Only decode enough to find the header
-	const headerEndIndex = findHeaderEnd(buffer);
-	if (headerEndIndex === -1) return null;
-
-	const headerText = new TextDecoder().decode(buffer.slice(0, headerEndIndex));
-	const contentLengthMatch = headerText.match(/Content-Length: (\d+)/i);
-	if (!contentLengthMatch) return null;
-
-	const contentLength = Number.parseInt(contentLengthMatch[1], 10);
-	const messageStart = headerEndIndex + 4; // Skip \r\n\r\n
-	const messageEnd = messageStart + contentLength;
-
-	if (buffer.length < messageEnd) return null;
-
-	const messageBytes = buffer.subarray(messageStart, messageEnd);
-	const messageText = new TextDecoder().decode(messageBytes);
-	const remaining = buffer.subarray(messageEnd);
-
-	return {
-		message: JSON.parse(messageText),
-		remaining,
-	};
-}
+// Reused for all full (non-streaming) decodes; each decode() resets state, so a
+// single instance is safe and avoids per-message TextDecoder allocation.
+const MESSAGE_DECODER = new TextDecoder("utf-8");
 
 /**
- * Find the end of the header section (before \r\n\r\n)
+ * Locate the `\r\n\r\n` header terminator across the pending chunk list.
+ * Returns the absolute byte index of the first `\r`, or -1 when not present.
+ * Equivalent to scanning the contiguous concatenation of the chunks.
  */
-function findHeaderEnd(buffer: Uint8Array): number {
-	for (let i = 0; i < buffer.length - 3; i++) {
-		if (buffer[i] === 13 && buffer[i + 1] === 10 && buffer[i + 2] === 13 && buffer[i + 3] === 10) {
-			return i;
+function findHeaderEndInChunks(chunks: Buffer[]): number {
+	let global = 0;
+	let b0 = -1;
+	let b1 = -1;
+	let b2 = -1;
+	for (const chunk of chunks) {
+		for (let i = 0; i < chunk.length; i++) {
+			const b3 = chunk[i];
+			if (b0 === 13 && b1 === 10 && b2 === 13 && b3 === 10) {
+				return global - 3;
+			}
+			b0 = b1;
+			b1 = b2;
+			b2 = b3;
+			global++;
 		}
 	}
 	return -1;
+}
+
+/** Copy the byte range [from, to) out of the pending chunk list into one Buffer. */
+function copyChunkRange(chunks: Buffer[], from: number, to: number): Buffer {
+	const out = Buffer.allocUnsafe(to - from);
+	let global = 0;
+	let written = 0;
+	for (const chunk of chunks) {
+		const chunkEnd = global + chunk.length;
+		if (chunkEnd > from && global < to) {
+			const start = Math.max(from, global) - global;
+			const end = Math.min(to, chunkEnd) - global;
+			chunk.copy(out, written, start, end);
+			written += end - start;
+		}
+		global = chunkEnd;
+		if (global >= to) break;
+	}
+	return out;
+}
+
+/** Drop the first `count` bytes from the pending chunk list in place. */
+function dropChunkFront(chunks: Buffer[], count: number): void {
+	let removed = 0;
+	while (chunks.length > 0) {
+		const head = chunks[0];
+		if (removed + head.length <= count) {
+			removed += head.length;
+			chunks.shift();
+		} else {
+			chunks[0] = head.subarray(count - removed);
+			break;
+		}
+	}
 }
 
 async function writeMessage(
@@ -247,64 +273,101 @@ async function startMessageReader(client: LspClient): Promise<void> {
 
 	const reader = (client.proc.stdout as ReadableStream<Uint8Array>).getReader();
 
+	// Incoming bytes are buffered as a list of chunks and only joined when a full
+	// message is framed. Concatenating the accumulator on every read was O(n^2)
+	// for messages that span many reads (e.g. a large initial diagnostics burst).
+	const pendingChunks: Buffer[] = [];
+	let pendingLen = 0;
+	if (client.messageBuffer.length > 0) {
+		const seed = Buffer.from(client.messageBuffer);
+		pendingChunks.push(seed);
+		pendingLen = seed.length;
+	}
+
 	try {
 		while (true) {
 			const { done, value } = await reader.read();
 			if (done) break;
 
-			// Atomically update buffer before processing
-			const currentBuffer: Buffer = Buffer.concat([client.messageBuffer, value]);
-			client.messageBuffer = currentBuffer;
+			pendingChunks.push(Buffer.from(value));
+			pendingLen += value.length;
 
-			// Process all complete messages in buffer
-			// Use local variable to avoid race with concurrent buffer updates
-			let workingBuffer = currentBuffer;
-			let parsed = parseMessage(workingBuffer);
-			while (parsed) {
-				const { message, remaining } = parsed;
-				workingBuffer = remaining;
+			// Drain every complete message currently buffered.
+			while (true) {
+				const headerEnd = findHeaderEndInChunks(pendingChunks);
+				if (headerEnd === -1) break;
 
-				// Route message
-				if ("id" in message && message.id !== undefined) {
-					// Response to a request
-					const pending = client.pendingRequests.get(message.id);
-					if (pending) {
-						client.pendingRequests.delete(message.id);
-						if ("error" in message && message.error) {
-							pending.reject(new Error(`LSP error: ${message.error.message}`));
-						} else {
-							pending.resolve(message.result);
+				const headerText = MESSAGE_DECODER.decode(copyChunkRange(pendingChunks, 0, headerEnd));
+				const contentLengthMatch = headerText.match(/Content-Length: (\d+)/i);
+				if (!contentLengthMatch) {
+					// Non-protocol bytes on stdout (e.g. a wrapper script printing).
+					// Drop past the bogus terminator and resync instead of stalling
+					// on the same junk header forever.
+					logger.warn("LSP framing resync: header block without Content-Length", {
+						server: client.name,
+						header: headerText.slice(0, 200),
+					});
+					dropChunkFront(pendingChunks, headerEnd + 4);
+					pendingLen -= headerEnd + 4;
+					continue;
+				}
+
+				const contentLength = Number.parseInt(contentLengthMatch[1], 10);
+				const messageStart = headerEnd + 4; // Skip \r\n\r\n
+				const messageEnd = messageStart + contentLength;
+				if (pendingLen < messageEnd) break;
+
+				const messageText = MESSAGE_DECODER.decode(copyChunkRange(pendingChunks, messageStart, messageEnd));
+				dropChunkFront(pendingChunks, messageEnd);
+				pendingLen -= messageEnd;
+
+				// A malformed message or a throwing server-request handler must not
+				// kill the reader — later messages are still well-framed.
+				try {
+					const message: LspJsonRpcResponse | LspJsonRpcNotification = JSON.parse(messageText);
+
+					// Route message
+					if ("id" in message && message.id !== undefined) {
+						// Response to a request
+						const pending = client.pendingRequests.get(message.id);
+						if (pending) {
+							client.pendingRequests.delete(message.id);
+							if ("error" in message && message.error) {
+								pending.reject(new Error(`LSP error: ${message.error.message}`));
+							} else {
+								pending.resolve(message.result);
+							}
+						} else if ("method" in message) {
+							await handleServerRequest(client, message as LspJsonRpcRequest);
 						}
 					} else if ("method" in message) {
-						await handleServerRequest(client, message as LspJsonRpcRequest);
-					}
-				} else if ("method" in message) {
-					// Server notification
-					if (message.method === "textDocument/publishDiagnostics" && message.params) {
-						const params = message.params as PublishDiagnosticsParams;
-						client.diagnostics.set(params.uri, {
-							diagnostics: params.diagnostics,
-							version: params.version ?? null,
-						});
-						client.diagnosticsVersion += 1;
-					} else if (message.method === "$/progress" && message.params) {
-						const params = message.params as { token: string | number; value?: { kind?: string } };
-						if (params.value?.kind === "begin") {
-							client.activeProgressTokens.add(params.token);
-						} else if (params.value?.kind === "end") {
-							client.activeProgressTokens.delete(params.token);
-							if (client.activeProgressTokens.size === 0) {
-								client.resolveProjectLoaded();
+						// Server notification
+						if (message.method === "textDocument/publishDiagnostics" && message.params) {
+							const params = message.params as PublishDiagnosticsParams;
+							client.diagnostics.set(params.uri, {
+								diagnostics: params.diagnostics,
+								version: params.version ?? null,
+							});
+							client.diagnosticsVersion += 1;
+						} else if (message.method === "$/progress" && message.params) {
+							const params = message.params as { token: string | number; value?: { kind?: string } };
+							if (params.value?.kind === "begin") {
+								client.activeProgressTokens.add(params.token);
+							} else if (params.value?.kind === "end") {
+								client.activeProgressTokens.delete(params.token);
+								if (client.activeProgressTokens.size === 0) {
+									client.resolveProjectLoaded();
+								}
 							}
 						}
 					}
+				} catch (err) {
+					logger.warn("LSP message handling failed", {
+						server: client.name,
+						error: err instanceof Error ? err.message : String(err),
+					});
 				}
-
-				parsed = parseMessage(workingBuffer);
 			}
-
-			// Atomically commit processed buffer
-			client.messageBuffer = workingBuffer;
 		}
 	} catch (err) {
 		// Connection closed or error - reject all pending requests
@@ -313,9 +376,48 @@ async function startMessageReader(client: LspClient): Promise<void> {
 		}
 		client.pendingRequests.clear();
 	} finally {
+		// Persist any unparsed remainder so a restarted reader resumes mid-message.
+		client.messageBuffer =
+			pendingChunks.length === 0
+				? new Uint8Array(0)
+				: pendingChunks.length === 1
+					? pendingChunks[0]
+					: Buffer.concat(pendingChunks, pendingLen);
 		reader.releaseLock();
 		client.isReading = false;
+		// Reader exited while the server process is still alive (unrecoverable
+		// read error or bad stream state): nothing will route responses anymore,
+		// so tear the client down — the next call respawns instead of timing out.
+		if (client.proc.exitCode === null) {
+			client.status = "error";
+			if (clients.get(client.name) === client) {
+				clients.delete(client.name);
+			}
+			const teardownErr = new Error("LSP reader stopped; client torn down");
+			for (const pending of client.pendingRequests.values()) {
+				pending.reject(teardownErr);
+			}
+			client.pendingRequests.clear();
+			client.resolveProjectLoaded();
+			client.proc.kill();
+		}
 	}
+}
+
+/**
+ * Build the workspace folder list advertised to the server. Identical shape
+ * for `initialize` params and `workspace/workspaceFolders` server requests.
+ */
+function currentWorkspaceFolders(client: LspClient): Array<{ uri: string; name: string }> {
+	return [{ uri: fileToUri(client.cwd), name: path.basename(client.cwd) || "workspace" }];
+}
+
+/**
+ * Handle workspace/workspaceFolders requests from the server.
+ */
+async function handleWorkspaceFoldersRequest(client: LspClient, message: LspJsonRpcRequest): Promise<void> {
+	if (typeof message.id !== "number") return;
+	await sendResponse(client, message.id, currentWorkspaceFolders(client), "workspace/workspaceFolders");
 }
 
 /**
@@ -362,6 +464,10 @@ async function handleApplyEditRequest(client: LspClient, message: LspJsonRpcRequ
 async function handleServerRequest(client: LspClient, message: LspJsonRpcRequest): Promise<void> {
 	if (message.method === "workspace/configuration") {
 		await handleConfigurationRequest(client, message);
+		return;
+	}
+	if (message.method === "workspace/workspaceFolders") {
+		await handleWorkspaceFoldersRequest(client, message);
 		return;
 	}
 	if (message.method === "workspace/applyEdit") {
@@ -412,7 +518,66 @@ async function sendResponse(
 /** Timeout for warmup initialize requests (5 seconds) */
 export const WARMUP_TIMEOUT_MS = 5000;
 
-/** Max time to wait for the server to report project loading completion via $/progress */
+/** Max time to poll rust-analyzer after progress ends but before Cargo workspaces are ready. */
+const RUST_ANALYZER_WORKSPACE_READY_TIMEOUT_MS = 5_000;
+const RUST_ANALYZER_WORKSPACE_READY_POLL_MS = 100;
+const RUST_ANALYZER_WORKSPACE_READY_SETTLE_MS = 2_000;
+const RUST_ANALYZER_STATUS_REQUEST_TIMEOUT_MS = 1_000;
+const rustAnalyzerReadyClients = new WeakSet<LspClient>();
+
+function commandBasename(command: string): string {
+	const slash = command.lastIndexOf("/");
+	const backslash = command.lastIndexOf("\\");
+	const separator = Math.max(slash, backslash);
+	return separator === -1 ? command : command.slice(separator + 1);
+}
+
+function isRustAnalyzerClient(client: LspClient): boolean {
+	return (
+		commandBasename(client.config.command) === "rust-analyzer" ||
+		(client.config.resolvedCommand ? commandBasename(client.config.resolvedCommand) === "rust-analyzer" : false)
+	);
+}
+
+function isRustAnalyzerStatusTimeout(err: unknown): boolean {
+	return err instanceof Error && err.message.startsWith("LSP request rust-analyzer/analyzerStatus timed out after ");
+}
+
+async function waitForRustAnalyzerWorkspace(client: LspClient, signal?: AbortSignal): Promise<void> {
+	if (rustAnalyzerReadyClients.has(client)) {
+		return;
+	}
+	const timings = client.config.workspaceReadyTimings;
+	const timeoutMs = timings?.timeoutMs ?? RUST_ANALYZER_WORKSPACE_READY_TIMEOUT_MS;
+	const pollMs = timings?.pollMs ?? RUST_ANALYZER_WORKSPACE_READY_POLL_MS;
+	const settleMs = timings?.settleMs ?? RUST_ANALYZER_WORKSPACE_READY_SETTLE_MS;
+	const statusRequestTimeoutMs = timings?.statusRequestTimeoutMs ?? RUST_ANALYZER_STATUS_REQUEST_TIMEOUT_MS;
+	const started = Date.now();
+	const deadline = started + timeoutMs;
+	while (true) {
+		throwIfAborted(signal);
+		let status: unknown;
+		try {
+			status = await sendRequest(client, "rust-analyzer/analyzerStatus", {}, signal, statusRequestTimeoutMs);
+		} catch (err) {
+			if (!isRustAnalyzerStatusTimeout(err) || Date.now() >= deadline) {
+				return;
+			}
+			await Bun.sleep(pollMs);
+			continue;
+		}
+		const ready = typeof status === "string" && !status.startsWith("No workspaces");
+		if (ready && Date.now() - started >= settleMs) {
+			rustAnalyzerReadyClients.add(client);
+			return;
+		}
+		if (Date.now() >= deadline) {
+			return;
+		}
+		await Bun.sleep(pollMs);
+	}
+}
+
 const PROJECT_LOAD_TIMEOUT_MS = 15_000;
 
 /** Max time to wait for graceful LSP shutdown and process exit. */
@@ -439,6 +604,16 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string, initT
 	const existingLock = clientLocks.get(key);
 	if (existingLock) {
 		return existingLock;
+	}
+
+	// Fail fast on a recent deterministic init failure instead of re-spawning
+	// a broken server (and paying its full init wait) on every call.
+	const recentFailure = initFailures.get(key);
+	if (recentFailure) {
+		if (Date.now() - recentFailure.at < INIT_FAILURE_BACKOFF_MS) {
+			throw new Error(`LSP server ${config.command} failed to initialize recently: ${recentFailure.message}`);
+		}
+		initFailures.delete(key);
 	}
 
 	// Create new client with lock
@@ -481,18 +656,18 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string, initT
 			pendingRequests: new Map(),
 			messageBuffer: new Uint8Array(0),
 			isReading: false,
+			status: "connecting",
 			lastActivity: Date.now(),
 			writeQueue: Promise.resolve(),
 			activeProgressTokens: new Set(),
 			projectLoaded,
 			resolveProjectLoaded,
 		};
-		clients.set(key, client);
 
 		// Register crash recovery - remove client on process exit
 		proc.exited.then(() => {
-			clients.delete(key);
-			clientLocks.delete(key);
+			if (clients.get(key) === client) clients.delete(key);
+			if (clientLocks.get(key) === clientPromise) clientLocks.delete(key);
 			client.resolveProjectLoaded();
 
 			// Reject any pending requests — the server is gone, they will never complete.
@@ -530,7 +705,7 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string, initT
 					rootPath: cwd,
 					capabilities: CLIENT_CAPABILITIES,
 					initializationOptions: config.initOptions ?? {},
-					workspaceFolders: [{ uri: fileToUri(cwd), name: cwd.split("/").pop() ?? "workspace" }],
+					workspaceFolders: currentWorkspaceFolders(client),
 				},
 				undefined, // signal
 				initTimeoutMs,
@@ -545,12 +720,26 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string, initT
 			// Send initialized notification
 			await sendNotification(client, "initialized", {});
 
+			client.status = "ready";
+			// Publish only after init succeeds: pre-init clients are reachable
+			// solely through clientLocks, so concurrent callers (warmup vs first
+			// tool call) wait for init instead of using an unacknowledged client.
+			clients.set(key, client);
+			initFailures.delete(key);
 			return client;
 		} catch (err) {
 			// Clean up on initialization failure
-			clients.delete(key);
-			clientLocks.delete(key);
+			client.status = "error";
+			if (clients.get(key) === client) clients.delete(key);
 			proc.kill();
+			const message = err instanceof Error ? err.message : String(err);
+			// Negative-cache deterministic failures. Timeouts under a
+			// caller-shortened deadline (warmup/writethrough) are not cached —
+			// the server may simply be slow and a later call with the full
+			// deadline can still succeed.
+			if (!(initTimeoutMs !== undefined && message.includes("timed out"))) {
+				initFailures.set(key, { at: Date.now(), message });
+			}
 			throw err;
 		} finally {
 			clientLocks.delete(key);
@@ -635,6 +824,9 @@ export async function waitForProjectLoaded(client: LspClient, signal?: AbortSign
 			? [new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]
 			: []),
 	]);
+	if (isRustAnalyzerClient(client)) {
+		await waitForRustAnalyzerWorkspace(client, signal);
+	}
 }
 
 /**
@@ -819,18 +1011,28 @@ export async function shutdownClient(key: string): Promise<void> {
 // LSP Protocol Methods
 // =============================================================================
 
-/** Default timeout for LSP requests (30 seconds) */
+/** Default timeout for LSP requests when no abort signal is provided (30 seconds) */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 
 /**
  * Send an LSP request and wait for response.
+ *
+ * Timeout policy:
+ * - If `timeoutMs` is explicitly provided, that value is used.
+ * - Else, if `signal` is provided, no internal timer is installed (the caller
+ *   owns the deadline via the signal — typically a wall-clock `AbortSignal.timeout`
+ *   from the LSP tool). Installing a second hard-coded 30s timer here used to
+ *   cause "timed out after 30000ms" errors even when the caller had requested
+ *   `timeout: 60`.
+ * - Else (no signal, no explicit timeout), fall back to `DEFAULT_REQUEST_TIMEOUT_MS`
+ *   to avoid leaking pending requests forever.
  */
 export async function sendRequest(
 	client: LspClient,
 	method: string,
 	params: unknown,
 	signal?: AbortSignal,
-	timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+	timeoutMs?: number,
 ): Promise<unknown> {
 	// Atomically increment and capture request ID
 	const id = ++client.requestId;
@@ -866,15 +1068,17 @@ export async function sendRequest(
 		reject(reason);
 	};
 
-	// Set timeout
-	timeout = setTimeout(() => {
-		if (client.pendingRequests.has(id)) {
-			client.pendingRequests.delete(id);
-			const err = new Error(`LSP request ${method} timed out after ${timeoutMs}ms`);
-			cleanup();
-			reject(err);
-		}
-	}, timeoutMs);
+	const effectiveTimeoutMs = timeoutMs ?? (signal ? undefined : DEFAULT_REQUEST_TIMEOUT_MS);
+	if (effectiveTimeoutMs !== undefined) {
+		timeout = setTimeout(() => {
+			if (client.pendingRequests.has(id)) {
+				client.pendingRequests.delete(id);
+				const err = new Error(`LSP request ${method} timed out after ${effectiveTimeoutMs}ms`);
+				cleanup();
+				reject(err);
+			}
+		}, effectiveTimeoutMs);
+	}
 	if (signal) {
 		signal.addEventListener("abort", abortHandler, { once: true });
 		if (signal.aborted) {
@@ -928,7 +1132,22 @@ export async function sendNotification(client: LspClient, method: string, params
 export async function shutdownAll(): Promise<void> {
 	const clientsToShutdown = Array.from(clients.values());
 	clients.clear();
-	await Promise.allSettled(clientsToShutdown.map(client => shutdownClientInstance(client)));
+	// Mid-initialize clients live only in clientLocks (publication is deferred
+	// until init succeeds) — without this, their server processes outlive
+	// shutdown. Failed init promises already cleaned up after themselves.
+	const pendingClients = Array.from(clientLocks.values());
+	clientLocks.clear();
+	const seen = new Set<LspClient>(clientsToShutdown);
+	await Promise.allSettled([
+		...clientsToShutdown.map(client => shutdownClientInstance(client)),
+		...pendingClients.map(pending =>
+			pending.then(client => {
+				if (seen.has(client)) return;
+				seen.add(client);
+				return shutdownClientInstance(client);
+			}),
+		),
+	]);
 }
 
 /** Status of an LSP server */
@@ -945,7 +1164,7 @@ export interface LspServerStatus {
 export function getActiveClients(): LspServerStatus[] {
 	return Array.from(clients.values()).map(client => ({
 		name: client.config.command,
-		status: "ready" as const,
+		status: client.status,
 		fileTypes: client.config.fileTypes,
 	}));
 }

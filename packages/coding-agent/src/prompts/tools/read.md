@@ -8,7 +8,7 @@ Read files, directories, archives, SQLite databases, images, documents, internal
 
 ## Parameters
 
-- `path` — required. Local path, internal URI (`skill://`, `agent://`, `artifact://`, `memory://`, `rule://`, `local://`, `vault://`, `mcp://`), or URL. Append `:<sel>` for line ranges, raw mode, or special modes (e.g. `src/foo.ts:50-200`, `src/foo.ts:raw`, `db.sqlite:users:42`).
+- `path` — required. Local path, internal URI (`skill://`, `agent://`, `artifact://`, `history://`, `memory://`, `rule://`, `local://`, `vault://`, `mcp://`, `omp://`, `issue://`, `pr://`), or URL. Append `:<sel>` for line ranges, raw mode, or special modes (e.g. `src/foo.ts:50-200`, `src/foo.ts:raw`, `db.sqlite:users:42`).
 
 ## Selectors
 
@@ -18,8 +18,8 @@ Append `:<sel>` to `path`. The bare path falls back to the default mode.
 - `:50` / `:50-` — read from line 50 onward.
 - `:50-200` — lines 50–200 inclusive.
 - `:50+150` — 150 lines starting at line 50.
-- `:20+1` — exactly one line.
-- `:5-16,960-973` — multiple ranges in one call (sorted, overlaps merged).
+- `:20+1` — anchor on line 20 (single-range reads expand by ≤1 leading and ≤3 trailing context lines).
+- `:5-16,960-973` — multiple ranges in one call (sorted, overlaps merged). Multi-range mode returns exact bounds with no context padding.
 - `:raw` — verbatim text; no anchors, no summary, no line prefixes.
 - `:2-4:raw` or `:raw:2-4` — range AND verbatim; the two compose in either order.
 - `:conflicts` — one-line-per-block index of every unresolved git merge conflict.
@@ -28,7 +28,7 @@ Append `:<sel>` to `path`. The bare path falls back to the default mode.
 
 - Reading a directory path returns a depth-limited dirent listing.
 {{#if IS_HL_MODE}}
-- Reading a file with an explicit selector emits a file snapshot tag header and numbered lines: `¶src/foo.ts#0a` then `41:def alpha():`. Copy the `¶PATH#TAG` header for anchored edits; ops use bare line numbers. NEVER fabricate the tag.
+- Reading a file with an explicit selector emits a file snapshot tag header and numbered lines: `[src/foo.ts#1A2B]` then `41:def alpha():`. Copy the `[PATH#TAG]` header for anchored edits; ops use bare line numbers. NEVER fabricate the tag.
 {{else}}
 {{#if IS_LINE_NUMBER_MODE}}
 - Reading a file with an explicit selector returns lines prefixed with line numbers: `41|def alpha():`.
@@ -74,13 +74,11 @@ For `.sqlite`, `.sqlite3`, `.db`, `.db3`:
 
 # Internal URIs
 
-`skill://<name>`, `agent://<id>`, `artifact://<id>`, `memory://root`, `rule://<name>`, `local://<name>.md`, `vault://<vault>/<path>`, `mcp://<uri>` resolve transparently and accept the same line selectors as filesystem paths. Use `artifact://<id>` to recover full output that a previous bash/eval/tool result spilled or truncated.
+`skill://<name>`, `agent://<id>`, `artifact://<id>`, `history://<agentId>`, `memory://root`, `rule://<name>`, `local://<name>.md`, `vault://<vault>/<path>`, `mcp://<uri>`, `omp://<doc>.md`, `issue://<N>`, and `pr://<N>` resolve transparently and accept the same line selectors as filesystem paths. Use `artifact://<id>` to recover full output that a previous bash/eval/tool result spilled or truncated. `history://<agentId>` is an agent's transcript as concise markdown; bare `history://` lists agents.
 
 <critical>
 - You MUST use `read` for every file, directory, archive, and URL inspection. `cat`, `head`, `tail`, `less`, `more`, `ls`, `tar`, `unzip`, `curl`, `wget` are FORBIDDEN — any such bash call is a bug, regardless of how short or convenient it looks.
 - You MUST prefer `read` over a browser/puppeteer tool for URL content; only reach for a browser when `read` cannot deliver reasonable content.
-- You MUST always include `path`. NEVER call `read` with `{}`.
 - For line ranges, append the selector to `path` (`path="src/foo.ts:50-200"`, `path="src/foo.ts:50+150"`). NEVER substitute `sed -n`, `awk NR`, or `head`/`tail` pipelines.
-- Summary footer says `read <path>:raw …`? Re-issue the exact selector it names. NEVER guess what's inside `..` / `…` markers — they carry no content.
-- You MAY combine selectors with URL reads and internal URIs; both paginate the cached resolved output.
+- Summary footer names ranges to re-read? Re-issue ONLY the ranges you need via the multi-range selector. NEVER guess what's inside `..` / `…` markers — they carry no content.
 </critical>

@@ -1,6 +1,142 @@
 # Changelog
 
 ## [Unreleased]
+### Breaking Changes
+
+- Removed `compaction/index.ts` re-export of snapcompact helpers, so snapcompact utilities are no longer available from the agent compaction barrel and should be imported from `@oh-my-pi/snapcompact`
+- Removed the `convertToLlm` alias export from `compaction/messages` — it duplicated `defaultConvertToLlm` under a second name. Import `defaultConvertToLlm` (array form) or the new `convertMessageToLlm` (single-message form) instead
+
+### Added
+
+- Added `convertMessageToLlm()`: the single-message core transformer behind `defaultConvertToLlm()`. Embedders with app-specific message roles should handle their own roles and delegate every core role (`user`/`developer`/`assistant`/`toolResult`/`custom`/`hookMessage`/`branchSummary`/`compactionSummary`) to it instead of duplicating the conversion — a duplicated `compactionSummary` case is how snapcompact frames once silently dropped off provider requests
+- Added `pruneSupersededToolResults()` and the opt-in `PruneConfig.supersedeKey` hook so harnesses can prune stale tool results superseded by a newer read of the same file; superseded results are pruned ahead of age-based victims during overflow pruning and replaced with a `[Superseded by a newer read of this file]` placeholder. Without the new config, `pruneToolOutputs()` behavior is unchanged.
+- Added `readToolSupersedeKey()` implementing the read-tool path/selector grammar (selector-free reads supersede range reads of the same file; URL-scheme paths exempt). Pruning honors prompt-cache economics: per-turn prunes only fire when the post-candidate suffix is small or the cache is cold (idle gap).
+- Added the `snapcompact` compaction strategy via `@oh-my-pi/snapcompact`: instead of an LLM summary, discarded history is printed onto dense bitmap frames and re-attached to the compaction summary message as image blocks. `CompactionSummaryMessage` gains an optional `images` field, `estimateTokens()` charges per attached frame, and frames persist under `preserveData.snapcompact` with an 8-frame middle-out eviction budget.
+- Snapcompact frames are now rendered in a provider-aware shape (`SNAPCOMPACT_SHAPES` + `resolveSnapcompactShape(api)`), following the snapcompact 200k-token monolithic evals: Anthropic-family and unknown APIs get `8x8r-bw` (unscii-8 square cells, black ink, every line printed twice with the copy on a pale highlight band — read at F1 parity with raw text at ~2x lower cost and the most refusal-robust), Google gets `8x8r-sent` (sentence-hue ink, ~2.9x cheaper), and OpenAI gets `6x6u-sent` (unscii Lanczos-stretched to 6x6 cells — OpenAI bills a flat ~2.9k tokens per image, so frame count is the only cost lever) with `detail: "original"` on the frame images. `snapcompactCompact()` accepts `model`/`shape` options, frames persist their shape metadata, mixed-shape archives (provider switches, legacy 5x8 frames) are flagged in the reading instructions, and `snapcompactGeometry()`/`renderSnapcompactFrame()` now take a shape
+
+### Fixed
+
+- Fixed queued steering messages being drained into an externally aborted run: interrupting mid-tool execution (e.g. Enter with a pending steer) dequeued the steer into the dying run — it landed in history without a response and the post-abort resume saw an empty queue, so the agent stopped instead of continuing. Steering/follow-up/aside queue polls are now skipped once the run's abort signal fires, leaving the queue intact for `Agent.continue()`.
+- Fixed `<read-files>` compaction lists recording the same file once per line-range/raw selector (`src/foo.ts:50-200`, `:raw`, `:1-50:raw`, …): read-tool selectors are now stripped before tracking, so reads dedupe to the base path and match their write/edit path when splitting read-only vs modified lists. Selector-polluted lists stored by earlier compactions self-heal on the next compaction. `readToolSupersedeKey()` now shares the same splitter (`splitReadSelector()`), gaining the `..` range alias and `L`-prefix forms it previously missed.
+
+## [15.10.12] - 2026-06-10
+
+### Added
+
+- Added `AgentLoopConfig.getDisableReasoning` so callers can override `disableReasoning` per LLM call, mirroring `getReasoning`.
+- Added `transformProviderContext` to `AgentOptions`/`AgentLoopConfig`: an optional hook applied to the assembled provider context after conversion, normalization, and append-only handling, but before telemetry capture and provider send.
+
+### Fixed
+
+- Fixed `Agent` runs so explicit reasoning disablement is forwarded to provider stream options and re-resolved per continuation, keeping mid-run thinking-off changes in sync with the next provider request.
+
+## [15.10.11] - 2026-06-10
+
+### Changed
+
+- Editorial pass over the compaction prompts: fixed garbled grammar and missing articles, RFC-keyed prohibitions, deduped restated instructions; parsed markers (`<read-files>`/`<modified-files>`/`<previous-summary>`) and all output-format headings left byte-identical
+- Catalog imports moved to the new `@oh-my-pi/pi-catalog` package: subpath imports (`calculateCost`, Codex wire constants) plus catalog values previously taken from the `@oh-my-pi/pi-ai` root (`getBundledModel`, `clampThinkingLevelForModel`), which pi-ai no longer re-exports; type-only `Model`/`Api`/`Effort` imports from pi-ai are unchanged
+
+## [15.10.8] - 2026-06-09
+
+### Added
+
+- Added optional `fetch` overrides to `SummaryOptions` and `compact`/`generateSummary` so remote compaction can use custom HTTP clients
+- Added optional `fetch` option to `ProxyStreamOptions` to control the HTTP request used by `streamProxy`
+- Added optional `fetch` overrides to `requestOpenAiRemoteCompaction` and `requestRemoteCompaction` for injectable HTTP transport
+- Added the upstream provider that served a request (`AssistantMessage.upstreamProvider`, e.g. OpenRouter's routed provider) as a `pi.gen_ai.response.upstream_provider` chat-span telemetry attribute, alongside the existing response id and time-to-first-chunk.
+
+## [15.10.5] - 2026-06-08
+
+### Removed
+
+- Removed the `maxToolCallsPerTurn` option from `AgentOptions` and `AgentLoopConfig`, so assistant turns are no longer capped after a configured number of completed tool calls
+
+### Fixed
+
+- Fixed stalled aborted assistant responses so the run now stops without waiting for provider iterator cleanup and returns the aborted message promptly
+- Fixed `afterToolCall` handling so it now runs for completed tool executions even after a run is aborted so tool post-processing still applies
+- Fixed `agentLoopDetailed().detailed()` so run telemetry and coverage are captured before `stream.result()` resolves.
+- Fixed agent-loop stream invariants so `agentLoopContinue` no longer mutates the caller's message array, emitted assistant events snapshot mutable provider content, terminal provider events win over late abort signals, transformed tool arguments are reflected consistently in hooks/events, and successful run-end telemetry fires from the same finalization path as failures.
+- Fixed tool result parsing to mark assistant tool outputs with unsupported content block shapes as errors and include a diagnostic text block
+- Fixed GPT-5 Harmony leakage handling by recovering valid leaked tool calls when possible and discarding leaked partial assistant output before retrying
+- Fixed tool-call cancellation handling so aborted tools are marked aborted with an explicit reason and do not report generic errors
+- Fixed tool-call completion so assistant messages on abort keep only completed tool-call blocks and continue processing tool calls when a length stop still included results
+- Fixed deliberate aborts (TTSR rule matches, user-interrupt labels) so a mid-stream tool-call block that never reached `toolcall_end` is retained on the aborted assistant message and paired with a placeholder result labeled by the abort reason, instead of being dropped; anonymous aborts (bare `abort()`) still drop incomplete tool calls whose partial arguments are unsafe to replay
+- Fixed runs that stopped with reason `length` after returning tool results so execution continues to handle additional tool calls
+
+## [15.10.3] - 2026-06-08
+
+### Added
+
+- Added a non-interrupting "aside" message channel to the agent loop (`AgentLoopConfig.getAsideMessages` / `Agent.setAsideMessageProvider`). Asides are drained at each step boundary (after a tool batch, before the next model call) and at the yield check, so passive notifications (e.g. background-job completions, late LSP diagnostics) reach the model *between requests* without waiting for the agent to stop and without aborting in-flight tools the way steering does.
+
+### Changed
+
+- Changed core custom and hook messages to convert to `developer` messages for provider context.
+
+### Fixed
+
+- Fixed the compaction spinner freezing (only repainting on a terminal resize) when compacting very large codex/OpenAI contexts. `buildOpenAiNativeHistory` re-collected the full known/custom tool-call id sets on every history-bearing message, rescanning the entire growing native history each time — O(N²) in history items — which blocked the event loop for seconds and starved the loader's animation timer and render scheduler. The sets are now maintained incrementally (linear), so building the compaction request no longer monopolizes the main thread.
+
+### Removed
+
+- Removed the now-dead `<turn-aborted>` marker from the OpenAI compaction output user-message filter, since `transformMessages` no longer emits that note.
+- Removed stale synthetic user-message tag filters from OpenAI remote compaction output preservation; developer messages are now dropped by role instead.
+- Tool executions now receive the active turn `AbortSignal` unconditionally.
+
+## [15.10.2] - 2026-06-08
+
+### Fixed
+
+- Fixed proxy stream silently returning a zero-token success response when the server disconnects without sending a `done` or `error` terminal SSE event. The stream now throws an error, surfacing the disconnect as an `error` event with `stopReason: "error"` and resolving `finalResultPromise`, instead of defaulting to `stopReason: "stop"` with empty content and leaving `stream.result()` callers hanging indefinitely.
+
+## [15.10.1] - 2026-06-07
+
+### Added
+
+- Added optional `promptCacheKey` support to `AgentOptions` and `Agent` via a new `promptCacheKey` property so providers can receive a caller-provided prompt cache key
+- Added optional `ApiKeyResolveContext` parameter to `getApiKey` in `AgentOptions` and `AgentLoopConfig` so key resolvers can receive retry context
+
+### Changed
+
+- Enabled streaming API calls to re-resolve credentials through the `getApiKey` callback when retries occur after authentication-related errors
+- `Agent.abort(reason?)` now forwards `reason` to the underlying `AbortController`, and the synthesized aborted assistant message carries that reason on `errorMessage` (string or non-`AbortError` `Error` message) instead of always defaulting to `"Request was aborted"`. Bare `abort()` is unchanged.
+
+### Fixed
+
+- Fixed handling of short-lived API keys so that expired tokens are retried with a refreshed value during 401/usage-limit failures
+- Ensured fallback API key resolution uses the initially configured static `apiKey` when `getApiKey` is present
+- Wrapped oneshot LLM completions (`instrumentedCompleteSimple`: handoff, compaction/branch summaries) in an `EventLoopKeepalive`. These run outside the agent `#runLoop`, so without the keepalive Bun's event loop stopped servicing timers while parked on the completion promise — freezing host spinners (e.g. the `/handoff` loader) until an unrelated terminal resize poked the loop into rendering again.
+
+## [15.9.5] - 2026-06-05
+
+### Fixed
+
+- Surfaced Anthropic stream failures whose message starts with `Output blocked by conten` as normal assistant error lifecycle events, so interactive clients render content-filter blocks instead of silently dropping the streaming bubble at `agent_end`.
+
+## [15.8.3] - 2026-06-03
+
+### Added
+
+- Added `getReadToolPath(context)` to `@oh-my-pi/pi-agent-core/compaction/tool-protection` to extract a paired `read` tool call's `path` for embedders building read-targeted protection matchers
+- Added `getReadToolPath(context)` to `@oh-my-pi/pi-agent-core/compaction/tool-protection`: the shared primitive that extracts a paired `read` tool call's `path` argument, so embedders can build their own read-targeted compaction protection matchers (e.g. plan-file reads) the same way `isSkillReadToolResult` does.
+
+## [15.8.2] - 2026-06-03
+
+### Added
+
+- Added optional `AgentTool.matcherDigest(args)` hook: tools whose streamed arguments encode content in a wire grammar (patch formats, escaped strings) can expose the real content they introduce, so stream-content matchers (e.g. TTSR rules) run against plain source text instead of the wire format.
+
+### Fixed
+
+- Fixed the agent loop wedging the model when a `write`/`edit` tool call is truncated by `stop_reason: length` (e.g. an OpenCode Zen / Claude-3.5-Haiku turn that emits >~1000 lines of code, blowing past the 8K `max_tokens` output cap). The skipped tool result now surfaces an actionable hint — naming `stop_reason: length` and telling the model to split the payload into multiple smaller calls — instead of the generic "Tool call was not executed because the assistant ended its turn" placeholder, which left the auto-continue loop re-emitting the same oversized payload until the user gave up. Tools are still NOT executed when the arguments are truncated. ([#1785](https://github.com/can1357/oh-my-pi/issues/1785))
+
+## [15.8.0] - 2026-06-02
+
+### Fixed
+
+- Engaged GPT-5 Harmony leak detection on the committed assistant message (openai-codex only). `detectHarmonyLeakInAssistantMessage` now runs on the streamed `done`/`error` result and the trailing fallback, so a leaked final response is aborted-and-retried by the existing mitigation instead of being committed as-is. Tool-argument (`tool_arg`) scanning is gated on the trailing-garbage `T` co-signal and only fires when a caller supplies a parse boundary via `detectHarmonyLeakInAssistantMessage`'s new optional `toolArgParseEnd` resolver. The agent loop passes none — it cannot bound a streamed tool DSL — so that surface stays inert and a legitimate codex tool call whose content legitimately carries `to=functions.*` next to a channel word or non-Latin script (e.g. editing the harmony fixtures) is never hard-aborted.
 
 ## [15.7.4] - 2026-05-31
 
@@ -19,6 +155,7 @@
 - Fixed tool-output pruning and shake protection for `read`: ordinary file/URL reads are now eligible for compaction, while `read` calls whose `path` starts with `skill://` remain protected like native `skill` results.
 
 ## [15.5.15] - 2026-05-30
+
 ### Added
 
 - Added `maxToolCallsPerTurn` to `AgentLoopConfig`/`AgentOptions`, allowing callers to cut a streamed assistant turn after a completed tool-call batch and execute the runnable partial turn instead of waiting for the provider to yield.
@@ -44,6 +181,7 @@
 - Changed `Agent.appendMessage`, `popMessage`, `clearMessages`, and `reset` to mutate `state.messages` and `state.pendingToolCalls` in place instead of allocating a fresh array/Set on every transition. Subscribers that capture `state.messages` by reference now observe updates without needing to re-read `state` after each event. The public type signature is unchanged (always `AgentMessage[]` / `Set<string>`).
 
 ## [15.5.0] - 2026-05-26
+
 ### Added
 
 - Added `approval` support to `AgentTool` declarations with the new `ToolTier` and `ToolApproval` APIs, allowing tools to declare capability tiers (`read`, `write`, or `exec`) and optional override/reason metadata for approval gating
@@ -55,23 +193,27 @@
 - Fixed chat-request telemetry storing the raw scoped `serviceTier` value (`"openai-only"`/`"claude-only"`) in `OpenAIAttr.RequestServiceTier` instead of the resolved wire value (`"priority"`). Dashboards and alerts filtering on the concrete tier name (`service_tier == "priority"`) were broken by the scoped placeholder; `buildChatRequestAttributes` now runs the tier through `resolveServiceTier(serviceTier, provider)` before recording, keeping the `shouldSendServiceTier` gate intact so non-OpenAI providers continue to omit the attribute entirely.
 
 ## [15.3.0] - 2026-05-25
+
 ### Fixed
 
 - Fixed `transformContext` receiving the loop config object as the `signal` argument instead of the actual `AbortSignal`, so hooks that check `signal.aborted` or call `signal.addEventListener` now work correctly under abort/timeout conditions
 - Fixed `appendOnlyContext` not being re-evaluated after `setModel()` — the mode was decided once at session construction based on the initial model's provider, so switching from/to DeepSeek (or changing `provider.appendOnlyContext`) mid-session produced incorrect mode behavior
 
 ## [15.2.3] - 2026-05-22
+
 ### Added
 
 - Added `onBeforeYield` hook support so user code can run right before the agent loop checks for follow-up messages
 
 ## [15.1.3] - 2026-05-17
+
 ### Added
 
 - Added optional `telemetry` support to `generateSummary`, `generateHandoff`, `generateBranchSummary`, and `compact` options so compaction, handoff, and branch summary one-shot LLM calls can emit OpenTelemetry chat telemetry when enabled
 - Added shared oneshot telemetry instrumentation for compaction, handoff, and branch summary calls, tagging spans with `pi.gen_ai.oneshot.kind` values such as `compaction_summary`, `compaction_short_summary`, `compaction_turn_prefix`, `handoff`, and `branch_summary`
 
 ## [15.1.2] - 2026-05-15
+
 ### Added
 
 - Added `responseHeaders` to `ChatUsageEvent` and `ManualChatTelemetryOptions` so telemetry hooks receive captured lowercase upstream response headers for each chat span
@@ -79,6 +221,7 @@
 - Added exported `detectGatewayFromHeaders` API for header-based gateway detection
 
 ## [15.1.0] - 2026-05-15
+
 ### Breaking Changes
 
 - Removed the `@oh-my-pi/pi-agent-core/compaction/handoff` exports from the package surface, including `extractHandoffDocument`, `createHandoffContext`, and `createHandoffFileName`
@@ -129,6 +272,7 @@
 - Fixed unbounded recursion in summary content capture when a captured value contains a cyclic or deeply nested array — array recursion now respects the same depth cap as plain-object recursion and replaces back-references with `"[Circular]"`
 
 ## [15.0.1] - 2026-05-14
+
 ### Breaking Changes
 
 - Raised the minimum required Bun version from >=1.3.7 to >=1.3.14
@@ -140,6 +284,7 @@
 - Added an `isError?: boolean` field on `AgentToolResult` so tools can flag a non-throwing failure (e.g. an aggregator that catches per-entry errors). `coerceToolResult` preserves the flag and the agent loop surfaces it as a tool error on the wire.
 
 ## [14.9.3] - 2026-05-10
+
 ### Added
 
 - Added `onHarmonyLeak` option on `Agent`/loop config to receive GPT-5 Harmony leak audit callbacks
@@ -155,13 +300,11 @@
 - Hardened failure handling so repeated GPT-5 Harmony leak mitigation is retried only up to two times before escalating to an explicit error
 
 ## [14.9.0] - 2026-05-10
+
 ### Added
 
 - Added `Agent#metadata` field forwarded to every API request; callers can set arbitrary provider metadata (e.g. `metadata.user_id`) once and have it applied to all subsequent stream calls without modifying per-call options
 - Added `Agent#setMetadataResolver(fn)` for installing a function that resolves request metadata at call time. The `metadata` getter dispatches through the resolver on every read (including the snapshot taken per `prompt()`), so callers reflect mutable external state (e.g. live OAuth account UUID after a token refresh) without manual re-syncs. Plain `agent.metadata = …` continues to set a static value and clears any installed resolver.
-
-### Added
-
 - Added an `onSseEvent` agent option and loop config forwarding path for raw provider SSE diagnostics.
 
 ## [14.7.6] - 2026-05-07
@@ -169,13 +312,16 @@
 ### Added
 
 - Added `hideThinkingSummary` option/getter/setter on `Agent` and `AgentLoopConfig`. Forwarded to the underlying stream call so providers can omit reasoning/thinking summaries on demand.
+
 ## [14.7.2] - 2026-05-06
+
 ### Added
 
 - Added `loadMode` option to `AgentTool` to mark built-in tools as `essential` for initial loading or `discoverable` for search activation
 - Added optional `summary` field to `AgentTool` definitions for one-line text used in tool discovery indexes
 
 ## [14.7.0] - 2026-05-04
+
 ### Breaking Changes
 
 - Changed `Agent` API types so `systemPrompt` is now a list of prompt strings, requiring callers to pass and update system prompts via string arrays
@@ -195,6 +341,7 @@
 - Fixed unhandled promise rejection when `getApiKey` or any other async error occurs during `streamAssistantResponse`: agent loop IIFEs now catch and route errors through `EventStream.fail()`, which terminates the `for await` loop and lets `Agent#runLoop`'s catch block create a proper error assistant message instead of crashing
 
 ## [14.6.0] - 2026-05-02
+
 ### Fixed
 
 - Fixed request cancellation before provider events by emitting an aborted assistant message and ending the stream with `stopReason: "aborted"`
@@ -212,6 +359,7 @@
 - Changed tool dispatch to match model-returned tool calls by either internal tool name or custom wire name, enabling custom OpenAI tool names such as `apply_patch`.
 
 ## [14.0.1] - 2026-04-08
+
 ### Added
 
 - Added `onAssistantMessageEvent` callback option to inspect assistant streaming events before they are emitted, enabling abort decisions before buffered events continue flowing
@@ -234,6 +382,7 @@
 - Fixed stale forced toolChoice being passed to provider after tools are refreshed mid-turn
 
 ## [13.9.16] - 2026-03-10
+
 ### Added
 
 - Added `onPayload` option to `AgentOptions` to inspect or replace provider payloads before they are sent
@@ -252,11 +401,13 @@
 - Updated `setThinkingLevel()` method to accept `Effort | undefined` instead of `ThinkingLevel` string
 
 ## [13.4.0] - 2026-03-01
+
 ### Added
 
 - Added `getToolChoice` option to dynamically override tool choice per LLM call
 
 ## [13.3.8] - 2026-02-28
+
 ### Changed
 
 - Changed intent field name from `agent__intent` to `_i` in tool schemas
@@ -264,12 +415,15 @@
 ### Fixed
 
 - Fixed synthetic tool result text formatting so aborted/error tool results no longer emit `Tool execution was aborted.: Request was aborted` style punctuation.
+
 ## [13.3.7] - 2026-02-27
+
 ### Added
 
 - Added `lenientArgValidation` option to tools to allow graceful handling of argument validation errors by passing raw arguments to execute() instead of returning an error to the LLM
 
 ## [13.3.1] - 2026-02-26
+
 ### Added
 
 - Added `topP`, `topK`, `minP`, `presencePenalty`, and `repetitionPenalty` options to `AgentOptions` for fine-grained sampling control
@@ -280,7 +434,9 @@
 ### Changed
 
 - Removed per-tool `agent__intent` field description from injected schema to reduce token usage; intent format is now documented once in the system prompt instead of repeated in every tool definition
+
 ## [12.19.0] - 2026-02-22
+
 ### Changed
 
 - Updated tool result messages to include error details when tool execution fails

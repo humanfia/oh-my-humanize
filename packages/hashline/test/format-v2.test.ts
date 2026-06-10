@@ -35,8 +35,9 @@ describe("hashline format v4", () => {
 		expect(applyPatch(text, "insert tail:\n+TAIL")).toBe("a\nb\nTAIL");
 	});
 
-	it("rejects empty body-bearing hunks", () => {
-		expect(() => parsePatch("replace 2..2:")).toThrow(/needs at least one/);
+	it("treats an empty replace hunk as a delete and still rejects empty inserts", () => {
+		const text = "a\nb\nc";
+		expect(applyPatch(text, "replace 2..2:")).toBe("a\nc");
 		expect(() => parsePatch("insert head:")).toThrow(/needs at least one/);
 	});
 
@@ -51,13 +52,49 @@ describe("hashline format v4", () => {
 		expect(warnings.some(w => /Auto-prefixed bare body row/.test(w))).toBe(true);
 	});
 
+	it("strips read-output line number prefix from auto-piped bare body rows", () => {
+		const text = "a\nb\nc";
+		// Without this fix, "3:text" becomes literal "3:text" in the file.
+		// With the fix, the "3:" prefix is stripped, yielding just "text".
+		const { edits, warnings } = parsePatch("replace 2..2:\n3:replaced");
+		expect(applyEdits(text, edits).text).toBe("a\nreplaced\nc");
+		expect(warnings.some(w => /Auto-prefixed bare body row/.test(w))).toBe(true);
+	});
+
 	it("validates insert anchors against file bounds", () => {
 		const edits = parsePatch("insert before 4:\n+x").edits;
 		expect(() => applyEdits("a\nb", edits)).toThrow(/Line 4 does not exist/);
 	});
 
-	it("does not flush a streaming pending empty replace block", () => {
+	it("rejects deleting the trailing blank sentinel of a newline-terminated file", () => {
+		// "a\nb\n" splits into ["a", "b", ""]; line 3 is the phantom sentinel.
+		const edits = parsePatch("delete 3").edits;
+		expect(() => applyEdits("a\nb\n", edits)).toThrow(/trailing blank sentinel/);
+	});
+
+	it("rejects a replace range that spans the trailing blank sentinel", () => {
+		const edits = parsePatch("replace 2..3:\n+B").edits;
+		expect(() => applyEdits("a\nb\n", edits)).toThrow(/trailing blank sentinel/);
+	});
+
+	it("still allows inserts anchored on the trailing blank sentinel", () => {
+		const edits = parsePatch("insert after 3:\n+tail").edits;
+		expect(applyEdits("a\nb\n", edits).text).toBe("a\nb\n\ntail");
+	});
+
+	it("still deletes a genuine empty last line of a non-newline-terminated file", () => {
+		// "a\nb" has no sentinel; line 2 is real content.
+		const edits = parsePatch("delete 2").edits;
+		expect(applyEdits("a\nb", edits).text).toBe("a");
+	});
+
+	it("does not flush a trailing streaming pending empty replace hunk", () => {
 		const result = parsePatchStreaming("replace 5..5:\n");
 		expect(result.edits).toEqual([]);
+	});
+
+	it("flushes a streaming empty replace hunk when another hunk starts", () => {
+		const result = parsePatchStreaming("replace 2..2:\ninsert tail:\n");
+		expect(result.edits).toEqual([{ kind: "delete", anchor: { line: 2 }, lineNum: 1, index: 0 }]);
 	});
 });

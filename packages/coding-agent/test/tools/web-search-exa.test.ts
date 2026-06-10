@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { hookFetch } from "@oh-my-pi/pi-utils";
-import { runSearchQuery } from "../../src/web/search";
 import {
 	buildExaRequestBody,
+	ExaProvider,
 	normalizeSearchType,
 	searchExa,
 	synthesizeAnswer,
-} from "../../src/web/search/providers/exa";
+} from "@oh-my-pi/pi-coding-agent/web/search/providers/exa";
 
 async function withLocalAuthStorage<T>(run: (authStorage: AuthStorage) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "web-search-exa-auth-"));
@@ -224,21 +224,22 @@ describe("searchExa", () => {
 		delete process.env.EXA_API_KEY;
 	});
 
-	function mockFetch(responseBody: unknown, status = 200): Disposable {
-		return hookFetch((_url, init) => {
+	function mockFetch(responseBody: unknown, status = 200): FetchImpl {
+		return (_url, init) => {
 			if (init?.body) {
 				capturedRequestBody = JSON.parse(init.body as string);
 			}
-			return new Response(JSON.stringify(responseBody), {
-				status,
-				headers: { "Content-Type": "application/json" },
-			});
-		});
+			return Promise.resolve(
+				new Response(JSON.stringify(responseBody), {
+					status,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		};
 	}
 
 	it("populates answer from per-result summaries", async () => {
-		using _hook = mockFetch(makeMockExaResponse());
-		const result = await searchExa({ query: "test query" });
+		const result = await searchExa({ query: "test query", fetch: mockFetch(makeMockExaResponse()) });
 		expect(result.provider).toBe("exa");
 		expect(result.answer).toBeDefined();
 		expect(result.answer).toContain("**Page Alpha**: Alpha is about X.");
@@ -248,39 +249,39 @@ describe("searchExa", () => {
 	});
 
 	it("returns answer=undefined when no summaries are present", async () => {
-		using _hook = mockFetch(
-			makeMockExaResponse({ results: [{ title: "No Summary", url: "https://nosummary.com", text: "some text" }] }),
-		);
-		const result = await searchExa({ query: "no answer query" });
+		const result = await searchExa({
+			query: "no answer query",
+			fetch: mockFetch(
+				makeMockExaResponse({
+					results: [{ title: "No Summary", url: "https://nosummary.com", text: "some text" }],
+				}),
+			),
+		});
 		expect(result.provider).toBe("exa");
 		expect(result.answer).toBeUndefined();
 		expect(result.sources).toHaveLength(1);
 	});
 
 	it("returns answer=undefined when results array is empty", async () => {
-		using _hook = mockFetch(makeMockExaResponse({ results: [] }));
-		const result = await searchExa({ query: "empty" });
+		const result = await searchExa({ query: "empty", fetch: mockFetch(makeMockExaResponse({ results: [] })) });
 		expect(result.answer).toBeUndefined();
 		expect(result.sources).toHaveLength(0);
 	});
 
 	it("returns answer=undefined when results is missing from response", async () => {
-		using _hook = mockFetch({ requestId: "req-empty" });
-		const result = await searchExa({ query: "nothing" });
+		const result = await searchExa({ query: "nothing", fetch: mockFetch({ requestId: "req-empty" }) });
 		expect(result.answer).toBeUndefined();
 		expect(result.sources).toHaveLength(0);
 	});
 
 	it("sends contents.summary in request body", async () => {
-		using _hook = mockFetch(makeMockExaResponse());
-		await searchExa({ query: "check body" });
+		await searchExa({ query: "check body", fetch: mockFetch(makeMockExaResponse()) });
 		expect(capturedRequestBody).toBeDefined();
 		expect(capturedRequestBody!.contents).toEqual({ summary: { query: "check body" } });
 	});
 
 	it("sends correct full request shape", async () => {
-		using _hook = mockFetch(makeMockExaResponse());
-		await searchExa({ query: "shape test", num_results: 5, type: "neural" });
+		await searchExa({ query: "shape test", num_results: 5, type: "neural", fetch: mockFetch(makeMockExaResponse()) });
 		expect(capturedRequestBody).toEqual({
 			query: "shape test",
 			numResults: 5,
@@ -290,77 +291,91 @@ describe("searchExa", () => {
 	});
 
 	it("prefers summary over text for snippet field", async () => {
-		using _hook = mockFetch(
-			makeMockExaResponse({
-				results: [{ title: "Has Both", url: "https://both.com", text: "full text here", summary: "summary here" }],
-			}),
-		);
-		const result = await searchExa({ query: "snippet test" });
+		const result = await searchExa({
+			query: "snippet test",
+			fetch: mockFetch(
+				makeMockExaResponse({
+					results: [
+						{ title: "Has Both", url: "https://both.com", text: "full text here", summary: "summary here" },
+					],
+				}),
+			),
+		});
 		expect(result.sources[0].snippet).toBe("summary here");
 	});
 
 	it("falls back to text when summary is null", async () => {
-		using _hook = mockFetch(
-			makeMockExaResponse({
-				results: [{ title: "Text Only", url: "https://text.com", text: "fallback text", summary: null }],
-			}),
-		);
-		const result = await searchExa({ query: "fallback" });
+		const result = await searchExa({
+			query: "fallback",
+			fetch: mockFetch(
+				makeMockExaResponse({
+					results: [{ title: "Text Only", url: "https://text.com", text: "fallback text", summary: null }],
+				}),
+			),
+		});
 		expect(result.sources[0].snippet).toBe("fallback text");
 	});
 
 	it("falls back to highlights when both summary and text are null", async () => {
-		using _hook = mockFetch(
-			makeMockExaResponse({
-				results: [
-					{
-						title: "Highlight Only",
-						url: "https://hl.com",
-						text: null,
-						summary: null,
-						highlights: ["hl1", "hl2"],
-					},
-				],
-			}),
-		);
-		const result = await searchExa({ query: "highlights" });
+		const result = await searchExa({
+			query: "highlights",
+			fetch: mockFetch(
+				makeMockExaResponse({
+					results: [
+						{
+							title: "Highlight Only",
+							url: "https://hl.com",
+							text: null,
+							summary: null,
+							highlights: ["hl1", "hl2"],
+						},
+					],
+				}),
+			),
+		});
 		expect(result.sources[0].snippet).toBe("hl1 hl2");
 	});
 
 	it("skips results without url", async () => {
-		using _hook = mockFetch(
-			makeMockExaResponse({
-				results: [
-					{ title: "No URL", url: null, summary: "orphan" },
-					{ title: "Has URL", url: "https://valid.com", summary: "valid" },
-				],
-			}),
-		);
-		const result = await searchExa({ query: "url filter" });
+		const result = await searchExa({
+			query: "url filter",
+			fetch: mockFetch(
+				makeMockExaResponse({
+					results: [
+						{ title: "No URL", url: null, summary: "orphan" },
+						{ title: "Has URL", url: "https://valid.com", summary: "valid" },
+					],
+				}),
+			),
+		});
 		expect(result.sources).toHaveLength(1);
 		expect(result.sources[0].url).toBe("https://valid.com");
 	});
 
 	it("falls back to text when summary is empty string (not just null)", async () => {
-		using _hook = mockFetch(
-			makeMockExaResponse({
-				results: [{ title: "Empty Summary", url: "https://empty.com", text: "real text", summary: "" }],
-			}),
-		);
-		const result = await searchExa({ query: "empty summary fallback" });
+		const result = await searchExa({
+			query: "empty summary fallback",
+			fetch: mockFetch(
+				makeMockExaResponse({
+					results: [{ title: "Empty Summary", url: "https://empty.com", text: "real text", summary: "" }],
+				}),
+			),
+		});
 		expect(result.sources[0].snippet).toBe("real text");
 	});
 
 	it("does not include url-less results in synthesized answer", async () => {
-		using _hook = mockFetch(
-			makeMockExaResponse({
-				results: [
-					{ title: "No URL", url: null, summary: "ghost summary" },
-					{ title: "Has URL", url: "https://valid.com", summary: "real summary" },
-				],
-			}),
-		);
-		const result = await searchExa({ query: "url filter answer" });
+		const result = await searchExa({
+			query: "url filter answer",
+			fetch: mockFetch(
+				makeMockExaResponse({
+					results: [
+						{ title: "No URL", url: null, summary: "ghost summary" },
+						{ title: "Has URL", url: "https://valid.com", summary: "real summary" },
+					],
+				}),
+			),
+		});
 		expect(result.answer).toBeDefined();
 		expect(result.answer).not.toContain("ghost summary");
 		expect(result.answer).toContain("**Has URL**: real summary");
@@ -368,248 +383,129 @@ describe("searchExa", () => {
 
 	it("uses Exa MCP when API key is missing", async () => {
 		delete process.env.EXA_API_KEY;
-		const fetchSpy = vi.fn(async (_input, _init, _next) => {
-			return new Response(JSON.stringify({ jsonrpc: "2.0", id: "mcp-1", result: makeMockExaResponse() }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			});
-		});
-		using _hook = hookFetch(fetchSpy);
+		let calledUrl = "";
+		const fetchMock: FetchImpl = (url, init) => {
+			calledUrl = String(url);
+			if (init?.body) {
+				capturedRequestBody = JSON.parse(init.body as string);
+			}
+			return Promise.resolve(
+				new Response(JSON.stringify({ jsonrpc: "2.0", id: "mcp-1", result: makeMockExaResponse() }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		};
 
-		const result = await searchExa({ query: "no key" });
+		const result = await searchExa({ query: "no key", fetch: fetchMock });
+
 		expect(result.provider).toBe("exa");
 		expect(result.sources).toHaveLength(3);
-
-		const calledUrl = String(fetchSpy.mock.calls[0][0]);
 		expect(calledUrl).toContain("https://mcp.exa.ai/mcp");
 		expect(calledUrl).toContain("tools=web_search_exa");
 		expect(calledUrl).not.toContain("exaApiKey=");
+		expect(capturedRequestBody?.method).toBe("tools/call");
+		expect(capturedRequestBody?.params).toEqual({
+			name: "web_search_exa",
+			arguments: { query: "no key" },
+		});
 	});
 
-	it("accepts MCP structuredContent search payloads when API key is missing", async () => {
+	it("parses Exa MCP plain-text payloads when API key is missing", async () => {
 		delete process.env.EXA_API_KEY;
-		using _hook = hookFetch(async () => {
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: "mcp-structured",
-					result: { structuredContent: makeMockExaResponse() },
-				}),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
+		const fetchMock: FetchImpl = () => {
+			return Promise.resolve(
+				new Response(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: "mcp-text",
+						result: {
+							content: [
+								{
+									type: "text",
+									text: "Title: Plain Result\nURL: https://plain.example\nAuthor: Reporter\nPublished Date: 2024-06-01\nText: Plain text body",
+								},
+							],
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
 			);
-		});
+		};
 
-		const result = await searchExa({ query: "structured payload" });
+		const result = await searchExa({ query: "plain text", fetch: fetchMock });
+
 		expect(result.provider).toBe("exa");
-		expect(result.sources).toHaveLength(3);
-		expect(result.answer).toContain("**Page Alpha**: Alpha is about X.");
+		expect(result.sources).toEqual([
+			{
+				title: "Plain Result",
+				url: "https://plain.example",
+				snippet: "Plain text body",
+				publishedDate: "2024-06-01",
+				ageSeconds: expect.any(Number),
+				author: "Reporter",
+			},
+		]);
 	});
 
-	it("accepts MCP text content JSON payloads when API key is missing", async () => {
+	it("uses AuthStorage credentials when EXA_API_KEY is unset", async () => {
 		delete process.env.EXA_API_KEY;
-		const payload = makeMockExaResponse();
-		const fetchSpy = vi.fn(async (_input, _init, _next) => {
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: "mcp-content",
-					result: {
-						content: [{ type: "text", text: JSON.stringify(payload) }],
-					},
+		let receivedKey: string | undefined;
+		const fetchMock: FetchImpl = (_url, init) => {
+			receivedKey = (init?.headers as Record<string, string> | undefined)?.["x-api-key"];
+			return Promise.resolve(
+				new Response(JSON.stringify(makeMockExaResponse()), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
 				}),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
 			);
+		};
+
+		await withLocalAuthStorage(async authStorage => {
+			authStorage.setRuntimeApiKey("exa", "stored-key-xyz");
+			const result = await searchExa({ query: "from auth storage", authStorage, fetch: fetchMock });
+			expect(result.provider).toBe("exa");
+			expect(result.sources).toHaveLength(3);
 		});
-		using _hook = hookFetch(fetchSpy);
-
-		const result = await searchExa({ query: "content payload" });
-		expect(result.provider).toBe("exa");
-		expect(result.sources).toHaveLength(3);
-		expect(result.answer).toContain("**Page Beta**: Beta covers Y.");
-
-		const calledUrl = String(fetchSpy.mock.calls[0][0]);
-		expect(calledUrl).not.toContain("exaApiKey=");
+		expect(receivedKey).toBe("stored-key-xyz");
 	});
 
-	it("accepts MCP text content plain-text payloads when API key is missing", async () => {
+	it("reports unavailable for the auto chain without EXA_API_KEY or stored credentials", async () => {
 		delete process.env.EXA_API_KEY;
-		const payloadText = [
-			"Title: Plain Alpha",
-			"URL: https://plain-alpha.com",
-			"Author: Alpha Author",
-			"Published Date: 2024-01-02",
-			"Text: Alpha snippet",
-			"",
-			"Title: Plain Beta",
-			"URL: https://plain-beta.com",
-			"Text: Beta snippet",
-		].join("\n");
-		const fetchSpy = vi.fn(async (_input, _init, _next) => {
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: "mcp-content-plain-text",
-					result: { content: [{ type: "text", text: payloadText }] },
-				}),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
-			);
-		});
-		using _hook = hookFetch(fetchSpy);
-
-		const result = await searchExa({ query: "plain text content payload" });
-		expect(result.provider).toBe("exa");
-		expect(result.sources).toHaveLength(2);
-		expect(result.sources[0]).toMatchObject({
-			title: "Plain Alpha",
-			url: "https://plain-alpha.com",
-			author: "Alpha Author",
-			snippet: "Alpha snippet",
-			publishedDate: "2024-01-02",
-		});
-		expect(result.sources[1]).toMatchObject({
-			title: "Plain Beta",
-			url: "https://plain-beta.com",
-			snippet: "Beta snippet",
-		});
-		expect(result.answer).toBeUndefined();
-
-		const calledUrl = String(fetchSpy.mock.calls[0][0]);
-		expect(calledUrl).not.toContain("exaApiKey=");
-	});
-
-	it("splits MCP plain-text records with CRLF line endings", async () => {
-		delete process.env.EXA_API_KEY;
-		const payloadText = [
-			"Title: CRLF Alpha",
-			"URL: https://crlf-alpha.com",
-			"Text: First result",
-			"",
-			"Title: CRLF Beta",
-			"URL: https://crlf-beta.com",
-			"Text: Second result",
-		].join("\r\n");
-		using _hook = hookFetch(async () => {
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: "mcp-content-crlf",
-					result: { content: [{ type: "text", text: payloadText }] },
-				}),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
-			);
-		});
-
-		const result = await searchExa({ query: "crlf payload" });
-		expect(result.provider).toBe("exa");
-		expect(result.sources).toHaveLength(2);
-		expect(result.sources[0]?.url).toBe("https://crlf-alpha.com");
-		expect(result.sources[1]?.url).toBe("https://crlf-beta.com");
-	});
-
-	it("keeps 'Title:' lines inside Text body when parsing MCP plain-text content", async () => {
-		delete process.env.EXA_API_KEY;
-		const payloadText = [
-			"Title: Plain Alpha",
-			"URL: https://plain-alpha.com",
-			"Text: Alpha line 1",
-			"Title: heading inside body",
-			"Alpha line 2",
-			"",
-			"Title: Plain Beta",
-			"URL: https://plain-beta.com",
-			"Text: Beta snippet",
-		].join("\n");
-		using _hook = hookFetch(async () => {
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: "mcp-content-embedded-title",
-					result: { content: [{ type: "text", text: payloadText }] },
-				}),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
-			);
-		});
-
-		const result = await searchExa({ query: "embedded title line" });
-		expect(result.provider).toBe("exa");
-		expect(result.sources).toHaveLength(2);
-		expect(result.sources[0]?.snippet).toContain("Title: heading inside body");
-		expect(result.sources[0]?.snippet).toContain("Alpha line 2");
-	});
-
-	it("runSearchQuery with provider=exa succeeds without EXA_API_KEY for MCP plain text content", async () => {
-		delete process.env.EXA_API_KEY;
-		const payloadText = [
-			"Title: Result One",
-			"URL: https://result-one.com",
-			"Text: First plain-text result",
-			"",
-			"Title: Result Two",
-			"URL: https://result-two.com",
-			"Text: Second plain-text result",
-		].join("\n");
-		using _hook = hookFetch(async () => {
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: "mcp-tool-plain-text",
-					result: { content: [{ type: "text", text: payloadText }] },
-				}),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
-			);
-		});
-
-		const result = await withLocalAuthStorage(authStorage =>
-			runSearchQuery({ query: "provider exa plain text", provider: "exa" }, { authStorage }),
+		const available = await withLocalAuthStorage(authStorage =>
+			Promise.resolve(new ExaProvider().isAvailable(authStorage)),
 		);
-		expect(result.details.error).toBeUndefined();
-		expect(result.details.response.provider).toBe("exa");
-		expect(result.details.response.sources).toHaveLength(2);
+		expect(available).toBe(false);
 	});
 
-	it("runSearchQuery with provider=exa succeeds without EXA_API_KEY for MCP structuredContent", async () => {
+	it("reports explicitly available without credentials so the MCP fallback runs", async () => {
 		delete process.env.EXA_API_KEY;
-		using _hook = hookFetch(async () => {
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: "mcp-tool",
-					result: { structuredContent: makeMockExaResponse() },
-				}),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
-			);
-		});
-
-		const result = await withLocalAuthStorage(authStorage =>
-			runSearchQuery({ query: "provider exa", provider: "exa" }, { authStorage }),
+		const explicit = await withLocalAuthStorage(authStorage =>
+			Promise.resolve(new ExaProvider().isExplicitlyAvailable(authStorage)),
 		);
-		expect(result.details.error).toBeUndefined();
-		expect(result.details.response.provider).toBe("exa");
-		expect(result.content[0]?.text).toContain("3 sources");
+		expect(explicit).toBe(true);
 	});
 
-	it("throws clear error when MCP content payload is not parseable JSON", async () => {
-		delete process.env.EXA_API_KEY;
-		using _hook = hookFetch(async () => {
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: "mcp-bad-content",
-					result: {
-						content: [{ type: "text", text: "not-json" }],
-					},
-				}),
-				{ status: 200, headers: { "Content-Type": "application/json" } },
-			);
-		});
-
-		await expect(searchExa({ query: "bad content" })).rejects.toThrow(
-			"Exa MCP search returned unexpected response shape.",
+	it("reports available with EXA_API_KEY", async () => {
+		process.env.EXA_API_KEY = "test-key-123";
+		const available = await withLocalAuthStorage(authStorage =>
+			Promise.resolve(new ExaProvider().isAvailable(authStorage)),
 		);
+		expect(available).toBe(true);
+	});
+
+	it("reports available when AuthStorage holds a credential", async () => {
+		delete process.env.EXA_API_KEY;
+		const available = await withLocalAuthStorage(authStorage => {
+			authStorage.setRuntimeApiKey("exa", "stored-key");
+			return Promise.resolve(new ExaProvider().isAvailable(authStorage));
+		});
+		expect(available).toBe(true);
 	});
 
 	it("throws SearchProviderError on non-ok HTTP response", async () => {
-		using _hook = mockFetch("Forbidden", 403);
-		await expect(searchExa({ query: "forbidden" })).rejects.toThrow("exa: 403 forbidden");
+		await expect(searchExa({ query: "forbidden", fetch: mockFetch("Forbidden", 403) })).rejects.toThrow(
+			"exa: 403 forbidden",
+		);
 	});
 });

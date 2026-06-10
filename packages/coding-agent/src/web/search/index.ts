@@ -131,7 +131,9 @@ async function executeSearch(
 	const providers =
 		params.provider && params.provider !== "auto"
 			? await getSearchProvider(params.provider).then(async provider =>
-					(await provider.isAvailable(authStorage)) ? [provider] : resolveProviderChain(authStorage, "auto"),
+					(await provider.isExplicitlyAvailable(authStorage))
+						? [provider]
+						: resolveProviderChain(authStorage, "auto"),
 				)
 			: await resolveProviderChain(authStorage);
 	if (providers.length === 0) {
@@ -148,7 +150,7 @@ async function executeSearch(
 		lastProvider = provider;
 		try {
 			const response = await provider.search({
-				query: params.query.replace(/202\d/g, String(new Date().getFullYear())), // LUL
+				query: params.query,
 				limit: params.limit,
 				recency: params.recency,
 				systemPrompt: webSearchSystemPrompt,
@@ -220,7 +222,7 @@ export async function runSearchQuery(
 /**
  * Web search tool implementation.
  *
- * Supports Anthropic, Perplexity, Exa, Brave, Jina, Kimi, Gemini, Codex, Z.AI, SearXNG, and Synthetic providers with automatic fallback.
+ * Supports the configured web-search provider chain with automatic fallback.
  */
 export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRenderDetails> {
 	readonly name = "web_search";
@@ -276,8 +278,8 @@ export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRende
 		return renderSearchCall(args, options, theme);
 	},
 
-	renderResult(result, options: RenderResultOptions, theme: Theme) {
-		return renderSearchResult(result, options, theme);
+	renderResult(result, options: RenderResultOptions, theme: Theme, args) {
+		return renderSearchResult(result, options, theme, args);
 	},
 };
 
