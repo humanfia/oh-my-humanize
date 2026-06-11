@@ -36,6 +36,7 @@ interface WorkflowStartArgs {
 	workflowPath: string;
 	runId?: string;
 	startNodeId?: string;
+	familyId?: string;
 }
 
 interface WorkflowStopArgs {
@@ -144,7 +145,7 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 		modelResolution: createWorkflowModelResolution(runtime),
 		lifecycle: pkg.freeze
 			? {
-					familyId: `${runId}:family`,
+					familyId: parsed.familyId ?? `${runId}:family`,
 					attemptId: `${runId}:attempt-1`,
 					freeze: pkg.freeze,
 					runtimeBindingSnapshot: createRuntimeBindingSnapshot(pkg.definition, `${runId}:binding-1`),
@@ -293,6 +294,7 @@ function parseWorkflowStartArgs(rest: string): WorkflowStartArgs | { error: stri
 	let workflowPath: string | undefined;
 	let runId: string | undefined;
 	let startNodeId: string | undefined;
+	let familyId: string | undefined;
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index];
 		if (token === undefined) continue;
@@ -310,6 +312,13 @@ function parseWorkflowStartArgs(rest: string): WorkflowStartArgs | { error: stri
 			index += 1;
 			continue;
 		}
+		if (token === "--family-id") {
+			const value = tokens[index + 1];
+			if (!value) return { error: workflowUsage() };
+			familyId = value;
+			index += 1;
+			continue;
+		}
 		if (token.startsWith("--")) {
 			return { error: `Unknown workflow start option: ${token}\n${workflowUsage()}` };
 		}
@@ -321,7 +330,11 @@ function parseWorkflowStartArgs(rest: string): WorkflowStartArgs | { error: stri
 	if (!workflowPath) {
 		return { error: workflowUsage() };
 	}
-	return { workflowPath, runId, startNodeId };
+	const args: WorkflowStartArgs = { workflowPath };
+	if (runId !== undefined) args.runId = runId;
+	if (startNodeId !== undefined) args.startNodeId = startNodeId;
+	if (familyId !== undefined) args.familyId = familyId;
+	return args;
 }
 
 function parseWorkflowFreezeArgs(rest: string): WorkflowFreezeArgs | { error: string } {
@@ -616,7 +629,7 @@ function workflowUsage(): string {
 	return [
 		"Usage: /workflow inspect",
 		"Usage: /workflow freeze <path> [--family-id <id>]",
-		"Usage: /workflow start <path> [--run-id <id>] [--start <node-id>]",
+		"Usage: /workflow start <path> [--run-id <id>] [--family-id <id>] [--start <node-id>]",
 		"Usage: /workflow request-change <file> [--family-id <id>] [--attempt-id <id>]",
 		"Usage: /workflow approve-change <change-request-id> [--actor <actor>]",
 		"Usage: /workflow stop <attempt-id> [--deadline-ms <n>]",

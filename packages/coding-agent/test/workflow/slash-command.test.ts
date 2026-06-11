@@ -15,6 +15,8 @@ import type { FlowFreeze } from "../../src/workflow/freeze";
 import {
 	appendWorkflowAttemptActivationCompleted,
 	appendWorkflowAttemptActivationStarted,
+	approveWorkflowChangeRequest,
+	proposeWorkflowChangeRequest,
 	reconstructWorkflowFamilies,
 	recordWorkflowFreeze,
 	startWorkflowAttempt,
@@ -373,7 +375,7 @@ edges:
 		const { output, runtime } = createRuntime(entries, runtimeHost);
 
 		const result = await executeAcpBuiltinSlashCommand(
-			`/workflow start ${path.join(dir, "release.omhflow")} --run-id run-omhflow`,
+			`/workflow start ${path.join(dir, "release.omhflow")} --run-id run-omhflow --family-id family-omhflow`,
 			runtime,
 		);
 
@@ -389,7 +391,7 @@ edges:
 
 		await executeAcpBuiltinSlashCommand("/workflow inspect", runtime);
 
-		expect(output[1]).toContain("Workflow family: run-omhflow:family");
+		expect(output[1]).toContain("Workflow family: family-omhflow");
 		expect(output[1]).toContain(`Freezes: ${families[0]?.freezes[0]?.id}`);
 		expect(output[1]).toContain("run-omhflow:attempt-1 completed");
 		expect(output[1]).toContain("binding=run-omhflow:binding-1");
@@ -548,6 +550,20 @@ edges: []
 			nodeId: "review",
 			parentActivationIds: ["activation-1"],
 		});
+		proposeWorkflowChangeRequest(host, {
+			changeRequestId: "change-1",
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			actor: "agent:reviewer",
+			origin: "internal-agent",
+			reason: "switch to reviewed freeze",
+			operations: [{ op: "add_node", node: { id: "review", type: "script" } }],
+			frontierMapping: { review: "review" },
+		});
+		approveWorkflowChangeRequest(host, {
+			changeRequestId: "change-1",
+			actor: "human:sihao",
+		});
 		recordWorkflowFreeze(host, freezeB, { familyId: "family-1" });
 		const calls: string[] = [];
 		const runtimeHost: WorkflowNodeRuntimeHost = {
@@ -584,6 +600,15 @@ edges: []
 			abortedActivationIds: ["activation-2"],
 			frontierNodeIds: ["review"],
 		});
+		expect(families[0]?.changeRequests).toMatchObject([
+			{
+				id: "change-1",
+				status: "approved",
+				actor: "agent:reviewer",
+				approvedBy: "human:sihao",
+				frontierMapping: { review: "review" },
+			},
+		]);
 	});
 });
 
