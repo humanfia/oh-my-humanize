@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import { freezeWorkflowArtifact } from "../../src/workflow/freeze";
 import { loadWorkflowArtifact } from "../../src/workflow/package-loader";
 
 const tempDirs: string[] = [];
+const workflowTestTempRoot = path.resolve(import.meta.dir, "../../../..", "temp", "workflow-tests");
 
 async function createTempDir(): Promise<string> {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-omhflow-artifact-"));
+	await fs.mkdir(workflowTestTempRoot, { recursive: true });
+	const dir = await fs.mkdtemp(path.join(workflowTestTempRoot, "omp-omhflow-artifact-"));
 	tempDirs.push(dir);
 	return dir;
 }

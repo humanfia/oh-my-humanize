@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { YAML } from "bun";
 import { parseWorkflowDefinition, type WorkflowDefinition } from "./definition";
+import { compileWorkflowDslBlock, WorkflowDslError } from "./dsl";
 
 export interface WorkflowPackage {
 	rootPath: string;
@@ -84,9 +85,12 @@ export async function loadWorkflowArtifact(inputPath: string): Promise<WorkflowA
 	if (workflowBlocks.length === 0) {
 		throw new WorkflowPackageError(`${flowPath}: .omhflow must contain at least one fenced workflow block`);
 	}
-	const definition = parseWorkflowDefinition(JSON.stringify(definitionInput(metadata, workflowBlocks[0]!.value)), {
-		sourcePath: flowPath,
-	});
+	const definition = parseWorkflowDefinition(
+		JSON.stringify(definitionInput(metadata, workflowBlocks[0]!.value, flowPath)),
+		{
+			sourcePath: flowPath,
+		},
+	);
 	return {
 		flowPath,
 		resourceDir: path.join(path.dirname(flowPath), path.basename(flowPath, ".omhflow")),
@@ -172,14 +176,26 @@ function parseWorkflowBlocks(source: string, flowPath: string): ParsedWorkflowBl
 	return blocks;
 }
 
-function definitionInput(metadata: WorkflowArtifactMetadata, block: Record<string, unknown>): Record<string, unknown> {
-	return {
-		name: metadata.name,
-		version: metadata.version,
-		models: block.models ?? metadata.models,
-		nodes: block.nodes,
-		edges: block.edges ?? [],
-	};
+function definitionInput(
+	metadata: WorkflowArtifactMetadata,
+	block: Record<string, unknown>,
+	flowPath?: string,
+): Record<string, unknown> {
+	try {
+		const compiled = compileWorkflowDslBlock(block);
+		return {
+			name: metadata.name,
+			version: metadata.version,
+			models: compiled.models ?? metadata.models,
+			nodes: compiled.nodes,
+			edges: compiled.edges,
+		};
+	} catch (error) {
+		if (error instanceof WorkflowDslError) {
+			throw new WorkflowPackageError(flowPath ? `${flowPath}: ${error.message}` : error.message);
+		}
+		throw error;
+	}
 }
 
 function expectRecord(value: unknown, label: string, flowPath: string): Record<string, unknown> {

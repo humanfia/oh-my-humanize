@@ -16,9 +16,11 @@ import {
 	appendWorkflowAttemptActivationCompleted,
 	appendWorkflowAttemptActivationStarted,
 	approveWorkflowChangeRequest,
+	createWorkflowCheckpoint,
 	proposeWorkflowChangeRequest,
 	reconstructWorkflowFamilies,
 	recordWorkflowFreeze,
+	requestWorkflowAttemptStop,
 	startWorkflowAttempt,
 	startWorkflowFamily,
 } from "../../src/workflow/lifecycle";
@@ -607,6 +609,174 @@ edges: []
 				actor: "agent:reviewer",
 				approvedBy: "human:sihao",
 				frontierMapping: { review: "review" },
+			},
+		]);
+	});
+
+	it("rejects restart when checkpoint frontier cannot be mapped into the selected freeze", async () => {
+		const entries: CapturedEntry[] = [];
+		const freezeA = createFreeze("flowfreeze:a", ["build", "removedReview"]);
+		const freezeB = createFreeze("flowfreeze:b", ["fallbackStart"]);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-1" });
+		recordWorkflowFreeze(host, freezeA, { familyId: "family-1" });
+		recordWorkflowFreeze(host, freezeB, { familyId: "family-1" });
+		startWorkflowAttempt(host, {
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			freezeId: freezeA.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-1"),
+		});
+		requestWorkflowAttemptStop(host, {
+			attemptId: "attempt-1",
+			deadlineMs: 5,
+			reason: "replace removed review node",
+		});
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-1",
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["removedReview"],
+			state: {},
+			sourceMapping: {},
+		});
+		const calls: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				calls.push(input.node.id);
+				return { summary: `ran ${input.node.id}` };
+			},
+		};
+		const { output, runtime } = createRuntime(entries, runtimeHost);
+
+		expect(
+			await executeAcpBuiltinSlashCommand("/workflow restart checkpoint-1 --freeze-id flowfreeze:b", runtime),
+		).toEqual({
+			consumed: true,
+		});
+
+		expect(output[0]).toBe("Workflow checkpoint has no restartable frontier: checkpoint-1");
+		expect(calls).toEqual([]);
+		expect(reconstructWorkflowFamilies(entries)[0]?.attempts).toHaveLength(1);
+	});
+
+	it("lists lifecycle manager records across families, attempts, freezes, checkpoints, and changes", async () => {
+		const entries: CapturedEntry[] = [];
+		const freezeA = createFreeze("flowfreeze:a", ["tryTiling", "evaluate"]);
+		const freezeB = createFreeze("flowfreeze:b", ["integrate", "review"]);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-optimizer", objective: "optimize kernels" });
+		recordWorkflowFreeze(host, freezeA, { familyId: "family-optimizer" });
+		startWorkflowAttempt(host, {
+			familyId: "family-optimizer",
+			attemptId: "attempt-search",
+			freezeId: freezeA.id,
+			startNodeId: "tryTiling",
+			runtimeBindingSnapshot: binding("binding-search"),
+		});
+		appendWorkflowAttemptActivationStarted(host, {
+			attemptId: "attempt-search",
+			activationId: "activation-1",
+			nodeId: "tryTiling",
+			parentActivationIds: [],
+		});
+		appendWorkflowAttemptActivationCompleted(host, {
+			attemptId: "attempt-search",
+			activationId: "activation-1",
+			output: { summary: "positive branch" },
+		});
+		proposeWorkflowChangeRequest(host, {
+			changeRequestId: "change-integrate",
+			familyId: "family-optimizer",
+			attemptId: "attempt-search",
+			actor: "agent:evaluator",
+			origin: "internal-agent",
+			reason: "promote positive optimization",
+			operations: [{ op: "add_node", node: { id: "integrate", type: "script" } }],
+			frontierMapping: { evaluate: "integrate" },
+		});
+		approveWorkflowChangeRequest(host, {
+			changeRequestId: "change-integrate",
+			actor: "human:sihao",
+		});
+		recordWorkflowFreeze(host, freezeB, { familyId: "family-optimizer" });
+		requestWorkflowAttemptStop(host, {
+			attemptId: "attempt-search",
+			deadlineMs: 10,
+			reason: "accepted positive branch",
+		});
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-search",
+			familyId: "family-optimizer",
+			attemptId: "attempt-search",
+			completedActivationIds: ["activation-1"],
+			abortedActivationIds: [],
+			frontierNodeIds: ["evaluate"],
+			state: {},
+			sourceMapping: { evaluate: "integrate" },
+		});
+		startWorkflowAttempt(host, {
+			familyId: "family-optimizer",
+			attemptId: "attempt-integrate",
+			freezeId: freezeB.id,
+			startNodeId: "integrate",
+			runtimeBindingSnapshot: binding("binding-integrate"),
+		});
+		const { output, runtime } = createRuntime(entries);
+
+		expect(await executeAcpBuiltinSlashCommand("/workflow list", runtime)).toEqual({ consumed: true });
+
+		expect(output[0]).toContain("Workflow families: 1");
+		expect(output[0]).toContain("- family-optimizer freezes=2 attempts=2 checkpoints=1 changes=1 - optimize kernels");
+		expect(output[0]).toContain("Workflow attempts:");
+		expect(output[0]).toContain(
+			"- attempt-search stopped freeze=flowfreeze:a start=tryTiling activations=1 binding=binding-search",
+		);
+		expect(output[0]).toContain(
+			"- attempt-integrate running freeze=flowfreeze:b start=integrate activations=0 binding=binding-integrate",
+		);
+		expect(output[0]).toContain("Workflow freezes:");
+		expect(output[0]).toContain("- flowfreeze:a nodes=2 resources=0 graph=sha256:graph-flowfreeze:a");
+		expect(output[0]).toContain("- flowfreeze:b nodes=2 resources=0 graph=sha256:graph-flowfreeze:b");
+		expect(output[0]).toContain("Workflow checkpoints:");
+		expect(output[0]).toContain("- checkpoint-search attempt=attempt-search completed=1 aborted=0 frontier=evaluate");
+		expect(output[0]).toContain("Workflow change requests:");
+		expect(output[0]).toContain(
+			"- change-integrate approved internal-agent actor=agent:evaluator ops=1 approvedBy=human:sihao - promote positive optimization",
+		);
+	});
+
+	it("rejects workflow change requests through the manager command", async () => {
+		const entries: CapturedEntry[] = [];
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-1" });
+		proposeWorkflowChangeRequest(host, {
+			changeRequestId: "change-rejected",
+			familyId: "family-1",
+			actor: "agent:reviewer",
+			origin: "internal-agent",
+			reason: "add risky shortcut",
+			operations: [{ op: "add_node", node: { id: "skip-review", type: "script" } }],
+		});
+		const { output, runtime } = createRuntime(entries);
+
+		expect(
+			await executeAcpBuiltinSlashCommand(
+				"/workflow reject-change change-rejected --actor human:sihao --reason keep strong review",
+				runtime,
+			),
+		).toEqual({ consumed: true });
+
+		expect(output[0]).toBe("Workflow change request rejected: change-rejected");
+		expect(reconstructWorkflowFamilies(entries)[0]?.changeRequests).toMatchObject([
+			{
+				id: "change-rejected",
+				status: "rejected",
+				rejectedBy: "human:sihao",
+				rejectionReason: "keep strong review",
 			},
 		]);
 	});

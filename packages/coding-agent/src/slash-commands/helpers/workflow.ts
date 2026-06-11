@@ -19,6 +19,7 @@ import {
 	type RuntimeBindingSnapshot,
 	reconstructWorkflowFamilies,
 	recordWorkflowFreeze,
+	rejectWorkflowChangeRequest,
 	requestWorkflowAttemptStop,
 	startWorkflowFamily,
 	type WorkflowChangeRequestOrigin,
@@ -65,6 +66,16 @@ interface WorkflowApproveChangeArgs {
 	actor?: string;
 }
 
+interface WorkflowRejectChangeArgs {
+	changeRequestId: string;
+	actor?: string;
+	reason?: string;
+}
+
+interface WorkflowListArgs {
+	familyId?: string;
+}
+
 interface WorkflowStartPackage {
 	rootPath: string;
 	workflowPath: string;
@@ -80,6 +91,9 @@ export async function handleWorkflowAcp(
 	if (!verb || verb === "inspect") {
 		return handleInspectCommand(runtime);
 	}
+	if (verb === "list") {
+		return handleListCommand(rest, runtime);
+	}
 	if (verb === "start") {
 		return handleStartCommand(rest, runtime);
 	}
@@ -91,6 +105,9 @@ export async function handleWorkflowAcp(
 	}
 	if (verb === "approve-change") {
 		return handleApproveChangeCommand(rest, runtime);
+	}
+	if (verb === "reject-change") {
+		return handleRejectChangeCommand(rest, runtime);
 	}
 	if (verb === "stop") {
 		return handleStopCommand(rest, runtime);
@@ -118,6 +135,21 @@ async function handleInspectCommand(runtime: SlashCommandRuntime): Promise<Slash
 		);
 	}
 	await runtime.output(sections.join("\n\n"));
+	return commandConsumed();
+}
+
+async function handleListCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+	const parsed = parseWorkflowListArgs(rest);
+	if ("error" in parsed) return usage(parsed.error, runtime);
+	let families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
+	if (parsed.familyId !== undefined) families = families.filter(family => family.id === parsed.familyId);
+	if (families.length === 0) {
+		await runtime.output(
+			parsed.familyId ? `Workflow family not found: ${parsed.familyId}` : "No workflow families found.",
+		);
+		return commandConsumed();
+	}
+	await runtime.output(formatWorkflowLifecycleList(families));
 	return commandConsumed();
 }
 
@@ -191,6 +223,18 @@ async function handleApproveChangeCommand(rest: string, runtime: SlashCommandRun
 		reason: "slash command approval",
 	});
 	await runtime.output(`Workflow change request approved: ${parsed.changeRequestId}`);
+	return commandConsumed();
+}
+
+async function handleRejectChangeCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+	const parsed = parseWorkflowRejectChangeArgs(rest);
+	if ("error" in parsed) return usage(parsed.error, runtime);
+	rejectWorkflowChangeRequest(runtime.sessionManager, {
+		changeRequestId: parsed.changeRequestId,
+		actor: parsed.actor ?? "human",
+		reason: parsed.reason,
+	});
+	await runtime.output(`Workflow change request rejected: ${parsed.changeRequestId}`);
 	return commandConsumed();
 }
 
@@ -337,6 +381,27 @@ function parseWorkflowStartArgs(rest: string): WorkflowStartArgs | { error: stri
 	return args;
 }
 
+function parseWorkflowListArgs(rest: string): WorkflowListArgs | { error: string } {
+	const tokens = parseCommandArgs(rest);
+	let familyId: string | undefined;
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index];
+		if (token === undefined) continue;
+		if (token === "--family-id") {
+			const value = tokens[index + 1];
+			if (!value) return { error: workflowUsage() };
+			familyId = value;
+			index += 1;
+			continue;
+		}
+		if (token.startsWith("--")) return { error: `Unknown workflow list option: ${token}\n${workflowUsage()}` };
+		return { error: `Unexpected workflow list argument: ${token}\n${workflowUsage()}` };
+	}
+	const args: WorkflowListArgs = {};
+	if (familyId !== undefined) args.familyId = familyId;
+	return args;
+}
+
 function parseWorkflowFreezeArgs(rest: string): WorkflowFreezeArgs | { error: string } {
 	const tokens = parseCommandArgs(rest);
 	let workflowPath: string | undefined;
@@ -424,6 +489,42 @@ function parseWorkflowApproveChangeArgs(rest: string): WorkflowApproveChangeArgs
 	if (!changeRequestId) return { error: workflowUsage() };
 	const args: WorkflowApproveChangeArgs = { changeRequestId };
 	if (actor !== undefined) args.actor = actor;
+	return args;
+}
+
+function parseWorkflowRejectChangeArgs(rest: string): WorkflowRejectChangeArgs | { error: string } {
+	const tokens = parseCommandArgs(rest);
+	let changeRequestId: string | undefined;
+	let actor: string | undefined;
+	let reason: string | undefined;
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index];
+		if (token === undefined) continue;
+		if (token === "--actor") {
+			const value = tokens[index + 1];
+			if (!value) return { error: workflowUsage() };
+			actor = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--reason") {
+			const value = tokens[index + 1];
+			if (!value) return { error: workflowUsage() };
+			reason = tokens.slice(index + 1).join(" ");
+			break;
+		}
+		if (token.startsWith("--")) {
+			return { error: `Unknown workflow reject-change option: ${token}\n${workflowUsage()}` };
+		}
+		if (changeRequestId !== undefined) {
+			return { error: `Unexpected workflow reject-change argument: ${token}\n${workflowUsage()}` };
+		}
+		changeRequestId = token;
+	}
+	if (!changeRequestId) return { error: workflowUsage() };
+	const args: WorkflowRejectChangeArgs = { changeRequestId };
+	if (actor !== undefined) args.actor = actor;
+	if (reason !== undefined) args.reason = reason;
 	return args;
 }
 
@@ -535,7 +636,7 @@ function resolveRestartStartNode(
 		const mapped = checkpoint.sourceMapping[frontierNodeId] ?? frontierNodeId;
 		if (nodeIds.has(mapped)) return mapped;
 	}
-	return definition.nodes[0]?.id;
+	return undefined;
 }
 
 function formatWorkflowCheckpoint(checkpoint: WorkflowCheckpointSnapshot): string {
@@ -628,13 +729,65 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function workflowUsage(): string {
 	return [
 		"Usage: /workflow inspect",
+		"Usage: /workflow list [--family-id <id>]",
 		"Usage: /workflow freeze <path> [--family-id <id>]",
 		"Usage: /workflow start <path> [--run-id <id>] [--family-id <id>] [--start <node-id>]",
 		"Usage: /workflow request-change <file> [--family-id <id>] [--attempt-id <id>]",
 		"Usage: /workflow approve-change <change-request-id> [--actor <actor>]",
+		"Usage: /workflow reject-change <change-request-id> [--actor <actor>] [--reason <text>]",
 		"Usage: /workflow stop <attempt-id> [--deadline-ms <n>]",
 		"Usage: /workflow restart <checkpoint-id> [--freeze-id <id>]",
 	].join("\n");
+}
+
+function formatWorkflowLifecycleList(families: WorkflowRunFamilySnapshot[]): string {
+	const attempts = families.flatMap(family => family.attempts);
+	const freezes = families.flatMap(family => family.freezes);
+	const checkpoints = families.flatMap(family => family.checkpoints);
+	const changeRequests = families.flatMap(family => family.changeRequests);
+	const lines = [`Workflow families: ${families.length}`];
+	for (const family of families) {
+		const objective = family.objective ? ` - ${family.objective}` : "";
+		lines.push(
+			`- ${family.id} freezes=${family.freezes.length} attempts=${family.attempts.length} checkpoints=${family.checkpoints.length} changes=${family.changeRequests.length}${objective}`,
+		);
+	}
+	if (attempts.length > 0) {
+		lines.push("Workflow attempts:");
+		for (const attempt of attempts) {
+			const checkpoint = attempt.checkpointId ? ` from=${attempt.checkpointId}` : "";
+			lines.push(
+				`- ${attempt.id} ${attempt.status} freeze=${attempt.freezeId}${checkpoint} start=${attempt.startNodeId} activations=${attempt.activations.length} binding=${attempt.runtimeBindingSnapshot.id}`,
+			);
+		}
+	}
+	if (freezes.length > 0) {
+		lines.push("Workflow freezes:");
+		for (const freeze of freezes) {
+			lines.push(
+				`- ${freeze.id} nodes=${freeze.definition.nodes.length} resources=${freeze.resourceHashes.length} graph=${freeze.canonicalGraphHash}`,
+			);
+		}
+	}
+	if (checkpoints.length > 0) {
+		lines.push("Workflow checkpoints:");
+		for (const checkpoint of checkpoints) {
+			lines.push(
+				`- ${checkpoint.id} attempt=${checkpoint.attemptId} completed=${checkpoint.completedActivationIds.length} aborted=${checkpoint.abortedActivationIds.length} frontier=${checkpoint.frontierNodeIds.join(", ") || "none"}`,
+			);
+		}
+	}
+	if (changeRequests.length > 0) {
+		lines.push("Workflow change requests:");
+		for (const request of changeRequests) {
+			const approval = request.approvedBy ? ` approvedBy=${request.approvedBy}` : "";
+			const rejection = request.rejectedBy ? ` rejectedBy=${request.rejectedBy}` : "";
+			lines.push(
+				`- ${request.id} ${request.status} ${request.origin} actor=${request.actor} ops=${request.operations.length}${approval}${rejection} - ${request.reason}`,
+			);
+		}
+	}
+	return lines.join("\n");
 }
 
 function formatWorkflowInspection(inspection: WorkflowInspection): string {
@@ -717,6 +870,11 @@ function formatWorkflowLifecycleInspection(inspection: WorkflowLifecycleInspecti
 			lines.push(
 				`  binding=${attempt.runtimeBindingSnapshot.id} activations=${formatRecordCounts(attempt.activationCounts)}`,
 			);
+			for (const activation of attempt.activations) {
+				const activationSummary = activation.summary ? ` - ${activation.summary}` : "";
+				const reason = activation.reason ? ` reason=${activation.reason}` : "";
+				lines.push(`  - ${activation.id} ${activation.nodeId} ${activation.status}${activationSummary}${reason}`);
+			}
 		}
 	}
 	if (inspection.checkpoints.length > 0) {

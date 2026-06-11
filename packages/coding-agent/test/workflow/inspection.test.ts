@@ -331,6 +331,28 @@ describe("workflow inspection model", () => {
 				},
 			],
 		});
+		expect(inspection.attempts[0]?.activations).toEqual([
+			{
+				id: "activation-1",
+				nodeId: "build",
+				parentActivationIds: [],
+				status: "completed",
+				summary: "built",
+				artifacts: undefined,
+				error: undefined,
+				reason: undefined,
+			},
+			{
+				id: "activation-2",
+				nodeId: "review",
+				parentActivationIds: [],
+				status: "aborted",
+				summary: undefined,
+				artifacts: undefined,
+				error: undefined,
+				reason: "stop deadline elapsed",
+			},
+		]);
 	});
 });
 

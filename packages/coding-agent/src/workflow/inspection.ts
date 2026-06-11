@@ -1,6 +1,8 @@
 import type { WorkflowNodeType } from "./definition";
 import type {
 	RuntimeBindingSnapshot,
+	WorkflowAttemptActivationRecord,
+	WorkflowAttemptActivationStatus,
 	WorkflowAttemptStatus,
 	WorkflowChangeRequestRecord,
 	WorkflowCheckpointSnapshot,
@@ -44,8 +46,20 @@ export interface WorkflowLifecycleInspectionAttempt {
 	checkpointId?: string;
 	runtimeBindingSnapshot: RuntimeBindingSnapshot;
 	activationCounts: Record<string, number>;
+	activations: WorkflowLifecycleInspectionActivation[];
 	summary?: string;
 	error?: string;
+}
+
+export interface WorkflowLifecycleInspectionActivation {
+	id: string;
+	nodeId: string;
+	parentActivationIds: string[];
+	status: WorkflowAttemptActivationStatus;
+	summary?: string;
+	artifacts?: string[];
+	error?: string;
+	reason?: string;
 }
 
 export interface WorkflowLifecycleInspectionCheckpoint {
@@ -236,11 +250,27 @@ function compactLifecycleAttempt(attempt: WorkflowRunAttemptSnapshot): WorkflowL
 			counts[activation.status] = (counts[activation.status] ?? 0) + 1;
 			return counts;
 		}, {}),
+		activations: attempt.activations.map(compactLifecycleActivation),
 	};
 	if (attempt.checkpointId !== undefined) inspection.checkpointId = attempt.checkpointId;
 	if (attempt.summary !== undefined) inspection.summary = attempt.summary;
 	if (attempt.error !== undefined) inspection.error = attempt.error;
 	return inspection;
+}
+
+function compactLifecycleActivation(
+	activation: WorkflowAttemptActivationRecord,
+): WorkflowLifecycleInspectionActivation {
+	return {
+		id: activation.id,
+		nodeId: activation.nodeId,
+		parentActivationIds: activation.parentActivationIds,
+		status: activation.status,
+		summary: activation.output?.summary,
+		artifacts: activation.output?.artifacts,
+		error: activation.error,
+		reason: activation.reason,
+	};
 }
 
 function compactLifecycleCheckpoint(checkpoint: WorkflowCheckpointSnapshot): WorkflowLifecycleInspectionCheckpoint {
