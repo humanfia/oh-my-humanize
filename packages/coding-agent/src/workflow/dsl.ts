@@ -329,6 +329,15 @@ function namespacePromptSource(
 	if (source.kind === "file" && typeof source.path === "string" && resourcePrefix) {
 		source.path = joinResourcePath(resourcePrefix, source.path);
 	}
+	if (source.kind === "template") {
+		if (typeof source.file === "string" && resourcePrefix) {
+			source.file = joinResourcePath(resourcePrefix, source.file);
+		}
+		const bindings = source.bindings;
+		if (isRecord(bindings)) {
+			source.bindings = namespaceTemplatePromptBindings(bindings, prefix, knownNodeIds);
+		}
+	}
 	return source;
 }
 
@@ -342,11 +351,58 @@ function namespaceRawPrompt(
 	if (typeof source.file === "string" && resourcePrefix) {
 		source.file = joinResourcePath(resourcePrefix, source.file);
 	}
+	const template = source.template;
+	if (isRecord(template)) {
+		source.template = namespaceRawTemplatePrompt(template, prefix, knownNodeIds, resourcePrefix);
+	}
 	const output = source.output;
 	if (isRecord(output) && typeof output.node === "string" && knownNodeIds.has(output.node)) {
 		source.output = { ...output, node: `${prefix}${output.node}` };
 	}
 	return source;
+}
+
+function namespaceRawTemplatePrompt(
+	template: Record<string, unknown>,
+	prefix: string,
+	knownNodeIds: Set<string>,
+	resourcePrefix?: string,
+): Record<string, unknown> {
+	const next = { ...template };
+	if (typeof next.file === "string" && resourcePrefix) {
+		next.file = joinResourcePath(resourcePrefix, next.file);
+	}
+	const bindings = next.bindings;
+	if (isRecord(bindings)) {
+		next.bindings = namespaceTemplatePromptBindings(bindings, prefix, knownNodeIds);
+	}
+	return next;
+}
+
+function namespaceTemplatePromptBindings(
+	bindings: Record<string, unknown>,
+	prefix: string,
+	knownNodeIds: Set<string>,
+): Record<string, unknown> {
+	return Object.fromEntries(
+		Object.entries(bindings).map(([name, binding]) => [
+			name,
+			isRecord(binding) ? namespaceTemplatePromptBinding(binding, prefix, knownNodeIds) : binding,
+		]),
+	);
+}
+
+function namespaceTemplatePromptBinding(
+	binding: Record<string, unknown>,
+	prefix: string,
+	knownNodeIds: Set<string>,
+): Record<string, unknown> {
+	const next = { ...binding };
+	const output = next.output;
+	if (isRecord(output) && typeof output.node === "string" && knownNodeIds.has(output.node)) {
+		next.output = { ...output, node: `${prefix}${output.node}` };
+	}
+	return next;
 }
 
 function namespaceExternalEdge(

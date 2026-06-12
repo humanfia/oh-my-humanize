@@ -56,6 +56,13 @@ export type WorkflowPromptSource =
 	| WorkflowFilePromptSource
 	| WorkflowStatePromptSource
 	| WorkflowOutputPromptSource
+	| WorkflowHumanPromptSource
+	| WorkflowTemplatePromptSource;
+
+export type WorkflowTemplatePromptBindingSource =
+	| WorkflowInlinePromptSource
+	| WorkflowStatePromptSource
+	| WorkflowOutputPromptSource
 	| WorkflowHumanPromptSource;
 
 export interface WorkflowInlinePromptSource {
@@ -83,6 +90,12 @@ export interface WorkflowOutputPromptSource {
 export interface WorkflowHumanPromptSource {
 	kind: "human";
 	path: string;
+}
+
+export interface WorkflowTemplatePromptSource {
+	kind: "template";
+	file: string;
+	bindings: Record<string, WorkflowTemplatePromptBindingSource>;
 }
 
 export interface WorkflowScriptSource {
@@ -363,6 +376,16 @@ function validatePromptSourceReferences(nodes: WorkflowNode[], sourcePath?: stri
 				sourcePath,
 			);
 		}
+		if (source?.kind === "template") {
+			for (const binding of Object.values(source.bindings)) {
+				if (binding.kind === "output" && !nodeIds.has(binding.node)) {
+					throw new WorkflowDefinitionError(
+						`node "${node.id}" prompt references unknown output node "${binding.node}"`,
+						sourcePath,
+					);
+				}
+			}
+		}
 	}
 }
 
@@ -419,10 +442,10 @@ function parsePromptSource(
 		};
 	}
 	const raw = expectRecord(value, path, sourcePath);
-	const sourceKeys = ["inline", "file", "state", "output", "human"].filter(key => raw[key] !== undefined);
+	const sourceKeys = ["inline", "file", "state", "output", "human", "template"].filter(key => raw[key] !== undefined);
 	if (sourceKeys.length !== 1) {
 		throw new WorkflowDefinitionError(
-			`${path} must define exactly one of inline, file, state, output, or human`,
+			`${path} must define exactly one of inline, file, state, output, human, or template`,
 			sourcePath,
 		);
 	}
@@ -443,11 +466,66 @@ function parsePromptSource(
 		const humanPath = expectJsonPointer(raw.human, `${path}.human`, sourcePath);
 		return { promptSource: { kind: "human", path: humanPath } };
 	}
+	if (sourceKey === "template") {
+		return { promptSource: parseTemplatePromptSource(raw.template, `${path}.template`, sourcePath) };
+	}
 	const output = expectRecord(raw.output, `${path}.output`, sourcePath);
 	const node = expectString(output.node, `${path}.output.node`, sourcePath);
 	const outputPath = expectJsonPointer(output.path, `${path}.output.path`, sourcePath);
 	const activation = parsePromptActivationSelector(output.activation, `${path}.output.activation`, sourcePath);
 	return { promptSource: { kind: "output", node, path: outputPath, activation } };
+}
+
+function parseTemplatePromptSource(value: unknown, path: string, sourcePath?: string): WorkflowTemplatePromptSource {
+	const raw = expectRecord(value, path, sourcePath);
+	const file = expectString(raw.file, `${path}.file`, sourcePath);
+	const bindings = parseTemplatePromptBindings(raw.bindings, `${path}.bindings`, sourcePath);
+	return { kind: "template", file, bindings };
+}
+
+function parseTemplatePromptBindings(
+	value: unknown,
+	path: string,
+	sourcePath?: string,
+): Record<string, WorkflowTemplatePromptBindingSource> {
+	const raw = expectRecord(value, path, sourcePath);
+	const bindings: Record<string, WorkflowTemplatePromptBindingSource> = {};
+	for (const [name, binding] of Object.entries(raw)) {
+		bindings[name] = parseTemplatePromptBindingSource(binding, `${path}.${name}`, sourcePath);
+	}
+	return bindings;
+}
+
+function parseTemplatePromptBindingSource(
+	value: unknown,
+	path: string,
+	sourcePath?: string,
+): WorkflowTemplatePromptBindingSource {
+	const raw = expectRecord(value, path, sourcePath);
+	const sourceKeys = ["inline", "state", "output", "human"].filter(key => raw[key] !== undefined);
+	if (sourceKeys.length !== 1) {
+		throw new WorkflowDefinitionError(
+			`${path} must define exactly one of inline, state, output, or human`,
+			sourcePath,
+		);
+	}
+	const sourceKey = sourceKeys[0];
+	if (sourceKey === "inline") {
+		return { kind: "inline", text: expectString(raw.inline, `${path}.inline`, sourcePath) };
+	}
+	if (sourceKey === "state") {
+		return { kind: "state", path: expectJsonPointer(raw.state, `${path}.state`, sourcePath) };
+	}
+	if (sourceKey === "human") {
+		return { kind: "human", path: expectJsonPointer(raw.human, `${path}.human`, sourcePath) };
+	}
+	const output = expectRecord(raw.output, `${path}.output`, sourcePath);
+	return {
+		kind: "output",
+		node: expectString(output.node, `${path}.output.node`, sourcePath),
+		path: expectJsonPointer(output.path, `${path}.output.path`, sourcePath),
+		activation: parsePromptActivationSelector(output.activation, `${path}.output.activation`, sourcePath),
+	};
 }
 
 function parseModelContext(value: unknown, path: string, sourcePath?: string): WorkflowModelContext | undefined {

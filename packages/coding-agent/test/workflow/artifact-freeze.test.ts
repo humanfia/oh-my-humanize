@@ -245,6 +245,45 @@ edges: []
 		);
 	});
 
+	it("rejects prompt template output reads outside node permissions before production freeze", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "release", "prompts"), { recursive: true });
+		await Bun.write(path.join(dir, "release", "prompts", "build.md"), "Review: {{reviewSummary}}\n");
+		const flowPath = path.join(dir, "release.omhflow");
+		await Bun.write(
+			flowPath,
+			omhflowSource(`
+nodes:
+  review:
+    type: review
+    prompt: Review the implementation.
+  build:
+    type: agent
+    agent: task
+    reads:
+      - /plan
+    prompt:
+      template:
+        file: prompts/build.md
+        bindings:
+          reviewSummary:
+            output:
+              node: review
+              path: /summary
+              activation: latest-completed
+edges:
+  - from: review
+    to: build
+`),
+		);
+
+		const artifact = await loadWorkflowArtifact(flowPath);
+
+		await expect(freezeWorkflowArtifact(artifact)).rejects.toThrow(
+			'workflow node "build" prompt reads "/summary" outside declared read scopes',
+		);
+	});
+
 	it("rejects waitFor references to unknown nodes before production freeze", async () => {
 		const dir = await createTempDir();
 		await fs.mkdir(path.join(dir, "release"), { recursive: true });

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added file-backed workflow prompt templates with explicit inline/state/output/human bindings, so `.omhflow` nodes can compose review state, prior outputs, and static prompt assets without building prompts in code.
 - Added immutable workflow lifecycle support for `.omhflow` artifacts: strict freeze manifests, runtime binding snapshots, family/attempt/checkpoint/change-request events, lifecycle-aware `/workflow` commands, and HTML export audit data.
 - Added structured `.omhflow` DSL modules, sequences, parallel joins, workflow manager listing/rejection commands, deterministic workflow benchmark coverage, and stricter checkpoint frontier validation for lifecycle restarts.
 

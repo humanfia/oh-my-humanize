@@ -1,6 +1,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { WorkflowDefinition, WorkflowNode, WorkflowPromptSource } from "./definition";
+import type {
+	WorkflowDefinition,
+	WorkflowNode,
+	WorkflowPromptSource,
+	WorkflowTemplatePromptBindingSource,
+} from "./definition";
 import type { WorkflowArtifact } from "./package-loader";
 
 export interface FlowFreeze {
@@ -188,18 +193,24 @@ function validateNodeStateScopes(node: WorkflowNode): void {
 }
 
 function validatePromptReadScope(node: WorkflowNode): void {
-	const source = node.promptSource;
-	const promptPath = promptStateReadPath(source);
-	if (promptPath === undefined) return;
-	if (statePathWithinScopes(promptPath, node.reads)) return;
-	throw new WorkflowFreezeError(
-		`workflow node "${node.id}" prompt reads "${promptPath}" outside declared read scopes`,
-	);
+	for (const promptPath of promptReadPaths(node.promptSource)) {
+		if (statePathWithinScopes(promptPath, node.reads)) continue;
+		throw new WorkflowFreezeError(
+			`workflow node "${node.id}" prompt reads "${promptPath}" outside declared read scopes`,
+		);
+	}
 }
 
-function promptStateReadPath(source: WorkflowPromptSource | undefined): string | undefined {
-	if (source?.kind === "state" || source?.kind === "human") return source.path;
-	return undefined;
+function promptReadPaths(source: WorkflowPromptSource | undefined): string[] {
+	if (source === undefined) return [];
+	if (source.kind === "state" || source.kind === "human" || source.kind === "output") return [source.path];
+	if (source.kind !== "template") return [];
+	return Object.values(source.bindings).flatMap(templateBindingReadPaths);
+}
+
+function templateBindingReadPaths(source: WorkflowTemplatePromptBindingSource): string[] {
+	if (source.kind === "state" || source.kind === "human" || source.kind === "output") return [source.path];
+	return [];
 }
 
 function statePathWithinScopes(pointer: string, scopes: string[] | undefined): boolean {
@@ -238,6 +249,9 @@ function collectResourceReferences(definition: WorkflowDefinition): string[] {
 	for (const node of definition.nodes) {
 		if (node.promptSource?.kind === "file") {
 			references.push(node.promptSource.path);
+		}
+		if (node.promptSource?.kind === "template") {
+			references.push(node.promptSource.file);
 		}
 		if (node.script?.file) {
 			references.push(node.script.file);

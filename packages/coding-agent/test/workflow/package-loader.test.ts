@@ -188,6 +188,83 @@ sequence:
 		expect(freeze.resourceHashes.map(resource => resource.path)).toContain("humanize.omhflow");
 	});
 
+	it("namespaces imported subflow prompt template resources and output bindings", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "caller", "humanize", "prompts"), { recursive: true });
+		await Bun.write(
+			path.join(dir, "caller", "humanize", "prompts", "build.md"),
+			"Plan:\n{{plan}}\n\nReview:\n{{reviewSummary}}\n",
+		);
+		await Bun.write(
+			path.join(dir, "caller", "humanize.omhflow"),
+			artifactSource(
+				"humanize-template-prompt",
+				`
+resources:
+  - path: prompts/build.md
+    kind: prompt
+sequence:
+  - node:
+      id: review
+      type: review
+      prompt: Review the current plan.
+      gates:
+        - retry
+        - complete
+  - node:
+      id: build
+      type: agent
+      agent: task
+      reads:
+        - /plan
+        - /summary
+      prompt:
+        template:
+          file: prompts/build.md
+          bindings:
+            plan:
+              state: /plan
+            reviewSummary:
+              output:
+                node: review
+                path: /summary
+                activation: latest-completed
+`,
+			),
+		);
+		const callerPath = path.join(dir, "caller.omhflow");
+		await Bun.write(
+			callerPath,
+			artifactSource(
+				"caller-flow",
+				`
+imports:
+  humanize:
+    path: ./caller/humanize.omhflow
+sequence:
+  - use: humanize
+`,
+			),
+		);
+
+		const artifact = await loadWorkflowArtifact(callerPath);
+
+		expect(artifact.definition.resources).toEqual([{ path: "humanize/prompts/build.md", kind: "prompt" }]);
+		expect(artifact.definition.nodes.find(node => node.id === "humanize__build")?.promptSource).toEqual({
+			kind: "template",
+			file: "humanize/prompts/build.md",
+			bindings: {
+				plan: { kind: "state", path: "/plan" },
+				reviewSummary: {
+					kind: "output",
+					node: "humanize__review",
+					path: "/summary",
+					activation: "latest-completed",
+				},
+			},
+		});
+	});
+
 	it("rejects imported subflow resources that escape the caller artifact at freeze time", async () => {
 		const dir = await createTempDir();
 		await fs.mkdir(path.join(dir, "humanize", "prompts"), { recursive: true });

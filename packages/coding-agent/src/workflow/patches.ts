@@ -537,6 +537,15 @@ function validatePromptSourceReferences(definition: WorkflowDefinition, nodeIds:
 				`workflow graph patch leaves node "${node.id}" prompt referencing unknown output node "${source.node}"`,
 			);
 		}
+		if (source?.kind === "template") {
+			for (const binding of Object.values(source.bindings)) {
+				if (binding.kind === "output" && !nodeIds.has(binding.node)) {
+					throw new WorkflowGraphPatchError(
+						`workflow graph patch leaves node "${node.id}" prompt referencing unknown output node "${binding.node}"`,
+					);
+				}
+			}
+		}
 		validatePromptSourcePermissions(node);
 	}
 }
@@ -546,6 +555,14 @@ function validatePromptSourcePermissions(node: WorkflowNode): void {
 	if (!source) return;
 	if (source.kind === "state" || source.kind === "human" || source.kind === "output") {
 		readWorkflowState({}, source.path, { allowedReadPaths: node.reads });
+		return;
+	}
+	if (source.kind === "template") {
+		for (const binding of Object.values(source.bindings)) {
+			if (binding.kind === "state" || binding.kind === "human" || binding.kind === "output") {
+				readWorkflowState({}, binding.path, { allowedReadPaths: node.reads });
+			}
+		}
 	}
 }
 
@@ -568,6 +585,41 @@ function validatePromptSourceShape(source: WorkflowPromptSource, nodeId: string)
 		if (source.activation !== "parent" && source.activation !== "latest-completed") {
 			throw new WorkflowGraphPatchError(
 				`workflow graph patch node "${nodeId}" prompt activation selector is invalid`,
+			);
+		}
+		return;
+	}
+	if (source.kind === "template") {
+		validateNonEmptyString(source.file, `workflow graph patch node "${nodeId}" prompt template file path`);
+		for (const [name, binding] of Object.entries(source.bindings)) {
+			validateNonEmptyString(name, `workflow graph patch node "${nodeId}" prompt template binding name`);
+			if (binding.kind === "inline") {
+				validateNonEmptyString(binding.text, `workflow graph patch node "${nodeId}" prompt template binding`);
+				continue;
+			}
+			if (binding.kind === "state" || binding.kind === "human") {
+				validateJsonPointer(binding.path, `workflow graph patch node "${nodeId}" prompt template binding path`);
+				continue;
+			}
+			if (binding.kind === "output") {
+				validateNonEmptyString(
+					binding.node,
+					`workflow graph patch node "${nodeId}" prompt template binding output node`,
+				);
+				validateJsonPointer(
+					binding.path,
+					`workflow graph patch node "${nodeId}" prompt template binding output path`,
+				);
+				if (binding.activation !== "parent" && binding.activation !== "latest-completed") {
+					throw new WorkflowGraphPatchError(
+						`workflow graph patch node "${nodeId}" prompt template binding activation selector is invalid`,
+					);
+				}
+				continue;
+			}
+			const invalidBinding: never = binding;
+			throw new WorkflowGraphPatchError(
+				`workflow graph patch prompt template binding is invalid: ${String(invalidBinding)}`,
 			);
 		}
 		return;

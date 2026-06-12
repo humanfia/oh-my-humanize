@@ -509,6 +509,78 @@ edges:
 		expect(result.scheduler.activations[1]?.error).toBe('workflow state read from "/data/nextPrompt" is not allowed');
 	});
 
+	it("renders file-backed prompt templates with explicit state and output bindings", async () => {
+		const dir = await createTempDir();
+		await Bun.write(path.join(dir, "prompts", "build.md"), "Plan:\n{{plan}}\n\nLatest review:\n{{reviewSummary}}\n");
+		const definition = parseWorkflowDefinition(
+			`
+name: template-prompt-demo
+version: 1
+nodes:
+  review:
+    type: review
+    prompt: Review the current plan.
+  build:
+    type: agent
+    agent: task
+    reads:
+      - /plan
+      - /summary
+    prompt:
+      template:
+        file: prompts/build.md
+        bindings:
+          plan:
+            state: /plan
+          reviewSummary:
+            output:
+              node: review
+              path: /summary
+              activation: latest-completed
+edges:
+  - from: review
+    to: build
+`,
+			{ sourcePath: path.join(dir, "workflow.yml") },
+		);
+		const buildNode = definition.nodes.find(node => node.id === "build");
+		if (!buildNode) throw new Error("expected build node");
+
+		const resolved = await resolveWorkflowPrompt(buildNode, {
+			state: { plan: "Implement the resumable workflow loop." },
+			completedActivations: [
+				{
+					id: "activation-1",
+					nodeId: "review",
+					graphRevisionId: "workflow-graph",
+					status: "completed",
+					parentActivationIds: [],
+					output: { summary: "Tighten the checkpoint restart criteria." },
+				},
+			],
+			parentActivationIds: ["activation-1"],
+			packageRoot: dir,
+		});
+
+		expect(resolved?.value).toBe(
+			"Plan:\nImplement the resumable workflow loop.\n\nLatest review:\nTighten the checkpoint restart criteria.",
+		);
+		expect(resolved?.source).toEqual({
+			kind: "template",
+			file: "prompts/build.md",
+			bindings: {
+				plan: { kind: "state", path: "/plan" },
+				reviewSummary: {
+					kind: "output",
+					node: "review",
+					path: "/summary",
+					activation: "latest-completed",
+					activationId: "activation-1",
+				},
+			},
+		});
+	});
+
 	it("resolves package-local prompt files before agent execution", async () => {
 		const dir = await createTempDir();
 		await Bun.write(path.join(dir, "prompts", "build.md"), "Implement the package workflow.\n");

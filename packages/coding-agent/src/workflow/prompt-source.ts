@@ -1,5 +1,14 @@
 import * as path from "node:path";
-import type { WorkflowNode, WorkflowOutputPromptSource, WorkflowPromptSource } from "./definition";
+import { prompt as promptTemplate } from "@oh-my-pi/pi-utils";
+import type {
+	WorkflowHumanPromptSource,
+	WorkflowInlinePromptSource,
+	WorkflowNode,
+	WorkflowOutputPromptSource,
+	WorkflowPromptSource,
+	WorkflowStatePromptSource,
+	WorkflowTemplatePromptSource,
+} from "./definition";
 import type { FlowFreezeResourceSnapshot } from "./freeze";
 import type { WorkflowActivation } from "./scheduler";
 import { readWorkflowState } from "./state";
@@ -26,10 +35,25 @@ export interface WorkflowActivationInputSnapshot {
 	prompt?: WorkflowResolvedPrompt;
 }
 
-export type WorkflowResolvedPromptSource = WorkflowPromptSource | WorkflowResolvedOutputPromptSource;
+export type WorkflowResolvedPromptSource =
+	| Exclude<WorkflowPromptSource, WorkflowOutputPromptSource | WorkflowTemplatePromptSource>
+	| WorkflowResolvedOutputPromptSource
+	| WorkflowResolvedTemplatePromptSource;
 
 export interface WorkflowResolvedOutputPromptSource extends WorkflowOutputPromptSource {
 	activationId: string;
+}
+
+export type WorkflowResolvedTemplatePromptBindingSource =
+	| WorkflowInlinePromptSource
+	| WorkflowHumanPromptSource
+	| WorkflowStatePromptSource
+	| WorkflowResolvedOutputPromptSource;
+
+export interface WorkflowResolvedTemplatePromptSource {
+	kind: "template";
+	file: string;
+	bindings: Record<string, WorkflowResolvedTemplatePromptBindingSource>;
 }
 
 export class WorkflowPromptSourceError extends Error {
@@ -66,6 +90,17 @@ export async function resolveWorkflowPrompt(
 			context,
 		);
 	}
+	if (source.kind === "template") {
+		const template = await readPackagePromptFile(node, source.file, context);
+		const bindings = resolveTemplatePromptBindings(node, source, context);
+		return resolvedPrompt(
+			node,
+			{ kind: "template", file: source.file, bindings: bindings.sources },
+			promptTemplate.render(template, bindings.values),
+			source.file,
+			context,
+		);
+	}
 	const activation = selectOutputPromptActivation(node, source, context);
 	return resolvedPrompt(
 		node,
@@ -74,6 +109,34 @@ export async function resolveWorkflowPrompt(
 		source.path,
 		context,
 	);
+}
+
+function resolveTemplatePromptBindings(
+	node: WorkflowNode,
+	source: WorkflowTemplatePromptSource,
+	context: WorkflowPromptResolutionContext,
+): {
+	values: Record<string, unknown>;
+	sources: Record<string, WorkflowResolvedTemplatePromptBindingSource>;
+} {
+	const values: Record<string, unknown> = {};
+	const sources: Record<string, WorkflowResolvedTemplatePromptBindingSource> = {};
+	for (const [name, binding] of Object.entries(source.bindings)) {
+		if (binding.kind === "inline") {
+			values[name] = binding.text;
+			sources[name] = binding;
+			continue;
+		}
+		if (binding.kind === "state" || binding.kind === "human") {
+			values[name] = readWorkflowState(context.state, binding.path, { allowedReadPaths: node.reads });
+			sources[name] = binding;
+			continue;
+		}
+		const activation = selectOutputPromptActivation(node, binding, context);
+		values[name] = readOutputPromptValue(node, binding, activation);
+		sources[name] = { ...binding, activationId: activation.id };
+	}
+	return { values, sources };
 }
 
 function readOutputPromptValue(

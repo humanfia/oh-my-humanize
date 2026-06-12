@@ -16,6 +16,7 @@ import type {
 	WorkflowPromptSource,
 	WorkflowScriptLanguage,
 	WorkflowScriptSource,
+	WorkflowTemplatePromptBindingSource,
 } from "../../workflow/definition";
 import { type FlowFreeze, freezeWorkflowArtifact, type WorkflowChangePolicy } from "../../workflow/freeze";
 import { buildWorkflowGraphView, renderWorkflowGraphText, type WorkflowGraphView } from "../../workflow/graph-view";
@@ -1577,7 +1578,30 @@ function workflowPromptSourceToBlock(source: WorkflowPromptSource): unknown {
 	if (source.kind === "file") return { file: source.path };
 	if (source.kind === "state") return { state: source.path };
 	if (source.kind === "human") return { human: source.path };
-	return { output: source.node, path: source.path, activation: source.activation };
+	if (source.kind === "output") return { output: workflowOutputPromptSourceToBlock(source) };
+	return {
+		template: {
+			file: source.file,
+			bindings: Object.fromEntries(
+				Object.entries(source.bindings).map(([name, binding]) => [name, workflowPromptBindingToBlock(binding)]),
+			),
+		},
+	};
+}
+
+function workflowPromptBindingToBlock(source: WorkflowTemplatePromptBindingSource): unknown {
+	if (source.kind === "inline") return { inline: source.text };
+	if (source.kind === "state") return { state: source.path };
+	if (source.kind === "human") return { human: source.path };
+	return { output: workflowOutputPromptSourceToBlock(source) };
+}
+
+function workflowOutputPromptSourceToBlock(source: {
+	node: string;
+	path: string;
+	activation: string;
+}): Record<string, string> {
+	return { node: source.node, path: source.path, activation: source.activation };
 }
 
 function workflowScriptSourceToBlock(source: WorkflowScriptSource): Record<string, unknown> {
