@@ -296,6 +296,63 @@ sequence:
 			["humanize__finalize", "downstream", undefined],
 		]);
 	});
+
+	it("namespaces output references on imported subflow boundary exits", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "caller", "humanize"), { recursive: true });
+		await Bun.write(
+			path.join(dir, "caller", "humanize.omhflow"),
+			artifactSource(
+				"humanize-boundary-exit",
+				`
+sequence:
+  - template:
+      kind: retry_until
+      body:
+        id: implementRound
+        type: agent
+        agent: task
+        prompt: Implement one round.
+      review:
+        id: summaryReview
+        type: review
+        prompt: Return retry or complete.
+        gates:
+          - retry
+          - complete
+      retryWhen: outputs.summaryReview.verdict == "retry"
+`,
+			),
+		);
+		const callerPath = path.join(dir, "caller.omhflow");
+		await Bun.write(
+			callerPath,
+			artifactSource(
+				"caller-flow",
+				`
+imports:
+  humanize:
+    path: ./caller/humanize.omhflow
+sequence:
+  - use: humanize
+  - node:
+      id: downstream
+      type: script
+      script:
+        inline: |
+          return { summary: "downstream" };
+`,
+			),
+		);
+
+		const artifact = await loadWorkflowArtifact(callerPath);
+
+		expect(artifact.definition.edges.map(edge => [edge.from, edge.to, edge.condition?.source])).toEqual([
+			["humanize__implementRound", "humanize__summaryReview", undefined],
+			["humanize__summaryReview", "humanize__implementRound", 'outputs.humanize__summaryReview.verdict == "retry"'],
+			["humanize__summaryReview", "downstream", '!(outputs.humanize__summaryReview.verdict == "retry")'],
+		]);
+	});
 });
 
 function artifactSource(name: string, workflowBlock: string): string {

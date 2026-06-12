@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fixed imported `.omhflow` subflow exit conditions to namespace `outputs.<nodeId>` references before connecting the subflow to caller steps.
 - Fixed workflow graph patch proposals to reject edge conditions that reference missing output nodes or undeclared review verdict gates before a mutable flow can be refrozen.
 
 ## [15.12.3] - 2026-06-12

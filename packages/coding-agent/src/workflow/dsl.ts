@@ -203,7 +203,7 @@ class WorkflowDslCompiler {
 			}
 			if (externalModule.resources) this.externalResources.push(...externalModule.resources);
 			if (externalModule.capabilities) this.externalCapabilities.push(externalModule.capabilities);
-			return externalModuleEntrypoints(externalModule, prefix);
+			return externalModuleEntrypoints(externalModule, prefix, originalNodeIds);
 		} finally {
 			this.#externalModuleStack.delete(moduleName);
 		}
@@ -386,13 +386,19 @@ function importedEdgeCondition(edge: Record<string, unknown>): string | undefine
 	return undefined;
 }
 
-function externalModuleEntrypoints(module: WorkflowDslExternalModule, prefix: string): CompileResult {
+function externalModuleEntrypoints(
+	module: WorkflowDslExternalModule,
+	prefix: string,
+	knownNodeIds: Set<string>,
+): CompileResult {
 	if (module.entries !== undefined && module.exits !== undefined) {
 		return {
 			entries: module.entries.map(nodeId => `${prefix}${nodeId}`),
 			exits: module.exits.map(exit => {
 				const compiled: WorkflowDslCompileExit = { nodeId: `${prefix}${exit.nodeId}` };
-				if (exit.condition !== undefined) compiled.condition = exit.condition;
+				if (exit.condition !== undefined) {
+					compiled.condition = namespaceOutputConditionReferences(exit.condition, prefix, knownNodeIds);
+				}
 				return compiled;
 			}),
 		};
@@ -414,7 +420,7 @@ function externalModuleEntrypoints(module: WorkflowDslExternalModule, prefix: st
 		}
 	}
 	const entries = nodeIds.filter(nodeId => !targeted.has(nodeId)).map(nodeId => `${prefix}${nodeId}`);
-	const exits = nodeIds.flatMap(nodeId => externalModuleNodeExits(nodeId, outgoing.get(nodeId), prefix));
+	const exits = nodeIds.flatMap(nodeId => externalModuleNodeExits(nodeId, outgoing.get(nodeId), prefix, knownNodeIds));
 	return { entries, exits };
 }
 
@@ -422,13 +428,18 @@ function externalModuleNodeExits(
 	nodeId: string,
 	outgoingConditions: Array<string | undefined> | undefined,
 	prefix: string,
+	knownNodeIds: Set<string>,
 ): WorkflowDslCompileExit[] {
 	if (outgoingConditions === undefined || outgoingConditions.length === 0) return [nodeExit(`${prefix}${nodeId}`)];
-	if (outgoingConditions.some(condition => condition === undefined)) return [];
+	const negatedConditions: string[] = [];
+	for (const condition of outgoingConditions) {
+		if (condition === undefined) return [];
+		negatedConditions.push(`!(${namespaceOutputConditionReferences(condition, prefix, knownNodeIds)})`);
+	}
 	return [
 		{
 			nodeId: `${prefix}${nodeId}`,
-			condition: outgoingConditions.map(condition => `!(${condition})`).join(" && "),
+			condition: negatedConditions.join(" && "),
 		},
 	];
 }
