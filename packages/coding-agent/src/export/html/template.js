@@ -1203,6 +1203,116 @@
 
       const globalStats = computeStats(entries);
 
+      function renderWorkflowDetailSection(title, bodyHtml) {
+        if (!bodyHtml) return '';
+        return `<div class="workflow-detail-section">
+          <div class="workflow-section-title">${escapeHtml(title)}</div>
+          ${bodyHtml}
+        </div>`;
+      }
+
+      function renderWorkflowList(items) {
+        if (!Array.isArray(items) || items.length === 0) return '<div class="workflow-empty">none</div>';
+        return `<ul class="workflow-list">${items.map(item => `<li>${item}</li>`).join('')}</ul>`;
+      }
+
+      function formatWorkflowMap(record) {
+        if (!record || typeof record !== 'object' || Array.isArray(record)) return 'none';
+        const entries = Object.entries(record);
+        if (entries.length === 0) return 'none';
+        return entries
+          .map(([key, value]) => `${escapeHtml(String(key))}=${escapeHtml(String(value))}`)
+          .join(', ');
+      }
+
+      function formatWorkflowArray(values) {
+        if (!Array.isArray(values) || values.length === 0) return 'none';
+        return values.map(value => escapeHtml(String(value))).join(', ');
+      }
+
+      function renderWorkflowActivationTimeline(attempts) {
+        if (!Array.isArray(attempts) || attempts.length === 0) return '';
+        const rows = attempts.flatMap(attempt => {
+          const activations = Array.isArray(attempt.activations) ? attempt.activations : [];
+          return activations.map(activation => {
+            const status = activation && activation.status ? String(activation.status) : 'unknown';
+            const summary = activation && activation.summary ? ` - ${truncate(String(activation.summary), 120)}` : '';
+            const error = activation && activation.error ? ` - error: ${truncate(String(activation.error), 120)}` : '';
+            const reason = activation && activation.reason ? ` - reason: ${truncate(String(activation.reason), 120)}` : '';
+            const parents = Array.isArray(activation.parentActivationIds) && activation.parentActivationIds.length > 0
+              ? ` parents=${activation.parentActivationIds.map(parent => escapeHtml(String(parent))).join(',')}`
+              : '';
+            const artifacts = Array.isArray(activation.artifacts) && activation.artifacts.length > 0
+              ? ` artifacts=${activation.artifacts.map(artifact => escapeHtml(String(artifact))).join(',')}`
+              : '';
+            return `<span class="workflow-chip">${escapeHtml(status)}</span> ${escapeHtml(String(attempt.id || 'attempt'))} ${escapeHtml(String(activation.id || 'activation'))} ${escapeHtml(String(activation.nodeId || 'node'))}${parents}${escapeHtml(summary)}${escapeHtml(error)}${escapeHtml(reason)}${artifacts}`;
+          });
+        });
+        return renderWorkflowDetailSection('Activation timeline', renderWorkflowList(rows));
+      }
+
+      function renderWorkflowCheckpoints(checkpoints) {
+        if (!Array.isArray(checkpoints) || checkpoints.length === 0) return '';
+        const rows = checkpoints.map(checkpoint => {
+          const frontier = formatWorkflowArray(checkpoint.frontierNodeIds);
+          const mapping = formatWorkflowMap(checkpoint.sourceMapping);
+          return `${escapeHtml(String(checkpoint.id || 'checkpoint'))} attempt=${escapeHtml(String(checkpoint.attemptId || 'unknown'))} completed=${escapeHtml(String(checkpoint.completedActivationCount || 0))} aborted=${escapeHtml(String(checkpoint.abortedActivationCount || 0))} frontier=${frontier} mapping=${mapping}`;
+        });
+        return renderWorkflowDetailSection('Checkpoint frontier', renderWorkflowList(rows));
+      }
+
+      function renderWorkflowChanges(changeRequests) {
+        if (!Array.isArray(changeRequests) || changeRequests.length === 0) return '';
+        const rows = changeRequests.map(request => {
+          const operations = Array.isArray(request.operations) && request.operations.length > 0
+            ? request.operations.map(operation => escapeHtml(String(operation))).join('; ')
+            : `${escapeHtml(String(request.operationCount || 0))} operation(s)`;
+          const mapping = formatWorkflowMap(request.frontierMapping);
+          const applications = Array.isArray(request.applications) && request.applications.length > 0
+            ? request.applications.map(application => {
+                const targetId = application.freezeId || application.draftId || '';
+                const reason = application.reason ? ` reason=${application.reason}` : '';
+                return `${application.target}:${targetId}:${application.actor}${reason}`;
+              }).map(text => escapeHtml(text)).join('; ')
+            : 'none';
+          const checkpoint = request.checkpointId ? ` checkpoint=${request.checkpointId}` : '';
+          const attempt = request.attemptId ? ` attempt=${request.attemptId}` : '';
+          const approved = request.approvedBy ? ` approvedBy=${request.approvedBy}` : '';
+          const rejected = request.rejectedBy ? ` rejectedBy=${request.rejectedBy}` : '';
+          return `${escapeHtml(String(request.id || 'change'))} ${escapeHtml(String(request.status || 'unknown'))} ${escapeHtml(String(request.origin || 'origin'))} actor=${escapeHtml(String(request.actor || 'unknown'))}${escapeHtml(attempt)}${escapeHtml(checkpoint)}${escapeHtml(approved)}${escapeHtml(rejected)}<br><span class="workflow-label">Reason</span>${escapeHtml(truncate(String(request.reason || ''), 180))}<br><span class="workflow-label">Change operations</span>${operations}<br><span class="workflow-label">Frontier</span>${mapping}<br><span class="workflow-label">Applications</span>${applications}`;
+        });
+        return renderWorkflowDetailSection('Change operations', renderWorkflowList(rows));
+      }
+
+      function renderWorkflowRestartLineage(attempts) {
+        if (!Array.isArray(attempts) || attempts.length === 0) return '';
+        const rows = attempts.map(attempt => {
+          const checkpoint = attempt.checkpointId ? ` from checkpoint=${attempt.checkpointId}` : '';
+          const startNodes = Array.isArray(attempt.startNodeIds) && attempt.startNodeIds.length > 0
+            ? attempt.startNodeIds.join(',')
+            : attempt.startNodeId || 'unknown';
+          const binding = attempt.runtimeBindingSnapshot ? attempt.runtimeBindingSnapshot.id : 'none';
+          const detail = attempt.error ? ` error=${attempt.error}` : attempt.summary ? ` summary=${attempt.summary}` : '';
+          return `${escapeHtml(String(attempt.id || 'attempt'))} ${escapeHtml(String(attempt.status || 'unknown'))} freeze=${escapeHtml(String(attempt.freezeId || 'none'))}${escapeHtml(checkpoint)} start=${escapeHtml(String(startNodes))} binding=${escapeHtml(String(binding))}${escapeHtml(truncate(detail, 180))}`;
+        });
+        return renderWorkflowDetailSection('Restart lineage', renderWorkflowList(rows));
+      }
+
+      function renderWorkflowBindingDiagnostics(attempts) {
+        if (!Array.isArray(attempts) || attempts.length === 0) return '';
+        const rows = attempts.map(attempt => {
+          const binding = attempt.runtimeBindingSnapshot || {};
+          const requested = formatWorkflowMap(binding.requestedRoles);
+          const resolved = formatWorkflowMap(binding.resolvedModels);
+          const unavailable = formatWorkflowArray(binding.unavailable);
+          const warnings = formatWorkflowArray(binding.warnings);
+          const tools = formatWorkflowArray(binding.tools);
+          const agents = formatWorkflowArray(binding.agents);
+          return `${escapeHtml(String(attempt.id || 'attempt'))} binding=${escapeHtml(String(binding.id || 'none'))}<br><span class="workflow-label">Roles</span>${requested}<br><span class="workflow-label">Models</span>${resolved}<br><span class="workflow-label">Tools</span>${tools}<br><span class="workflow-label">Agents</span>${agents}<br><span class="workflow-label">Unavailable</span>${unavailable}<br><span class="workflow-label">Warnings</span>${warnings}`;
+        });
+        return renderWorkflowDetailSection('Binding diagnostics', renderWorkflowList(rows));
+      }
+
       function renderWorkflowOverview() {
         const hasRuns = Array.isArray(workflowInspections) && workflowInspections.length > 0;
         const hasFamilies = Array.isArray(workflowLifecycleInspections) && workflowLifecycleInspections.length > 0;
@@ -1229,6 +1339,8 @@
           const latestActivation = activations[activations.length - 1];
           const latestSummary = latestActivation && latestActivation.summary ? String(latestActivation.summary) : '';
 
+          const timeline = renderWorkflowActivationTimeline([{ id: run.runId, activations }]);
+
           return `<div class="workflow-run">
             <div class="workflow-run-title">${escapeHtml(String(run.runId || 'unknown'))}</div>
             <div class="workflow-grid">
@@ -1240,6 +1352,7 @@
               <div><span class="workflow-label">Models</span><span>${modelText ? escapeHtml(modelText) : 'none'}</span></div>
             </div>
             ${latestSummary ? `<div class="workflow-summary">${escapeHtml(truncate(latestSummary, 160))}</div>` : ''}
+            ${timeline}
           </div>`;
         }).join('') : '';
 
@@ -1259,6 +1372,14 @@
             ? String(latestAttempt.runtimeBindingSnapshot.id || 'unknown')
             : 'none';
 
+          const detailHtml = [
+            renderWorkflowRestartLineage(attempts),
+            renderWorkflowActivationTimeline(attempts),
+            renderWorkflowCheckpoints(checkpoints),
+            renderWorkflowChanges(changeRequests),
+            renderWorkflowBindingDiagnostics(attempts),
+          ].join('');
+
           return `<div class="workflow-run">
             <div class="workflow-run-title">${escapeHtml(String(family.familyId || 'unknown'))}</div>
             <div class="workflow-grid">
@@ -1269,6 +1390,7 @@
               <div><span class="workflow-label">Binding</span><span>${escapeHtml(latestBinding)}</span></div>
             </div>
             ${family.objective ? `<div class="workflow-summary">${escapeHtml(truncate(String(family.objective), 160))}</div>` : ''}
+            ${detailHtml}
           </div>`;
         }).join('') : '';
 

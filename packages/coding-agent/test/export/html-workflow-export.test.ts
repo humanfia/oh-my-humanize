@@ -8,12 +8,17 @@ import { parseWorkflowDefinition } from "../../src/workflow/definition";
 import type { FlowFreeze } from "../../src/workflow/freeze";
 import type { WorkflowInspection, WorkflowLifecycleInspection } from "../../src/workflow/inspection";
 import {
+	appendWorkflowAttemptActivationAborted,
+	appendWorkflowAttemptActivationCompleted,
+	appendWorkflowAttemptActivationStarted,
 	approveWorkflowChangeRequest,
 	completeWorkflowAttempt,
 	createWorkflowCheckpoint,
 	proposeWorkflowChangeRequest,
 	recordWorkflowChangeRequestApplied,
 	recordWorkflowFreeze,
+	requestWorkflowAttemptStop,
+	restartWorkflowAttempt,
 	startWorkflowAttempt,
 	startWorkflowFamily,
 } from "../../src/workflow/lifecycle";
@@ -150,6 +155,7 @@ describe("HTML export workflow inspection support", () => {
 		try {
 			startWorkflowFamily(sm, { familyId: "family-export", objective: "ship export" });
 			const freeze = createFreeze("flowfreeze:export");
+			const freezeB = createFreeze("flowfreeze:export-v2", undefined, ["verify"]);
 			recordWorkflowFreeze(sm, freeze, { familyId: "family-export" });
 			startWorkflowAttempt(sm, {
 				familyId: "family-export",
@@ -166,6 +172,29 @@ describe("HTML export workflow inspection support", () => {
 					warnings: [],
 				},
 			});
+			appendWorkflowAttemptActivationStarted(sm, {
+				attemptId: "attempt-export-1",
+				activationId: "activation-1",
+				nodeId: "build",
+				parentActivationIds: [],
+			});
+			appendWorkflowAttemptActivationCompleted(sm, {
+				attemptId: "attempt-export-1",
+				activationId: "activation-1",
+				output: { summary: "built export artifact", artifacts: ["artifact://workflow/build.log"] },
+			});
+			appendWorkflowAttemptActivationStarted(sm, {
+				attemptId: "attempt-export-1",
+				activationId: "activation-2",
+				nodeId: "weakReview",
+				parentActivationIds: ["activation-1"],
+			});
+			appendWorkflowAttemptActivationAborted(sm, {
+				attemptId: "attempt-export-1",
+				activationId: "activation-2",
+				nodeId: "weakReview",
+				reason: "stop deadline elapsed",
+			});
 			proposeWorkflowChangeRequest(sm, {
 				changeRequestId: "change-export",
 				familyId: "family-export",
@@ -180,25 +209,58 @@ describe("HTML export workflow inspection support", () => {
 				changeRequestId: "change-export",
 				actor: "human:sihao",
 			});
-			recordWorkflowChangeRequestApplied(sm, {
-				changeRequestId: "change-export",
-				target: "draft",
-				actor: "human:sihao",
-				draftId: "export-draft.omhflow",
-				reason: "drafted export verification flow",
+			requestWorkflowAttemptStop(sm, {
+				attemptId: "attempt-export-1",
+				deadlineMs: 50,
+				reason: "stop before export validation refreeze",
 			});
 			createWorkflowCheckpoint(sm, {
 				checkpointId: "checkpoint-export",
 				familyId: "family-export",
 				attemptId: "attempt-export-1",
 				completedActivationIds: ["activation-1"],
-				abortedActivationIds: [],
+				abortedActivationIds: ["activation-2"],
 				frontierNodeIds: ["build"],
 				state: { score: 0.92 },
 				sourceMapping: { build: "verify" },
 			});
+			recordWorkflowFreeze(sm, freezeB, { familyId: "family-export" });
+			recordWorkflowChangeRequestApplied(sm, {
+				changeRequestId: "change-export",
+				target: "freeze",
+				actor: "human:sihao",
+				freezeId: freezeB.id,
+				reason: "strict export verification freeze passed",
+			});
+			restartWorkflowAttempt(sm, {
+				familyId: "family-export",
+				attemptId: "attempt-export-2",
+				checkpointId: "checkpoint-export",
+				freezeId: freezeB.id,
+				startNodeId: "verify",
+				runtimeBindingSnapshot: {
+					id: "binding-export-v2",
+					requestedRoles: { verifier: "openai/gpt-4o" },
+					resolvedModels: { verifier: "openai/gpt-4o" },
+					tools: ["eval"],
+					agents: [],
+					unavailable: [],
+					warnings: ["used deterministic verifier"],
+				},
+			});
+			appendWorkflowAttemptActivationStarted(sm, {
+				attemptId: "attempt-export-2",
+				activationId: "activation-3",
+				nodeId: "verify",
+				parentActivationIds: ["activation-1"],
+			});
+			appendWorkflowAttemptActivationCompleted(sm, {
+				attemptId: "attempt-export-2",
+				activationId: "activation-3",
+				output: { summary: "verified export artifact" },
+			});
 			completeWorkflowAttempt(sm, {
-				attemptId: "attempt-export-1",
+				attemptId: "attempt-export-2",
 				summary: "exported lifecycle",
 			});
 
@@ -209,14 +271,37 @@ describe("HTML export workflow inspection support", () => {
 				{
 					familyId: "family-export",
 					objective: "ship export",
-					freezeIds: ["flowfreeze:export"],
+					freezeIds: ["flowfreeze:export", "flowfreeze:export-v2"],
 					attempts: [
 						{
 							id: "attempt-export-1",
 							freezeId: "flowfreeze:export",
-							status: "completed",
-							summary: "exported lifecycle",
+							status: "stopped",
+							activationCounts: { completed: 1, aborted: 1 },
+							activations: [
+								{
+									id: "activation-1",
+									nodeId: "build",
+									status: "completed",
+									summary: "built export artifact",
+									artifacts: ["artifact://workflow/build.log"],
+								},
+								{
+									id: "activation-2",
+									nodeId: "weakReview",
+									status: "aborted",
+									reason: "stop deadline elapsed",
+								},
+							],
 							runtimeBindingSnapshot: { id: "binding-export" },
+						},
+						{
+							id: "attempt-export-2",
+							freezeId: "flowfreeze:export-v2",
+							status: "completed",
+							checkpointId: "checkpoint-export",
+							summary: "exported lifecycle",
+							runtimeBindingSnapshot: { id: "binding-export-v2" },
 						},
 					],
 					checkpoints: [
@@ -224,7 +309,7 @@ describe("HTML export workflow inspection support", () => {
 							id: "checkpoint-export",
 							attemptId: "attempt-export-1",
 							completedActivationCount: 1,
-							abortedActivationCount: 0,
+							abortedActivationCount: 1,
 							frontierNodeIds: ["build"],
 							sourceMapping: { build: "verify" },
 						},
@@ -238,14 +323,15 @@ describe("HTML export workflow inspection support", () => {
 							reason: "upgrade export validation",
 							attemptId: "attempt-export-1",
 							operationCount: 1,
+							operations: ["add_node verify (script)"],
 							frontierMapping: { build: "verify" },
 							approvedBy: "human:sihao",
 							applications: [
 								{
-									target: "draft",
+									target: "freeze",
 									actor: "human:sihao",
-									draftId: "export-draft.omhflow",
-									reason: "drafted export verification flow",
+									freezeId: "flowfreeze:export-v2",
+									reason: "strict export verification freeze passed",
 								},
 							],
 						},
@@ -287,6 +373,11 @@ describe("HTML export workflow inspection support", () => {
 		expect(template).toContain("workflow-overview");
 		expect(template).toContain("workflowInspections");
 		expect(template).toContain("workflowLifecycleInspections");
+		expect(template).toContain("Activation timeline");
+		expect(template).toContain("Checkpoint frontier");
+		expect(template).toContain("Change operations");
+		expect(template).toContain("Restart lineage");
+		expect(template).toContain("Binding diagnostics");
 	});
 });
 
@@ -296,7 +387,7 @@ function decodeSessionData(html: string): ExportedSessionData {
 	return JSON.parse(Buffer.from(match[1], "base64").toString("utf8")) as ExportedSessionData;
 }
 
-function createFreeze(id: string, resourceText?: string): FlowFreeze {
+function createFreeze(id: string, resourceText?: string, nodeIds: string[] = ["build"]): FlowFreeze {
 	return {
 		id,
 		schemaVersion: "omhflow/v1",
@@ -318,7 +409,7 @@ function createFreeze(id: string, resourceText?: string): FlowFreeze {
 		canonicalGraphHash: `sha256:graph-${id}`,
 		sourceMapping: {
 			workflowBlocks: [{ id: "workflow:0", language: "yaml" }],
-			nodes: { build: { sourceBlock: "workflow:0" } },
+			nodes: Object.fromEntries(nodeIds.map(nodeId => [nodeId, { sourceBlock: "workflow:0" }])),
 		},
 		staticCheckReport: { status: "passed", checks: [{ name: "fixture", status: "passed" }] },
 		portableDefaults: { models: { roles: { builder: "openai/gpt-4o" }, defaults: { agent: "builder" } } },
@@ -326,7 +417,7 @@ function createFreeze(id: string, resourceText?: string): FlowFreeze {
 			name: id,
 			version: 1,
 			models: { roles: { builder: "openai/gpt-4o" }, defaults: { agent: "builder" } },
-			nodes: [{ id: "build", type: "agent" }],
+			nodes: nodeIds.map(nodeId => ({ id: nodeId, type: nodeId === "build" ? "agent" : "script" })),
 			edges: [],
 		},
 	};

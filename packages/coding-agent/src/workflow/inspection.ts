@@ -76,6 +76,7 @@ export interface WorkflowLifecycleInspectionChangeRequest {
 	attemptId?: string;
 	checkpointId?: string;
 	operationCount: number;
+	operations: string[];
 	frontierMapping: Record<string, string>;
 	approvedBy?: string;
 	rejectedBy?: string;
@@ -276,6 +277,7 @@ function compactLifecycleChangeRequest(request: WorkflowChangeRequestRecord): Wo
 		origin: request.origin,
 		reason: request.reason,
 		operationCount: request.operations.length,
+		operations: request.operations.map(compactLifecycleChangeOperation),
 		frontierMapping: request.frontierMapping,
 		applications: request.applications.map(compactLifecycleChangeApplication),
 	};
@@ -297,6 +299,36 @@ function compactLifecycleChangeApplication(
 	if (application.freezeId !== undefined) inspection.freezeId = application.freezeId;
 	if (application.draftId !== undefined) inspection.draftId = application.draftId;
 	return inspection;
+}
+
+function compactLifecycleChangeOperation(operation: WorkflowChangeRequestRecord["operations"][number]): string {
+	if (operation.op === "add_node") return `add_node ${operation.node.id} (${operation.node.type})`;
+	if (operation.op === "remove_node") return `remove_node ${operation.nodeId}`;
+	if (operation.op === "add_edge")
+		return `add_edge ${formatEdgeOperation(operation.edge.from, operation.edge.to, operation.edge.condition?.source)}`;
+	if (operation.op === "remove_edge") return `remove_edge ${formatEdgeOperation(operation.from, operation.to)}`;
+	if (operation.op === "replace_edge_condition") {
+		return `replace_edge_condition ${formatEdgeOperation(operation.from, operation.to, operation.condition)}`;
+	}
+	if (operation.op === "replace_node_prompt_source") return `replace_node_prompt_source ${operation.nodeId}`;
+	if (operation.op === "replace_node_model") return `replace_node_model ${operation.nodeId}`;
+	if (operation.op === "replace_node_permissions") {
+		const reads = operation.reads === undefined ? "" : ` reads=${operation.reads.join(",")}`;
+		const writes = operation.writes === undefined ? "" : ` writes=${operation.writes.join(",")}`;
+		return `replace_node_permissions ${operation.nodeId}${reads}${writes}`;
+	}
+	if (operation.op === "set_model_role") return `set_model_role ${operation.role}=${operation.selector}`;
+	if (operation.op === "abandon_branch") return `abandon_branch ${operation.nodeId}${formatReason(operation.reason)}`;
+	return `rollback_branch ${operation.nodeId} -> ${operation.targetNodeId}${formatReason(operation.reason)}`;
+}
+
+function formatEdgeOperation(from: string, to: string, condition?: string): string {
+	const when = condition === undefined ? "" : ` when ${condition}`;
+	return `${from} -> ${to}${when}`;
+}
+
+function formatReason(reason: string | undefined): string {
+	return reason === undefined ? "" : ` - ${reason}`;
 }
 
 function compactEdge(from: string, to: string, condition: string | undefined): WorkflowInspectionEdge {

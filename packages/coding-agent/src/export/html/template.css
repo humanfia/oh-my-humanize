@@ -929,6 +929,53 @@
       word-break: break-word;
     }
 
+    .workflow-detail-section {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--hairline-soft);
+      color: var(--customMessageText, var(--muted));
+      font-size: 11px;
+    }
+
+    .workflow-section-title {
+      color: var(--dim);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .workflow-list {
+      list-style: none;
+      display: grid;
+      gap: 4px;
+    }
+
+    .workflow-list li {
+      padding: 5px 7px;
+      border: 1px solid var(--hairline-soft);
+      border-radius: var(--radius-ctl);
+      background: var(--inset-bg);
+      overflow-wrap: anywhere;
+    }
+
+    .workflow-chip {
+      display: inline-block;
+      padding: 0 5px;
+      border-radius: 3px;
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      color: color-mix(in srgb, var(--accent) 82%, var(--text));
+      font-size: 10px;
+      line-height: 15px;
+      margin-right: 4px;
+    }
+
+    .workflow-empty {
+      color: var(--dim);
+      font-size: 11px;
+    }
+
     /* Hook/custom messages */
     .hook-message {
       background: color-mix(in srgb, var(--customMessageBg, var(--container-bg)) 70%, var(--body-bg));
