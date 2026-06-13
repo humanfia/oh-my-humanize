@@ -2451,7 +2451,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #startGoalFromObjective(objective: string): Promise<void> {
 		await this.#enterGoalMode({ objective, silent: true });
 		this.#resetGoalContinuationSuppression();
-		if (this.onInputCallback) {
+		if (!this.session.isStreaming && this.onInputCallback) {
 			this.onInputCallback(this.startPendingSubmission({ text: objective }));
 		}
 	}
@@ -2466,7 +2466,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.session.isStreaming) {
 			await this.session.sendGoalModeContext({ deliverAs: "steer" });
 		}
-		if (this.onInputCallback) {
+		if (!this.session.isStreaming && this.onInputCallback) {
 			this.onInputCallback(this.startPendingSubmission({ text: objective }));
 		}
 	}
@@ -3047,10 +3047,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		const message = this.#pendingWorkingMessage;
 		this.#pendingWorkingMessage = undefined;
 		this.setWorkingMessage(message);
-	}
-
-	notifyInterrupting(): void {
-		this.#eventController.notifyInterrupting();
 	}
 
 	showNewVersionNotification(newVersion: string): void {
