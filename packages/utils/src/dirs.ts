@@ -423,6 +423,11 @@ export function getTinyModelsCacheDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, path.join("cache", "tiny-models"), "cache");
 }
 
+/** Get the workflow monitor snapshot cache directory (~/.omp/agent/cache/workflows). */
+export function getWorkflowMonitorCacheDir(agentDir?: string): string {
+	return dirs.agentSubdir(agentDir, path.join("cache", "workflows"), "cache");
+}
+
 /** Get the sessions directory (~/.omp/agent/sessions). */
 export function getSessionsDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, "sessions", "data");

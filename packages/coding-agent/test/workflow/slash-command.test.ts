@@ -150,6 +150,8 @@ function createTuiRuntime(
 	sessionOptions: RuntimeSessionOptions = { availableModels: [openAiModel], activeModel: openAiModel },
 ) {
 	const output: string[] = [];
+	const presentedComponents: unknown[] = [];
+	const workflowMonitorComponents: unknown[] = [];
 	const availableModels = sessionOptions.availableModels ?? [openAiModel];
 	const activeModel = sessionOptions.activeModel ?? openAiModel;
 	const session = {
@@ -174,16 +176,25 @@ function createTuiRuntime(
 		session,
 		sessionManager,
 		settings: Settings.isolated(),
+		workflowMonitorSnapshotAgentDir: path.join(cwd, "agent"),
 		showStatus: (text: string) => {
 			output.push(text);
 		},
-		present: () => {},
+		present: (content: unknown) => {
+			if (Array.isArray(content)) presentedComponents.push(...content);
+			else presentedComponents.push(content);
+		},
+		showWorkflowGraphMonitor: (component: unknown) => {
+			workflowMonitorComponents.splice(0, workflowMonitorComponents.length, component);
+		},
 		ui: { requestComponentRender: () => {} },
 		editor: { setText: () => {} },
 		refreshSlashCommandState: () => {},
 	} as unknown as InteractiveModeContext;
 	return {
 		output,
+		presentedComponents,
+		workflowMonitorComponents,
 		runtime: {
 			ctx,
 			handleBackgroundCommand: () => {},
@@ -1613,6 +1624,52 @@ edges: []
 			data: { exitCode: 0 },
 		});
 		expect(runs[0]?.activations[0]?.modelAudit?.resolvedModel).toBe("openai/gpt-4o");
+	});
+
+	it("updates a persistent TUI workflow monitor instead of appending graph components to transcript", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "monitor"), { recursive: true });
+		await Bun.write(
+			path.join(dir, "monitor.omhflow"),
+			`---
+name: tui-monitor
+version: 1
+schema: omhflow/v1
+checkpoint:
+  stopDeadlineMs: 50
+changePolicy:
+  agentsCanPropose: true
+  humansCanApprove: true
+---
+
+\`\`\`yaml workflow
+nodes:
+  build:
+    type: agent
+    agent: task
+    prompt: Build once.
+edges: []
+\`\`\`
+`,
+		);
+		const entries: CapturedEntry[] = [];
+		const runner: WorkflowAgentTaskRunner = async () => ({ exitCode: 0, output: "done" });
+		const { output, presentedComponents, workflowMonitorComponents, runtime } = createTuiRuntime(
+			entries,
+			dir,
+			runner,
+		);
+
+		const result = await executeBuiltinSlashCommand(
+			`/workflow start ${path.join(dir, "monitor.omhflow")} --run-id run-monitor --family-id family-monitor`,
+			runtime,
+		);
+
+		expect(result).toBe(true);
+		expect(output).toHaveLength(1);
+		expect(output[0]).toContain("Workflow run: run-monitor");
+		expect(presentedComponents).toEqual([]);
+		expect(workflowMonitorComponents).toHaveLength(1);
 	});
 
 	it("starts review .omhflow artifacts with exact workflow model overrides through the TUI task runner", async () => {

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { WorkflowGraphComponent } from "../../src/modes/components/workflow-graph";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
@@ -11,6 +13,7 @@ import {
 	type WorkflowGraphView,
 } from "../../src/workflow/graph-view";
 import type { RuntimeBindingSnapshot, WorkflowRunFamilySnapshot } from "../../src/workflow/lifecycle";
+import { writeWorkflowGraphMonitorSnapshot } from "../../src/workflow/monitor-history";
 
 describe("workflow graph view rendering", () => {
 	it("renders parallel branches as sibling graph lanes before a join", () => {
@@ -292,6 +295,27 @@ describe("workflow graph view rendering", () => {
 		expect(text).toContain("frontier weakReview to strongReview");
 		expect(text).not.toContain("frontier weakReview -> strongReview");
 		expect(text).not.toMatch(/[-─]+[>→▶]|[<←◀][-─]+|->|=>|→{1,}|←{1,}/u);
+	});
+
+	it("writes timestamped workflow monitor snapshots under the agent cache", async () => {
+		const root = path.resolve("temp", "workflow-monitor-history", String(Bun.nanoseconds()));
+		try {
+			const agentDir = path.join(root, "agent");
+			const snapshotPath = await writeWorkflowGraphMonitorSnapshot(singleNodeView("running"), {
+				agentDir,
+				now: new Date("2026-01-02T03:04:05.006Z"),
+			});
+
+			expect(snapshotPath).toBe(
+				path.join(agentDir, "cache", "workflows", "2026-01-02T03-04-05-006Z-live-family.json"),
+			);
+			const snapshot = await Bun.file(snapshotPath).json();
+			expect(snapshot.familyId).toBe("live-family");
+			expect(snapshot.view.currentAttempt.id).toBe("attempt-live");
+			expect(snapshot.renderedText).toContain("Workflow graph: live-family");
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 });
 

@@ -282,6 +282,12 @@ class StatusContainer extends Container implements NativeScrollbackLiveRegion {
 	}
 }
 
+function disposeWorkflowMonitorComponent(component: Component | undefined): void {
+	if (component === undefined) return;
+	const disposable = component as Component & { dispose?: () => void };
+	disposable.dispose?.();
+}
+
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
  * one hooked row per running agent in the same `Id: description` shape the
@@ -335,6 +341,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
+	workflowMonitorContainer: Container;
 	todoContainer: Container;
 	subagentContainer: Container;
 	btwContainer: Container;
@@ -345,6 +352,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;
+	#workflowMonitorComponent?: Component;
 
 	isInitialized = false;
 	isBashMode = false;
@@ -519,6 +527,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.chatContainer = new TranscriptContainer();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new StatusContainer();
+		this.workflowMonitorContainer = new Container();
 		this.todoContainer = new Container();
 		this.subagentContainer = new Container();
 		this.btwContainer = new Container();
@@ -687,6 +696,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
+		this.ui.addChild(this.workflowMonitorContainer);
 		this.ui.addChild(this.todoContainer);
 		this.ui.addChild(this.subagentContainer);
 		this.ui.addChild(this.btwContainer);
@@ -2690,6 +2700,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
+		disposeWorkflowMonitorComponent(this.#workflowMonitorComponent);
+		this.#workflowMonitorComponent = undefined;
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
 			unsubscribe();
 		}
@@ -2820,6 +2832,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else {
 			this.#mountChatChild(content as Component);
 		}
+		this.ui.requestRender();
+	}
+
+	showWorkflowGraphMonitor(component: Component): void {
+		disposeWorkflowMonitorComponent(this.#workflowMonitorComponent);
+		this.workflowMonitorContainer.clear();
+		this.#workflowMonitorComponent = component;
+		this.workflowMonitorContainer.addChild(component);
 		this.ui.requestRender();
 	}
 

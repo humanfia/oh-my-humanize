@@ -84,6 +84,7 @@ export interface InteractiveModeContext {
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
+	workflowMonitorContainer: Container;
 	todoContainer: Container;
 	subagentContainer: Container;
 	btwContainer: Container;
@@ -121,6 +122,7 @@ export interface InteractiveModeContext {
 	collabGuest?: CollabGuestLink;
 	eventController: EventController;
 	eventBus?: EventBus;
+	workflowMonitorSnapshotAgentDir?: string;
 
 	// State
 	isInitialized: boolean;
@@ -189,6 +191,8 @@ export interface InteractiveModeContext {
 	 * runs) so their timers/subscriptions start.
 	 */
 	present(content: Component | readonly Component[]): void;
+	/** Replace the persistent workflow monitor panel without appending to transcript scrollback. */
+	showWorkflowGraphMonitor(component: Component): void;
 	/**
 	 * Dispose every live block in the transcript (stopping timers/subscriptions)
 	 * and clear it. Used before a full rebuild so animated/streaming blocks do not

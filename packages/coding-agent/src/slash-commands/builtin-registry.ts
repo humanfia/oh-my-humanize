@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { setNextRequestDebugPath } from "@oh-my-pi/pi-ai/utils/request-debug";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
-import { APP_NAME, setProjectDir } from "@oh-my-pi/pi-utils";
+import { APP_NAME, logger, setProjectDir } from "@oh-my-pi/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
 import type { SettingPath, SettingValue } from "../config/settings";
@@ -33,6 +33,7 @@ import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
 import { buildWorkflowGraphView } from "../workflow/graph-view";
 import { reconstructWorkflowFamilies } from "../workflow/lifecycle";
+import { writeWorkflowGraphMonitorSnapshot } from "../workflow/monitor-history";
 import { createSessionWorkflowRuntimeHost } from "../workflow/session-runtime";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
@@ -2166,7 +2167,7 @@ export async function executeBuiltinSlashCommand(
 			output: (text: string) => {
 				ctx.showStatus(text);
 			},
-			outputWorkflowGraph: view => {
+			outputWorkflowGraph: async view => {
 				const component = new WorkflowGraphComponent(view, {
 					viewProvider: () => {
 						const family = reconstructWorkflowFamilies(ctx.sessionManager.getBranch()).find(
@@ -2176,7 +2177,12 @@ export async function executeBuiltinSlashCommand(
 					},
 					requestRender: target => ctx.ui.requestComponentRender(target),
 				});
-				ctx.present(component);
+				try {
+					await writeWorkflowGraphMonitorSnapshot(view, { agentDir: ctx.workflowMonitorSnapshotAgentDir });
+				} catch (error) {
+					logger.warn("Failed to write workflow monitor snapshot", { error: String(error) });
+				}
+				ctx.showWorkflowGraphMonitor(component);
 			},
 			createWorkflowRuntimeHost: () =>
 				createSessionWorkflowRuntimeHost({
