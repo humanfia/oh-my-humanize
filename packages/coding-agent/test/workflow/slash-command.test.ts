@@ -677,6 +677,15 @@ edges: []
 			id: "run-binding:binding-1",
 			requestedRoles: { builder: "openai/gpt-4o" },
 			resolvedModels: { build: "openai/gpt-4o" },
+			modelBindings: {
+				build: {
+					source: "workflow-default",
+					requestedRole: "builder",
+					requestedPattern: "openai/gpt-4o",
+					resolvedModel: "openai/gpt-4o",
+					fallbackUsed: false,
+				},
+			},
 			tools: ["task"],
 			agents: ["task"],
 			unavailable: [],
@@ -1859,6 +1868,16 @@ edges: []
 		expect(families[0]?.attempts[0]?.runtimeBindingSnapshot).toMatchObject({
 			requestedRoles: { builder: "openai/gpt-4o" },
 			resolvedModels: { build: "rust-cat/gpt-5.5" },
+			modelBindings: {
+				build: {
+					source: "parent-fallback",
+					requestedRole: "builder",
+					requestedPattern: "openai/gpt-4o",
+					resolvedModel: "rust-cat/gpt-5.5",
+					fallbackUsed: true,
+					fallbackReason: "parent active model overrides workflow role default",
+				},
+			},
 		});
 		const runs = reconstructWorkflowRuns(entries);
 		expect(runs[0]?.activations[0]?.modelAudit?.fallbackReason).toBe(

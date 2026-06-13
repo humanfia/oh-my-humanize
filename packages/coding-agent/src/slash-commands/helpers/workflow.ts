@@ -51,7 +51,7 @@ import {
 	workflowChangeProposalDenial,
 	workflowFreezeForChangeTarget,
 } from "../../workflow/lifecycle";
-import { resolveWorkflowNodeModel } from "../../workflow/model-resolution";
+import { resolveWorkflowNodeModel, type WorkflowModelResolutionAudit } from "../../workflow/model-resolution";
 import type { WorkflowNodeRuntimeHost } from "../../workflow/node-runtime";
 import { loadWorkflowArtifact, loadWorkflowPackage, type WorkflowArtifact } from "../../workflow/package-loader";
 import { applyWorkflowGraphPatch, type WorkflowGraphPatchOperation } from "../../workflow/patches";
@@ -1222,6 +1222,7 @@ function createRuntimeBindingSnapshot(
 	const tools = new Set<string>();
 	const agents = new Set<string>();
 	const resolvedModels: Record<string, string> = {};
+	const modelBindings: Record<string, WorkflowModelResolutionAudit> = {};
 	const unavailable: string[] = [];
 	const warnings: string[] = [];
 	for (const node of definition.nodes) {
@@ -1230,7 +1231,15 @@ function createRuntimeBindingSnapshot(
 		if (node.type === "agent" || node.type === "review") tools.add("task");
 		if (node.agent) agents.add(node.agent);
 		recordRuntimeBindingTool(node, runtimeHost, unavailable);
-		recordRuntimeBindingModel(definition, node, modelResolution, resolvedModels, unavailable, warnings);
+		recordRuntimeBindingModel(
+			definition,
+			node,
+			modelResolution,
+			resolvedModels,
+			modelBindings,
+			unavailable,
+			warnings,
+		);
 	}
 	for (const tool of definition.capabilities?.tools ?? []) {
 		tools.add(tool);
@@ -1244,6 +1253,7 @@ function createRuntimeBindingSnapshot(
 		id,
 		requestedRoles: { ...definition.models.roles },
 		resolvedModels,
+		modelBindings,
 		tools: [...tools].sort(),
 		agents: [...agents].sort(),
 		unavailable,
@@ -1311,6 +1321,7 @@ function recordRuntimeBindingModel(
 	node: WorkflowNode,
 	modelResolution: WorkflowRunnerModelResolutionOptions | undefined,
 	resolvedModels: Record<string, string>,
+	modelBindings: Record<string, WorkflowModelResolutionAudit>,
 	unavailable: string[],
 	warnings: string[],
 ): void {
@@ -1328,6 +1339,7 @@ function recordRuntimeBindingModel(
 		agentModel: workflowRuntimeAgentModelPattern(modelResolution, node),
 	});
 	const audit = result.audit;
+	modelBindings[node.id] = audit;
 	if (audit.resolvedModel !== undefined) {
 		resolvedModels[node.id] = audit.resolvedModel;
 	}

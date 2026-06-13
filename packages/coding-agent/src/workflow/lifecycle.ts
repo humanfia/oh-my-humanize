@@ -1,6 +1,7 @@
 import type { CustomEntry, SessionEntry } from "../session/session-manager";
 import type { WorkflowDefinition } from "./definition";
 import type { FlowFreeze } from "./freeze";
+import type { WorkflowModelResolutionAudit } from "./model-resolution";
 import type { WorkflowGraphPatchOperation } from "./patches";
 import type { WorkflowActivationOutput } from "./state";
 
@@ -27,6 +28,7 @@ export interface RuntimeBindingSnapshot {
 	id: string;
 	requestedRoles: Record<string, string>;
 	resolvedModels: Record<string, string>;
+	modelBindings?: Record<string, WorkflowModelResolutionAudit>;
 	tools: string[];
 	agents: string[];
 	unavailable: string[];
@@ -1094,6 +1096,7 @@ function emptyRuntimeBindingSnapshot(attemptId: string): RuntimeBindingSnapshot 
 		id: `${attemptId}:binding`,
 		requestedRoles: {},
 		resolvedModels: {},
+		modelBindings: {},
 		tools: [],
 		agents: [],
 		unavailable: [],
