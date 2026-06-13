@@ -187,8 +187,12 @@ async function executeReviewNode(
 	const result: WorkflowActivationOutput = {
 		summary: output.summary,
 		data: { verdict: output.verdict },
-		statePatch: [{ op: "set", path: "/verdict", value: output.verdict }],
+		statePatch: [{ op: "set", path: reviewVerdictStatePath(node), value: output.verdict }],
 	};
 	if (output.artifacts !== undefined) result.artifacts = output.artifacts;
 	return result;
+}
+
+function reviewVerdictStatePath(node: WorkflowNode): string {
+	return node.writes?.[0] ?? "/verdict";
 }

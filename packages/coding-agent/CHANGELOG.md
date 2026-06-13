@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added active workflow-agent visibility to the TUI workflow graph and `/workflow manager`, including human-facing node roles and Agent Hub focus hints for live workflow nodes.
+- Added `--background` support to `/workflow restart` so long-running checkpoint resumes can keep the operator in the interactive TUI with the resident workflow monitor visible.
+
+### Fixed
+
+- Fixed `/workflow stop` and synchronous `/workflow restart` to flush lifecycle events at checkpoint/restart boundaries before returning.
+- Fixed workflow-only sessions so stop/checkpoint boundaries force lifecycle entries onto disk, making printed `omp --resume <id>` commands resolvable even before any user/assistant transcript messages exist.
+- Fixed workflow manager and graph active-agent hints so persisted running activations from a resumed session are not presented as live Agent Hub targets when no local workflow runner is attached.
+- Fixed workflow checkpoint and restart edge cases for attempts that stop before any activation starts and for restart attempt ids that would otherwise collide with existing custom ids.
+- Fixed review workflow nodes so verdict state patches use the node's declared `writes` path, allowing imported subflow review gates to write scoped verdict fields such as `/qualityVerdict`.
+
 ## [15.12.4] - 2026-06-13
 
 ### Breaking Changes

@@ -158,6 +158,41 @@ describe("workflow node runtime adapters", () => {
 		});
 	});
 
+	it("writes review verdicts to the declared workflow state path", async () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: review-custom-verdict-path
+version: 1
+nodes:
+  qualityGate:
+    type: review
+    agent: reviewer
+    writes:
+      - /qualityVerdict
+    gates:
+      - ISSUES
+      - CLEAN
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const node = definition.nodes[0]!;
+		const host: WorkflowNodeRuntimeHost = {
+			runReviewNode: async () => ({
+				summary: "quality gate passed",
+				verdict: "CLEAN",
+			}),
+		};
+
+		const output = await executeWorkflowNode(node, activation(node.id), host);
+
+		expect(output).toEqual({
+			summary: "quality gate passed",
+			data: { verdict: "CLEAN" },
+			statePatch: [{ op: "set", path: "/qualityVerdict", value: "CLEAN" }],
+		});
+	});
+
 	it("rejects review verdicts outside the declared gates", async () => {
 		const definition = parseWorkflowDefinition(reviewWorkflow, { sourcePath: "workflow.yml" });
 		const node = definition.nodes[0]!;

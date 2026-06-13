@@ -31,7 +31,7 @@ import type { AgentSession, FreshSessionResult } from "../session/agent-session"
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
-import { buildWorkflowGraphView, type WorkflowGraphView } from "../workflow/graph-view";
+import type { WorkflowGraphView } from "../workflow/graph-view";
 import { reconstructWorkflowFamilies } from "../workflow/lifecycle";
 import { writeWorkflowGraphMonitorSnapshot } from "../workflow/monitor-history";
 import { createSessionWorkflowRuntimeHost } from "../workflow/session-runtime";
@@ -45,7 +45,7 @@ import { handleSshAcp } from "./helpers/ssh";
 import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
-import { handleWorkflowAcp } from "./helpers/workflow";
+import { buildWorkflowGraphViewForRuntime, handleWorkflowAcp } from "./helpers/workflow";
 import { parseMarketplaceInstallArgs, parsePluginScopeArgs } from "./marketplace-install-parser";
 import type {
 	BuiltinSlashCommand,
@@ -2214,7 +2214,7 @@ export async function executeBuiltinSlashCommand(
 						const family = reconstructWorkflowFamilies(ctx.sessionManager.getBranch()).find(
 							candidate => candidate.id === view.familyId,
 						);
-						return family ? buildWorkflowGraphView(family) : view;
+						return family ? buildWorkflowGraphViewForRuntime(family, adapted) : view;
 					},
 					onViewChange: monitorSnapshots.writeSoon,
 					requestRender: target => ctx.ui.requestComponentRender(target),

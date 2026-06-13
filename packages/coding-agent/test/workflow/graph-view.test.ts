@@ -118,6 +118,135 @@ describe("workflow graph view rendering", () => {
 		expect(diagram).toContain('review back to build when state.verdict == "retry"');
 	});
 
+	it("surfaces running workflow agents as operator-visible live work items", () => {
+		const freeze = createFreeze({
+			name: "agent-observability",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "buildRound", type: "agent", agent: "task" },
+				{ id: "reviewRound", type: "review", agent: "task" },
+				{ id: "archive", type: "script", script: { language: "sh", code: "true" } },
+			],
+			edges: [
+				{ from: "buildRound", to: "reviewRound" },
+				{ from: "reviewRound", to: "archive" },
+			],
+		});
+		const view = buildWorkflowGraphView({
+			id: "agent-observability-family",
+			freezes: [freeze],
+			attempts: [
+				{
+					id: "attempt-1",
+					familyId: "agent-observability-family",
+					freezeId: freeze.id,
+					startNodeId: "buildRound",
+					status: "running",
+					runtimeBindingSnapshot: createBinding(),
+					activations: [
+						{
+							id: "activation-1",
+							nodeId: "buildRound",
+							parentActivationIds: [],
+							status: "running",
+						},
+						{
+							id: "activation-2",
+							nodeId: "reviewRound",
+							parentActivationIds: ["activation-1"],
+							status: "running",
+						},
+					],
+				},
+			],
+			checkpoints: [],
+			changeRequests: [],
+		});
+
+		expect(view.activeAgents).toEqual([
+			{
+				activationId: "activation-1",
+				nodeId: "buildRound",
+				label: "Build round",
+				role: "Builder",
+				status: "running",
+			},
+			{
+				activationId: "activation-2",
+				nodeId: "reviewRound",
+				label: "Review round",
+				role: "Reviewer",
+				status: "running",
+			},
+		]);
+
+		const text = renderWorkflowGraphText(view);
+
+		expect(text).toContain("Active agents:");
+		expect(text).toContain("Use Agent Hub to watch or intervene; use Interrupt if a live node does not settle.");
+		expect(text).toContain("- Builder · Build round live (activation activation-1)");
+		expect(text).toContain("- Reviewer · Review round live (activation activation-2)");
+		expect(text).toContain("Open Agent Hub: double-left or observe key, then Enter focuses the selected live agent");
+		expect(text).not.toContain("Focus agent: /agents");
+	});
+
+	it("keeps default graph labels human-facing instead of showing runtime adapter names", () => {
+		const view = createView({
+			name: "human-facing-labels",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "buildRound", type: "agent", agent: "task" },
+				{ id: "reviewRound", type: "review", agent: "task" },
+				{ id: "archive", type: "script", script: { language: "sh", code: "true" } },
+			],
+			edges: [
+				{ from: "buildRound", to: "reviewRound" },
+				{ from: "reviewRound", to: "archive" },
+			],
+		});
+
+		const rendered = renderWorkflowGraphText(view);
+
+		expect(rendered).toContain("Builder");
+		expect(rendered).toContain("Reviewer");
+		expect(rendered).toContain("Evidence archive");
+		expect(rendered).not.toContain("agent:task");
+		expect(rendered).not.toContain("review:task");
+		expect(rendered).not.toContain("script:sh");
+	});
+
+	it("infers cockpit roles from workflow node intent instead of falling back to generic agents", () => {
+		const view = createView({
+			name: "cockpit-labels",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "scoutParser", type: "agent" },
+				{ id: "scoutCli", type: "agent" },
+				{ id: "scoutUx", type: "agent" },
+				{ id: "chooseBranch", type: "script" },
+				{ id: "quality__qualityGate", type: "review" },
+			],
+			edges: [
+				{ from: "scoutParser", to: "chooseBranch" },
+				{ from: "scoutCli", to: "chooseBranch" },
+				{ from: "scoutUx", to: "chooseBranch" },
+				{ from: "chooseBranch", to: "quality__qualityGate" },
+			],
+		});
+
+		const rendered = renderWorkflowGraphText(view);
+
+		expect(rendered).toContain("Parser scout");
+		expect(rendered).toContain("CLI scout");
+		expect(rendered).toContain("UX scout");
+		expect(rendered).toContain("Branch selector");
+		expect(rendered).toContain("Quality gate");
+		expect(rendered).not.toMatch(/\nAgent\s*\n/u);
+	});
+
 	it("renders imported subflows as explicit graph metadata", () => {
 		const view = createView({
 			name: "kda-humanize",
@@ -534,6 +663,31 @@ describe("workflow graph view rendering", () => {
 		expect(text).toContain("humanize -> humanize-reference@1");
 		expect(text).toContain("nodes=2");
 		expect(text).toContain("resources=humanize");
+	});
+
+	it("renders active workflow agents in the live TUI graph component", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("dark theme fixture is required");
+		setThemeInstance(theme);
+		const view = singleNodeView("running");
+		view.activeAgents = [
+			{
+				activationId: "activation-build",
+				nodeId: "buildRound",
+				label: "Build round",
+				role: "Builder",
+				status: "running",
+				summary: "editing implementation",
+			},
+		];
+		const component = new WorkflowGraphComponent(view, { refreshMs: 0 });
+
+		const text = stripAnsi(component.render(120).join("\n"));
+
+		expect(text).toContain("active agents");
+		expect(text).toContain("Agent Hub watches live transcripts; Interrupt stops a stuck workflow node.");
+		expect(text).toContain("● Builder · Build round live - editing implementation");
+		expect(text).not.toContain("activation-build");
 	});
 
 	it("writes timestamped workflow monitor snapshots under the agent cache", async () => {

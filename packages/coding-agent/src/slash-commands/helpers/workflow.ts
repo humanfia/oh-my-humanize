@@ -86,6 +86,7 @@ interface WorkflowStopArgs {
 interface WorkflowRestartArgs {
 	checkpointId: string;
 	freezeId?: string;
+	background?: boolean;
 }
 
 interface WorkflowFreezeArgs {
@@ -240,7 +241,10 @@ async function handleGraphCommand(rest: string, runtime: SlashCommandRuntime): P
 		);
 		return commandConsumed();
 	}
-	await emitWorkflowGraphViews(families.map(buildWorkflowGraphView), runtime);
+	await emitWorkflowGraphViews(
+		families.map(family => buildWorkflowGraphViewForRuntime(family, runtime)),
+		runtime,
+	);
 	return commandConsumed();
 }
 
@@ -255,7 +259,7 @@ async function handleManagerCommand(rest: string, runtime: SlashCommandRuntime):
 		);
 		return commandConsumed();
 	}
-	await runtime.output(families.map(formatWorkflowManager).join("\n\n"));
+	await runtime.output(families.map(family => formatWorkflowManager(family, runtime)).join("\n\n"));
 	return commandConsumed();
 }
 
@@ -353,7 +357,7 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 			const family = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
 				candidate => candidate.id === lifecycle.familyId,
 			);
-			if (family) await emitWorkflowGraphViews([buildWorkflowGraphView(family)], runtime);
+			if (family) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(family, runtime)], runtime);
 			return commandConsumed();
 		}
 	}
@@ -370,7 +374,7 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 		);
 		if (family) {
 			await runtime.output(sections.join("\n\n"));
-			await emitWorkflowGraphViews([buildWorkflowGraphView(family)], runtime);
+			await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(family, runtime)], runtime);
 			return commandConsumed();
 		}
 	}
@@ -422,7 +426,7 @@ async function handleFreezeCommand(rest: string, runtime: SlashCommandRuntime): 
 	const family = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
 		candidate => candidate.id === familyId,
 	);
-	if (family) await emitWorkflowGraphViews([buildWorkflowGraphView(family)], runtime);
+	if (family) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(family, runtime)], runtime);
 	return commandConsumed();
 }
 
@@ -483,7 +487,7 @@ async function handleRequestChangeCommand(rest: string, runtime: SlashCommandRun
 	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
 		candidate => candidate.id === request.familyId,
 	);
-	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphView(updatedFamily)], runtime);
+	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
 	return commandConsumed();
 }
 
@@ -509,7 +513,7 @@ async function handleApproveChangeCommand(rest: string, runtime: SlashCommandRun
 		reconstructWorkflowFamilies(runtime.sessionManager.getBranch()),
 		parsed.changeRequestId,
 	);
-	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphView(updatedFamily)], runtime);
+	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
 	return commandConsumed();
 }
 
@@ -526,7 +530,7 @@ async function handleRejectChangeCommand(rest: string, runtime: SlashCommandRunt
 		reconstructWorkflowFamilies(runtime.sessionManager.getBranch()),
 		parsed.changeRequestId,
 	);
-	if (family) await emitWorkflowGraphViews([buildWorkflowGraphView(family)], runtime);
+	if (family) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(family, runtime)], runtime);
 	return commandConsumed();
 }
 
@@ -581,7 +585,7 @@ async function handleApplyChangeCommand(rest: string, runtime: SlashCommandRunti
 		request.id,
 	);
 	await runtime.output(`Workflow change request applied: ${request.id} -> ${target} ${targetId}`);
-	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphView(updatedFamily)], runtime);
+	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
 	return commandConsumed();
 }
 
@@ -661,12 +665,13 @@ async function handleStopCommand(rest: string, runtime: SlashCommandRuntime): Pr
 		state: deriveLifecycleAttemptState(checkpointAttempt),
 		sourceMapping: checkpointSourceMapping(checkpointFamily ?? family, attempt.id, frontierNodeIds),
 	});
+	await flushWorkflowLifecycle(runtime);
 	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
 		candidate => candidate.id === family.id,
 	);
 	const sections = [formatWorkflowCheckpoint(checkpoint)];
 	await runtime.output(sections.join("\n\n"));
-	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphView(updatedFamily)], runtime);
+	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
 	return commandConsumed();
 }
 
@@ -701,8 +706,9 @@ async function stopActiveWorkflowAttempt(
 	if (!checkpoint) {
 		return usage(`Workflow active attempt did not create a checkpoint: ${attempt.id}`, runtime);
 	}
+	await flushWorkflowLifecycle(runtime);
 	await runtime.output(formatWorkflowCheckpoint(checkpoint));
-	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphView(updatedFamily)], runtime);
+	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
 	return commandConsumed();
 }
 
@@ -728,7 +734,7 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 		return usage(`Workflow checkpoint has no restartable frontier: ${parsed.checkpointId}`, runtime);
 	}
 	const startNodeId = startNodeIds[0]!;
-	const attemptId = `attempt-${located.family.attempts.length + 1}`;
+	const attemptId = nextWorkflowRestartAttemptId(located.family);
 	if (!runtime.createWorkflowRuntimeHost) {
 		return usage("Workflow restart requires a workflow runtime host.", runtime);
 	}
@@ -785,14 +791,38 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 	};
 	registerActiveWorkflowAttempt(runtime, active);
 	void active.finished.finally(() => unregisterActiveWorkflowAttempt(runtime, attemptId));
+	if (parsed.background) {
+		await flushWorkflowLifecycle(runtime);
+		await runtime.output(`Workflow background restart attempt started: ${attemptId}`);
+		const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+			candidate => candidate.id === located.family.id,
+		);
+		if (updatedFamily)
+			await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
+		return commandConsumed();
+	}
 	await runPromise;
 	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
 		candidate => candidate.id === located.family.id,
 	);
+	await flushWorkflowLifecycle(runtime);
 	const sections = [`Workflow restart attempt: ${attemptId}`];
 	await runtime.output(sections.join("\n\n"));
-	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphView(updatedFamily)], runtime);
+	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
 	return commandConsumed();
+}
+
+async function flushWorkflowLifecycle(runtime: SlashCommandRuntime): Promise<void> {
+	await runtime.sessionManager.ensureOnDisk();
+	await runtime.sessionManager.flush();
+}
+
+function nextWorkflowRestartAttemptId(family: WorkflowRunFamilySnapshot): string {
+	const existing = new Set(family.attempts.map(attempt => attempt.id));
+	for (let index = family.attempts.length + 1; ; index += 1) {
+		const attemptId = `attempt-${index}`;
+		if (!existing.has(attemptId)) return attemptId;
+	}
 }
 
 async function loadWorkflowStartPackage(workflowPath: string): Promise<WorkflowStartPackage> {
@@ -1164,9 +1194,14 @@ function parseWorkflowRestartArgs(rest: string): WorkflowRestartArgs | { error: 
 	const tokens = parseCommandArgs(rest);
 	let checkpointId: string | undefined;
 	let freezeId: string | undefined;
+	let background = false;
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index];
 		if (token === undefined) continue;
+		if (token === "--background") {
+			background = true;
+			continue;
+		}
 		if (token === "--freeze-id") {
 			const value = tokens[index + 1];
 			if (!value) return { error: workflowUsage() };
@@ -1182,6 +1217,7 @@ function parseWorkflowRestartArgs(rest: string): WorkflowRestartArgs | { error: 
 	if (!checkpointId) return { error: workflowUsage() };
 	const args: WorkflowRestartArgs = { checkpointId };
 	if (freezeId !== undefined) args.freezeId = freezeId;
+	if (background) args.background = true;
 	return args;
 }
 
@@ -1221,7 +1257,16 @@ function findActiveWorkflowAttempt(runtime: SlashCommandRuntime, attemptId: stri
 	return activeWorkflowAttemptMap(runtime).get(attemptId);
 }
 
-function activeWorkflowAttemptMap(runtime: SlashCommandRuntime): Map<string, ActiveWorkflowAttempt> {
+export function buildWorkflowGraphViewForRuntime(
+	family: WorkflowRunFamilySnapshot,
+	runtime: Pick<SlashCommandRuntime, "sessionManager">,
+): WorkflowGraphView {
+	return buildWorkflowGraphView(family, { liveAttemptIds: new Set(activeWorkflowAttemptMap(runtime).keys()) });
+}
+
+function activeWorkflowAttemptMap(
+	runtime: Pick<SlashCommandRuntime, "sessionManager">,
+): Map<string, ActiveWorkflowAttempt> {
 	const key = runtime.sessionManager as object;
 	const existing = activeWorkflowAttempts.get(key);
 	if (existing !== undefined) return existing;
@@ -1799,6 +1844,10 @@ function deriveStopFrontierNodeIds(
 	const state = deriveLifecycleAttemptState(attempt);
 	const outputs = deriveLifecycleAttemptOutputs(attempt);
 	const frontierNodeIds: string[] = [];
+	if (attempt.activations.length === 0 && runningActivationIds.size === 0) {
+		for (const nodeId of attempt.startNodeIds ?? [attempt.startNodeId]) pushUnique(frontierNodeIds, nodeId);
+		return frontierNodeIds;
+	}
 	for (const activation of attempt.activations) {
 		if (!runningActivationIds.has(activation.id)) continue;
 		if (activation.status === "completed" && freeze) {
@@ -2477,7 +2526,7 @@ function workflowUsage(): string {
 		"Usage: /workflow reject-change <change-request-id> [--actor <actor>] [--reason <text>]",
 		"Usage: /workflow apply-change <change-request-id> (--freeze-id <id>|--draft-id <id>|--draft-path <path>) [--actor <actor>] [--reason <text>]",
 		"Usage: /workflow stop <attempt-id> [--deadline-ms <n>]",
-		"Usage: /workflow restart <checkpoint-id> [--freeze-id <id>]",
+		"Usage: /workflow restart <checkpoint-id> [--freeze-id <id>] [--background]",
 	].join("\n");
 }
 
@@ -2549,12 +2598,16 @@ function formatWorkflowLifecycleList(families: WorkflowRunFamilySnapshot[]): str
 	return lines.join("\n");
 }
 
-function formatWorkflowManager(family: WorkflowRunFamilySnapshot): string {
+function formatWorkflowManager(
+	family: WorkflowRunFamilySnapshot,
+	runtime: Pick<SlashCommandRuntime, "sessionManager">,
+): string {
 	const lines = [`Workflow manager: ${family.id}`];
 	if (family.objective !== undefined) lines.push(`Objective: ${family.objective}`);
 	const currentAttempt = family.attempts.at(-1);
 	const latestFreeze = family.freezes.at(-1);
 	const latestCheckpoint = family.checkpoints.at(-1);
+	const graphView = buildWorkflowGraphViewForRuntime(family, runtime);
 	lines.push("Focus:");
 	if (currentAttempt !== undefined) {
 		const checkpoint = currentAttempt.checkpointId ? ` from ${currentAttempt.checkpointId}` : "";
@@ -2571,6 +2624,33 @@ function formatWorkflowManager(family: WorkflowRunFamilySnapshot): string {
 		);
 	} else {
 		lines.push("- latest checkpoint: none");
+	}
+	lines.push("Active agents:");
+	if (graphView.activeAgents === undefined || graphView.activeAgents.length === 0) {
+		if (
+			currentAttempt?.status === "running" &&
+			currentAttempt.activations.some(activation => activation.status === "running")
+		) {
+			lines.push(
+				"- no live agent process is attached in this OMP session; interrupt to checkpoint before restarting.",
+			);
+			lines.push(`- interrupt active attempt: /workflow stop ${currentAttempt.id} --deadline-ms 30000`);
+		} else {
+			lines.push("- none");
+		}
+	} else {
+		lines.push("- Agent Hub watches live transcripts; interrupt/restart if an intervened node does not settle.");
+		for (const agent of graphView.activeAgents) {
+			const summary = formatWorkflowDetail(agent.summary);
+			lines.push(`- ${agent.role} · ${agent.label} live${summary} (activation ${agent.activationId})`);
+		}
+		const labels = graphView.activeAgents.map(agent => agent.label).join("/");
+		lines.push(
+			`- focus live agent: open Agent Hub with double-left or the observe key, select ${labels}, press Enter`,
+		);
+		if (currentAttempt?.status === "running") {
+			lines.push(`- interrupt active attempt: /workflow stop ${currentAttempt.id} --deadline-ms 30000`);
+		}
 	}
 	lines.push("Change review:");
 	if (family.changeRequests.length === 0) {
@@ -2605,11 +2685,14 @@ function formatWorkflowManager(family: WorkflowRunFamilySnapshot): string {
 	lines.push("Operator actions:");
 	lines.push(`- graph: /workflow graph --family-id ${family.id}`);
 	if (currentAttempt?.status === "running") {
+		if (graphView.activeAgents !== undefined && graphView.activeAgents.length > 0) {
+			lines.push("- agent hub: double-left or observe key; Enter focuses, Esc returns");
+		}
 		lines.push(`- interrupt: /workflow stop ${currentAttempt.id} --deadline-ms 30000`);
 	}
 	for (const checkpoint of family.checkpoints) {
 		const freezeSuffix = latestFreeze === undefined ? "" : ` --freeze-id ${latestFreeze.id}`;
-		lines.push(`- restart: /workflow restart ${checkpoint.id}${freezeSuffix}`);
+		lines.push(`- restart: /workflow restart ${checkpoint.id}${freezeSuffix} --background`);
 	}
 	lines.push(`- request change: /workflow request-change <file> --family-id ${family.id}`);
 	return lines.join("\n");

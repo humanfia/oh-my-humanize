@@ -10,7 +10,7 @@ import { MarketplaceManager } from "../../src/extensibility/plugins/marketplace"
 import type { Skill } from "../../src/extensibility/skills";
 import type { InteractiveModeContext } from "../../src/modes/types";
 import type { AgentSession } from "../../src/session/agent-session";
-import type { SessionManager } from "../../src/session/session-manager";
+import { resolveResumableSession, SessionManager } from "../../src/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../src/slash-commands/acp-builtins";
 import { executeBuiltinSlashCommand } from "../../src/slash-commands/builtin-registry";
 import { parseWorkflowDefinition, type WorkflowDefinition } from "../../src/workflow/definition";
@@ -135,6 +135,8 @@ function createRuntime(
 			return `entry-${entries.length}`;
 		},
 		getBranch: () => entries,
+		ensureOnDisk: async () => {},
+		flush: async () => {},
 	} as unknown as SessionManager;
 	return {
 		output,
@@ -181,6 +183,8 @@ function createTuiRuntime(
 		},
 		getBranch: () => entries,
 		getCwd: () => cwd,
+		ensureOnDisk: async () => {},
+		flush: async () => {},
 	} as unknown as SessionManager;
 	const ctx = {
 		session,
@@ -2209,6 +2213,83 @@ edges: []
 		]);
 	});
 
+	it("persists workflow-only checkpoints so printed resume ids reopen", async () => {
+		const cwd = await createTempDir();
+		const sessionDir = path.join(cwd, "sessions");
+		const manager = SessionManager.create(cwd, sessionDir);
+		try {
+			const freeze = createFreeze("flowfreeze:resume-checkpoint", ["build", "review"]);
+			startWorkflowFamily(manager, { familyId: "family-resume-checkpoint" });
+			recordWorkflowFreeze(manager, freeze, { familyId: "family-resume-checkpoint" });
+			startWorkflowAttempt(manager, {
+				familyId: "family-resume-checkpoint",
+				attemptId: "attempt-resume-checkpoint",
+				freezeId: freeze.id,
+				startNodeId: "build",
+				runtimeBindingSnapshot: binding("binding-resume-checkpoint"),
+			});
+			appendWorkflowAttemptActivationStarted(manager, {
+				attemptId: "attempt-resume-checkpoint",
+				activationId: "activation-1",
+				nodeId: "build",
+				parentActivationIds: [],
+			});
+			appendWorkflowAttemptActivationCompleted(manager, {
+				attemptId: "attempt-resume-checkpoint",
+				activationId: "activation-1",
+				output: { summary: "built" },
+			});
+			appendWorkflowAttemptActivationStarted(manager, {
+				attemptId: "attempt-resume-checkpoint",
+				activationId: "activation-2",
+				nodeId: "review",
+				parentActivationIds: ["activation-1"],
+			});
+
+			expect(await resolveResumableSession(manager.getSessionId(), cwd, sessionDir)).toBeUndefined();
+
+			const output: string[] = [];
+			const runtime = {
+				session: {} as AgentSession,
+				sessionManager: manager,
+				settings: Settings.isolated(),
+				cwd,
+				output: (text: string) => {
+					output.push(text);
+				},
+				refreshCommands: () => {},
+				reloadPlugins: async () => {},
+			};
+
+			expect(
+				await executeAcpBuiltinSlashCommand("/workflow stop attempt-resume-checkpoint --deadline-ms 1", runtime),
+			).toEqual({ consumed: true });
+
+			const match = await resolveResumableSession(manager.getSessionId(), cwd, sessionDir);
+			expect(match?.session.id).toBe(manager.getSessionId());
+			expect(match?.session.messageCount).toBe(0);
+			expect(
+				output.some(entry => entry.includes("Workflow checkpoint: attempt-resume-checkpoint:checkpoint-1")),
+			).toBeTrue();
+
+			if (!match) throw new Error("Expected workflow-only session to be resumable");
+			const reopened = await SessionManager.open(match.session.path, sessionDir);
+			try {
+				const families = reconstructWorkflowFamilies(reopened.getBranch());
+				expect(families[0]?.checkpoints[0]).toMatchObject({
+					id: "attempt-resume-checkpoint:checkpoint-1",
+					completedActivationIds: ["activation-1"],
+					abortedActivationIds: ["activation-2"],
+					frontierNodeIds: ["review"],
+				});
+			} finally {
+				await reopened.close();
+			}
+		} finally {
+			await manager.close();
+		}
+	});
+
 	it("restarts from the checkpoint attempt when activation ids were reused by older attempts", async () => {
 		const entries: CapturedEntry[] = [];
 		const definition = parseWorkflowDefinition(
@@ -2649,6 +2730,7 @@ edges:
 			};
 		};
 		const { output, runtime } = createTuiRuntime(entries, dir, runner);
+		const flush = vi.spyOn(runtime.ctx.sessionManager, "flush");
 
 		expect(
 			await executeBuiltinSlashCommand(
@@ -2659,11 +2741,13 @@ edges:
 		await agentStarted.promise;
 
 		expect(capturedSignal?.aborted).toBe(false);
+		flush.mockClear();
 		expect(await executeBuiltinSlashCommand("/workflow stop run-live-agent:attempt-1 --deadline-ms 1", runtime)).toBe(
 			true,
 		);
 
 		expect(capturedSignal?.aborted).toBe(true);
+		expect(flush).toHaveBeenCalledTimes(1);
 		expect(calls).toEqual(["build"]);
 		const family = reconstructWorkflowFamilies(entries)[0];
 		expect(
@@ -3473,6 +3557,117 @@ edges:
 		expect(family?.attempts[1]?.startNodeIds).toEqual(["leftReview", "rightReview"]);
 	});
 
+	it("restarts checkpointed workflows in the background without blocking operator control", async () => {
+		const entries: CapturedEntry[] = [];
+		const freeze = createFreeze("flowfreeze:background-restart", ["build", "review"]);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-background-restart" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-background-restart" });
+		startWorkflowAttempt(host, {
+			familyId: "family-background-restart",
+			attemptId: "attempt-1",
+			freezeId: freeze.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-1"),
+		});
+		requestWorkflowAttemptStop(host, {
+			attemptId: "attempt-1",
+			deadlineMs: 5,
+			reason: "restart in background",
+		});
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-background",
+			familyId: "family-background-restart",
+			attemptId: "attempt-1",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["build"],
+			state: {},
+			sourceMapping: { build: "build" },
+		});
+		const buildStarted = Promise.withResolvers<void>();
+		const releaseBuild = Promise.withResolvers<void>();
+		const calls: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				calls.push(input.node.id);
+				if (input.node.id === "build") {
+					buildStarted.resolve();
+					await releaseBuild.promise;
+				}
+				return { summary: `ran ${input.node.id}` };
+			},
+		};
+		const { output, runtime } = createRuntime(entries, runtimeHost);
+
+		expect(
+			await executeAcpBuiltinSlashCommand(
+				"/workflow restart checkpoint-background --freeze-id flowfreeze:background-restart --background",
+				runtime,
+			),
+		).toEqual({ consumed: true });
+		await buildStarted.promise;
+
+		expect(calls).toEqual(["build"]);
+		expect(output.some(entry => entry.includes("Workflow background restart attempt started: attempt-2"))).toBeTrue();
+		expect(output.some(entry => entry.includes("Workflow graph: family-background-restart"))).toBeTrue();
+		expect(reconstructWorkflowFamilies(entries)[0]?.attempts.at(-1)).toMatchObject({
+			id: "attempt-2",
+			status: "running",
+		});
+
+		releaseBuild.resolve();
+		await Bun.sleep(10);
+		expect(reconstructWorkflowFamilies(entries)[0]?.attempts.at(-1)?.status).toBe("completed");
+	});
+
+	it("allocates a unique restart attempt id when generated ids would collide", async () => {
+		const entries: CapturedEntry[] = [];
+		const freeze = createFreeze("flowfreeze:restart-id", ["build"]);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-restart-id" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-restart-id" });
+		startWorkflowAttempt(host, {
+			familyId: "family-restart-id",
+			attemptId: "attempt-2",
+			freezeId: freeze.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-2"),
+		});
+		requestWorkflowAttemptStop(host, {
+			attemptId: "attempt-2",
+			deadlineMs: 5,
+			reason: "restart custom id",
+		});
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-id",
+			familyId: "family-restart-id",
+			attemptId: "attempt-2",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["build"],
+			state: {},
+			sourceMapping: { build: "build" },
+		});
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async () => ({ summary: "built" }),
+		};
+		const { output, runtime } = createRuntime(entries, runtimeHost);
+
+		expect(
+			await executeAcpBuiltinSlashCommand(
+				"/workflow restart checkpoint-id --freeze-id flowfreeze:restart-id",
+				runtime,
+			),
+		).toEqual({ consumed: true });
+
+		expect(output.some(entry => entry.includes("Workflow restart attempt: attempt-3"))).toBeTrue();
+		expect(reconstructWorkflowFamilies(entries)[0]?.attempts.map(attempt => attempt.id)).toEqual([
+			"attempt-2",
+			"attempt-3",
+		]);
+	});
+
 	it("does not stop terminal lifecycle attempts", async () => {
 		const entries: CapturedEntry[] = [];
 		const freeze = createFreeze("flowfreeze:a", ["build"]);
@@ -3499,6 +3694,37 @@ edges:
 		expect(output[0]).toBe("Workflow attempt is not running: attempt-1 (completed)");
 		expect(reconstructWorkflowFamilies(entries)[0]?.attempts[0]?.status).toBe("completed");
 		expect(reconstructWorkflowFamilies(entries)[0]?.checkpoints).toEqual([]);
+	});
+
+	it("checkpoints a persisted running attempt with no activations at its start node", async () => {
+		const entries: CapturedEntry[] = [];
+		const freeze = createFreeze("flowfreeze:empty-activation-stop", ["build", "review"]);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-empty-activation-stop" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-empty-activation-stop" });
+		startWorkflowAttempt(host, {
+			familyId: "family-empty-activation-stop",
+			attemptId: "attempt-empty-activation",
+			freezeId: freeze.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-empty-activation"),
+		});
+		const { output, runtime } = createRuntime(entries);
+
+		expect(
+			await executeAcpBuiltinSlashCommand("/workflow stop attempt-empty-activation --deadline-ms 5", runtime),
+		).toEqual({
+			consumed: true,
+		});
+
+		const family = reconstructWorkflowFamilies(entries)[0];
+		expect(
+			output.some(entry => entry.includes("Workflow checkpoint: attempt-empty-activation:checkpoint-1")),
+		).toBeTrue();
+		expect(family?.checkpoints[0]).toMatchObject({
+			frontierNodeIds: ["build"],
+			sourceMapping: { build: "build" },
+		});
 	});
 
 	it("rejects restart when checkpoint frontier cannot be mapped into the selected freeze", async () => {
@@ -3730,7 +3956,135 @@ edges:
 		expect(output[0]).toContain("Operator actions:");
 		expect(output[0]).toContain("- graph: /workflow graph --family-id family-optimizer");
 		expect(output[0]).toContain("- interrupt: /workflow stop attempt-integrate --deadline-ms 30000");
-		expect(output[0]).toContain("- restart: /workflow restart checkpoint-search --freeze-id flowfreeze:b");
+		expect(output[0]).toContain(
+			"- restart: /workflow restart checkpoint-search --freeze-id flowfreeze:b --background",
+		);
+	});
+
+	it("shows running workflow agents in the operator manager", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "live-manager"), { recursive: true });
+		await Bun.write(
+			path.join(dir, "live-manager.omhflow"),
+			`---
+name: live-manager
+version: 1
+schema: omhflow/v1
+checkpoint:
+  stopDeadlineMs: 50
+changePolicy:
+  agentsCanPropose: true
+  humansCanApprove: true
+---
+# Live Manager
+
+\`\`\`yaml workflow
+nodes:
+  buildRound:
+    type: agent
+    agent: task
+    prompt: Build the current round.
+  reviewRound:
+    type: review
+    agent: task
+    prompt: Review the current round.
+    gates:
+      - COMPLETE
+edges: []
+\`\`\`
+`,
+		);
+		const entries: CapturedEntry[] = [];
+		const buildStarted = Promise.withResolvers<void>();
+		const reviewStarted = Promise.withResolvers<void>();
+		const releaseAgents = Promise.withResolvers<void>();
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async () => {
+				buildStarted.resolve();
+				await releaseAgents.promise;
+				return { summary: "built" };
+			},
+			runReviewNode: async () => {
+				reviewStarted.resolve();
+				await releaseAgents.promise;
+				return { summary: "complete", verdict: "COMPLETE" };
+			},
+		};
+		const { output, runtime } = createRuntime(entries, runtimeHost);
+
+		expect(
+			await executeAcpBuiltinSlashCommand(
+				`/workflow start ${path.join(dir, "live-manager.omhflow")} --run-id live-manager --family-id family-agents --background`,
+				runtime,
+			),
+		).toEqual({ consumed: true });
+		await Promise.all([buildStarted.promise, reviewStarted.promise]);
+
+		expect(await executeAcpBuiltinSlashCommand("/workflow manager --family-id family-agents", runtime)).toEqual({
+			consumed: true,
+		});
+
+		const managerOutput = output.at(-1) ?? "";
+		expect(managerOutput).toContain("Active agents:");
+		expect(managerOutput).toContain(
+			"- Agent Hub watches live transcripts; interrupt/restart if an intervened node does not settle.",
+		);
+		expect(managerOutput).toContain("- Builder · Build round live");
+		expect(managerOutput).toContain("- Reviewer · Review round live");
+		expect(managerOutput).toContain(
+			"- focus live agent: open Agent Hub with double-left or the observe key, select Build round/Review round, press Enter",
+		);
+		expect(managerOutput).toContain(
+			"- interrupt active attempt: /workflow stop live-manager:attempt-1 --deadline-ms 30000",
+		);
+		expect(managerOutput).toContain("- agent hub: double-left or observe key; Enter focuses, Esc returns");
+		expect(managerOutput).not.toContain("agent:task");
+		expect(managerOutput).not.toContain("review:task");
+		expect(managerOutput).not.toContain("/agents");
+
+		releaseAgents.resolve();
+		await Bun.sleep(10);
+	});
+
+	it("does not present persisted running workflow activations as live Agent Hub targets", async () => {
+		const entries: CapturedEntry[] = [];
+		const freeze = createFreeze("flowfreeze:stale-agents", ["buildRound", "reviewRound"]);
+		freeze.definition.nodes = [
+			{ id: "buildRound", type: "agent", agent: "task" },
+			{ id: "reviewRound", type: "review", agent: "task" },
+		];
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-stale-agents", objective: "resume stale workflow" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-stale-agents" });
+		startWorkflowAttempt(host, {
+			familyId: "family-stale-agents",
+			attemptId: "attempt-stale",
+			freezeId: freeze.id,
+			startNodeId: "buildRound",
+			runtimeBindingSnapshot: binding("binding-stale"),
+		});
+		appendWorkflowAttemptActivationStarted(host, {
+			attemptId: "attempt-stale",
+			activationId: "activation-stale",
+			nodeId: "buildRound",
+			parentActivationIds: [],
+		});
+		const { output, runtime } = createRuntime(entries);
+
+		expect(await executeAcpBuiltinSlashCommand("/workflow manager --family-id family-stale-agents", runtime)).toEqual(
+			{
+				consumed: true,
+			},
+		);
+
+		expect(output[0]).toContain("Active agents:");
+		expect(output[0]).toContain(
+			"- no live agent process is attached in this OMP session; interrupt to checkpoint before restarting.",
+		);
+		expect(output[0]).toContain("- interrupt active attempt: /workflow stop attempt-stale --deadline-ms 30000");
+		expect(output[0]).not.toContain("Agent Hub watches live transcripts");
+		expect(output[0]).not.toContain("focus live agent");
+		expect(output[0]).not.toContain("agent hub: double-left");
 	});
 
 	it("renders a human-facing lifecycle graph with node status and mutable lineage", async () => {

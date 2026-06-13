@@ -1,4 +1,4 @@
-import type { Component, NativeScrollbackLiveRegion } from "@oh-my-pi/pi-tui";
+import { type Component, type NativeScrollbackLiveRegion, replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { renderOutputBlock } from "../../tui/output-block";
 import type { State } from "../../tui/types";
 import {
@@ -66,6 +66,9 @@ export class WorkflowGraphComponent implements Component, NativeScrollbackLiveRe
 					...(view.subflows !== undefined && view.subflows.length > 0
 						? [{ label: "subflows", lines: workflowGraphSubflowLines(view) }]
 						: []),
+					...(view.activeAgents !== undefined && view.activeAgents.length > 0
+						? [{ label: "active agents", lines: workflowGraphActiveAgentLines(view, safeWidth - 8) }]
+						: []),
 					{
 						label: "diagram",
 						lines: colorWorkflowDiagram(renderWorkflowGraphDiagram(view, { width: safeWidth - 8 })),
@@ -131,6 +134,22 @@ function workflowGraphControlLines(view: WorkflowGraphView): string[] {
 
 function workflowGraphSubflowLines(view: WorkflowGraphView): string[] {
 	return (view.subflows ?? []).map(subflow => formatWorkflowSubflow(subflow));
+}
+
+function workflowGraphActiveAgentLines(view: WorkflowGraphView, width: number): string[] {
+	const lines = [theme.fg("muted", "Agent Hub watches live transcripts; Interrupt stops a stuck workflow node.")];
+	for (const agent of view.activeAgents ?? []) {
+		const summary =
+			agent.summary === undefined ? "" : ` - ${sanitizeWorkflowAgentSummary(agent.summary, Math.floor(width / 2))}`;
+		const line = `${theme.fg("accent", "●")} ${agent.role}${theme.fg("muted", ` · ${agent.label}`)} ${theme.fg("accent", "live")}${summary}`;
+		lines.push(truncateToWidth(replaceTabs(line), Math.max(20, width)));
+	}
+	return lines;
+}
+
+function sanitizeWorkflowAgentSummary(summary: string, width: number): string {
+	const compact = replaceTabs(summary).replace(/\s+/g, " ").trim();
+	return truncateToWidth(compact, Math.max(16, width));
 }
 
 function colorWorkflowDiagram(lines: string[]): string[] {
