@@ -113,6 +113,7 @@ async function loadWorkflowArtifactInternal(inputPath: string, stack: string[]):
 	const resourceDir = workflowResourceDirForFlowPath(flowPath);
 	const externalModules = await loadWorkflowImports(block.value, flowPath, resourceDir, [...stack, flowPath]);
 	const compiled = compileArtifactDefinitionInput(metadata, block.value, flowPath, externalModules);
+	const artifactMetadata = mergeWorkflowBlockMetadata(metadata, compiled, flowPath);
 	const definition = parseWorkflowDefinition(JSON.stringify(compiled.definitionInput), {
 		sourcePath: flowPath,
 	});
@@ -120,7 +121,7 @@ async function loadWorkflowArtifactInternal(inputPath: string, stack: string[]):
 		flowPath,
 		resourceDir,
 		source,
-		metadata,
+		metadata: artifactMetadata,
 		definition,
 		entryNodeIds: compiled.entryNodeIds,
 		exits: compiled.exits,
@@ -207,6 +208,7 @@ interface CompiledWorkflowArtifactInput {
 	definitionInput: Record<string, unknown>;
 	entryNodeIds: string[];
 	exits: WorkflowDslCompileExit[];
+	checkpointPolicy?: unknown;
 }
 
 function compileArtifactDefinitionInput(
@@ -231,6 +233,7 @@ function compileArtifactDefinitionInput(
 			},
 			entryNodeIds: compiled.entries,
 			exits: compiled.exits,
+			checkpointPolicy: compiled.checkpointPolicy,
 		};
 	} catch (error) {
 		if (error instanceof WorkflowDslError) {
@@ -238,6 +241,33 @@ function compileArtifactDefinitionInput(
 		}
 		throw error;
 	}
+}
+
+function mergeWorkflowBlockMetadata(
+	metadata: WorkflowArtifactMetadata,
+	compiled: CompiledWorkflowArtifactInput,
+	flowPath: string,
+): WorkflowArtifactMetadata {
+	if (compiled.checkpointPolicy === undefined) return metadata;
+	const checkpoint = parseCheckpointPolicy(compiled.checkpointPolicy, "workflow block checkpoint_policy", flowPath);
+	if (metadata.checkpoint !== undefined) {
+		const frontmatterCheckpoint = parseCheckpointPolicy(metadata.checkpoint, "frontmatter.checkpoint", flowPath);
+		if (frontmatterCheckpoint.stopDeadlineMs !== checkpoint.stopDeadlineMs) {
+			throw new WorkflowPackageError(
+				`${flowPath}: workflow block checkpoint_policy conflicts with frontmatter.checkpoint`,
+			);
+		}
+	}
+	return { ...metadata, checkpoint };
+}
+
+function parseCheckpointPolicy(value: unknown, label: string, flowPath: string): { stopDeadlineMs: number } {
+	const record = expectRecord(value, label, flowPath);
+	const stopDeadlineMs = record.stopDeadlineMs;
+	if (typeof stopDeadlineMs !== "number" || !Number.isFinite(stopDeadlineMs)) {
+		throw new WorkflowPackageError(`${flowPath}: ${label}.stopDeadlineMs must be a finite number`);
+	}
+	return { stopDeadlineMs };
 }
 
 async function loadWorkflowImports(

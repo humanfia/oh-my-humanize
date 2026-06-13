@@ -134,6 +134,9 @@ schema: omhflow/v1
 nodes:
   build:
     type: script
+    script:
+      inline: |
+        return { summary: "built" };
 edges: []
 \`\`\`
 `,
@@ -143,6 +146,64 @@ edges: []
 
 		await expect(freezeWorkflowArtifact(artifact)).rejects.toThrow(
 			".omhflow frontmatter must define checkpoint.stopDeadlineMs for production freeze",
+		);
+	});
+
+	it("accepts checkpoint policy declared in the workflow DSL block", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "release"), { recursive: true });
+		const flowPath = path.join(dir, "release.omhflow");
+		await Bun.write(
+			flowPath,
+			`---
+name: release-flow
+version: 1
+schema: omhflow/v1
+changePolicy:
+  agentsCanPropose: true
+  humansCanApprove: true
+---
+# Release Flow
+
+\`\`\`yaml workflow
+checkpoint_policy:
+  stopDeadlineMs: 125
+nodes:
+  build:
+    type: script
+    script:
+      inline: |
+        return { summary: "built" };
+edges: []
+\`\`\`
+`,
+		);
+
+		const artifact = await loadWorkflowArtifact(flowPath);
+		const freeze = await freezeWorkflowArtifact(artifact);
+
+		expect(artifact.metadata.checkpoint).toEqual({ stopDeadlineMs: 125 });
+		expect(freeze.checkpointPolicy).toEqual({ stopDeadlineMs: 125 });
+	});
+
+	it("rejects conflicting frontmatter and workflow DSL checkpoint policies", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "release"), { recursive: true });
+		const flowPath = path.join(dir, "release.omhflow");
+		await Bun.write(
+			flowPath,
+			omhflowSource(`
+checkpoint_policy:
+  stopDeadlineMs: 125
+nodes:
+  build:
+    type: script
+edges: []
+`),
+		);
+
+		await expect(loadWorkflowArtifact(flowPath)).rejects.toThrow(
+			"workflow block checkpoint_policy conflicts with frontmatter.checkpoint",
 		);
 	});
 

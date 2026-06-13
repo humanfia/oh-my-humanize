@@ -8,6 +8,7 @@ export interface WorkflowDslCompileResult {
 	resources?: unknown;
 	capabilities?: unknown;
 	migrations?: unknown;
+	checkpointPolicy?: unknown;
 }
 
 export interface WorkflowDslCompileExit {
@@ -83,6 +84,7 @@ function addWorkflowContracts(result: WorkflowDslCompileResult, block: Record<st
 	if (block.resources !== undefined) result.resources = block.resources;
 	if (block.capabilities !== undefined) result.capabilities = block.capabilities;
 	if (block.migrations !== undefined) result.migrations = block.migrations;
+	if (block.checkpoint_policy !== undefined) result.checkpointPolicy = block.checkpoint_policy;
 }
 
 class WorkflowDslCompiler {
