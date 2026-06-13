@@ -5,6 +5,7 @@ import {
 	formatActiveWorkflowAgentGeneration,
 	formatWorkflowSubflow,
 	renderWorkflowGraphDiagram,
+	type WorkflowGraphActiveAgentView,
 	type WorkflowGraphNodeStatus,
 	type WorkflowGraphView,
 } from "../../workflow/graph-view";
@@ -140,14 +141,22 @@ function workflowGraphSubflowLines(view: WorkflowGraphView): string[] {
 function workflowGraphActiveAgentLines(view: WorkflowGraphView, width: number): string[] {
 	const lines = [theme.fg("muted", "Agent Hub watches live transcripts; interrupt a selected live agent if needed.")];
 	for (const agent of view.activeAgents ?? []) {
-		const summary =
-			agent.summary === undefined ? "" : ` - ${sanitizeWorkflowAgentSummary(agent.summary, Math.floor(width / 2))}`;
+		const activity = workflowAgentActivityText(agent, width);
+		const model = agent.model === undefined ? "" : theme.fg("muted", ` · ${agent.model}`);
+		const tool = agent.tool === undefined ? "" : theme.fg("muted", ` · tool ${agent.tool}`);
+		const stats = agent.stats === undefined ? "" : theme.fg("muted", ` · ${agent.stats}`);
 		const generation = theme.fg("muted", formatActiveWorkflowAgentGeneration(agent));
 		const focus = theme.fg("muted", ` focus ${agent.focusAgentId}`);
-		const line = `${theme.fg("accent", "●")} ${agent.role}${theme.fg("muted", ` · ${agent.label}`)} ${theme.fg("accent", "live")}${generation}${summary}${focus}`;
+		const line = `${theme.fg("accent", "●")} ${agent.role}${theme.fg("muted", ` · ${agent.label}`)} ${theme.fg("accent", "live")}${generation}${model}${tool}${stats}${activity}${focus}`;
 		lines.push(truncateToWidth(replaceTabs(line), Math.max(20, width)));
 	}
 	return lines;
+}
+
+function workflowAgentActivityText(agent: WorkflowGraphActiveAgentView, width: number): string {
+	const source = agent.activity ?? agent.summary;
+	if (source === undefined) return "";
+	return ` - ${sanitizeWorkflowAgentSummary(source, Math.floor(width / 2))}`;
 }
 
 function sanitizeWorkflowAgentSummary(summary: string, width: number): string {

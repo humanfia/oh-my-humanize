@@ -35,6 +35,7 @@ import type { TranscriptContainer } from "./components/transcript-container";
 import type { EventController } from "./controllers/event-controller";
 import type { LoopLimitRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
+import type { ObservableSession } from "./session-observer-registry";
 import type { Theme } from "./theme/theme";
 
 export type CompactionQueuedMessage = {
@@ -312,6 +313,7 @@ export interface InteractiveModeContext {
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
 	showAgentHub(): void;
+	getObservedSessions(): readonly ObservableSession[];
 	resetObserverRegistry(): void;
 
 	// Input handling

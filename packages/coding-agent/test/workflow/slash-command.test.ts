@@ -13,8 +13,10 @@ import type { AgentSession } from "../../src/session/agent-session";
 import { resolveResumableSession, SessionManager } from "../../src/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../src/slash-commands/acp-builtins";
 import { executeBuiltinSlashCommand } from "../../src/slash-commands/builtin-registry";
+import { buildWorkflowGraphViewForRuntime } from "../../src/slash-commands/helpers/workflow";
 import { parseWorkflowDefinition, type WorkflowDefinition } from "../../src/workflow/definition";
 import type { FlowFreeze } from "../../src/workflow/freeze";
+import type { WorkflowGraphActiveAgentProgress } from "../../src/workflow/graph-view";
 import {
 	appendWorkflowAttemptActivationCompleted,
 	appendWorkflowAttemptActivationFailed,
@@ -112,6 +114,7 @@ interface RuntimeSessionOptions {
 	activeModel?: Model<Api>;
 	extensionPaths?: string[];
 	skills?: Skill[];
+	workflowAgentProgressById?: ReadonlyMap<string, WorkflowGraphActiveAgentProgress>;
 }
 
 function createRuntime(
@@ -154,6 +157,7 @@ function createRuntime(
 			output: (text: string) => {
 				output.push(text);
 			},
+			getWorkflowAgentProgressById: () => sessionOptions.workflowAgentProgressById ?? new Map(),
 			createWorkflowRuntimeHost: workflowRuntimeHost ? () => workflowRuntimeHost : undefined,
 			refreshCommands: () => {},
 			reloadPlugins: async () => {},
@@ -207,6 +211,7 @@ function createTuiRuntime(
 		showWorkflowGraphMonitor: (component: unknown) => {
 			workflowMonitorComponents.splice(0, workflowMonitorComponents.length, component);
 		},
+		getObservedSessions: () => [],
 		ui: { requestComponentRender: () => {} },
 		editor: { setText: () => {} },
 		refreshSlashCommandState: () => {},
@@ -4119,6 +4124,93 @@ edges: []
 		expect(managerOutput).not.toContain("/agents");
 
 		releaseAgents.resolve();
+		await Bun.sleep(10);
+	});
+
+	it("feeds live subagent progress into the runtime workflow graph view", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "progress-graph"), { recursive: true });
+		await Bun.write(
+			path.join(dir, "progress-graph.omhflow"),
+			`---
+name: progress-graph
+version: 1
+schema: omhflow/v1
+checkpoint:
+  stopDeadlineMs: 50
+changePolicy:
+  agentsCanPropose: true
+  humansCanApprove: true
+---
+# Progress Graph
+
+\`\`\`yaml workflow
+models:
+  roles:
+    builder: rust-cat/gpt-5.5
+  defaults:
+    agent: builder
+nodes:
+  buildRound:
+    type: agent
+    agent: task
+    prompt: Build the current round.
+edges: []
+\`\`\`
+`,
+		);
+		const entries: CapturedEntry[] = [];
+		const buildStarted = Promise.withResolvers<void>();
+		const releaseBuild = Promise.withResolvers<void>();
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async () => {
+				buildStarted.resolve();
+				await releaseBuild.promise;
+				return { summary: "built" };
+			},
+		};
+		const { runtime } = createRuntime(entries, runtimeHost, {
+			availableModels: [rustCatModel],
+			activeModel: rustCatModel,
+			workflowAgentProgressById: new Map([
+				[
+					"buildRound",
+					{
+						model: "rust-cat/gpt-5.5",
+						currentTool: "bash",
+						currentToolArgs: "bun test",
+						lastIntent: "running the recursive workflow harness",
+						durationMs: 125_000,
+						toolCount: 6,
+					},
+				],
+			]),
+		});
+
+		expect(
+			await executeAcpBuiltinSlashCommand(
+				`/workflow start ${path.join(dir, "progress-graph.omhflow")} --run-id progress-graph --family-id family-progress --background`,
+				runtime,
+			),
+		).toEqual({ consumed: true });
+		await buildStarted.promise;
+
+		const family = expectDefined(
+			reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+				candidate => candidate.id === "family-progress",
+			),
+		);
+		const view = buildWorkflowGraphViewForRuntime(family, runtime);
+
+		expect(view.activeAgents?.[0]).toMatchObject({
+			focusAgentId: "buildRound",
+			model: "rust-cat/gpt-5.5",
+			tool: "bash bun test",
+			activity: "running the recursive workflow harness",
+			stats: "2m05s · 6 tools",
+		});
+
+		releaseBuild.resolve();
 		await Bun.sleep(10);
 	});
 

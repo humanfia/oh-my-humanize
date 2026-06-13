@@ -65,6 +65,10 @@ export interface WorkflowGraphActiveAgentView {
 	label: string;
 	role: string;
 	status: "running";
+	model?: string;
+	tool?: string;
+	activity?: string;
+	stats?: string;
 	summary?: string;
 }
 
@@ -113,6 +117,28 @@ export interface WorkflowGraphViewOptions {
 	 * Agent Hub targets after a session resume.
 	 */
 	liveAttemptIds?: ReadonlySet<string>;
+	activeAgentProgressById?: ReadonlyMap<string, WorkflowGraphActiveAgentProgress>;
+}
+
+export interface WorkflowGraphActiveAgentProgress {
+	model?: string;
+	currentTool?: string;
+	currentToolArgs?: string;
+	lastIntent?: string;
+	recentOutput?: readonly string[];
+	durationMs?: number;
+	toolCount?: number;
+	contextTokens?: number;
+	contextWindow?: number;
+	retryState?: WorkflowGraphActiveAgentRetryState;
+}
+
+export interface WorkflowGraphActiveAgentRetryState {
+	attempt: number;
+	maxAttempts: number;
+	delayMs: number;
+	errorMessage: string;
+	startedAtMs: number;
 }
 
 const WORKFLOW_DETAIL_PREVIEW_CHARS = 180;
@@ -871,6 +897,15 @@ function formatActiveWorkflowAgents(
 			status: "running",
 		};
 		if (generation > 1) view.generation = generation;
+		const progress = options.activeAgentProgressById?.get(view.focusAgentId);
+		const model = progress?.model ?? currentAttempt.runtimeBindingSnapshot.modelBindings?.[node.id]?.resolvedModel;
+		const tool = formatWorkflowActiveAgentTool(progress);
+		const activity = formatWorkflowActiveAgentActivity(progress);
+		const stats = formatWorkflowActiveAgentStats(progress);
+		if (model !== undefined) view.model = model;
+		if (tool !== undefined) view.tool = tool;
+		if (activity !== undefined) view.activity = activity;
+		if (stats !== undefined) view.stats = stats;
 		if (activation.output?.summary !== undefined) view.summary = activation.output.summary;
 		activeAgents.push(view);
 	}
@@ -883,8 +918,12 @@ function workflowNodeIsAgentLike(node: WorkflowNode): boolean {
 
 function formatActiveWorkflowAgent(agent: WorkflowGraphActiveAgentView): string {
 	const generation = formatActiveWorkflowAgentGeneration(agent);
+	const model = agent.model === undefined ? "" : ` · ${formatSingleLineWorkflowDetail(agent.model)}`;
+	const tool = agent.tool === undefined ? "" : ` · tool ${formatSingleLineWorkflowDetail(agent.tool)}`;
+	const stats = agent.stats === undefined ? "" : ` · ${agent.stats}`;
+	const activity = agent.activity === undefined ? "" : ` - ${formatSingleLineWorkflowDetail(agent.activity)}`;
 	const summary = agent.summary === undefined ? "" : ` - ${formatSingleLineWorkflowDetail(agent.summary)}`;
-	return `${agent.role} · ${agent.label} live${generation}${summary} (focus ${agent.focusAgentId})`;
+	return `${agent.role} · ${agent.label} live${generation}${model}${tool}${stats}${activity}${summary} (focus ${agent.focusAgentId})`;
 }
 
 export function formatActiveWorkflowAgentGeneration(agent: WorkflowGraphActiveAgentView): string {
@@ -894,6 +933,59 @@ export function formatActiveWorkflowAgentGeneration(agent: WorkflowGraphActiveAg
 function formatWorkflowAgentFocusTarget(nodeId: string, generation: number): string {
 	const base = workflowAgentTaskIdForNode(nodeId);
 	return generation === 1 ? base : `${base}-${generation}`;
+}
+
+function formatWorkflowActiveAgentTool(progress: WorkflowGraphActiveAgentProgress | undefined): string | undefined {
+	if (progress?.currentTool === undefined) return undefined;
+	const args = progress.currentToolArgs?.trim();
+	if (!args) return progress.currentTool;
+	return `${progress.currentTool} ${formatSingleLineWorkflowDetail(args)}`;
+}
+
+function formatWorkflowActiveAgentActivity(progress: WorkflowGraphActiveAgentProgress | undefined): string | undefined {
+	if (progress === undefined) return undefined;
+	if (progress.retryState !== undefined) {
+		return `retrying provider request ${progress.retryState.attempt}/${progress.retryState.maxAttempts}: ${progress.retryState.errorMessage}`;
+	}
+	if (progress.lastIntent !== undefined && progress.lastIntent.trim().length > 0) {
+		return progress.lastIntent;
+	}
+	const recent = progress.recentOutput
+		?.map(line => line.trim())
+		.filter(line => line.length > 0)
+		.at(-1);
+	return recent;
+}
+
+function formatWorkflowActiveAgentStats(progress: WorkflowGraphActiveAgentProgress | undefined): string | undefined {
+	if (progress === undefined) return undefined;
+	const parts: string[] = [];
+	if (progress.durationMs !== undefined && progress.durationMs > 0) {
+		parts.push(formatWorkflowDuration(progress.durationMs));
+	}
+	if (progress.toolCount !== undefined && progress.toolCount > 0) {
+		parts.push(`${progress.toolCount} ${progress.toolCount === 1 ? "tool" : "tools"}`);
+	}
+	if (
+		progress.contextTokens !== undefined &&
+		progress.contextTokens > 0 &&
+		progress.contextWindow !== undefined &&
+		progress.contextWindow > 0
+	) {
+		parts.push(`${Math.round((progress.contextTokens / progress.contextWindow) * 100)}% ctx`);
+	}
+	return parts.length === 0 ? undefined : parts.join(" · ");
+}
+
+function formatWorkflowDuration(durationMs: number): string {
+	const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	if (minutes < 60) return `${minutes}m${seconds.toString().padStart(2, "0")}s`;
+	const hours = Math.floor(minutes / 60);
+	const remainingMinutes = minutes % 60;
+	return `${hours}h${remainingMinutes.toString().padStart(2, "0")}m`;
 }
 
 function formatCheckpointFrontier(checkpoint: WorkflowGraphCheckpointView): string {

@@ -25,13 +25,14 @@ import {
 } from "../extensibility/plugins/marketplace";
 import { resolveMemoryBackend } from "../memory-backend";
 import { WorkflowGraphComponent } from "../modes/components/workflow-graph";
+import type { ObservableSession } from "../modes/session-observer-registry";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
-import type { WorkflowGraphView } from "../workflow/graph-view";
+import type { WorkflowGraphActiveAgentProgress, WorkflowGraphView } from "../workflow/graph-view";
 import { reconstructWorkflowFamilies } from "../workflow/lifecycle";
 import { writeWorkflowGraphMonitorSnapshot } from "../workflow/monitor-history";
 import { createSessionWorkflowRuntimeHost } from "../workflow/session-runtime";
@@ -91,6 +92,29 @@ function createWorkflowMonitorSnapshotWriter(agentDir: string | undefined): Work
 			void write(view);
 		},
 	};
+}
+
+function workflowAgentProgressByIdFromObservedSessions(
+	sessions: readonly ObservableSession[],
+): ReadonlyMap<string, WorkflowGraphActiveAgentProgress> {
+	const progressById = new Map<string, WorkflowGraphActiveAgentProgress>();
+	for (const session of sessions) {
+		const progress = session.progress;
+		if (progress === undefined) continue;
+		const view: WorkflowGraphActiveAgentProgress = {};
+		if (progress.resolvedModel !== undefined) view.model = progress.resolvedModel;
+		if (progress.currentTool !== undefined) view.currentTool = progress.currentTool;
+		if (progress.currentToolArgs !== undefined) view.currentToolArgs = progress.currentToolArgs;
+		if (progress.lastIntent !== undefined) view.lastIntent = progress.lastIntent;
+		if (progress.recentOutput.length > 0) view.recentOutput = progress.recentOutput;
+		if (progress.durationMs > 0) view.durationMs = progress.durationMs;
+		if (progress.toolCount > 0) view.toolCount = progress.toolCount;
+		if (progress.contextTokens !== undefined) view.contextTokens = progress.contextTokens;
+		if (progress.contextWindow !== undefined) view.contextWindow = progress.contextWindow;
+		if (progress.retryState !== undefined) view.retryState = progress.retryState;
+		progressById.set(session.id, view);
+	}
+	return progressById;
 }
 
 /** Scheme-less display form of a browser deep link: accent + underline, OSC-8 linked to the full URL. */
@@ -2206,6 +2230,7 @@ export async function executeBuiltinSlashCommand(
 			output: (text: string) => {
 				ctx.showStatus(text);
 			},
+			getWorkflowAgentProgressById: () => workflowAgentProgressByIdFromObservedSessions(ctx.getObservedSessions()),
 			outputWorkflowGraph: async view => {
 				const monitorSnapshots = createWorkflowMonitorSnapshotWriter(ctx.workflowMonitorSnapshotAgentDir);
 				await monitorSnapshots.write(view);

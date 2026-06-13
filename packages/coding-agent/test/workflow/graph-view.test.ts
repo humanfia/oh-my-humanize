@@ -201,6 +201,96 @@ describe("workflow graph view rendering", () => {
 		expect(text).not.toContain("Focus agent: /agents");
 	});
 
+	it("summarizes active workflow agent model binding and live progress for the cockpit", () => {
+		const freeze = createFreeze({
+			name: "agent-progress-cockpit",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "buildRound", type: "agent", agent: "task" },
+				{ id: "reviewRound", type: "review", agent: "task" },
+			],
+			edges: [{ from: "buildRound", to: "reviewRound" }],
+		});
+		const view = buildWorkflowGraphView(
+			{
+				id: "agent-progress-family",
+				freezes: [freeze],
+				attempts: [
+					{
+						id: "attempt-1",
+						familyId: "agent-progress-family",
+						freezeId: freeze.id,
+						startNodeId: "buildRound",
+						status: "running",
+						runtimeBindingSnapshot: {
+							...createBinding(),
+							modelBindings: {
+								buildRound: {
+									nodeId: "buildRound",
+									source: "node",
+									requestedPattern: "gpt-5.5",
+									unavailablePolicy: "fail",
+									resolvedModel: "rust.cat/gpt-5.5",
+									explicitThinkingLevel: false,
+									fallbackUsed: false,
+								},
+							},
+						},
+						activations: [
+							{
+								id: "activation-build",
+								nodeId: "buildRound",
+								parentActivationIds: [],
+								status: "running",
+							},
+						],
+					},
+				],
+				checkpoints: [],
+				changeRequests: [],
+			},
+			{
+				activeAgentProgressById: new Map([
+					[
+						"buildRound",
+						{
+							model: "rust.cat/gpt-5.5",
+							currentTool: "bash",
+							currentToolArgs: "bun test",
+							lastIntent: "tightening the recursive runner validation",
+							durationMs: 65_000,
+							toolCount: 4,
+						},
+					],
+				]),
+			},
+		);
+
+		expect(view.activeAgents).toEqual([
+			{
+				activationId: "activation-build",
+				focusAgentId: "buildRound",
+				nodeId: "buildRound",
+				label: "Build round",
+				role: "Builder",
+				status: "running",
+				model: "rust.cat/gpt-5.5",
+				tool: "bash bun test",
+				activity: "tightening the recursive runner validation",
+				stats: "1m05s · 4 tools",
+			},
+		]);
+
+		const text = renderWorkflowGraphText(view);
+
+		expect(text).toContain(
+			"- Builder · Build round live · rust.cat/gpt-5.5 · tool bash bun test · 1m05s · 4 tools - tightening the recursive runner validation",
+		);
+		expect(text).not.toContain("activation-build");
+		expect(text).not.toContain("agent:task");
+	});
+
 	it("labels repeated loop activations with the current round and focus target", () => {
 		const freeze = createFreeze({
 			name: "loop-observability",

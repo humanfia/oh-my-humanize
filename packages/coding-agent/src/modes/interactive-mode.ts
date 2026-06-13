@@ -3298,6 +3298,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showAgentHub(this.#observerRegistry);
 	}
 
+	getObservedSessions(): readonly ObservableSession[] {
+		return this.#observerRegistry.getSessions();
+	}
+
 	resetObserverRegistry(): void {
 		this.#observerRegistry.resetSessions();
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);

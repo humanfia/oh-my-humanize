@@ -1441,9 +1441,12 @@ function runningNodeGeneration(
 
 export function buildWorkflowGraphViewForRuntime(
 	family: WorkflowRunFamilySnapshot,
-	runtime: Pick<SlashCommandRuntime, "sessionManager">,
+	runtime: Pick<SlashCommandRuntime, "sessionManager" | "getWorkflowAgentProgressById">,
 ): WorkflowGraphView {
-	return buildWorkflowGraphView(family, { liveAttemptIds: new Set(activeWorkflowAttemptMap(runtime).keys()) });
+	return buildWorkflowGraphView(family, {
+		liveAttemptIds: new Set(activeWorkflowAttemptMap(runtime).keys()),
+		activeAgentProgressById: runtime.getWorkflowAgentProgressById?.(),
+	});
 }
 
 function activeWorkflowAttemptMap(
