@@ -31,7 +31,7 @@ import type { AgentSession, FreshSessionResult } from "../session/agent-session"
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
-import { buildWorkflowGraphView } from "../workflow/graph-view";
+import { buildWorkflowGraphView, type WorkflowGraphView } from "../workflow/graph-view";
 import { reconstructWorkflowFamilies } from "../workflow/lifecycle";
 import { writeWorkflowGraphMonitorSnapshot } from "../workflow/monitor-history";
 import { createSessionWorkflowRuntimeHost } from "../workflow/session-runtime";
@@ -66,6 +66,31 @@ function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
 	ctx.updateEditorTopBorder();
 	ctx.ui.requestRender();
+}
+
+interface WorkflowMonitorSnapshotWriter {
+	write(view: WorkflowGraphView): Promise<void>;
+	writeSoon(view: WorkflowGraphView): void;
+}
+
+function createWorkflowMonitorSnapshotWriter(agentDir: string | undefined): WorkflowMonitorSnapshotWriter {
+	let lastSnapshotSignature: string | undefined;
+	async function write(view: WorkflowGraphView): Promise<void> {
+		const signature = JSON.stringify(view);
+		if (signature === lastSnapshotSignature) return;
+		lastSnapshotSignature = signature;
+		try {
+			await writeWorkflowGraphMonitorSnapshot(view, { agentDir });
+		} catch (error) {
+			logger.warn("Failed to write workflow monitor snapshot", { error: String(error) });
+		}
+	}
+	return {
+		write,
+		writeSoon: view => {
+			void write(view);
+		},
+	};
 }
 
 /** Scheme-less display form of a browser deep link: accent + underline, OSC-8 linked to the full URL. */
@@ -2168,6 +2193,8 @@ export async function executeBuiltinSlashCommand(
 				ctx.showStatus(text);
 			},
 			outputWorkflowGraph: async view => {
+				const monitorSnapshots = createWorkflowMonitorSnapshotWriter(ctx.workflowMonitorSnapshotAgentDir);
+				await monitorSnapshots.write(view);
 				const component = new WorkflowGraphComponent(view, {
 					viewProvider: () => {
 						const family = reconstructWorkflowFamilies(ctx.sessionManager.getBranch()).find(
@@ -2175,13 +2202,9 @@ export async function executeBuiltinSlashCommand(
 						);
 						return family ? buildWorkflowGraphView(family) : view;
 					},
+					onViewChange: monitorSnapshots.writeSoon,
 					requestRender: target => ctx.ui.requestComponentRender(target),
 				});
-				try {
-					await writeWorkflowGraphMonitorSnapshot(view, { agentDir: ctx.workflowMonitorSnapshotAgentDir });
-				} catch (error) {
-					logger.warn("Failed to write workflow monitor snapshot", { error: String(error) });
-				}
 				ctx.showWorkflowGraphMonitor(component);
 			},
 			createWorkflowRuntimeHost: () =>

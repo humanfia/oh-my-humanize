@@ -501,6 +501,39 @@ describe("session workflow runtime host", () => {
 		});
 	});
 
+	it("extracts declared Humanize gates from reviewer explanation text before pass/fail mapping", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "review");
+		if (!node) throw new Error("expected review node");
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: JSON.stringify({
+					overall_correctness: "correct",
+					explanation:
+						"README.md satisfies round 1, but the Humanize loop must continue until round 10.\nCONTINUE",
+					confidence: 0.93,
+				}),
+			}),
+		});
+
+		const output = await host.runReviewNode?.({
+			node,
+			activation: activation(node.id),
+			agent: node.agent,
+			prompt: node.prompt,
+			model: node.model,
+			gates: ["CONTINUE", "COMPLETE", "STOP"],
+			fallbackVerdict: "CONTINUE",
+		});
+
+		expect(output).toEqual({
+			summary: "README.md satisfies round 1, but the Humanize loop must continue until round 10.\nCONTINUE",
+			verdict: "CONTINUE",
+		});
+	});
+
 	it("maps unmatched Humanize-style review text to an explicit fallback verdict", async () => {
 		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
 		const node = definition.nodes.find(candidate => candidate.id === "review");
@@ -530,6 +563,38 @@ describe("session workflow runtime host", () => {
 		expect(output).toEqual({
 			summary:
 				"Review findings:\n- acceptance criterion AC-2 is still missing\n- continue implementation before review can pass",
+			verdict: "CONTINUE",
+		});
+	});
+
+	it("maps reviewer correctness output to fallback when declared gates do not include pass or fail", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "review");
+		if (!node) throw new Error("expected review node");
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: JSON.stringify({
+					overall_correctness: "correct",
+					explanation: "Round 7 artifact is present, but the loop has not reached the completion threshold.",
+					confidence: 0.88,
+				}),
+			}),
+		});
+
+		const output = await host.runReviewNode?.({
+			node,
+			activation: activation(node.id),
+			agent: node.agent,
+			prompt: node.prompt,
+			model: node.model,
+			gates: ["CONTINUE", "COMPLETE", "STOP"],
+			fallbackVerdict: "CONTINUE",
+		});
+
+		expect(output).toEqual({
+			summary: "Round 7 artifact is present, but the loop has not reached the completion threshold.",
 			verdict: "CONTINUE",
 		});
 	});

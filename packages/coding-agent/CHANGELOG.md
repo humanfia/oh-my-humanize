@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added persistent TUI workflow monitoring: `/workflow` graph updates now replace a live monitor panel and write timestamped JSON snapshots under the agent workflow cache for later audit.
+- Added persistent TUI workflow monitoring: `/workflow` graph updates now replace a live monitor panel and write timestamped JSON snapshots under the agent workflow cache as observed graph state changes for later audit.
 - Added file-backed workflow prompt templates with explicit inline/state/output/human bindings, so `.omhflow` nodes can compose review state, prior outputs, and static prompt assets without building prompts in code.
 - Added immutable workflow lifecycle support for `.omhflow` artifacts: strict freeze manifests, runtime binding snapshots, family/attempt/checkpoint/change-request events, lifecycle-aware `/workflow` commands, and HTML export audit data.
 - Added structured `.omhflow` DSL modules, sequences, parallel joins, workflow manager listing/rejection commands, deterministic workflow benchmark coverage, and stricter checkpoint frontier validation for lifecycle restarts.
@@ -12,6 +12,7 @@
 ### Fixed
 
 - Fixed draft-based workflow refreezes so restart frontier mappings are preserved automatically when a generated draft is frozen, and repeated manual freeze applications are idempotent.
+- Fixed workflow review nodes so standard reviewer JSON can still drive custom Humanize-style gates: declared gates are extracted from reviewer summaries before pass/fail mapping, and `fallbackVerdict` is used when correctness output cannot map to any declared gate.
 - Fixed imported `.omhflow` subflow exit conditions to namespace `outputs.<nodeId>` references before connecting the subflow to caller steps.
 - Fixed workflow graph patch proposals to reject edge conditions that reference missing output nodes or undeclared review verdict gates before a mutable flow can be refrozen.
 - Added `skills.enableAgentsUser` and `skills.enableAgentsProject` settings (default on) so the canonical OMP-native `~/.agent[s]/skills` and project-walkup `.agent[s]/skills` are configurable independently from the third-party Claude/Codex/Pi toggles.

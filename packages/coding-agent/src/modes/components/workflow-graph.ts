@@ -10,12 +10,15 @@ import { theme } from "../theme/theme";
 
 export interface WorkflowGraphComponentOptions {
 	viewProvider?: () => WorkflowGraphView | undefined;
+	onViewChange?: (view: WorkflowGraphView) => void;
 	requestRender?: (component: Component) => void;
 	refreshMs?: number;
 }
 
 export class WorkflowGraphComponent implements Component {
 	#cache?: { width: number; lines: string[] };
+	#lastObservedViewSignature?: string;
+	#onViewChange?: (view: WorkflowGraphView) => void;
 	#view: WorkflowGraphView;
 	#viewProvider?: () => WorkflowGraphView | undefined;
 	#refreshTimer?: NodeJS.Timeout;
@@ -23,6 +26,7 @@ export class WorkflowGraphComponent implements Component {
 	constructor(view: WorkflowGraphView, options: WorkflowGraphComponentOptions = {}) {
 		this.#view = view;
 		this.#viewProvider = options.viewProvider;
+		this.#onViewChange = options.onViewChange;
 		const refreshMs = options.refreshMs ?? 500;
 		if (options.requestRender !== undefined && refreshMs > 0) {
 			this.#refreshTimer = setInterval(() => {
@@ -47,6 +51,7 @@ export class WorkflowGraphComponent implements Component {
 	render(width: number): readonly string[] {
 		const safeWidth = Math.max(40, width);
 		const view = this.#currentView();
+		this.#observeView(view);
 		if (this.#viewProvider === undefined && this.#cache?.width === safeWidth) return this.#cache.lines;
 		const lines = renderOutputBlock(
 			{
@@ -72,6 +77,14 @@ export class WorkflowGraphComponent implements Component {
 
 	#currentView(): WorkflowGraphView {
 		return this.#viewProvider?.() ?? this.#view;
+	}
+
+	#observeView(view: WorkflowGraphView): void {
+		if (this.#onViewChange === undefined) return;
+		const signature = JSON.stringify(view);
+		if (signature === this.#lastObservedViewSignature) return;
+		this.#lastObservedViewSignature = signature;
+		this.#onViewChange(view);
 	}
 }
 

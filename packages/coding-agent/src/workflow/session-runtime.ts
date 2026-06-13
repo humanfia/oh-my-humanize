@@ -330,7 +330,7 @@ function parseReviewTaskOutput(
 	const trimmed = output.trim();
 	const parsed = parseJsonObject(trimmed);
 	if (parsed) {
-		return parseReviewObject(nodeId, parsed, trimmed, gates);
+		return parseReviewObject(nodeId, parsed, trimmed, gates, fallbackVerdict);
 	}
 	if (gates?.includes(trimmed)) {
 		return { verdict: trimmed, summary: trimmed };
@@ -339,7 +339,7 @@ function parseReviewTaskOutput(
 	if (finalLine && finalLine !== trimmed) {
 		const finalJson = parseJsonObject(finalLine);
 		if (finalJson) {
-			return parseReviewObject(nodeId, finalJson, trimmed, gates);
+			return parseReviewObject(nodeId, finalJson, trimmed, gates, fallbackVerdict);
 		}
 		if (gates?.includes(finalLine)) {
 			return { verdict: finalLine, summary: trimmed };
@@ -364,6 +364,7 @@ function parseReviewObject(
 	parsed: Record<string, unknown>,
 	fallbackSummary: string,
 	gates: string[] | undefined,
+	fallbackVerdict: string | undefined,
 ): { verdict: string; summary: string } {
 	const direct = reviewVerdictFromObject(parsed, fallbackSummary);
 	if (direct) return direct;
@@ -371,10 +372,13 @@ function parseReviewObject(
 	const nested = nestedReviewVerdictFromObject(parsed, fallbackSummary);
 	if (nested) return nested;
 
+	const textGate = reviewVerdictFromObjectText(parsed, fallbackSummary, gates);
+	if (textGate) return textGate;
+
 	const correctness = parsed.overall_correctness;
 	if (correctness === "correct" || correctness === "incorrect") {
 		return {
-			verdict: verdictFromReviewerCorrectness(correctness, gates),
+			verdict: verdictFromReviewerCorrectness(correctness, gates, fallbackVerdict),
 			summary: reviewSummaryFromObject(parsed, fallbackSummary),
 		};
 	}
@@ -405,6 +409,18 @@ function nestedReviewVerdictFromObject(
 	return undefined;
 }
 
+function reviewVerdictFromObjectText(
+	parsed: Record<string, unknown>,
+	fallbackSummary: string,
+	gates: string[] | undefined,
+): { verdict: string; summary: string } | undefined {
+	if (!gates?.length) return undefined;
+	const summary = reviewSummaryFromObject(parsed, fallbackSummary);
+	const finalLine = lastNonEmptyLine(summary);
+	if (finalLine === undefined || !gates.includes(finalLine)) return undefined;
+	return { verdict: finalLine, summary };
+}
+
 function reviewSummaryFromObject(parsed: Record<string, unknown>, fallbackSummary: string): string {
 	for (const source of [parsed.summary, parsed.explanation]) {
 		if (typeof source === "string" && source.length > 0) return source;
@@ -412,7 +428,11 @@ function reviewSummaryFromObject(parsed: Record<string, unknown>, fallbackSummar
 	return fallbackSummary;
 }
 
-function verdictFromReviewerCorrectness(correctness: "correct" | "incorrect", gates: string[] | undefined): string {
+function verdictFromReviewerCorrectness(
+	correctness: "correct" | "incorrect",
+	gates: string[] | undefined,
+	fallbackVerdict: string | undefined,
+): string {
 	const candidates =
 		correctness === "correct"
 			? ["correct", "pass", "approve", "approved", "finish"]
@@ -421,6 +441,7 @@ function verdictFromReviewerCorrectness(correctness: "correct" | "incorrect", ga
 		const declared = candidates.find(candidate => gates.includes(candidate));
 		if (declared) return declared;
 	}
+	if (fallbackVerdict !== undefined) return fallbackVerdict;
 	return correctness === "correct" ? "pass" : "fail";
 }
 

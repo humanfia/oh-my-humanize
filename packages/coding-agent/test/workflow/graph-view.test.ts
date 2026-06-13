@@ -263,6 +263,28 @@ describe("workflow graph view rendering", () => {
 		expect(component.render(80).join("\n")).toContain("completed");
 	});
 
+	it("notifies monitor history only when the live workflow graph view changes", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("dark theme fixture is required");
+		setThemeInstance(theme);
+		let view = singleNodeView("running");
+		const observed: WorkflowGraphView[] = [];
+		const component = new WorkflowGraphComponent(view, {
+			viewProvider: () => view,
+			onViewChange: changedView => {
+				observed.push(changedView);
+			},
+			refreshMs: 0,
+		});
+
+		component.render(80);
+		component.render(80);
+		view = singleNodeView("completed");
+		component.render(80);
+
+		expect(observed.map(changedView => changedView.nodes[0]?.status)).toEqual(["running", "completed"]);
+	});
+
 	it("renders TUI frontier routes without arrow fragments", async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("dark theme fixture is required");
