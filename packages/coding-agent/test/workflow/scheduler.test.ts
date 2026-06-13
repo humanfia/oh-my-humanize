@@ -100,6 +100,48 @@ edges:
     to: join
 `;
 
+const loopedJoinWorkflow = `
+name: looped-join-demo
+version: 1
+nodes:
+  start:
+    type: script
+  left:
+    type: script
+  right:
+    type: script
+  validate:
+    type: script
+    waitFor:
+      - left
+      - right
+  review:
+    type: review
+  fix:
+    type: script
+  archive:
+    type: script
+edges:
+  - from: start
+    to: left
+  - from: start
+    to: right
+  - from: left
+    to: validate
+  - from: right
+    to: validate
+  - from: validate
+    to: review
+  - from: review
+    to: fix
+    when: outputs.review.verdict == "retry"
+  - from: review
+    to: archive
+    when: outputs.review.verdict == "finish"
+  - from: fix
+    to: validate
+`;
+
 const mutableWorkflow = `
 name: mutable-demo
 version: 1
@@ -351,6 +393,43 @@ edges: []
 
 		expect(started.slice(0, 3)).toEqual(["start", "left", "right"]);
 		expect(result.activations.map(activation => activation.nodeId)).toEqual(["start", "left", "right", "join"]);
+	});
+
+	it("re-activates a join when a loop edge returns from outside its waitFor set", async () => {
+		const definition = parseWorkflowDefinition(loopedJoinWorkflow, { sourcePath: "workflow.yml" });
+		let reviewCount = 0;
+
+		const result = await runWorkflowScheduler(definition, {
+			startNodeId: "start",
+			executeNode: async activation => {
+				if (activation.nodeId !== "review") return { summary: `ran ${activation.nodeId}` };
+				reviewCount += 1;
+				return {
+					summary: `review ${reviewCount}`,
+					data: { verdict: reviewCount === 1 ? "retry" : "finish" },
+				};
+			},
+		});
+
+		expect(result.activations.map(activation => activation.nodeId)).toEqual([
+			"start",
+			"left",
+			"right",
+			"validate",
+			"review",
+			"fix",
+			"validate",
+			"review",
+			"archive",
+		]);
+		const secondValidate = result.activations.filter(activation => activation.nodeId === "validate")[1];
+		const left = result.activations.find(activation => activation.nodeId === "left");
+		const right = result.activations.find(activation => activation.nodeId === "right");
+		const fix = result.activations.find(activation => activation.nodeId === "fix");
+		if (!secondValidate || !left || !right || !fix) {
+			throw new Error("expected looped join activations to exist");
+		}
+		expect(secondValidate.parentActivationIds).toEqual([left.id, right.id, fix.id]);
 	});
 
 	it("stops scheduling downstream nodes after parallel activations observe cancellation", async () => {

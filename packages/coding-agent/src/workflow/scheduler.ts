@@ -395,6 +395,7 @@ function collectJoinParentIds(
 	completedById: Map<string, WorkflowActivation>,
 	currentActivation: WorkflowActivation,
 ): string[] | undefined {
+	const includeCurrentActivation = !waitFor.includes(currentActivation.nodeId);
 	for (const generation of joinGenerationCandidates(currentActivation, completedById, new Set(waitFor))) {
 		const parentIds: string[] = [];
 		for (const nodeId of waitFor) {
@@ -404,10 +405,23 @@ function collectJoinParentIds(
 			parentIds.push(matching.id);
 		}
 		if (parentIds.length === waitFor.length) {
+			if (includeCurrentActivation) parentIds.push(currentActivation.id);
 			return parentIds;
 		}
 	}
-	return undefined;
+	if (!includeCurrentActivation) return undefined;
+	const parentIds: string[] = [];
+	for (const nodeId of waitFor) {
+		const matching = latestCompletedActivation(completedByNode.get(nodeId));
+		if (!matching) return undefined;
+		parentIds.push(matching.id);
+	}
+	parentIds.push(currentActivation.id);
+	return parentIds;
+}
+
+function latestCompletedActivation(activations: WorkflowActivation[] | undefined): WorkflowActivation | undefined {
+	return activations?.at(-1);
 }
 
 function latestActivationInJoinGeneration(
