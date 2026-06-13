@@ -296,6 +296,11 @@ sequence:
 		expect(artifact.definition.stateSchema).toEqual({ version: 1, shape: { decision: "object" } });
 		expect(freeze.resourceSnapshots.map(snapshot => snapshot.path)).toEqual(["prompts/brief.md"]);
 		expect(freeze.staticCheckReport.checks.map(check => check.name)).toContain("contracts");
+		expect(freeze.staticCheckReport.checks).toContainEqual({
+			name: "state-schema",
+			status: "passed",
+			details: ["decision: object"],
+		});
 	});
 
 	it("does not continue past retry_until until the retry condition is false", async () => {

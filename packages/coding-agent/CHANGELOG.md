@@ -11,7 +11,7 @@
 
 ### Fixed
 
-- Fixed workflow state schemas so `.omhflow` `stateSchema.version: 1` declarations are enforced during activation output validation, state patch application, and run-history reconstruction instead of being preserved as passive metadata.
+- Fixed workflow state schemas so `.omhflow` `stateSchema.version: 1` declarations are enforced during activation output validation, state patch application, run-history reconstruction, and freeze static-check reporting instead of being preserved as passive metadata.
 - Fixed draft-based workflow refreezes so restart frontier mappings are preserved automatically when a generated draft is frozen, and repeated manual freeze applications are idempotent.
 - Fixed workflow lifecycle APIs so change applications and changed-freeze restarts cannot bypass proposal approval, stop/checkpoint requirements, supervisor policy, or applied freeze records outside the slash-command path.
 - Fixed workflow review nodes so standard reviewer JSON can still drive custom Humanize-style gates: declared gates are extracted from reviewer summaries before pass/fail mapping, and `fallbackVerdict` is used when correctness output cannot map to any declared gate.

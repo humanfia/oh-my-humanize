@@ -55,6 +55,7 @@ export interface WorkflowStaticCheckReport {
 export interface WorkflowStaticCheck {
 	name: string;
 	status: "passed";
+	details?: string[];
 }
 
 export interface WorkflowPortableDefaults {
@@ -98,20 +99,35 @@ export async function freezeWorkflowArtifact(artifact: WorkflowArtifact): Promis
 		resourceSnapshots,
 		canonicalGraphHash,
 		sourceMapping: artifact.sourceMapping,
-		staticCheckReport: {
-			status: "passed",
-			checks: [
-				{ name: "parse", status: "passed" },
-				{ name: "policy", status: "passed" },
-				{ name: "resources", status: "passed" },
-				{ name: "contracts", status: "passed" },
-				{ name: "canonical-graph", status: "passed" },
-			],
-		},
+		staticCheckReport: buildStaticCheckReport(artifact.definition),
 		portableDefaults: { models: artifact.definition.models },
 		checkpointPolicy: freezeMetadata.checkpointPolicy,
 		changePolicy: freezeMetadata.changePolicy,
 		definition: structuredClone(artifact.definition),
+	};
+}
+
+function buildStaticCheckReport(definition: WorkflowDefinition): WorkflowStaticCheckReport {
+	const checks: WorkflowStaticCheck[] = [
+		{ name: "parse", status: "passed" },
+		{ name: "policy", status: "passed" },
+		{ name: "resources", status: "passed" },
+		{ name: "contracts", status: "passed" },
+	];
+	const stateSchemaCheck = workflowStateSchemaCheck(definition);
+	if (stateSchemaCheck !== undefined) checks.push(stateSchemaCheck);
+	checks.push({ name: "canonical-graph", status: "passed" });
+	return { status: "passed", checks };
+}
+
+function workflowStateSchemaCheck(definition: WorkflowDefinition): WorkflowStaticCheck | undefined {
+	if (definition.stateSchema === undefined) return undefined;
+	return {
+		name: "state-schema",
+		status: "passed",
+		details: Object.entries(definition.stateSchema.shape)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([field, type]) => `${field}: ${type}`),
 	};
 }
 
