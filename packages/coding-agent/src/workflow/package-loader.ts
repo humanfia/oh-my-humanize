@@ -209,6 +209,7 @@ interface CompiledWorkflowArtifactInput {
 	entryNodeIds: string[];
 	exits: WorkflowDslCompileExit[];
 	checkpointPolicy?: unknown;
+	changePolicy?: unknown;
 }
 
 function compileArtifactDefinitionInput(
@@ -234,6 +235,7 @@ function compileArtifactDefinitionInput(
 			entryNodeIds: compiled.entries,
 			exits: compiled.exits,
 			checkpointPolicy: compiled.checkpointPolicy,
+			changePolicy: compiled.changePolicy,
 		};
 	} catch (error) {
 		if (error instanceof WorkflowDslError) {
@@ -248,17 +250,33 @@ function mergeWorkflowBlockMetadata(
 	compiled: CompiledWorkflowArtifactInput,
 	flowPath: string,
 ): WorkflowArtifactMetadata {
-	if (compiled.checkpointPolicy === undefined) return metadata;
-	const checkpoint = parseCheckpointPolicy(compiled.checkpointPolicy, "workflow block checkpoint_policy", flowPath);
-	if (metadata.checkpoint !== undefined) {
-		const frontmatterCheckpoint = parseCheckpointPolicy(metadata.checkpoint, "frontmatter.checkpoint", flowPath);
-		if (frontmatterCheckpoint.stopDeadlineMs !== checkpoint.stopDeadlineMs) {
-			throw new WorkflowPackageError(
-				`${flowPath}: workflow block checkpoint_policy conflicts with frontmatter.checkpoint`,
-			);
+	if (compiled.checkpointPolicy === undefined && compiled.changePolicy === undefined) return metadata;
+	let result = metadata;
+	if (compiled.checkpointPolicy !== undefined) {
+		const checkpoint = parseCheckpointPolicy(compiled.checkpointPolicy, "workflow block checkpoint_policy", flowPath);
+		if (metadata.checkpoint !== undefined) {
+			const frontmatterCheckpoint = parseCheckpointPolicy(metadata.checkpoint, "frontmatter.checkpoint", flowPath);
+			if (frontmatterCheckpoint.stopDeadlineMs !== checkpoint.stopDeadlineMs) {
+				throw new WorkflowPackageError(
+					`${flowPath}: workflow block checkpoint_policy conflicts with frontmatter.checkpoint`,
+				);
+			}
 		}
+		result = { ...result, checkpoint };
 	}
-	return { ...metadata, checkpoint };
+	if (compiled.changePolicy !== undefined) {
+		const changePolicy = parseChangePolicy(compiled.changePolicy, "workflow block change_policy", flowPath);
+		if (metadata.changePolicy !== undefined) {
+			const frontmatterChangePolicy = parseChangePolicy(metadata.changePolicy, "frontmatter.changePolicy", flowPath);
+			if (!sameChangePolicy(frontmatterChangePolicy, changePolicy)) {
+				throw new WorkflowPackageError(
+					`${flowPath}: workflow block change_policy conflicts with frontmatter.changePolicy`,
+				);
+			}
+		}
+		result = { ...result, changePolicy };
+	}
+	return result;
 }
 
 function parseCheckpointPolicy(value: unknown, label: string, flowPath: string): { stopDeadlineMs: number } {
@@ -268,6 +286,42 @@ function parseCheckpointPolicy(value: unknown, label: string, flowPath: string):
 		throw new WorkflowPackageError(`${flowPath}: ${label}.stopDeadlineMs must be a finite number`);
 	}
 	return { stopDeadlineMs };
+}
+
+function parseChangePolicy(
+	value: unknown,
+	label: string,
+	flowPath: string,
+): { agentsCanPropose: boolean; humansCanApprove: boolean; supervisorsCanApprove?: boolean } {
+	const record = expectRecord(value, label, flowPath);
+	if (typeof record.agentsCanPropose !== "boolean") {
+		throw new WorkflowPackageError(`${flowPath}: ${label}.agentsCanPropose must be a boolean`);
+	}
+	if (typeof record.humansCanApprove !== "boolean") {
+		throw new WorkflowPackageError(`${flowPath}: ${label}.humansCanApprove must be a boolean`);
+	}
+	const policy = {
+		agentsCanPropose: record.agentsCanPropose,
+		humansCanApprove: record.humansCanApprove,
+	};
+	if (record.supervisorsCanApprove !== undefined) {
+		if (typeof record.supervisorsCanApprove !== "boolean") {
+			throw new WorkflowPackageError(`${flowPath}: ${label}.supervisorsCanApprove must be a boolean when defined`);
+		}
+		return { ...policy, supervisorsCanApprove: record.supervisorsCanApprove };
+	}
+	return policy;
+}
+
+function sameChangePolicy(
+	left: { agentsCanPropose: boolean; humansCanApprove: boolean; supervisorsCanApprove?: boolean },
+	right: { agentsCanPropose: boolean; humansCanApprove: boolean; supervisorsCanApprove?: boolean },
+): boolean {
+	return (
+		left.agentsCanPropose === right.agentsCanPropose &&
+		left.humansCanApprove === right.humansCanApprove &&
+		left.supervisorsCanApprove === right.supervisorsCanApprove
+	);
 }
 
 async function loadWorkflowImports(

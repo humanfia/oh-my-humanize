@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added a workflow DSL `checkpoint_policy` primitive that can supply production checkpoint policy from the fenced workflow block, with conflict checks against frontmatter checkpoint metadata.
+- Added workflow DSL `checkpoint_policy` and `change_policy` primitives that can supply production lifecycle policy from the fenced workflow block, with conflict checks against frontmatter metadata.
 - Added structured per-node model binding audits to workflow runtime binding snapshots, preserving model source, requested role/pattern, fallback status, fallback reason, and resolved model alongside the compact resolved-model map.
 - Added persistent TUI workflow monitoring: `/workflow` graph updates now replace a live monitor panel and write timestamped JSON snapshots under the agent workflow cache as observed graph state changes for later audit.
 - Added file-backed workflow prompt templates with explicit inline/state/output/human bindings, so `.omhflow` nodes can compose review state, prior outputs, and static prompt assets without building prompts in code.
