@@ -26,9 +26,12 @@ import type {
 import { type FlowFreeze, freezeWorkflowArtifact } from "../../workflow/freeze";
 import {
 	buildWorkflowGraphView,
-	formatActiveWorkflowAgent,
-	formatWorkflowActiveAgentGuidance,
+	formatWorkflowChangeReviewLines,
 	formatWorkflowConditionLabel,
+	formatWorkflowControlLines,
+	formatWorkflowOnFlightLines,
+	formatWorkflowOverviewLines,
+	formatWorkflowRecentOutputLines,
 	renderWorkflowGraphText,
 	type WorkflowGraphView,
 } from "../../workflow/graph-view";
@@ -2886,163 +2889,53 @@ function formatWorkflowManager(
 ): string {
 	const lines = [`Workflow manager: ${family.id}`];
 	if (family.objective !== undefined) lines.push(`Objective: ${family.objective}`);
-	const currentAttempt = family.attempts.at(-1);
-	const latestFreeze = family.freezes.at(-1);
-	const latestCheckpoint = family.checkpoints.at(-1);
 	const graphView = buildWorkflowGraphViewForRuntime(family, runtime);
-	lines.push("Focus:");
-	if (currentAttempt !== undefined) {
-		const checkpoint = currentAttempt.checkpointId ? ` from ${currentAttempt.checkpointId}` : "";
-		lines.push(
-			`- current attempt: ${currentAttempt.id} ${currentAttempt.status} freeze=${currentAttempt.freezeId}${checkpoint}`,
-		);
-	} else {
-		lines.push("- current attempt: none");
+
+	lines.push("Overview:");
+	for (const line of formatWorkflowOverviewLines(graphView)) lines.push(`- ${line}`);
+
+	const onFlight = formatWorkflowOnFlightLines(graphView);
+	if (onFlight.length > 0) {
+		lines.push("On-flight:");
+		for (const line of onFlight) lines.push(`- ${line}`);
 	}
-	lines.push(`- latest freeze: ${latestFreeze?.id ?? "none"}`);
-	if (latestCheckpoint !== undefined) {
-		lines.push(
-			`- latest checkpoint: ${latestCheckpoint.id} frontier=${latestCheckpoint.frontierNodeIds.join(", ") || "none"}`,
-		);
-	} else {
-		lines.push("- latest checkpoint: none");
+
+	const recentOutput = formatWorkflowRecentOutputLines(graphView);
+	if (recentOutput.length > 0) {
+		lines.push("Recent output:");
+		for (const line of recentOutput) lines.push(`- ${line}`);
 	}
-	lines.push("Active agents:");
-	if (graphView.activeAgents === undefined || graphView.activeAgents.length === 0) {
-		if (
-			currentAttempt?.status === "running" &&
-			currentAttempt.activations.some(activation => activation.status === "running")
-		) {
-			lines.push(
-				"- no live agent process is attached in this OMP session; interrupt to checkpoint before restarting.",
-			);
-			lines.push(`- interrupt active attempt: /workflow stop ${currentAttempt.id} --deadline-ms 30000`);
-		} else {
-			lines.push("- none");
-		}
-	} else {
-		for (const guidance of formatWorkflowActiveAgentGuidance()) lines.push(`- ${guidance}`);
-		for (const agent of graphView.activeAgents) {
-			lines.push(`- ${formatActiveWorkflowAgent(agent)}`);
-		}
-		if (currentAttempt?.status === "running") {
-			for (const agent of graphView.activeAgents) {
-				lines.push(
-					`- interrupt agent ${agent.role} · ${agent.label}: /workflow interrupt ${currentAttempt.id} ${agent.focusAgentId} --deadline-ms 30000`,
-				);
-			}
-		}
-		const focusTargets = graphView.activeAgents.map(agent => agent.focusAgentId).join(" or ");
-		lines.push(
-			`- watch/intervene live agent: open Agent Hub with double-left or the observe key, then press Enter on ${focusTargets}`,
-		);
-		if (currentAttempt?.status === "running") {
-			lines.push(`- interrupt active attempt: /workflow stop ${currentAttempt.id} --deadline-ms 30000`);
-		}
-	}
+
 	lines.push("Change review:");
-	if (family.changeRequests.length === 0) {
+	const changeReview = formatWorkflowChangeReviewLines(graphView);
+	if (changeReview.length === 0) {
 		lines.push("- none");
 	} else {
-		for (const request of family.changeRequests) {
-			lines.push(formatWorkflowManagerChangeRequest(request));
-			for (const operation of request.operations) {
-				lines.push(`  op: ${formatWorkflowManagerOperation(operation)}`);
-			}
-			if (request.status === "proposed") {
-				lines.push(`  approve: /workflow approve-change ${request.id} --actor human`);
-				lines.push(`  reject: /workflow reject-change ${request.id} --actor human --reason <reason>`);
-			}
-			if (request.status === "approved" && latestFreeze !== undefined) {
-				lines.push(`  apply: /workflow apply-change ${request.id} --freeze-id ${latestFreeze.id} --actor human`);
-			}
-		}
+		for (const line of changeReview) lines.push(`- ${line}`);
 	}
-	lines.push("Runtime bindings:");
-	if (family.attempts.length === 0) {
-		lines.push("- none");
-	} else {
-		for (const attempt of family.attempts) {
-			lines.push(formatWorkflowManagerBinding(attempt));
-			for (const warning of attempt.runtimeBindingSnapshot.warnings) lines.push(`  warning: ${warning}`);
-			for (const unavailable of attempt.runtimeBindingSnapshot.unavailable) {
-				lines.push(`  unavailable: ${unavailable}`);
-			}
-		}
+
+	const diagnostics = formatWorkflowManagerDiagnostics(family);
+	if (diagnostics.length > 0) {
+		lines.push("Diagnostics:");
+		for (const diagnostic of diagnostics) lines.push(`- ${diagnostic}`);
 	}
-	lines.push("Operator actions:");
-	lines.push(`- graph: /workflow graph --family-id ${family.id}`);
-	if (currentAttempt?.status === "running") {
-		if (graphView.activeAgents !== undefined && graphView.activeAgents.length > 0) {
-			lines.push("- agent hub: double-left or observe key; Enter attaches prompt, Esc returns");
-		}
-		lines.push(`- interrupt: /workflow stop ${currentAttempt.id} --deadline-ms 30000`);
-	}
-	for (const checkpoint of family.checkpoints) {
-		const runningResume = findRunningWorkflowCheckpointResumeAttempt(family, checkpoint.id);
-		if (runningResume !== undefined) {
-			lines.push(`- resume in progress: ${runningResume.id} from ${checkpoint.id}`);
-		} else {
-			const freezeSuffix = latestFreeze === undefined ? "" : ` --freeze-id ${latestFreeze.id}`;
-			lines.push(`- restart: /workflow restart ${checkpoint.id}${freezeSuffix} --background`);
-		}
-	}
-	lines.push(`- request change: /workflow request-change <file> --family-id ${family.id}`);
+
+	lines.push("Controls:");
+	for (const action of formatWorkflowControlLines(graphView)) lines.push(`- ${action}`);
 	return lines.join("\n");
 }
 
-function formatWorkflowManagerChangeRequest(request: WorkflowChangeRequestRecord): string {
-	const approval = request.approvedBy ? ` approvedBy=${request.approvedBy}` : "";
-	const rejection = request.rejectedBy ? ` rejectedBy=${request.rejectedBy}` : "";
-	const applied =
-		request.applications.length > 0 ? ` applied=${formatWorkflowChangeApplications(request.applications)}` : "";
-	return `- ${request.id} ${request.status} ${request.origin} actor=${request.actor} ops=${request.operations.length}${approval}${rejection}${applied} - ${request.reason}`;
-}
-
-function formatWorkflowManagerOperation(operation: WorkflowGraphPatchOperation): string {
-	if (operation.op === "add_node") return `add_node ${operation.node.id}`;
-	if (operation.op === "remove_node") return `remove_node ${operation.nodeId}`;
-	if (operation.op === "add_edge") return `add_edge ${operation.edge.from} -> ${operation.edge.to}`;
-	if (operation.op === "remove_edge") return `remove_edge ${operation.from} -> ${operation.to}`;
-	if (operation.op === "replace_edge_condition") {
-		return `replace_edge_condition ${operation.from} -> ${operation.to}`;
+function formatWorkflowManagerDiagnostics(family: WorkflowRunFamilySnapshot): string[] {
+	const diagnostics: string[] = [];
+	for (const attempt of family.attempts) {
+		for (const warning of attempt.runtimeBindingSnapshot.warnings) {
+			diagnostics.push(`${attempt.id}: warning ${warning}`);
+		}
+		for (const unavailable of attempt.runtimeBindingSnapshot.unavailable) {
+			diagnostics.push(`${attempt.id}: unavailable ${unavailable}`);
+		}
 	}
-	if (operation.op === "replace_node_prompt_source") {
-		return `replace_node_prompt_source ${operation.nodeId}`;
-	}
-	if (operation.op === "replace_node_model") return `replace_node_model ${operation.nodeId}`;
-	if (operation.op === "replace_node_permissions") return `replace_node_permissions ${operation.nodeId}`;
-	if (operation.op === "set_model_role") return `set_model_role ${operation.role}`;
-	if (operation.op === "abandon_branch") return `abandon_branch ${operation.nodeId}`;
-	if (operation.op === "rollback_branch") return `rollback_branch ${operation.nodeId} -> ${operation.targetNodeId}`;
-	return operation satisfies never;
-}
-
-function formatWorkflowManagerBinding(attempt: WorkflowRunAttemptSnapshot): string {
-	const binding = attempt.runtimeBindingSnapshot;
-	const parts = [
-		`tools=${formatWorkflowManagerList(binding.tools)}`,
-		`agents=${formatWorkflowManagerList(binding.agents)}`,
-		...(binding.plugins && binding.plugins.length > 0
-			? [`plugins=${formatWorkflowManagerList(binding.plugins)}`]
-			: []),
-		...(binding.extensions && binding.extensions.length > 0
-			? [`extensions=${formatWorkflowManagerList(binding.extensions)}`]
-			: []),
-		...(binding.skills && binding.skills.length > 0 ? [`skills=${formatWorkflowManagerList(binding.skills)}`] : []),
-		`models=${formatWorkflowManagerModels(binding.resolvedModels)}`,
-	];
-	return `- ${attempt.id} ${binding.id} ${parts.join(" ")}`;
-}
-
-function formatWorkflowManagerModels(models: Record<string, string>): string {
-	const entries = Object.entries(models);
-	if (entries.length === 0) return "none";
-	return entries.map(([key, value]) => `${key}=${value}`).join(",");
-}
-
-function formatWorkflowManagerList(values: string[]): string {
-	return values.length === 0 ? "none" : values.join(",");
+	return diagnostics;
 }
 
 function formatWorkflowInspection(inspection: WorkflowInspection): string {

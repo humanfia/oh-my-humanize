@@ -1065,8 +1065,10 @@ edges: []
 				consumed: true,
 			},
 		);
-		expect(output.at(-1)).toContain("tools=bash");
-		expect(output.at(-1)).not.toContain("unavailable: tool:bash");
+		expect(output.at(-1)).toContain("Workflow manager: family-bash-binding");
+		expect(output.at(-1)).not.toContain("Diagnostics:");
+		expect(output.at(-1)).not.toContain("Runtime bindings:");
+		expect(output.at(-1)).not.toContain("unavailable tool:bash");
 	});
 
 	it("records plugin, extension, and skill capability binding diagnostics", async () => {
@@ -1179,12 +1181,12 @@ edges: []
 		expect(await executeAcpBuiltinSlashCommand("/workflow manager --family-id family-portable", runtime)).toEqual({
 			consumed: true,
 		});
+		expect(output.at(-1)).toContain("Diagnostics:");
 		expect(output.at(-1)).toContain(
-			"plugins=humanize-loop,missing-plugin,optimizer@community extensions=absent-extension,humanize-extension skills=grill-me,missing-skill",
+			"unavailable plugin:optimizer@community: installed marketplace plugin is disabled",
 		);
-		expect(output.at(-1)).toContain(
-			"unavailable: plugin:optimizer@community: installed marketplace plugin is disabled",
-		);
+		expect(output.at(-1)).not.toContain("plugins=humanize-loop");
+		expect(output.at(-1)).not.toContain("Runtime bindings:");
 	});
 
 	it("freezes artifacts and records file-based change request approvals", async () => {
@@ -2051,10 +2053,8 @@ edges: []
 		const managerOutput = output.at(-1) ?? "";
 		expect(calls).toEqual(["verify"]);
 		expect(output.some(entry => entry.includes("Workflow background restart attempt started: attempt-2"))).toBeTrue();
-		expect(managerOutput).toContain(
-			"- current attempt: attempt-2 running freeze=flowfreeze:failed-b from attempt-1:checkpoint-1",
-		);
-		expect(managerOutput).toContain("- resume in progress: attempt-2 from attempt-1:checkpoint-1");
+		expect(managerOutput).toContain("- Run: attempt-2 running from checkpoint-1");
+		expect(managerOutput).toContain("- Resume in progress: attempt-2 from attempt-1:checkpoint-1");
 		expect(reconstructWorkflowFamilies(entries)[0]?.changeRequests[0]?.applications).toMatchObject([
 			{
 				target: "freeze",
@@ -3891,9 +3891,7 @@ edges: []
 		const family = reconstructWorkflowFamilies(entries)[0];
 		expect(calls).toEqual(["strongReview"]);
 		expect(output.some(entry => entry.includes("Workflow restart attempt: attempt-2"))).toBeTrue();
-		expect(
-			output.some(entry => entry.includes("Checkpoint frontier: checkpoint-migration weakReview to strongReview")),
-		).toBeTrue();
+		expect(output.some(entry => entry.includes("Frontier: weakReview to strongReview"))).toBeTrue();
 		expect(family?.attempts[1]?.startNodeIds).toEqual(["strongReview"]);
 		expect(family?.attempts.map(attempt => [attempt.id, attempt.freezeId, attempt.status])).toEqual([
 			["attempt-1", "flowfreeze:a", "stopped"],
@@ -4376,29 +4374,25 @@ edges:
 		});
 
 		expect(output[0]).toContain("Workflow manager: family-optimizer");
-		expect(output[0]).toContain("Focus:");
-		expect(output[0]).toContain(
-			"- current attempt: attempt-integrate running freeze=flowfreeze:b from checkpoint-search",
-		);
-		expect(output[0]).toContain("- latest checkpoint: checkpoint-search frontier=evaluate");
+		expect(output[0]).toContain("Overview:");
+		expect(output[0]).toContain("- Run: attempt-integrate running from checkpoint-search");
+		expect(output[0]).toContain("- Frontier: evaluate to integrate");
+		expect(output[0]).toContain("- On-flight: none");
+		expect(output[0]).not.toContain("On-flight:\n- none");
 		expect(output[0]).toContain("Change review:");
 		expect(output[0]).toContain(
-			"- change-integrate approved internal-agent actor=agent:evaluator ops=1 approvedBy=human:sihao applied=freeze:flowfreeze:b:human:sihao - promote positive optimization",
+			"- change-integrate approved by human:sihao · applied - promote positive optimization",
 		);
-		expect(output[0]).toContain("  op: add_node integrate");
-		expect(output[0]).toContain("Runtime bindings:");
+		expect(output[0]).toContain("Diagnostics:");
+		expect(output[0]).toContain("- attempt-search: warning model:tryTiling: fallback used");
 		expect(output[0]).toContain(
-			"- attempt-search binding-search tools=task agents=task models=builder=openai/gpt-4o",
+			"- attempt-integrate: unavailable tool:eval: workflow runtime host does not support script nodes",
 		);
-		expect(output[0]).toContain("  warning: model:tryTiling: fallback used");
-		expect(output[0]).toContain(
-			"- attempt-integrate binding-integrate tools=task agents=task models=builder=openai/gpt-4o",
-		);
-		expect(output[0]).toContain("  unavailable: tool:eval: workflow runtime host does not support script nodes");
-		expect(output[0]).toContain("Operator actions:");
-		expect(output[0]).toContain("- graph: /workflow graph --family-id family-optimizer");
-		expect(output[0]).toContain("- interrupt: /workflow stop attempt-integrate --deadline-ms 30000");
-		expect(output[0]).toContain("- resume in progress: attempt-integrate from checkpoint-search");
+		expect(output[0]).toContain("Controls:");
+		expect(output[0]).toContain("- Refresh · /workflow graph --family-id family-optimizer");
+		expect(output[0]).toContain("- Stop attempt · /workflow stop attempt-integrate --deadline-ms 30000");
+		expect(output[0]).toContain("- Resume in progress: attempt-integrate from checkpoint-search");
+		expect(output[0]).not.toContain("Runtime bindings:");
 		expect(output[0]).not.toContain(
 			"- restart: /workflow restart checkpoint-search --freeze-id flowfreeze:b --background",
 		);
@@ -4513,29 +4507,26 @@ edges: []
 		});
 
 		const managerOutput = output.at(-1) ?? "";
-		expect(managerOutput).toContain("Active agents:");
+		expect(managerOutput).toContain("On-flight:");
 		expect(managerOutput).toContain(
-			"- Use Agent Hub to watch or intervene; interrupt a selected live agent if it does not settle.",
-		);
-		expect(managerOutput).toContain(
-			"- Agent Hub Enter attaches the main prompt to a live agent; Esc returns to workflow control.",
+			"- Agent Hub: double-left or observe to watch; Enter steers the selected agent; Esc returns.",
 		);
 		expect(managerOutput).toContain("- Builder · Build round live");
 		expect(managerOutput).toContain("- Reviewer · Review round live");
 		expect(managerOutput).toContain("- Builder · Build round live (watch/intervene buildRound)");
 		expect(managerOutput).toContain(
-			"- interrupt agent Builder · Build round: /workflow interrupt live-manager:attempt-1 buildRound --deadline-ms 30000",
+			"- Interrupt Builder · Build round · /workflow interrupt live-manager:attempt-1 buildRound --deadline-ms 30000",
 		);
 		expect(managerOutput).toContain(
-			"- interrupt agent Reviewer · Review round: /workflow interrupt live-manager:attempt-1 reviewRound --deadline-ms 30000",
+			"- Interrupt Reviewer · Review round · /workflow interrupt live-manager:attempt-1 reviewRound --deadline-ms 30000",
 		);
 		expect(managerOutput).toContain(
-			"- watch/intervene live agent: open Agent Hub with double-left or the observe key, then press Enter on buildRound or reviewRound",
+			"- Open Agent Hub · double-left or observe key; watch/intervene buildRound or reviewRound",
 		);
+		expect(managerOutput).toContain("- Stop attempt · /workflow stop live-manager:attempt-1 --deadline-ms 30000");
 		expect(managerOutput).toContain(
-			"- interrupt active attempt: /workflow stop live-manager:attempt-1 --deadline-ms 30000",
+			"- Steer selected agent · Agent Hub Enter attaches to the selected agent; Esc returns to workflow control",
 		);
-		expect(managerOutput).toContain("- agent hub: double-left or observe key; Enter attaches prompt, Esc returns");
 		expect(managerOutput).not.toContain("agent:task");
 		expect(managerOutput).not.toContain("review:task");
 		expect(managerOutput).not.toContain("/agents");
@@ -4705,10 +4696,10 @@ edges: []
 		);
 		const managerOutput = output.at(-1) ?? "";
 		expect(managerOutput).toContain(
-			"- interrupt agent Builder · Build a: /workflow interrupt selected-interrupt:attempt-1 buildA --deadline-ms 30000",
+			"- Interrupt Builder · Build a · /workflow interrupt selected-interrupt:attempt-1 buildA --deadline-ms 30000",
 		);
 		expect(managerOutput).toContain(
-			"- interrupt agent Builder · Build b: /workflow interrupt selected-interrupt:attempt-1 buildB --deadline-ms 30000",
+			"- Interrupt Builder · Build b · /workflow interrupt selected-interrupt:attempt-1 buildB --deadline-ms 30000",
 		);
 
 		const interrupt = executeBuiltinSlashCommand(
@@ -4820,7 +4811,7 @@ edges:
 		expect(managerOutput).toContain("- Builder · Build path live · round 2 · openai/gpt-4o");
 		expect(managerOutput).toContain("(watch/intervene build_path-2)");
 		expect(managerOutput).toContain(
-			"- interrupt agent Builder · Build path: /workflow interrupt sanitized-loop-interrupt:attempt-1 build_path-2 --deadline-ms 30000",
+			"- Interrupt Builder · Build path · /workflow interrupt sanitized-loop-interrupt:attempt-1 build_path-2 --deadline-ms 30000",
 		);
 
 		const interrupt = executeBuiltinSlashCommand(
@@ -4878,11 +4869,9 @@ edges:
 			},
 		);
 
-		expect(output[0]).toContain("Active agents:");
-		expect(output[0]).toContain(
-			"- no live agent process is attached in this OMP session; interrupt to checkpoint before restarting.",
-		);
-		expect(output[0]).toContain("- interrupt active attempt: /workflow stop attempt-stale --deadline-ms 30000");
+		expect(output[0]).toContain("On-flight:");
+		expect(output[0]).toContain("- Build round running");
+		expect(output[0]).toContain("- Stop attempt · /workflow stop attempt-stale --deadline-ms 30000");
 		expect(output[0]).not.toContain("Agent Hub watches live transcripts");
 		expect(output[0]).not.toContain("watch/intervene live agent");
 		expect(output[0]).not.toContain("agent hub: double-left");
@@ -5008,9 +4997,10 @@ edges:
 
 		expect(output[0]).toContain("Workflow graph: family-mutable");
 		expect(output[0]).toContain("Objective: upgrade review before validation");
-		expect(output[0]).toContain("Latest freeze: flowfreeze:strong");
-		expect(output[0]).toContain("Current attempt: attempt-strong failed from checkpoint-weak");
-		expect(output[0]).toContain("Changes: 1 approved, 0 proposed, 0 rejected");
+		expect(output[0]).toContain("Overview:");
+		expect(output[0]).toContain("- Run: attempt-strong failed from checkpoint-weak");
+		expect(output[0]).toContain("- Changes: 1 approved");
+		expect(output[0]).toContain("- Frontier: runValidation to runValidation");
 		expect(output[0]).toContain("Diagram:");
 		expect(output[0]).toContain("│◆ planner");
 		expect(output[0]).toContain("checkpointed - planned validation with extra...");
@@ -5019,11 +5009,14 @@ edges:
 		expect(output[0]).toContain("║! strongReview");
 		expect(nodeCenterHasIncomingConnector(output[0], "strongReview")).toBe(true);
 		expect(output[0]).toContain("failed - error: review prompt missing");
-		expect(output[0]).toContain("Checkpoint frontier: checkpoint-weak runValidation to runValidation");
-		expect(output[0]).toContain("Mutable lineage:");
+		expect(output[0]).toContain("Recent output:");
+		expect(output[0]).toContain("- Strong review stderr: review prompt missing");
+		expect(output[0]).toContain("Change review:");
 		expect(output[0]).toContain(
-			"- change-strong-review approved by human:sihao applied=freeze:flowfreeze:strong:human:sihao - replace weak review with strong review",
+			"- change-strong-review approved by human:sihao · applied - replace weak review with strong review",
 		);
+		expect(output[0]).not.toContain("Latest freeze:");
+		expect(output[0]).not.toContain("Runtime binding:");
 	});
 
 	it("prints workflow attempt errors in lifecycle lists", async () => {

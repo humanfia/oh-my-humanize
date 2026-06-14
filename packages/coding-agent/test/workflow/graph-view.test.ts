@@ -159,7 +159,7 @@ describe("workflow graph view rendering", () => {
 			subflows: 1,
 		});
 		expect(renderWorkflowGraphText(view)).toContain(
-			"Topology: parallel fan-outs 1 / branch points 1 / joins 1 / loops 1 / subflows 1",
+			"Flow: parallel fan-outs 1 / branch points 1 / joins 1 / loops 1 / subflows 1 · 5 nodes",
 		);
 	});
 
@@ -230,24 +230,21 @@ describe("workflow graph view rendering", () => {
 
 		const text = renderWorkflowGraphText(view);
 
-		expect(text).toContain("Active agents:");
+		expect(text).toContain("On-flight:");
 		expect(text).toContain(
-			"Use Agent Hub to watch or intervene; interrupt a selected live agent if it does not settle.",
-		);
-		expect(text).toContain(
-			"Agent Hub Enter attaches the main prompt to a live agent; Esc returns to workflow control.",
+			"Agent Hub: double-left or observe to watch; Enter steers the selected agent; Esc returns.",
 		);
 		expect(text).toContain("- Builder · Build round live");
 		expect(text).toContain("- Reviewer · Review round live");
 		expect(text).toContain(
-			"Interrupt Builder · Build round: /workflow interrupt attempt-1 buildRound --deadline-ms 30000",
+			"Interrupt Builder · Build round · /workflow interrupt attempt-1 buildRound --deadline-ms 30000",
 		);
 		expect(text).toContain(
-			"Interrupt Reviewer · Review round: /workflow interrupt attempt-1 reviewRound --deadline-ms 30000",
+			"Interrupt Reviewer · Review round · /workflow interrupt attempt-1 reviewRound --deadline-ms 30000",
 		);
-		expect(text).toContain("Open Agent Hub: double-left or observe key; watch/intervene buildRound or reviewRound");
+		expect(text).toContain("Open Agent Hub · double-left or observe key; watch/intervene buildRound or reviewRound");
 		expect(text).toContain(
-			"Focused prompt: Agent Hub Enter attaches to the selected agent; Esc returns to workflow control",
+			"Steer selected agent · Agent Hub Enter attaches to the selected agent; Esc returns to workflow control",
 		);
 		expect(text).not.toContain("Focus agent: /agents");
 	});
@@ -310,6 +307,7 @@ describe("workflow graph view rendering", () => {
 							currentTool: "bash",
 							currentToolArgs: "bun test",
 							lastIntent: "tightening the recursive runner validation",
+							recentOutput: ["Running bun test", "Fixed loop termination case"],
 							durationMs: 65_000,
 							toolCount: 4,
 						},
@@ -330,6 +328,7 @@ describe("workflow graph view rendering", () => {
 				tool: "bash bun test",
 				activity: "tightening the recursive runner validation",
 				stats: "1m05s · 4 tools",
+				recentOutput: ["Running bun test", "Fixed loop termination case"],
 			},
 		]);
 
@@ -338,6 +337,9 @@ describe("workflow graph view rendering", () => {
 		expect(text).toContain(
 			"- Builder · Build round live · rust.cat/gpt-5.5 · tool bash bun test · 1m05s · 4 tools - tightening the recursive runner validation",
 		);
+		expect(text).toContain("Recent output:");
+		expect(text).toContain("- Builder · Build round stdout: Running bun test");
+		expect(text).toContain("- Builder · Build round stdout: Fixed loop termination case");
 		expect(text).not.toContain("activation-build");
 		expect(text).not.toContain("agent:task");
 	});
@@ -410,9 +412,9 @@ describe("workflow graph view rendering", () => {
 
 		expect(text).toContain("- Builder · Build round live · round 2 (watch/intervene buildRound-2)");
 		expect(text).toContain(
-			"Interrupt Builder · Build round: /workflow interrupt attempt-1 buildRound-2 --deadline-ms 30000",
+			"Interrupt Builder · Build round · /workflow interrupt attempt-1 buildRound-2 --deadline-ms 30000",
 		);
-		expect(text).toContain("Open Agent Hub: double-left or observe key; watch/intervene buildRound-2");
+		expect(text).toContain("Open Agent Hub · double-left or observe key; watch/intervene buildRound-2");
 	});
 
 	it("keeps default graph labels human-facing instead of showing runtime adapter names", () => {
@@ -559,9 +561,9 @@ describe("workflow graph view rendering", () => {
 				resourcePrefix: "humanize",
 			},
 		]);
-		expect(text).toContain("Subflows:");
+		expect(text).toContain("Flow calls:");
 		expect(text).toContain(
-			"- humanize -> humanize-reference@1 namespace=humanize__ nodes=2 entries=humanize__planQuiz exits=humanize__finalize resources=humanize",
+			"- humanize calls humanize-reference@1 · 2 nodes · entry planQuiz · exit finalize · resources humanize",
 		);
 	});
 
@@ -801,7 +803,7 @@ describe("workflow graph view rendering", () => {
 
 		expect(view.checkpoint?.frontier).toEqual([{ from: "weakReview", to: "strongReview" }]);
 		expect(view.nodes.find(node => node.id === "strongReview")?.status).toBe("frontier");
-		expect(renderWorkflowGraphText(view)).toContain("Checkpoint frontier: checkpoint-1 weakReview to strongReview");
+		expect(renderWorkflowGraphText(view)).toContain("- Frontier: weakReview to strongReview");
 	});
 
 	it("surfaces checkpointed aborted work as omitted activation output", async () => {
@@ -853,16 +855,14 @@ describe("workflow graph view rendering", () => {
 		});
 
 		expect(view.checkpoint?.omittedAbortedOutputs).toBe(1);
-		expect(renderWorkflowGraphText(view)).toContain(
-			"Checkpoint omitted aborted work: checkpoint-1 1 activation output omitted",
-		);
+		expect(renderWorkflowGraphText(view)).toContain("- Aborted work: 1 activation output omitted");
 
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("dark theme fixture is required");
 		setThemeInstance(theme);
 		const componentText = stripAnsi(new WorkflowGraphComponent(view, { refreshMs: 0 }).render(120).join("\n"));
 
-		expect(componentText).toContain("aborted work 1 activation output omitted");
+		expect(componentText).toContain("Aborted work: 1 activation output omitted");
 		expect(componentText).not.toContain("half-finished");
 	});
 
@@ -1058,7 +1058,7 @@ describe("workflow graph view rendering", () => {
 
 		const text = stripAnsi(component.render(120).join("\n"));
 
-		expect(text).toContain("frontier weakReview to strongReview");
+		expect(text).toContain("Frontier: weakReview to strongReview");
 		expect(text).not.toContain("frontier weakReview -> strongReview");
 		expect(text).not.toMatch(/[-─]+[>→▶]|[<←◀][-─]+|->|=>|→{1,}|←{1,}/u);
 	});
@@ -1097,10 +1097,10 @@ describe("workflow graph view rendering", () => {
 
 		const text = stripAnsi(component.render(120).join("\n"));
 
-		expect(text).toContain("subflows");
-		expect(text).toContain("humanize -> humanize-reference@1");
-		expect(text).toContain("nodes=2");
-		expect(text).toContain("resources=humanize");
+		expect(text).toContain("flow calls");
+		expect(text).toContain("humanize calls humanize-reference@1");
+		expect(text).toContain("2 nodes");
+		expect(text).toContain("resources humanize");
 	});
 
 	it("renders active workflow agents in the live TUI graph component", async () => {
@@ -1124,12 +1124,9 @@ describe("workflow graph view rendering", () => {
 
 		const text = stripAnsi(component.render(120).join("\n"));
 
-		expect(text).toContain("active agents");
+		expect(text).toContain("on-flight");
 		expect(text).toContain(
-			"Use Agent Hub to watch or intervene; interrupt a selected live agent if it does not settle.",
-		);
-		expect(text).toContain(
-			"Agent Hub Enter attaches the main prompt to a live agent; Esc returns to workflow control.",
+			"Agent Hub: double-left or observe to watch; Enter steers the selected agent; Esc returns.",
 		);
 		expect(text).toContain("● Builder · Build round live · round 3 - editing implementation");
 		expect(text).toContain("watch/intervene buildRound");
@@ -1273,13 +1270,16 @@ describe("workflow graph view rendering", () => {
 
 		const text = stripAnsi(component.render(120).join("\n"));
 
-		expect(text).toContain("topology branch points 1 / loops 1");
-		expect(text).toContain("focus live Reviewer · Review round");
-		expect(text).toContain("Agent Hub: double-left or observe key; Enter to attach; Esc to return");
-		expect(text.indexOf("topology branch points 1 / loops 1")).toBeLessThan(text.indexOf("diagram"));
-		const cockpitSectionIndex = text.indexOf(" cockpit ");
-		expect(cockpitSectionIndex).toBeGreaterThan(text.indexOf("diagram"));
-		expect(cockpitSectionIndex).toBeLessThan(text.indexOf("controls"));
+		expect(text).toContain("Flow: branch points 1 / loops 1 · 3 nodes");
+		expect(text).toContain("Focus: live Reviewer · Review round");
+		expect(text).toContain(
+			"Agent Hub: double-left or observe to watch; Enter steers the selected agent; Esc returns.",
+		);
+		expect(text).toContain(" on-flight ");
+		expect(text).toContain("● Reviewer · Review round live");
+		expect(text.indexOf("Flow: branch points 1 / loops 1")).toBeLessThan(text.indexOf("diagram"));
+		expect(text.indexOf(" on-flight ")).toBeLessThan(text.indexOf("diagram"));
+		expect(text).not.toContain(" cockpit ");
 		expect(text).not.toContain("agent:task");
 		expect(text).not.toContain("activation-review");
 	});

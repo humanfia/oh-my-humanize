@@ -84,6 +84,7 @@ export interface WorkflowGraphActiveAgentView {
 	activity?: string;
 	stats?: string;
 	summary?: string;
+	recentOutput?: string[];
 }
 
 export interface WorkflowGraphNodeView {
@@ -164,6 +165,8 @@ export interface WorkflowGraphActiveAgentRetryState {
 }
 
 const WORKFLOW_DETAIL_PREVIEW_CHARS = 180;
+const WORKFLOW_RECENT_OUTPUT_LINES = 4;
+const WORKFLOW_RECENT_OUTPUT_PER_AGENT = 2;
 const MIN_NODE_WIDTH = 31;
 const DEFAULT_NODE_WIDTH = 49;
 const MAX_NODE_WIDTH = 71;
@@ -255,27 +258,21 @@ export function buildWorkflowGraphView(
 export function renderWorkflowGraphText(view: WorkflowGraphView, options: WorkflowGraphRenderOptions = {}): string {
 	const lines: string[] = [`Workflow graph: ${view.familyId}`];
 	if (view.objective !== undefined) lines.push(`Objective: ${view.objective}`);
-	lines.push(`Latest freeze: ${view.latestFreezeId ?? "none"}`);
-	if (view.currentAttempt !== undefined) {
-		const checkpoint = view.currentAttempt.checkpointId ? ` from ${view.currentAttempt.checkpointId}` : "";
-		lines.push(`Current attempt: ${view.currentAttempt.id} ${view.currentAttempt.status}${checkpoint}`);
-		lines.push(`Runtime binding: ${view.currentAttempt.runtimeBindingId}`);
-	} else {
-		lines.push("Current attempt: none");
-	}
-	lines.push(
-		`Changes: ${view.changes.approved} approved, ${view.changes.proposed} proposed, ${view.changes.rejected} rejected`,
-	);
-	lines.push(`Topology: ${formatWorkflowTopology(view.topology)}`);
-	lines.push(`Focus: ${formatWorkflowOperatorFocus(view)}`);
+	lines.push("Overview:");
+	for (const line of formatWorkflowOverviewLines(view)) lines.push(`- ${line}`);
 	if (view.subflows !== undefined && view.subflows.length > 0) {
-		lines.push("Subflows:");
+		lines.push("Flow calls:");
 		for (const subflow of view.subflows) lines.push(`- ${formatWorkflowSubflow(subflow)}`);
 	}
-	if (view.activeAgents !== undefined && view.activeAgents.length > 0) {
-		lines.push("Active agents:");
-		lines.push(...formatWorkflowActiveAgentGuidance());
-		for (const agent of view.activeAgents) lines.push(`- ${formatActiveWorkflowAgent(agent)}`);
+	const onFlight = formatWorkflowOnFlightLines(view);
+	if (onFlight.length > 0) {
+		lines.push("On-flight:");
+		for (const line of onFlight) lines.push(`- ${line}`);
+	}
+	const recentOutput = formatWorkflowRecentOutputLines(view);
+	if (recentOutput.length > 0) {
+		lines.push("Recent output:");
+		for (const line of recentOutput) lines.push(`- ${line}`);
 	}
 	lines.push("Diagram:");
 	lines.push(...renderWorkflowGraphDiagram(view, options));
@@ -283,24 +280,12 @@ export function renderWorkflowGraphText(view: WorkflowGraphView, options: Workfl
 		lines.push("Selected routes:");
 		for (const route of view.selectedRoutes) lines.push(`- ${formatWorkflowSelectedRoute(route)}`);
 	}
-	if (view.checkpoint !== undefined) {
-		lines.push(`Checkpoint frontier: ${view.checkpoint.id} ${formatCheckpointFrontier(view.checkpoint)}`);
-		if ((view.checkpoint.omittedAbortedOutputs ?? 0) > 0) {
-			lines.push(
-				`Checkpoint omitted aborted work: ${view.checkpoint.id} ${formatOmittedAbortedOutputs(view.checkpoint.omittedAbortedOutputs ?? 0)}`,
-			);
-		}
-	}
 	if (view.lineage.length > 0) {
-		lines.push("Mutable lineage:");
-		for (const request of view.lineage) {
-			const actor = request.actor === undefined ? "" : ` by ${request.actor}`;
-			const applied = request.applications.length === 0 ? "" : ` applied=${request.applications.join(",")}`;
-			lines.push(`- ${request.id} ${request.status}${actor}${applied} - ${request.reason}`);
-		}
+		lines.push("Change review:");
+		for (const line of formatWorkflowChangeReviewLines(view)) lines.push(`- ${line}`);
 	}
-	lines.push("Actions:");
-	for (const action of view.actions) lines.push(`- ${action}`);
+	lines.push("Controls:");
+	for (const action of formatWorkflowControlLines(view)) lines.push(`- ${action}`);
 	return lines.join("\n");
 }
 
@@ -1109,10 +1094,12 @@ function formatActiveWorkflowAgents(
 		const tool = formatWorkflowActiveAgentTool(progress);
 		const activity = formatWorkflowActiveAgentActivity(progress);
 		const stats = formatWorkflowActiveAgentStats(progress);
+		const recentOutput = formatWorkflowActiveAgentRecentOutput(progress);
 		if (model !== undefined) view.model = model;
 		if (tool !== undefined) view.tool = tool;
 		if (activity !== undefined) view.activity = activity;
 		if (stats !== undefined) view.stats = stats;
+		if (recentOutput.length > 0) view.recentOutput = recentOutput;
 		if (activation.output?.summary !== undefined) view.summary = activation.output.summary;
 		activeAgents.push(view);
 	}
@@ -1134,10 +1121,7 @@ export function formatActiveWorkflowAgent(agent: WorkflowGraphActiveAgentView): 
 }
 
 export function formatWorkflowActiveAgentGuidance(): string[] {
-	return [
-		"Use Agent Hub to watch or intervene; interrupt a selected live agent if it does not settle.",
-		"Agent Hub Enter attaches the main prompt to a live agent; Esc returns to workflow control.",
-	];
+	return ["Agent Hub: double-left or observe to watch; Enter steers the selected agent; Esc returns."];
 }
 
 export function formatActiveWorkflowAgentGeneration(agent: WorkflowGraphActiveAgentView): string {
@@ -1169,6 +1153,15 @@ function formatWorkflowActiveAgentActivity(progress: WorkflowGraphActiveAgentPro
 		.filter(line => line.length > 0)
 		.at(-1);
 	return recent;
+}
+
+function formatWorkflowActiveAgentRecentOutput(progress: WorkflowGraphActiveAgentProgress | undefined): string[] {
+	return (
+		progress?.recentOutput
+			?.map(line => formatSingleLineWorkflowDetail(line))
+			.filter(line => line.length > 0)
+			.slice(0, WORKFLOW_RECENT_OUTPUT_PER_AGENT) ?? []
+	);
 }
 
 function formatWorkflowActiveAgentStats(progress: WorkflowGraphActiveAgentProgress | undefined): string | undefined {
@@ -1223,6 +1216,80 @@ export function formatWorkflowTopology(topology: WorkflowGraphTopologyView): str
 	return parts.length === 0 ? "linear" : parts.join(" / ");
 }
 
+export function formatWorkflowOverviewLines(view: WorkflowGraphView): string[] {
+	const lines: string[] = [];
+	const attempt = view.currentAttempt;
+	if (attempt === undefined) {
+		lines.push("Run: no attempt yet");
+	} else {
+		const checkpoint =
+			attempt.checkpointId === undefined ? "" : ` from ${formatWorkflowShortId(attempt.checkpointId)}`;
+		lines.push(`Run: ${formatWorkflowShortId(attempt.id)} ${attempt.status}${checkpoint}`);
+	}
+	lines.push(`Flow: ${formatWorkflowTopology(view.topology)} · ${view.nodes.length} ${pluralNode(view.nodes.length)}`);
+	lines.push(`Focus: ${formatWorkflowOperatorFocus(view)}`);
+	lines.push(`On-flight: ${formatWorkflowOnFlightSummary(view)}`);
+	lines.push(`Changes: ${formatWorkflowChangeCounts(view.changes)}`);
+	if (view.checkpoint !== undefined) {
+		lines.push(`Frontier: ${formatCheckpointFrontier(view.checkpoint)}`);
+		if ((view.checkpoint.omittedAbortedOutputs ?? 0) > 0) {
+			lines.push(`Aborted work: ${formatOmittedAbortedOutputs(view.checkpoint.omittedAbortedOutputs ?? 0)}`);
+		}
+	}
+	if (view.activeAgents !== undefined && view.activeAgents.length > 0) {
+		lines.push(...formatWorkflowActiveAgentGuidance());
+	}
+	return lines;
+}
+
+export function formatWorkflowOnFlightLines(view: WorkflowGraphView): string[] {
+	const lines = (view.activeAgents ?? []).map(agent => formatActiveWorkflowAgent(agent));
+	if (lines.length > 0) return lines;
+	const runningNodes = view.nodes.filter(node => node.status === "running");
+	return runningNodes.map(node => `${formatWorkflowNodeDisplayName(node.id)} running`);
+}
+
+export function formatWorkflowRecentOutputLines(view: WorkflowGraphView): string[] {
+	const lines: string[] = [];
+	for (const agent of view.activeAgents ?? []) {
+		for (const output of agent.recentOutput ?? []) {
+			lines.push(`${agent.role} · ${agent.label} stdout: ${output}`);
+		}
+	}
+	for (const node of view.nodes) {
+		if (node.status === "failed" && node.error !== undefined) {
+			lines.push(`${formatWorkflowNodeDisplayName(node.id)} stderr: ${formatSingleLineWorkflowDetail(node.error)}`);
+		}
+	}
+	return lines.slice(0, WORKFLOW_RECENT_OUTPUT_LINES);
+}
+
+export function formatWorkflowChangeReviewLines(view: WorkflowGraphView): string[] {
+	return view.lineage.map(request => {
+		const actor = request.actor === undefined ? "" : ` by ${request.actor}`;
+		const applied = request.applications.length === 0 ? "" : " · applied";
+		return `${request.id} ${request.status}${actor}${applied} - ${formatSingleLineWorkflowDetail(request.reason)}`;
+	});
+}
+
+export function formatWorkflowControlLines(view: WorkflowGraphView): string[] {
+	return view.actions.map(formatWorkflowControlAction);
+}
+
+function formatWorkflowControlAction(action: string): string {
+	const normalized = action
+		.replace("Active agents:", "Open manager:")
+		.replace("Focused prompt:", "Steer selected agent:");
+	const separator = normalized.indexOf(": ");
+	if (separator === -1) return normalized;
+	const label = normalized.slice(0, separator);
+	const command = normalized.slice(separator + 2);
+	if (!command.startsWith("/workflow") && !command.startsWith("Agent Hub") && !command.startsWith("double-left")) {
+		return normalized;
+	}
+	return `${label} · ${command}`;
+}
+
 export function formatWorkflowOperatorFocus(view: WorkflowGraphView): string {
 	const activeAgents = view.activeAgents ?? [];
 	if (activeAgents.length > 0) {
@@ -1249,8 +1316,47 @@ function formatWorkflowOperatorAgentFocus(agent: WorkflowGraphActiveAgentView): 
 }
 
 export function formatWorkflowSubflow(subflow: WorkflowGraphSubflowView): string {
-	const resources = subflow.resourcePrefix === undefined ? "" : ` resources=${subflow.resourcePrefix}`;
-	return `${subflow.alias} -> ${subflow.name}@${subflow.version} namespace=${subflow.namespace} nodes=${subflow.nodeCount} entries=${subflow.entryNodeIds.join(",")} exits=${subflow.exitNodeIds.join(",")}${resources}`;
+	const entries = subflow.entryNodeIds.map(nodeId => formatSubflowNodeReference(subflow, nodeId)).join(", ") || "none";
+	const exits = subflow.exitNodeIds.map(nodeId => formatSubflowNodeReference(subflow, nodeId)).join(", ") || "none";
+	const resources = subflow.resourcePrefix === undefined ? "" : ` · resources ${subflow.resourcePrefix}`;
+	return `${subflow.alias} calls ${subflow.name}@${subflow.version} · ${subflow.nodeCount} ${pluralNode(subflow.nodeCount)} · entry ${entries} · exit ${exits}${resources}`;
+}
+
+function formatSubflowNodeReference(subflow: WorkflowGraphSubflowView, nodeId: string): string {
+	return nodeId.startsWith(subflow.namespace) ? nodeId.slice(subflow.namespace.length) : nodeId;
+}
+
+function formatWorkflowChangeCounts(changes: WorkflowGraphChangeCounts): string {
+	const parts: string[] = [];
+	if (changes.approved > 0) parts.push(`${changes.approved} approved`);
+	if (changes.proposed > 0) parts.push(`${changes.proposed} proposed`);
+	if (changes.rejected > 0) parts.push(`${changes.rejected} rejected`);
+	return parts.length === 0 ? "none" : parts.join(" / ");
+}
+
+function formatWorkflowOnFlightSummary(view: WorkflowGraphView): string {
+	const activeAgents = view.activeAgents ?? [];
+	if (activeAgents.length > 0) {
+		return activeAgents
+			.map(agent => `${agent.role} · ${agent.label}${formatActiveWorkflowAgentGeneration(agent)}`)
+			.join(" / ");
+	}
+	const runningNodes = view.nodes.filter(node => node.status === "running");
+	if (runningNodes.length > 0) return runningNodes.map(node => formatWorkflowNodeDisplayName(node.id)).join(" / ");
+	return "none";
+}
+
+function pluralNode(count: number): string {
+	return count === 1 ? "node" : "nodes";
+}
+
+function formatWorkflowShortId(id: string): string {
+	const checkpoint = id.match(/(?:^|:)(checkpoint-[^:]+)$/u)?.[1];
+	if (checkpoint !== undefined) return checkpoint;
+	const attempt = id.match(/(?:^|:)(attempt-[^:]+)$/u)?.[1];
+	if (attempt !== undefined) return attempt;
+	if (id.startsWith("flowfreeze:")) return `freeze ${id.slice("flowfreeze:".length, "flowfreeze:".length + 8)}`;
+	return id;
 }
 
 function formatLineage(request: WorkflowChangeRequestRecord): WorkflowGraphLineageView {
@@ -1279,6 +1385,7 @@ function formatWorkflowGraphActions(
 	options: WorkflowGraphViewOptions,
 	activeAgents: readonly WorkflowGraphActiveAgentView[],
 ): string[] {
+	const latestFreeze = family.freezes.at(-1);
 	const actions = [`Refresh: /workflow graph --family-id ${family.id}`];
 	if (currentAttempt?.status === "running") {
 		actions.push(`Stop attempt: /workflow stop ${currentAttempt.id} --deadline-ms 30000`);
@@ -1307,6 +1414,15 @@ function formatWorkflowGraphActions(
 	for (const request of proposed) {
 		actions.push(`Approve: /workflow approve-change ${request.id} --actor human`);
 		actions.push(`Reject: /workflow reject-change ${request.id} --actor human --reason <reason>`);
+	}
+	for (const request of family.changeRequests.filter(
+		request => request.status === "approved" && request.applications.length === 0,
+	)) {
+		if (latestFreeze !== undefined) {
+			actions.push(
+				`Apply change: /workflow apply-change ${request.id} --freeze-id ${latestFreeze.id} --actor human`,
+			);
+		}
 	}
 	if (currentCheckpoint) {
 		const runningResume = findRunningWorkflowCheckpointResumeAttempt(family, currentCheckpoint.id);

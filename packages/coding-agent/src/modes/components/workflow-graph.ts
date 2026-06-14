@@ -2,15 +2,14 @@ import { type Component, type NativeScrollbackLiveRegion, replaceTabs, truncateT
 import { renderOutputBlock } from "../../tui/output-block";
 import type { State } from "../../tui/types";
 import {
-	formatActiveWorkflowAgentGeneration,
-	formatOmittedAbortedOutputs,
-	formatWorkflowActiveAgentGuidance,
-	formatWorkflowOperatorFocus,
+	formatWorkflowChangeReviewLines,
+	formatWorkflowControlLines,
+	formatWorkflowOnFlightLines,
+	formatWorkflowOverviewLines,
+	formatWorkflowRecentOutputLines,
 	formatWorkflowSelectedRoute,
 	formatWorkflowSubflow,
-	formatWorkflowTopology,
 	renderWorkflowGraphDiagram,
-	type WorkflowGraphActiveAgentView,
 	type WorkflowGraphNodeStatus,
 	type WorkflowGraphView,
 } from "../../workflow/graph-view";
@@ -61,6 +60,8 @@ export class WorkflowGraphComponent implements Component, NativeScrollbackLiveRe
 		const view = this.#currentView();
 		this.#observeView(view);
 		if (this.#viewProvider === undefined && this.#cache?.width === safeWidth) return this.#cache.lines;
+		const onFlightLines = workflowGraphOnFlightLines(view, safeWidth - 8);
+		const recentOutputLines = workflowGraphRecentOutputLines(view, safeWidth - 8);
 		const lines = renderOutputBlock(
 			{
 				header: "Workflow graph",
@@ -69,13 +70,12 @@ export class WorkflowGraphComponent implements Component, NativeScrollbackLiveRe
 				width: safeWidth,
 				contentPaddingLeft: 2,
 				sections: [
-					{ lines: workflowGraphHeaderLines(view) },
+					{ lines: formatWorkflowOverviewLines(view) },
 					...(view.subflows !== undefined && view.subflows.length > 0
-						? [{ label: "subflows", lines: workflowGraphSubflowLines(view) }]
+						? [{ label: "flow calls", lines: workflowGraphSubflowLines(view) }]
 						: []),
-					...(view.activeAgents !== undefined && view.activeAgents.length > 0
-						? [{ label: "active agents", lines: workflowGraphActiveAgentLines(view, safeWidth - 8) }]
-						: []),
+					...(onFlightLines.length > 0 ? [{ label: "on-flight", lines: onFlightLines }] : []),
+					...(recentOutputLines.length > 0 ? [{ label: "recent output", lines: recentOutputLines }] : []),
 					{
 						label: "diagram",
 						lines: colorWorkflowDiagram(renderWorkflowGraphDiagram(view, { width: safeWidth - 8 })),
@@ -83,7 +83,9 @@ export class WorkflowGraphComponent implements Component, NativeScrollbackLiveRe
 					...(view.selectedRoutes !== undefined && view.selectedRoutes.length > 0
 						? [{ label: "routes", lines: workflowGraphSelectedRouteLines(view) }]
 						: []),
-					{ label: "cockpit", lines: workflowGraphCockpitLines(view) },
+					...(view.lineage.length > 0
+						? [{ label: "change review", lines: workflowGraphChangeLines(view, safeWidth - 8) }]
+						: []),
 					{ label: "controls", lines: workflowGraphControlLines(view) },
 				],
 			},
@@ -110,56 +112,9 @@ export class WorkflowGraphComponent implements Component, NativeScrollbackLiveRe
 	}
 }
 
-function workflowGraphHeaderLines(view: WorkflowGraphView): string[] {
-	const lines = [
-		`topology ${formatWorkflowTopology(view.topology)}`,
-		`focus ${formatWorkflowOperatorFocus(view)}`,
-		`freeze ${view.latestFreezeId ?? "none"}`,
-		`changes ${view.changes.approved} approved / ${view.changes.proposed} proposed / ${view.changes.rejected} rejected`,
-	];
-	if (view.activeAgents !== undefined && view.activeAgents.length > 0) {
-		lines.push("Agent Hub: double-left or observe key; Enter to attach; Esc to return");
-	}
-	if (view.currentAttempt !== undefined) {
-		const checkpoint = view.currentAttempt.checkpointId ? ` from ${view.currentAttempt.checkpointId}` : "";
-		lines.unshift(`attempt ${view.currentAttempt.id} ${view.currentAttempt.status}${checkpoint}`);
-	} else {
-		lines.unshift("attempt none");
-	}
-	if (view.checkpoint !== undefined) {
-		const frontier = view.checkpoint.frontier.map(entry => `${entry.from} to ${entry.to}`).join(", ") || "none";
-		lines.push(`frontier ${frontier}`);
-		if ((view.checkpoint.omittedAbortedOutputs ?? 0) > 0) {
-			lines.push(`aborted work ${formatOmittedAbortedOutputs(view.checkpoint.omittedAbortedOutputs ?? 0)}`);
-		}
-	}
-	return lines.map(line => theme.fg("muted", line));
-}
-
-function workflowGraphCockpitLines(view: WorkflowGraphView): string[] {
-	const lines = [`topology ${formatWorkflowTopology(view.topology)}`, `focus ${formatWorkflowOperatorFocus(view)}`];
-	if (view.activeAgents !== undefined && view.activeAgents.length > 0) {
-		lines.push("Agent Hub: double-left or observe key; Enter to attach; Esc to return");
-	}
-	if (view.checkpoint !== undefined) {
-		const frontier = view.checkpoint.frontier.map(entry => `${entry.from} to ${entry.to}`).join(", ") || "none";
-		lines.push(`frontier ${frontier}`);
-	}
-	return lines.map(line => theme.fg("muted", line));
-}
-
 function workflowGraphControlLines(view: WorkflowGraphView): string[] {
 	const lines: string[] = [];
-	if (view.lineage.length > 0) {
-		lines.push(theme.fg("muted", "changes"));
-		for (const request of view.lineage) {
-			const actor = request.actor === undefined ? "" : ` by ${request.actor}`;
-			const applied = request.applications.length === 0 ? "" : ` applied=${request.applications.join(",")}`;
-			lines.push(`  ${request.id} ${request.status}${actor}${applied} - ${request.reason}`);
-		}
-	}
-	lines.push(theme.fg("muted", "actions"));
-	for (const action of view.actions) lines.push(`  ${action}`);
+	for (const action of formatWorkflowControlLines(view)) lines.push(`  ${action}`);
 	return lines;
 }
 
@@ -167,34 +122,25 @@ function workflowGraphSubflowLines(view: WorkflowGraphView): string[] {
 	return (view.subflows ?? []).map(subflow => formatWorkflowSubflow(subflow));
 }
 
-function workflowGraphActiveAgentLines(view: WorkflowGraphView, width: number): string[] {
-	const lines = formatWorkflowActiveAgentGuidance().map(line => theme.fg("muted", line));
-	for (const agent of view.activeAgents ?? []) {
-		const activity = workflowAgentActivityText(agent, width);
-		const model = agent.model === undefined ? "" : theme.fg("muted", ` · ${agent.model}`);
-		const tool = agent.tool === undefined ? "" : theme.fg("muted", ` · tool ${agent.tool}`);
-		const stats = agent.stats === undefined ? "" : theme.fg("muted", ` · ${agent.stats}`);
-		const generation = theme.fg("muted", formatActiveWorkflowAgentGeneration(agent));
-		const focus = theme.fg("muted", ` watch/intervene ${agent.focusAgentId}`);
-		const line = `${theme.fg("accent", "●")} ${agent.role}${theme.fg("muted", ` · ${agent.label}`)} ${theme.fg("accent", "live")}${generation}${model}${tool}${stats}${activity}${focus}`;
-		lines.push(truncateToWidth(replaceTabs(line), Math.max(20, width)));
-	}
-	return lines;
+function workflowGraphOnFlightLines(view: WorkflowGraphView, width: number): string[] {
+	return formatWorkflowOnFlightLines(view).map(line => {
+		const prefixed = line.includes(" live") ? `${theme.fg("accent", "●")} ${line}` : line;
+		return truncateToWidth(replaceTabs(prefixed), Math.max(20, width));
+	});
+}
+
+function workflowGraphRecentOutputLines(view: WorkflowGraphView, width: number): string[] {
+	return formatWorkflowRecentOutputLines(view).map(line =>
+		theme.fg("muted", truncateToWidth(replaceTabs(line), Math.max(20, width))),
+	);
+}
+
+function workflowGraphChangeLines(view: WorkflowGraphView, width: number): string[] {
+	return formatWorkflowChangeReviewLines(view).map(line => truncateToWidth(replaceTabs(line), Math.max(20, width)));
 }
 
 function workflowGraphSelectedRouteLines(view: WorkflowGraphView): string[] {
 	return (view.selectedRoutes ?? []).map(route => formatWorkflowSelectedRoute(route));
-}
-
-function workflowAgentActivityText(agent: WorkflowGraphActiveAgentView, width: number): string {
-	const source = agent.activity ?? agent.summary;
-	if (source === undefined) return "";
-	return ` - ${sanitizeWorkflowAgentSummary(source, Math.floor(width / 2))}`;
-}
-
-function sanitizeWorkflowAgentSummary(summary: string, width: number): string {
-	const compact = replaceTabs(summary).replace(/\s+/g, " ").trim();
-	return truncateToWidth(compact, Math.max(16, width));
 }
 
 function colorWorkflowDiagram(lines: string[]): string[] {
