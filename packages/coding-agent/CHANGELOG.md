@@ -23,9 +23,30 @@
 - Fixed workflow manager and graph active-agent hints so persisted running activations from a resumed session are not presented as live Agent Hub targets when no local workflow runner is attached.
 - Fixed workflow checkpoint and restart edge cases for attempts that stop before any activation starts and for restart attempt ids that would otherwise collide with existing custom ids.
 - Fixed review workflow nodes so verdict state patches use the node's declared `writes` path, allowing imported subflow review gates to write scoped verdict fields such as `/qualityVerdict`.
+## [15.12.6] - 2026-06-14
+### Breaking Changes
+
+- Removed the `writeLine` and `writeLineSync` methods from the public `SessionStorageWriter` contract, requiring custom `SessionStorage` backends to switch to the `append` API
+
+### Added
+
+- Added package-level exports for `SessionContext`, session entry types, session listing/loader helpers, and migration APIs via `session/session-context`, `session/session-entries`, `session/session-listing`, `session/session-loader`, and `session/session-migrations`
+- Added asynchronous session-write `append(...)`-based persistence API in session storage implementations so callers can stream writes without sync line-appending methods
+
+### Changed
+
+- Changed session persistence internals to expose `writeTextAtomic(...)` on session storage writers for atomic whole-file replacements
+- Changed online session-title generation to support tool-choice-less title models. Providers/models that cannot be forced to call a tool (chat-completions hosts without `tool_choice` support such as DeepSeek V4, and Claude Fable/Mythos) are now prompted to wrap the title in `<title>...</title>` markers instead of the `set_title` tool call; extraction is lenient, accepting a plain sentence or a truncated/unclosed tag. A `TITLE_SYSTEM.md` override is reused in this mode with the marker instruction appended.
+
 ### Fixed
 
 - Fixed session JSONL persistence so the first assistant turn materializes the file synchronously, leaves the append writer open, and writes later entries with a sync append writer even during writer-close races instead of waiting on a queued rewrite.
+- Fixed submitted user messages emitting OSC 133 command-start markers without a matching command-finished marker, which made some terminals group later transcript output under the first prompt instead of appending it normally.
+- Fixed queued forced tool choices being rejected and requeued or dropped when their named tool is no longer active for the upcoming turn, preventing eager todo and pending-action reminders from forcing unavailable tools. ([#1701](https://github.com/can1357/oh-my-pi/issues/1701))
+
+### Removed
+
+- Removed the `re-roots past a cwd-less legacy session in a shared explicit sessionDir` relocation test case and the `stores symlink-equivalent home cwd sessions under home-relative directories` file-operations test case.
 
 ## [15.12.5] - 2026-06-13
 ### Changed

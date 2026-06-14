@@ -1,4 +1,4 @@
-import type { CustomEntry, SessionEntry } from "../session/session-manager";
+import type { CustomEntry, SessionEntry } from "../session/session-entries";
 import type { WorkflowDefinition } from "./definition";
 import type { WorkflowModelResolutionAudit } from "./model-resolution";
 import type { WorkflowGraphPatchActor, WorkflowGraphPatchOperation, WorkflowGraphPatchPreview } from "./patches";

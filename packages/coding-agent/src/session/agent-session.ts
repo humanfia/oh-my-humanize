@@ -238,7 +238,7 @@ import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
-import { buildNamedToolChoice } from "../utils/tool-choice";
+import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
 import type {
 	WorkflowAgentTaskRunner,
 	WorkflowHumanInputRunner,
@@ -264,15 +264,12 @@ import {
 	SKILL_PROMPT_MESSAGE_TYPE,
 	stripImagesFromMessage,
 } from "./messages";
+import type { SessionContext } from "./session-context";
+import { getLatestCompactionEntry, getRestorableSessionModels } from "./session-context";
 import { formatSessionDumpText } from "./session-dump-format";
-import type {
-	BranchSummaryEntry,
-	CompactionEntry,
-	NewSessionOptions,
-	SessionContext,
-	SessionManager,
-} from "./session-manager";
-import { EPHEMERAL_MODEL_CHANGE_ROLE, getLatestCompactionEntry, getRestorableSessionModels } from "./session-manager";
+import type { BranchSummaryEntry, CompactionEntry, NewSessionOptions } from "./session-entries";
+import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
+import type { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { YieldQueue } from "./yield-queue";
@@ -945,6 +942,7 @@ export class AgentSession {
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	#pendingNextTurnMessages: CustomMessage[] = [];
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
+	#queuedMessageDrainScheduled = false;
 	#planModeState: PlanModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
@@ -1103,6 +1101,7 @@ export class AgentSession {
 
 	#streamingEditFileCache = new Map<string, string>();
 	#promptInFlightCount = 0;
+	#abortInProgress = false;
 	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
 	// Internal extension hooks and post-emit work (auto-retry, auto-compaction, todo
 	// checks in #handleAgentEvent) still fire on the original schedule — only the
@@ -1178,10 +1177,8 @@ export class AgentSession {
 	 *  Runs whenever the session settles; the guard makes it a no-op when the
 	 *  queue was consumed normally or a new turn already started. */
 	#drainStrandedQueuedMessages(): void {
-		if (!this.agent.hasQueuedMessages()) return;
-		this.#scheduleAgentContinue({
-			shouldContinue: () => this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages(),
-		});
+		if (this.#abortInProgress) return;
+		this.#scheduleQueuedMessageDrain();
 	}
 
 	#resetInFlight(): void {
@@ -1395,7 +1392,12 @@ export class AgentSession {
 
 	/** Advance the tool-choice queue and return the next directive for the upcoming LLM call. */
 	nextToolChoice(): ToolChoice | undefined {
-		return this.#toolChoiceQueue.nextToolChoice();
+		const choice = this.#toolChoiceQueue.nextToolChoice();
+		if (isToolChoiceActive(choice, this.agent.state.tools)) {
+			return choice;
+		}
+		this.#toolChoiceQueue.reject("unavailable");
+		return undefined;
 	}
 
 	/**
@@ -1933,6 +1935,11 @@ export class AgentSession {
 				return;
 			}
 
+			// A deliberate abort should settle the current turn, not trigger queued continuations.
+			if (msg.stopReason === "aborted") {
+				this.#resolveRetry();
+				return;
+			}
 			// Check for retryable errors first (overloaded, rate limit, server errors)
 			if (this.#isRetryableError(msg)) {
 				const didRetry = await this.#handleRetryableError(msg);
@@ -1955,7 +1962,7 @@ export class AgentSession {
 			if (compactionDeferredHandoff) {
 				return;
 			}
-			if (msg.stopReason !== "error" && msg.stopReason !== "aborted") {
+			if (msg.stopReason !== "error") {
 				if (this.#enforceRewindBeforeYield()) {
 					return;
 				}
@@ -2051,13 +2058,13 @@ export class AgentSession {
 		onError?: () => void;
 	}): void {
 		this.#schedulePostPromptTask(
-			async () => {
+			async signal => {
 				// Defense in depth: if compaction/handoff slipped onto the post-prompt queue
 				// alongside us (e.g. via a scheduler we don't own), refuse to start a fresh
 				// streaming turn — agent.continue() here would race the handoff's session
 				// reset. The first-class fix is in #checkCompaction/the agent_end handler,
 				// but this guard catches anything that bypasses that path.
-				if (this.isCompacting || this.isGeneratingHandoff) {
+				if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
 					options?.onSkip?.();
 					return;
 				}
@@ -2068,6 +2075,10 @@ export class AgentSession {
 				this.#beginInFlight();
 				try {
 					await this.#maybeRestoreRetryFallbackPrimary();
+					if (signal.aborted || this.#isDisposed) {
+						options?.onSkip?.();
+						return;
+					}
 					await this.agent.continue();
 				} catch (error) {
 					logger.warn("agent.continue failed after scheduling", {
@@ -3179,8 +3190,9 @@ export class AgentSession {
 		// session's dispose.
 		this.abortRetry();
 		this.abortCompaction();
+		const postPromptDrain = this.#cancelPostPromptTasks();
 		this.agent.abort();
-		await this.#cancelPostPromptTasks();
+		await postPromptDrain;
 		// Cancel jobs this agent registered so a subagent's teardown doesn't
 		// leak its background bash/task work into the parent's manager. Only
 		// the session that owns the manager goes on to dispose it (which itself
@@ -5094,9 +5106,25 @@ export class AgentSession {
 	}
 
 	#scheduleIdleQueueDrain(): void {
-		if (!this.#canAutoContinueForFollowUp()) return;
+		this.#scheduleQueuedMessageDrain();
+	}
+
+	#scheduleQueuedMessageDrain(): void {
+		if (this.#queuedMessageDrainScheduled || !this.#canAutoContinueForFollowUp() || !this.agent.hasQueuedMessages()) {
+			return;
+		}
+		this.#queuedMessageDrainScheduled = true;
 		this.#scheduleAgentContinue({
-			shouldContinue: () => this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages(),
+			shouldContinue: () => {
+				this.#queuedMessageDrainScheduled = false;
+				return this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages();
+			},
+			onSkip: () => {
+				this.#queuedMessageDrainScheduled = false;
+			},
+			onError: () => {
+				this.#queuedMessageDrainScheduled = false;
+			},
 		});
 	}
 
@@ -5424,28 +5452,37 @@ export class AgentSession {
 	 * abort. Omit it for internal/lifecycle aborts.
 	 */
 	async abort(options?: { goalReason?: "interrupted" | "internal"; reason?: string }): Promise<void> {
-		this.abortRetry();
-		this.#promptGeneration++;
-		this.#scheduledHiddenNextTurnGeneration = undefined;
-		this.abortCompaction();
-		this.abortHandoff();
-		this.abortBash();
-		this.abortEval();
-		const postPromptDrain = this.#cancelPostPromptTasks();
-		this.agent.abort(options?.reason);
-		await postPromptDrain;
-		await this.agent.waitForIdle();
-		await this.#goalRuntime.onTaskAborted({ reason: options?.goalReason ?? "interrupted" });
-		// Clear prompt-in-flight state: waitForIdle resolves when the agent loop's finally
-		// block runs, but nested prompt setup/finalizers may still be unwinding. Without this,
-		// a subsequent prompt() can incorrectly observe the session as busy after an abort.
-		this.#resetInFlight();
-		// Safety net: if the agent loop aborted without producing an assistant
-		// message (e.g. failed before the first stream), the in-flight yield was
-		// never resolved or rejected by the normal message_end path. Reject it now
-		// so any requeue callback still fires and the queue stays consistent.
-		if (this.#toolChoiceQueue.hasInFlight) {
-			this.#toolChoiceQueue.reject("aborted");
+		// Session switch/compact paths disconnect first; explicit aborts should
+		// leave any queued steer/follow-up visible for the user rather than
+		// auto-starting a fresh turn during cleanup.
+		this.#abortInProgress = true;
+		try {
+			this.abortRetry();
+			this.#promptGeneration++;
+			this.#scheduledHiddenNextTurnGeneration = undefined;
+			this.abortCompaction();
+			this.abortHandoff();
+			this.abortBash();
+			this.abortEval();
+			const postPromptDrain = this.#cancelPostPromptTasks();
+			this.agent.abort(options?.reason);
+			await postPromptDrain;
+			await this.agent.waitForIdle();
+			await this.#goalRuntime.onTaskAborted({ reason: options?.goalReason ?? "interrupted" });
+			// Clear prompt-in-flight state: waitForIdle resolves when the agent loop's finally
+			// block runs, but nested prompt setup/finalizers may still be unwinding. Without this,
+			// a subsequent prompt() can incorrectly observe the session as busy after an abort.
+			this.#resetInFlight();
+			// Safety net: if the agent loop aborted without producing an assistant
+			// message (e.g. failed before the first stream), the in-flight yield was
+			// never resolved or rejected by the normal message_end path. Reject it now
+			// so any requeue callback still fires and the queue stays consistent.
+			if (this.#toolChoiceQueue.hasInFlight) {
+				this.#toolChoiceQueue.reject("aborted");
+			}
+		} finally {
+			this.#abortInProgress = false;
+			this.#drainStrandedQueuedMessages();
 		}
 	}
 

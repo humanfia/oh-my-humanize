@@ -10,7 +10,8 @@ import { MarketplaceManager } from "../../src/extensibility/plugins/marketplace"
 import type { Skill } from "../../src/extensibility/skills";
 import type { InteractiveModeContext } from "../../src/modes/types";
 import type { AgentSession } from "../../src/session/agent-session";
-import { resolveResumableSession, SessionManager } from "../../src/session/session-manager";
+import { resolveResumableSession } from "../../src/session/session-listing";
+import { SessionManager } from "../../src/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../src/slash-commands/acp-builtins";
 import { executeBuiltinSlashCommand } from "../../src/slash-commands/builtin-registry";
 import { buildWorkflowGraphViewForRuntime } from "../../src/slash-commands/helpers/workflow";
