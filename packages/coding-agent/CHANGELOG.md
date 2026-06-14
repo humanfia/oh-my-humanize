@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fixed workflow graph condition labels so common state/output verdict checks render as human-facing phrases instead of raw condition expressions in the TUI.
 - Fixed workflow graph node summaries so structured agent completion JSON is rendered as concise human-facing text instead of leaking runtime adapter fields into the TUI.
 - Fixed workflow cockpit interrupt targets so sanitized live-agent ids shown in the graph and manager are accepted by `/workflow interrupt`, including repeated loop rounds.
 - Fixed workflow graph checkpoint summaries so stopped attempts show when aborted activation outputs were intentionally omitted from the checkpoint.

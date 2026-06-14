@@ -663,7 +663,68 @@ function isWorkflowDisplayRecord(value: unknown): value is Record<string, unknow
 }
 
 function formatEdgeTarget(edge: WorkflowGraphEdgeView): string {
-	return edge.condition === undefined ? edge.to : `${edge.to} when ${edge.condition}`;
+	return edge.condition === undefined ? edge.to : `${edge.to} when ${formatWorkflowConditionLabel(edge.condition)}`;
+}
+
+export function formatWorkflowConditionLabel(condition: string): string {
+	const trimmed = condition.trim();
+	const negated = trimmed.match(/^!\((.*)\)$/u);
+	if (negated?.[1] !== undefined) {
+		const simple = parseSimpleWorkflowCondition(negated[1].trim());
+		if (simple !== undefined) return formatSimpleWorkflowCondition(simple, true);
+	}
+	const simple = parseSimpleWorkflowCondition(trimmed);
+	if (simple !== undefined) return formatSimpleWorkflowCondition(simple, false);
+	return trimmed;
+}
+
+interface SimpleWorkflowCondition {
+	reference: string;
+	operator: "==" | "!=";
+	value: string;
+}
+
+function parseSimpleWorkflowCondition(condition: string): SimpleWorkflowCondition | undefined {
+	const match = condition.match(/^((?:state|outputs)(?:\.[A-Za-z0-9_-]+)+)\s*(==|!=)\s*"((?:\\.|[^"])*)"$/u);
+	const reference = match?.[1];
+	const operator = match?.[2];
+	const value = match?.[3];
+	if (reference === undefined || (operator !== "==" && operator !== "!=") || value === undefined) return undefined;
+	return { reference, operator, value: unescapeWorkflowConditionString(value) };
+}
+
+function formatSimpleWorkflowCondition(condition: SimpleWorkflowCondition, negated: boolean): string {
+	const isPositive = condition.operator === "==" ? !negated : negated;
+	const relation = isPositive ? "is" : "is not";
+	return `${formatWorkflowConditionSubject(condition.reference)} ${relation} ${condition.value}`;
+}
+
+function formatWorkflowConditionSubject(reference: string): string {
+	if (reference.startsWith("state.")) return formatWorkflowConditionPath(reference.slice("state.".length).split("."));
+	if (reference.startsWith("outputs.")) {
+		const [nodeId, ...fields] = reference.slice("outputs.".length).split(".");
+		return formatWorkflowConditionPath([nodeId ?? "", ...fields]);
+	}
+	return reference;
+}
+
+function formatWorkflowConditionPath(parts: string[]): string {
+	return parts
+		.filter(part => part.length > 0)
+		.map(formatWorkflowConditionIdentifier)
+		.join(" ");
+}
+
+function formatWorkflowConditionIdentifier(identifier: string): string {
+	return identifier
+		.replaceAll("__", " ")
+		.replace(/[_-]+/gu, " ")
+		.replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+		.toLowerCase();
+}
+
+function unescapeWorkflowConditionString(value: string): string {
+	return value.replace(/\\(["\\])/gu, "$1");
 }
 
 function padCell(text: string, width: number): string {

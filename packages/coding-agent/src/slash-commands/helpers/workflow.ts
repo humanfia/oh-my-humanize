@@ -26,6 +26,7 @@ import {
 	buildWorkflowGraphView,
 	formatActiveWorkflowAgent,
 	formatWorkflowActiveAgentGuidance,
+	formatWorkflowConditionLabel,
 	renderWorkflowGraphText,
 	type WorkflowGraphView,
 } from "../../workflow/graph-view";
@@ -3086,7 +3087,7 @@ function formatSingleLineWorkflowDetail(value: string): string {
 }
 
 function formatEdgeCondition(condition: string | undefined): string {
-	return condition === undefined ? "" : ` when ${condition}`;
+	return condition === undefined ? "" : ` when ${formatWorkflowConditionLabel(condition)}`;
 }
 
 function formatActivationCounts(counts: { completed: number; failed: number; running: number }): string {

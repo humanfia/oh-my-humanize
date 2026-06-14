@@ -115,7 +115,7 @@ describe("workflow graph view rendering", () => {
 		const diagram = renderWorkflowGraphDiagram(view, { width: 80 }).join("\n");
 
 		expect(diagram).toContain("loopbacks");
-		expect(diagram).toContain('review back to build when state.verdict == "retry"');
+		expect(diagram).toContain("review back to build when verdict is retry");
 	});
 
 	it("surfaces running workflow agents as operator-visible live work items", () => {
@@ -539,9 +539,47 @@ describe("workflow graph view rendering", () => {
 
 		const diagram = renderWorkflowGraphDiagram(view, { width: 80 }).join("\n");
 
-		expect(diagram).toContain('edge review to ship when state.verdict == "finish"');
-		expect(diagram).toContain('review back to build when state.verdict == "retry"');
+		expect(diagram).toContain("edge review to ship when verdict is finish");
+		expect(diagram).toContain("review back to build when verdict is retry");
+		expect(diagram).not.toContain('state.verdict == "finish"');
+		expect(diagram).not.toContain('state.verdict == "retry"');
 		expect(diagram).not.toMatch(/[-─]+[>→▶]|[<←◀][-─]+|->|=>|→|↺/u);
+	});
+
+	it("renders review-output loop conditions as human-facing verdict labels", () => {
+		const view = createView({
+			name: "review-output-loop",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "writeInvestigation", type: "agent" },
+				{ id: "reviewInvestigation", type: "review" },
+				{ id: "archiveInvestigation", type: "script" },
+			],
+			edges: [
+				{ from: "writeInvestigation", to: "reviewInvestigation" },
+				{
+					from: "reviewInvestigation",
+					to: "writeInvestigation",
+					condition: { source: 'outputs.reviewInvestigation.verdict == "CONTINUE"' },
+				},
+				{
+					from: "reviewInvestigation",
+					to: "archiveInvestigation",
+					condition: { source: '!(outputs.reviewInvestigation.verdict == "CONTINUE")' },
+				},
+			],
+		});
+
+		const diagram = renderWorkflowGraphDiagram(view, { width: 96 }).join("\n");
+
+		expect(diagram).toContain(
+			"reviewInvestigation back to writeInvestigation when review investigation verdict is CONTINUE",
+		);
+		expect(diagram).toContain(
+			"edge reviewInvestigation to archiveInvestigation when review investigation verdict is not CONTINUE",
+		);
+		expect(diagram).not.toContain("outputs.reviewInvestigation.verdict");
 	});
 
 	it("keeps node boxes aligned when ids and summaries contain wide terminal glyphs", () => {

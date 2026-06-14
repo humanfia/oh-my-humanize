@@ -310,6 +310,38 @@ edges:
 		expect(output[0]).toContain("activation-1 build openai/gpt-4o (workflow-default)");
 	});
 
+	it("prints workflow inspection edge conditions as human-facing labels", async () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(
+			`
+name: slash-condition-labels
+version: 1
+nodes:
+  build:
+    type: agent
+  review:
+    type: review
+    gates: [CONTINUE, COMPLETE]
+edges:
+  - from: build
+    to: review
+  - from: review
+    to: build
+    when: outputs.review.verdict == "CONTINUE"
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		startWorkflowRun(host, definition, { runId: "run-conditions" });
+		const { output, runtime } = createRuntime(host.entries);
+
+		const result = await executeAcpBuiltinSlashCommand("/workflow inspect", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toContain("Graph edges:");
+		expect(output[0]).toContain("- review → build when review verdict is CONTINUE");
+		expect(output[0]).not.toContain('outputs.review.verdict == "CONTINUE"');
+	});
+
 	it("prints workflow activation errors in inspection summaries", async () => {
 		const host = createHost();
 		const definition = parseWorkflowDefinition(
