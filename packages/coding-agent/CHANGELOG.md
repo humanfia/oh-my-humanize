@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Fixed workflow agent and review nodes so long model outputs are truncated to bounded inline summaries while preserving agent-output/local artifact references, preventing real-project workflows from failing state validation on verbose subagent results.
 - Fixed `Test & smoke (TS)` CI timeouts caused by parallel test files racing on the process-global Settings singleton. `CustomEditor` now accepts a `magicKeywordsEnabledOverride` injection point so the shimmer-gate test can assert behaviour without calling `resetSettingsForTest()` / `Settings.init()`; the "streaming tool call preview height" describe drops its gratuitous Settings reset+init. Production wiring is unchanged ([#2582](https://github.com/can1357/oh-my-pi/issues/2582))
 - Fixed MCP OAuth fallback rendering to show a short terminal hyperlink and keep the raw authorization URL on one unwrapped copy line ([#2121](https://github.com/can1357/oh-my-pi/issues/2121)).
 - Fixed `omp dry-balance --bench` to recover from 401 token failures by re-minting the failing OAuth credential in place before switching accounts

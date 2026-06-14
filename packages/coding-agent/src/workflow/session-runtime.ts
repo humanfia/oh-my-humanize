@@ -3,7 +3,14 @@ import type { WorkflowScriptLanguage } from "./definition";
 import { formatWorkflowAgentWorkItemLabel } from "./display";
 import type { WorkflowNodeRuntimeHost, WorkflowReviewNodeOutput } from "./node-runtime";
 import { WorkflowNodeRuntimeError } from "./node-runtime";
-import { validateWorkflowActivationOutput, type WorkflowActivationOutput } from "./state";
+import {
+	DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES,
+	validateWorkflowActivationOutput,
+	type WorkflowActivationOutput,
+} from "./state";
+
+const WORKFLOW_SUMMARY_TRUNCATION_SUFFIX =
+	"\n\n[workflow summary truncated; full output is stored outside inline workflow state.]";
 
 export interface WorkflowSessionRuntimeOptions {
 	cwd: string;
@@ -280,9 +287,15 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 	if (structured) {
 		return mergeActivationArtifacts(structured, artifacts);
 	}
+	const boundedSummary = boundWorkflowSummary(result.output, `agent node "${nodeId}" completed`);
+	const data: Record<string, unknown> = { exitCode: result.exitCode };
+	if (boundedSummary.truncated) {
+		data.summaryTruncated = true;
+		data.summaryBytes = boundedSummary.originalBytes;
+	}
 	const output: WorkflowActivationOutput = {
-		summary: result.output.trim() || `agent node "${nodeId}" completed`,
-		data: { exitCode: result.exitCode },
+		summary: boundedSummary.summary,
+		data,
 	};
 	if (artifacts.length > 0) {
 		output.artifacts = artifacts;
@@ -313,8 +326,9 @@ function reviewOutputFromTaskResult(
 		throw new WorkflowNodeRuntimeError(`workflow review node "${nodeId}" failed: ${reason}`);
 	}
 	const parsed = parseReviewTaskOutput(nodeId, result.output, gates, fallbackVerdict);
+	const boundedSummary = boundWorkflowSummary(parsed.summary, parsed.verdict);
 	const output: WorkflowReviewNodeOutput = {
-		summary: parsed.summary,
+		summary: boundedSummary.summary,
 		verdict: parsed.verdict,
 	};
 	const artifacts = taskResultArtifactReferences(result);
@@ -341,6 +355,33 @@ function mergeActivationArtifacts(
 		if (!artifacts.includes(artifact)) artifacts.push(artifact);
 	}
 	return { ...output, artifacts };
+}
+
+interface BoundedWorkflowSummary {
+	summary: string;
+	truncated: boolean;
+	originalBytes: number;
+}
+
+function boundWorkflowSummary(source: string, fallback: string): BoundedWorkflowSummary {
+	const summary = source.trim() || fallback;
+	const bytes = textBytes(summary);
+	if (bytes.length <= DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES) {
+		return { summary, truncated: false, originalBytes: bytes.length };
+	}
+	const suffixBytes = textBytes(WORKFLOW_SUMMARY_TRUNCATION_SUFFIX);
+	const budget = Math.max(0, DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES - suffixBytes.length);
+	let prefix = new TextDecoder().decode(bytes.slice(0, budget));
+	let bounded = `${prefix}${WORKFLOW_SUMMARY_TRUNCATION_SUFFIX}`;
+	while (textBytes(bounded).length > DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES && prefix.length > 0) {
+		prefix = prefix.slice(0, -1);
+		bounded = `${prefix}${WORKFLOW_SUMMARY_TRUNCATION_SUFFIX}`;
+	}
+	return { summary: bounded, truncated: true, originalBytes: bytes.length };
+}
+
+function textBytes(value: string): Uint8Array {
+	return new TextEncoder().encode(value);
 }
 
 function parseReviewTaskOutput(

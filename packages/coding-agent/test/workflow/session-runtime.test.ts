@@ -9,6 +9,7 @@ import {
 	type WorkflowScriptEvalRequest,
 	type WorkflowShellScriptRequest,
 } from "../../src/workflow/session-runtime";
+import { DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES, validateWorkflowActivationOutput } from "../../src/workflow/state";
 
 const scriptWorkflow = `
 name: session-runtime-demo
@@ -311,6 +312,43 @@ describe("session workflow runtime host", () => {
 		expect(JSON.stringify(output)).not.toContain("omp-workflow-agent.jsonl");
 	});
 
+	it("bounds unstructured agent output summaries and keeps full output references", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "build");
+		if (!node) throw new Error("expected build node");
+		const longOutput = "workspace finding\n".repeat(900);
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: longOutput,
+				agentId: "agent-long",
+				outputPath: "/tmp/workflow-long-output.md",
+			}),
+		});
+
+		const output = await host.runAgentNode?.({
+			node,
+			activation: activation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+			model: node.model,
+		});
+		if (output === undefined) throw new Error("expected agent output");
+
+		expect(new TextEncoder().encode(output.summary ?? "").byteLength).toBeLessThanOrEqual(
+			DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES,
+		);
+		expect(output.summary).toContain("[workflow summary truncated");
+		expect(output.data).toMatchObject({
+			exitCode: 0,
+			summaryTruncated: true,
+			summaryBytes: new TextEncoder().encode(longOutput.trim()).byteLength,
+		});
+		expect(output.artifacts).toEqual(["agent-output://agent-long", "local:///tmp/workflow-long-output.md"]);
+		expect(validateWorkflowActivationOutput(output)).toEqual(output);
+	});
+
 	it("accepts structured activation output from agent task results", async () => {
 		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
 		const node = definition.nodes.find(candidate => candidate.id === "build");
@@ -442,6 +480,32 @@ describe("session workflow runtime host", () => {
 			summary: "review passed",
 			verdict: "continue",
 		});
+	});
+
+	it("bounds review summaries after parsing a declared verdict", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "review");
+		if (!node) throw new Error("expected review node");
+		const longReview = `${"review detail\n".repeat(900)}finish`;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: longReview,
+				agentId: "review-long",
+				outputPath: "/tmp/workflow-review-output.md",
+			}),
+		});
+
+		const output = await executeWorkflowNode(node, activation(node.id), host);
+
+		expect(output.data).toEqual({ verdict: "finish" });
+		expect(new TextEncoder().encode(output.summary ?? "").byteLength).toBeLessThanOrEqual(
+			DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES,
+		);
+		expect(output.summary).toContain("[workflow summary truncated");
+		expect(output.artifacts).toEqual(["agent-output://review-long", "local:///tmp/workflow-review-output.md"]);
+		expect(validateWorkflowActivationOutput(output)).toEqual(output);
 	});
 
 	it("propagates abort signals to review task requests", async () => {
