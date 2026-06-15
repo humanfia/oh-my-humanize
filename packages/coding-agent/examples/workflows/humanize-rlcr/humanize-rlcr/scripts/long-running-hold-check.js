@@ -25,12 +25,28 @@ const hold = {
 	remainingMinimumMs,
 	checkedAtMs: Date.now(),
 };
+const elapsed = formatDuration(elapsedMs);
+const remaining = formatDuration(remainingMinimumMs);
+const summary = minimumSatisfied
+	? `long-running floor satisfied; elapsed ${elapsed}`
+	: `long-running floor pending; elapsed ${elapsed}, remaining ${remaining}`;
 
 return {
-	summary: minimumSatisfied ? "long-running floor satisfied" : "long-running floor pending",
+	summary,
 	statePatch: [
 		{ op: "set", path: "/humanize/runtime", value: runtime },
 		{ op: "set", path: "/humanize/operatorGate/minimumSatisfied", value: minimumSatisfied },
 		{ op: "set", path: "/humanize/longRunningHold", value: hold },
 	],
 };
+
+function formatDuration(durationMs) {
+	const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+	const seconds = totalSeconds % 60;
+	const totalMinutes = Math.floor(totalSeconds / 60);
+	const minutes = totalMinutes % 60;
+	const hours = Math.floor(totalMinutes / 60);
+	if (hours > 0) return `${hours}h${String(minutes).padStart(2, "0")}m`;
+	if (minutes > 0) return `${minutes}m${String(seconds).padStart(2, "0")}s`;
+	return `${seconds}s`;
+}

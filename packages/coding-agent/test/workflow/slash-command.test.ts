@@ -5309,7 +5309,7 @@ edges:
 		expect(output[0]).toContain("- Frontier: runValidation to runValidation");
 		expect(output[0]).toContain("Diagram:");
 		expect(output[0]).toContain("│◆ planner");
-		expect(output[0]).toContain("checkpointed - planned validation with extra...");
+		expect(output[0]).toContain("checkpointed - planned validation with");
 		expect(output[0]).not.toContain("planned validation\nwith extra detail");
 		expect(output[0]).toContain("│✓ runValidation");
 		expect(output[0]).toContain("║! strongReview");

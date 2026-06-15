@@ -49,19 +49,17 @@ describe("workflow graph view rendering", () => {
 		expect(rendered).toContain("┬");
 		expect(rendered).toMatch(/[┌└]─{2,}[┐┘]/u);
 		expect(splitBusIndex).toBeGreaterThan(-1);
-		expect(diagram[splitBusIndex + 1]?.[diagram[splitBusIndex]!.indexOf("┌")]).toBe("│");
+		expect(["│", "▼"]).toContain(diagram[splitBusIndex + 1]?.[diagram[splitBusIndex]!.indexOf("┌")]);
 		expect(["┴", "╧"]).toContain(diagram[splitBusIndex + 2]?.[diagram[splitBusIndex]!.indexOf("┌")]);
-		expect(diagram[splitBusIndex + 1]?.[diagram[splitBusIndex]!.lastIndexOf("┐")]).toBe("│");
+		expect(["│", "▼"]).toContain(diagram[splitBusIndex + 1]?.[diagram[splitBusIndex]!.lastIndexOf("┐")]);
 		expect(["┴", "╧"]).toContain(diagram[splitBusIndex + 2]?.[diagram[splitBusIndex]!.lastIndexOf("┐")]);
 		expect(mergeBusIndex).toBeGreaterThan(-1);
-		expect(diagram[mergeBusIndex + 1]?.[diagram[mergeBusIndex]!.indexOf("┬")]).toBe("│");
+		expect(["│", "▼"]).toContain(diagram[mergeBusIndex + 1]?.[diagram[mergeBusIndex]!.indexOf("┬")]);
 		expect(["┴", "╧"]).toContain(diagram[mergeBusIndex + 2]?.[diagram[mergeBusIndex]!.indexOf("┬")]);
 		expectConnectorsUseOneBoxDrawingBaseline(diagram);
 		expectSplitAndMergeBusesToBeCentered(diagram);
-		expect(rendered).not.toMatch(/[-─]+[>→▶]|[<←◀][-─]+|→{2,}|←{2,}/u);
-		expect(rendered).not.toContain("▶");
-		expect(rendered).not.toContain("◀");
-		expect(rendered).not.toContain("▼");
+		expect(rendered).toContain("▼");
+		expect(rendered).not.toMatch(/->|=>|→{2,}|←{1,}|◀/u);
 		expect(rendered).toContain("evaluate");
 	});
 
@@ -91,11 +89,15 @@ describe("workflow graph view rendering", () => {
 		const connectorColumn = visibleColumnsOf(diagram[sourceBottomIndex]!, "┬")[0];
 		expect(connectorColumn).toBeDefined();
 		expect(charAtVisibleColumn(diagram[targetTopIndex]!, connectorColumn!)).toBe("┴");
+		let arrowSeen = false;
 		for (let index = sourceBottomIndex + 1; index < targetTopIndex; index += 1) {
-			expect(charAtVisibleColumn(diagram[index]!, connectorColumn!)).toBe("│");
+			const char = charAtVisibleColumn(diagram[index]!, connectorColumn!);
+			if (char === "▼") arrowSeen = true;
+			expect(char).toBeDefined();
+			expect(["│", "▼"]).toContain(char!);
 		}
-		expect(rendered).not.toMatch(/[-─]+[>→▶▼]|[<←◀][-─]+|→{2,}|←{2,}/u);
-		expect(rendered).not.toContain("▼");
+		expect(arrowSeen).toBe(true);
+		expect(rendered).not.toMatch(/->|=>|→{2,}|←{1,}|◀/u);
 	});
 
 	it("renders loop edges as explicit back-edge controls instead of hiding them in linear flow", () => {
@@ -840,7 +842,7 @@ describe("workflow graph view rendering", () => {
 		);
 	});
 
-	it("renders edge annotations without composed arrowheads", () => {
+	it("renders edge annotations with directed connectors but without composed arrow fragments", () => {
 		const view = createView({
 			name: "conditional-loop",
 			version: 1,
@@ -865,7 +867,8 @@ describe("workflow graph view rendering", () => {
 		expect(diagram).not.toContain('state.verdict == "finish"');
 		expect(diagram).not.toContain('state.verdict == "retry"');
 		expect(diagram).not.toContain("edge review to ship");
-		expect(diagram).not.toMatch(/[-─]+[>→▶]|[<←◀][-─]+|->|=>|→|↺/u);
+		expect(diagram).toContain("▼");
+		expect(diagram).not.toMatch(/->|=>|→{1,}|←{1,}|◀|↺/u);
 	});
 
 	it("anchors conditional edge labels to the connector column", () => {
@@ -1341,7 +1344,7 @@ describe("workflow graph view rendering", () => {
 		expect(liveRegion.getNativeScrollbackCommitSafeEnd?.()).toBeUndefined();
 	});
 
-	it("renders TUI frontier routes without arrow fragments", async () => {
+	it("renders TUI frontier routes without ASCII arrow fragments", async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("dark theme fixture is required");
 		setThemeInstance(theme);
@@ -1373,7 +1376,7 @@ describe("workflow graph view rendering", () => {
 
 		expect(text).toContain("Frontier: weakReview to strongReview");
 		expect(text).not.toContain("frontier weakReview -> strongReview");
-		expect(text).not.toMatch(/[-─]+[>→▶]|[<←◀][-─]+|->|=>|→{1,}|←{1,}/u);
+		expect(text).not.toMatch(/->|=>|→{1,}|←{1,}/u);
 	});
 
 	it("renders imported subflows in the live TUI graph component", async () => {
@@ -1597,6 +1600,73 @@ describe("workflow graph view rendering", () => {
 		expect(text).not.toContain("activation-review");
 	});
 
+	it("renders a width-aware directed flow map before the boxed diagram", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("dark theme fixture is required");
+		setThemeInstance(theme);
+		const view = createView({
+			name: "wide-flow-map",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "plan", type: "agent" },
+				{ id: "inspect", type: "script" },
+				{ id: "build", type: "agent" },
+				{ id: "review", type: "review" },
+				{ id: "fix", type: "agent" },
+				{ id: "verify", type: "script" },
+				{ id: "ship", type: "script" },
+			],
+			edges: [
+				{ from: "plan", to: "inspect" },
+				{ from: "inspect", to: "build" },
+				{ from: "build", to: "review" },
+				{ from: "review", to: "fix", condition: { source: 'outputs.review.verdict == "CONTINUE"' } },
+				{ from: "review", to: "verify", condition: { source: 'outputs.review.verdict != "CONTINUE"' } },
+				{ from: "fix", to: "verify" },
+				{ from: "verify", to: "ship" },
+			],
+		});
+		view.nodes[2] = { ...view.nodes[2]!, status: "running", focused: true, activationCount: 4 };
+		view.focus = {
+			nodeId: "build",
+			label: "Build",
+			role: "Builder",
+			status: "running",
+			focusAgentId: "build-4",
+			generation: 4,
+		};
+		const component = new WorkflowGraphComponent(view, { refreshMs: 0 });
+
+		const rendered = component.render(156);
+		const text = stripAnsi(rendered.join("\n"));
+		const mapLine = text.split("\n").find(line => line.includes("[● build ×4]"));
+
+		expect(text).toContain(" flow map ");
+		expect(mapLine).toBeDefined();
+		expect(mapLine).toContain("plan");
+		expect(mapLine).toContain("inspect");
+		expect(mapLine).toContain("─▶");
+		expect(mapLine).not.toContain("->");
+		expect(visibleWidth(mapLine!)).toBeLessThanOrEqual(156);
+		expect(text.indexOf(" flow map ")).toBeLessThan(text.indexOf(" diagram "));
+	});
+
+	it("keeps diagram status color from leaking into node borders", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("dark theme fixture is required");
+		setThemeInstance(theme);
+		const view = singleNodeView("running");
+		view.nodes[0] = { ...view.nodes[0]!, activationCount: 2 };
+		const component = new WorkflowGraphComponent(view, { refreshMs: 0 });
+
+		const statusLine = component.render(100).find(line => stripAnsi(line).includes("║● build"));
+
+		expect(statusLine).toBeDefined();
+		expect(statusLine!).toMatch(/║\x1b\[39m(?:\x1b\[[0-9;]*m)*●/u);
+		expect(statusLine!).not.toMatch(/\x1b\[[0-9;]*m║● build/u);
+	});
+
 	it("compacts the live TUI graph to the terminal height budget", async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("dark theme fixture is required");
@@ -1699,7 +1769,8 @@ describe("workflow graph view rendering", () => {
 		expect(mediumLines.length).toBeLessThanOrEqual(40);
 		expect(mediumText).not.toContain("workflow graph rows hidden");
 		expect(mediumText).toContain("diagram rows hidden");
-		expect(mediumText).toContain("Map: plan -> inspect -> [build] -> summaryReview");
+		expect(mediumText).toContain("flow map");
+		expect(mediumText).toContain("[○ plan] ─▶ [○ inspect] ─▶ [○ build]");
 
 		const tinyLines = new WorkflowGraphComponent(view, { refreshMs: 0, heightProvider: () => 10 }).render(96);
 		const tinyText = stripAnsi(tinyLines.join("\n"));
@@ -1709,6 +1780,15 @@ describe("workflow graph view rendering", () => {
 		expect(tinyText).toContain("Flow: branch points 2 / joins 2 / loops 1");
 		expect(tinyText).toContain("diagram");
 		expect(tinyText).not.toContain("workflow graph rows hidden");
+
+		const narrowLines = new WorkflowGraphComponent(view, { refreshMs: 0, heightProvider: () => 30 }).render(96);
+		const narrowTextLines = narrowLines.map(line => stripAnsi(line));
+		const hiddenMarkerIndex = narrowTextLines.findIndex(line => line.includes("diagram rows hidden"));
+		const beforeHiddenMarker = narrowTextLines[hiddenMarkerIndex - 1] ?? "";
+
+		expect(narrowLines.length).toBeLessThanOrEqual(30);
+		expect(hiddenMarkerIndex).toBeGreaterThan(-1);
+		expect(beforeHiddenMarker).not.toMatch(/[│║].*(runs \d+|Reviewer|Builder|frontier|running|pending|completed)/u);
 	});
 
 	it("renders selected workflow routes in the live TUI graph component", async () => {
@@ -1755,7 +1835,7 @@ describe("workflow graph view rendering", () => {
 });
 
 function expectConnectorsUseOneBoxDrawingBaseline(diagram: string[]): void {
-	const connectorChars = new Set(["│", "─", "┌", "┐", "└", "┘", "┬", "┴", "┼", "├", "┤", "╤", "╧", " "]);
+	const connectorChars = new Set(["│", "─", "┌", "┐", "└", "┘", "┬", "┴", "┼", "├", "┤", "╤", "╧", "▼", " "]);
 	for (const line of diagram) {
 		for (const char of line) {
 			if (char === "✓" || char === "○" || char === " " || /\p{Letter}|\p{Number}|\p{Punctuation}/u.test(char)) {

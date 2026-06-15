@@ -1,8 +1,15 @@
-import { type Component, type NativeScrollbackLiveRegion, replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
+import {
+	type Component,
+	type NativeScrollbackLiveRegion,
+	replaceTabs,
+	truncateToWidth,
+	visibleWidth,
+} from "@oh-my-pi/pi-tui";
 import { renderOutputBlock } from "../../tui/output-block";
 import type { State } from "../../tui/types";
 import {
 	formatWorkflowChangeReviewLines,
+	formatWorkflowConditionLabel,
 	formatWorkflowControlLines,
 	formatWorkflowFocusLines,
 	formatWorkflowOnFlightLines,
@@ -14,7 +21,7 @@ import {
 	type WorkflowGraphNodeStatus,
 	type WorkflowGraphView,
 } from "../../workflow/graph-view";
-import { theme } from "../theme/theme";
+import { type ThemeColor, theme } from "../theme/theme";
 
 export interface WorkflowGraphComponentOptions {
 	viewProvider?: () => WorkflowGraphView | undefined;
@@ -118,6 +125,7 @@ function renderWorkflowGraphBlockAtDensity(
 	const onFlightLines = workflowGraphOnFlightLines(view, contentWidth, density);
 	const recentActivityLines = workflowGraphRecentActivityLines(view, contentWidth);
 	const profile = workflowGraphCompactProfile(density, heightBudget);
+	const flowMapLines = workflowGraphFlowMapLines(view, contentWidth, density);
 	const diagramLines = workflowGraphDiagramLines(view, contentWidth, density, heightBudget, profile.diagramChromeRows);
 	const overviewSourceLines = formatWorkflowOverviewLines(view);
 	const overviewLines =
@@ -148,6 +156,7 @@ function renderWorkflowGraphBlockAtDensity(
 			contentPaddingLeft: 2,
 			sections: [
 				{ lines: overviewLines },
+				...(flowMapLines.length > 0 ? [{ label: "flow map", lines: colorWorkflowDiagram(flowMapLines) }] : []),
 				...(compactFocusLines.length > 0 ? [{ label: "focused node", lines: compactFocusLines }] : []),
 				...(density === "full" && view.subflows !== undefined && view.subflows.length > 0
 					? [{ label: "flow calls", lines: workflowGraphSubflowLines(view) }]
@@ -214,7 +223,7 @@ function workflowGraphCompactProfile(
 			onFlightLines: 0,
 			recentActivityLines: 0,
 			controlLines: 0,
-			diagramChromeRows: 5,
+			diagramChromeRows: 7,
 			pathLine: false,
 		};
 	}
@@ -225,7 +234,7 @@ function workflowGraphCompactProfile(
 			onFlightLines: 0,
 			recentActivityLines: 0,
 			controlLines: 1,
-			diagramChromeRows: 10,
+			diagramChromeRows: 12,
 			pathLine: false,
 		};
 	}
@@ -236,7 +245,7 @@ function workflowGraphCompactProfile(
 			onFlightLines: 1,
 			recentActivityLines: 0,
 			controlLines: 2,
-			diagramChromeRows: 15,
+			diagramChromeRows: 17,
 			pathLine: false,
 		};
 	}
@@ -246,8 +255,8 @@ function workflowGraphCompactProfile(
 		onFlightLines: 1,
 		recentActivityLines: 0,
 		controlLines: 2,
-		diagramChromeRows: 15,
-		pathLine: true,
+		diagramChromeRows: 18,
+		pathLine: false,
 	};
 }
 
@@ -267,7 +276,9 @@ function limitWorkflowGraphDiagramLines(
 		focusBox !== undefined && focusBox.end - focusBox.start + 1 <= visibleRows
 			? workflowGraphContextStart(lines, focusBox, visibleRows)
 			: Math.max(0, Math.min(anchor - Math.floor(visibleRows / 2), lines.length - visibleRows));
-	const end = Math.min(lines.length, start + visibleRows);
+	const rawEnd = Math.min(lines.length, start + visibleRows);
+	const focusEnd = focusBox === undefined ? start + 1 : focusBox.end + 1;
+	const end = workflowGraphTrimPartialTrailingNode(lines, start, rawEnd, focusEnd);
 	const hiddenBefore = start;
 	const hiddenAfter = lines.length - end;
 	const hidden = hiddenBefore + hiddenAfter;
@@ -341,6 +352,23 @@ function workflowGraphContextStart(
 	return Math.min(focusBox.start, Math.max(0, lines.length - visibleRows));
 }
 
+function workflowGraphTrimPartialTrailingNode(
+	lines: readonly string[],
+	start: number,
+	end: number,
+	minEnd: number,
+): number {
+	let lastTop = -1;
+	let lastBottom = -1;
+	for (let index = start; index < end; index += 1) {
+		const line = lines[index] ?? "";
+		if (/[┌╔]/u.test(line)) lastTop = index;
+		if (/[┘╝]/u.test(line)) lastBottom = index;
+	}
+	if (lastTop > lastBottom && lastTop >= minEnd) return lastTop;
+	return end;
+}
+
 function workflowGraphPreviousNodeBox(
 	lines: readonly string[],
 	beforeIndex: number,
@@ -386,7 +414,80 @@ function workflowGraphCompactPathLine(view: WorkflowGraphView, width: number): s
 	if (view.nodes.length === 0) return undefined;
 	const focusNodeId = view.focus?.nodeId ?? view.activeAgents?.[0]?.nodeId;
 	const nodeIds = view.nodes.map(node => (node.id === focusNodeId ? `[${node.id}]` : node.id));
-	return truncateToWidth(`Map: ${nodeIds.join(" -> ")}`, Math.max(20, width));
+	return truncateToWidth(`Map: ${nodeIds.join(" ─▶ ")}`, Math.max(20, width));
+}
+
+function workflowGraphFlowMapLines(view: WorkflowGraphView, width: number, density: WorkflowGraphDensity): string[] {
+	if (view.nodes.length === 0) return [];
+	const maxRows = density === "full" ? 4 : 1;
+	const nodeRows = workflowGraphFlowMapNodeRows(view, width, density === "full" ? 3 : 1);
+	const hintRows =
+		density === "full" ? workflowGraphFlowMapHintRows(view, width, Math.max(0, maxRows - nodeRows.length)) : [];
+	return [...nodeRows, ...hintRows].slice(0, maxRows);
+}
+
+function workflowGraphFlowMapNodeRows(view: WorkflowGraphView, width: number, maxRows: number): string[] {
+	const rows: string[] = [];
+	let row = "";
+	for (let index = 0; index < view.nodes.length; index += 1) {
+		const node = view.nodes[index]!;
+		const token = workflowGraphFlowMapNodeToken(node, width);
+		const piece = index === 0 ? token : ` ─▶ ${token}`;
+		if (row.length > 0 && visibleWidth(row) + visibleWidth(piece) > width) {
+			rows.push(row);
+			if (rows.length >= maxRows) return workflowGraphFlowMapRowsWithOverflow(rows, view.nodes.length - index);
+			row = `↳ ${token}`;
+			continue;
+		}
+		row = `${row}${piece}`;
+	}
+	if (row.length > 0) rows.push(row);
+	return rows;
+}
+
+function workflowGraphFlowMapRowsWithOverflow(rows: string[], hiddenNodeCount: number): string[] {
+	if (hiddenNodeCount <= 0) return rows;
+	const lastIndex = rows.length - 1;
+	rows[lastIndex] = `${rows[lastIndex]}  +${hiddenNodeCount} nodes`;
+	return rows;
+}
+
+function workflowGraphFlowMapNodeToken(node: WorkflowGraphView["nodes"][number], width: number): string {
+	const count = node.activationCount === undefined || node.activationCount <= 0 ? "" : ` ×${node.activationCount}`;
+	const labelWidth = Math.max(8, Math.min(24, Math.floor(width / 4)));
+	const label = truncateToWidth(node.id, labelWidth);
+	return `[${workflowGraphStatusGlyph(node.status)} ${label}${count}]`;
+}
+
+function workflowGraphFlowMapHintRows(view: WorkflowGraphView, width: number, maxRows: number): string[] {
+	if (maxRows <= 0) return [];
+	const order = new Map(view.nodes.map((node, index) => [node.id, index]));
+	const outgoing = new Map<string, number>();
+	for (const edge of view.edges) outgoing.set(edge.from, (outgoing.get(edge.from) ?? 0) + 1);
+	const branches = view.edges
+		.filter(edge => (outgoing.get(edge.from) ?? 0) > 1 && !workflowGraphIsBackEdge(edge, order))
+		.map(edge => {
+			const condition = edge.condition === undefined ? "" : ` · ${formatWorkflowConditionLabel(edge.condition)}`;
+			return `${edge.from} ┬▶ ${edge.to}${condition}`;
+		});
+	const loops = view.edges
+		.filter(edge => workflowGraphIsBackEdge(edge, order))
+		.map(edge => {
+			const condition = edge.condition === undefined ? "" : ` · ${formatWorkflowConditionLabel(edge.condition)}`;
+			return `${edge.from} ⟲ ${edge.to}${condition}`;
+		});
+	const hints = [
+		branches.length > 0 ? `Branches: ${branches.slice(0, 2).join("  ·  ")}` : undefined,
+		loops.length > 0 ? `Loops: ${loops.slice(0, 2).join("  ·  ")}` : undefined,
+	].filter((line): line is string => line !== undefined);
+	return hints.slice(0, maxRows).map(line => truncateToWidth(line, Math.max(20, width)));
+}
+
+function workflowGraphIsBackEdge(edge: { from: string; to: string }, order: ReadonlyMap<string, number>): boolean {
+	const source = order.get(edge.from);
+	const target = order.get(edge.to);
+	if (source === undefined || target === undefined) return false;
+	return target <= source;
 }
 
 function fitWorkflowGraphRowsToHeight(lines: string[], width: number, heightBudget: number): string[] {
@@ -471,25 +572,67 @@ function workflowGraphSelectedRouteLines(view: WorkflowGraphView): string[] {
 }
 
 function colorWorkflowDiagram(lines: string[]): string[] {
-	return lines.map(line => {
-		const status = detectLineStatus(line);
-		if (status === "failed") return theme.fg("error", line);
-		if (status === "running" || status === "frontier") return theme.fg("accent", line);
-		if (status === "checkpointed") return theme.fg("warning", line);
-		if (status === "completed") return theme.fg("success", line);
-		return theme.fg("muted", line);
-	});
+	return lines.map(colorWorkflowStatusLine);
 }
 
-function detectLineStatus(line: string): WorkflowGraphNodeStatus | undefined {
-	if (line.includes("failed") || line.includes("! ")) return "failed";
-	if (line.includes("running") || line.includes("● ")) return "running";
-	if (line.includes("frontier") || line.includes("◇ ")) return "frontier";
-	if (line.includes("checkpointed") || line.includes("◆ ")) return "checkpointed";
-	if (line.includes("completed") || line.includes("✓ ")) return "completed";
-	if (line.includes("aborted") || line.includes("× ")) return "aborted";
-	if (line.includes("pending") || line.includes("○ ")) return "pending";
-	return undefined;
+const WORKFLOW_STATUS_TOKEN_PATTERN =
+	/[✓◆◇●!○]|×(?=\s)|\b(?:failed|running|frontier|checkpointed|completed|aborted|pending)\b/gu;
+
+function colorWorkflowStatusLine(line: string): string {
+	let rendered = "";
+	let offset = 0;
+	for (const match of line.matchAll(WORKFLOW_STATUS_TOKEN_PATTERN)) {
+		const token = match[0];
+		const index = match.index;
+		if (index > offset) rendered = `${rendered}${theme.fg("muted", line.slice(offset, index))}`;
+		rendered = `${rendered}${theme.fg(workflowGraphStatusColor(workflowGraphStatusFromToken(token)), token)}`;
+		offset = index + token.length;
+	}
+	if (offset < line.length) rendered = `${rendered}${theme.fg("muted", line.slice(offset))}`;
+	return rendered;
+}
+
+function workflowGraphStatusFromToken(token: string): WorkflowGraphNodeStatus {
+	switch (token) {
+		case "✓":
+		case "completed":
+			return "completed";
+		case "◆":
+		case "checkpointed":
+			return "checkpointed";
+		case "◇":
+		case "frontier":
+			return "frontier";
+		case "●":
+		case "running":
+			return "running";
+		case "!":
+		case "failed":
+			return "failed";
+		case "×":
+		case "aborted":
+			return "aborted";
+		default:
+			return "pending";
+	}
+}
+
+function workflowGraphStatusColor(status: WorkflowGraphNodeStatus): ThemeColor {
+	if (status === "failed") return "error";
+	if (status === "running" || status === "frontier") return "accent";
+	if (status === "checkpointed" || status === "aborted") return "warning";
+	if (status === "completed") return "success";
+	return "muted";
+}
+
+function workflowGraphStatusGlyph(status: WorkflowGraphNodeStatus): string {
+	if (status === "completed") return "✓";
+	if (status === "checkpointed") return "◆";
+	if (status === "frontier") return "◇";
+	if (status === "running") return "●";
+	if (status === "failed") return "!";
+	if (status === "aborted") return "×";
+	return "○";
 }
 
 function workflowGraphState(view: WorkflowGraphView): State {

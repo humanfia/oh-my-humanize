@@ -194,9 +194,9 @@ export interface WorkflowGraphActiveAgentRetryState {
 const WORKFLOW_DETAIL_PREVIEW_CHARS = 180;
 const WORKFLOW_RECENT_OUTPUT_LINES = 4;
 const WORKFLOW_RECENT_OUTPUT_PER_AGENT = 2;
-const MIN_NODE_WIDTH = 31;
-const DEFAULT_NODE_WIDTH = 49;
-const MAX_NODE_WIDTH = 71;
+const MIN_NODE_WIDTH = 27;
+const DEFAULT_NODE_WIDTH = 43;
+const MAX_NODE_WIDTH = 57;
 const NODE_GAP_WIDTH = 3;
 const LOOP_RAIL_GAP_WIDTH = 3;
 const LOOP_RAIL_STEP_WIDTH = 4;
@@ -386,7 +386,7 @@ function layoutWorkflowGraph(view: WorkflowGraphView, width: number | undefined)
 	}
 	const maxRankSize = Math.max(1, ...ranks.map(rank => rank.length));
 	const nodeWidth = workflowGraphNodeWidth(width, maxRankSize, backEdges.length);
-	const totalWidth = rankWidth(maxRankSize, nodeWidth);
+	const totalWidth = workflowGraphCanvasWidth(width, rankWidth(maxRankSize, nodeWidth), backEdges.length);
 	const labelWidth =
 		width === undefined || !Number.isFinite(width) ? totalWidth : Math.max(totalWidth, Math.floor(width));
 	return {
@@ -456,6 +456,14 @@ function oddNodeWidth(width: number): number {
 
 function rankWidth(rankSize: number, nodeWidth: number): number {
 	return rankSize * nodeWidth + Math.max(0, rankSize - 1) * NODE_GAP_WIDTH;
+}
+
+function workflowGraphCanvasWidth(width: number | undefined, rankContentWidth: number, loopRailCount: number): number {
+	if (width === undefined || !Number.isFinite(width)) return rankContentWidth;
+	const safeWidth = Math.max(rankContentWidth, Math.floor(width));
+	const loopReserve = workflowGraphLoopRailReserve(loopRailCount);
+	const graphWidth = loopReserve === 0 ? safeWidth : safeWidth - loopReserve;
+	return Math.max(rankContentWidth, graphWidth);
 }
 
 function renderWorkflowGraphRank(rankIndex: number, layout: WorkflowGraphLayout): string[] {
@@ -714,6 +722,7 @@ function drawWorkflowGraphConnectorAtColumn(
 		down: existing.down || directions.down === true,
 		left: existing.left || directions.left === true,
 		right: existing.right || directions.right === true,
+		arrowDown: existing.arrowDown,
 		doubleVertical: existing.doubleVertical,
 	};
 	lines[lineIndex] = putWorkflowGraphTextAtColumn(
@@ -733,8 +742,12 @@ function workflowGraphCharAtColumn(line: string, column: number): string | undef
 }
 
 function workflowGraphConnectorCellFromChar(char: string | undefined): WorkflowGraphConnectorCell {
-	const cell: WorkflowGraphConnectorCell = { up: false, down: false, left: false, right: false };
+	const cell: WorkflowGraphConnectorCell = { up: false, down: false, left: false, right: false, arrowDown: false };
 	switch (char) {
+		case "▼":
+			cell.up = true;
+			cell.arrowDown = true;
+			break;
 		case "│":
 			cell.up = true;
 			cell.down = true;
@@ -880,6 +893,7 @@ interface ConnectorCell {
 	down: boolean;
 	left: boolean;
 	right: boolean;
+	arrowDown: boolean;
 }
 
 type ConnectorDirection = "up" | "down" | "left" | "right";
@@ -893,6 +907,7 @@ function createConnectorGrid(rows: number, width: number): ConnectorGrid {
 			down: false,
 			left: false,
 			right: false,
+			arrowDown: false,
 		})),
 	);
 }
@@ -922,7 +937,8 @@ function drawConnectorBus(grid: ConnectorGrid, row: number, source: number, targ
 
 function drawConnectorLanding(grid: ConnectorGrid, row: number, column: number): void {
 	addConnectorDirection(grid, row, column, "up");
-	addConnectorDirection(grid, row, column, "down");
+	const cell = grid[row]?.[column];
+	if (cell !== undefined) cell.arrowDown = true;
 }
 
 function addConnectorDirection(grid: ConnectorGrid, row: number, column: number, direction: ConnectorDirection): void {
@@ -936,6 +952,7 @@ function connectorRowToString(row: ConnectorCell[]): string {
 }
 
 function connectorCellToChar(cell: ConnectorCell): string {
+	if (cell.arrowDown) return "▼";
 	const { up, down, left, right } = cell;
 	if (up && down && left && right) return "┼";
 	if (up && down && left) return "┤";
@@ -967,10 +984,10 @@ function renderWorkflowGraphNode(
 	const innerWidth = width - 2;
 	const detail = formatWorkflowNodeDetail(node);
 	const activationCount = node.activationCount === undefined ? undefined : `runs ${node.activationCount}`;
+	const metadata = activationCount === undefined ? node.kind : `${node.kind} · ${activationCount}`;
 	const lines = [
 		`${statusGlyph(node.status)} ${node.id}`,
-		node.kind,
-		...(activationCount === undefined ? [] : [activationCount]),
+		metadata,
 		detail ? `${node.status} - ${detail}` : node.status,
 	];
 	return [

@@ -355,6 +355,11 @@ describe("workflow artifact registry", () => {
 			const runtime = expectRecord(humanize.runtime, "humanize runtime");
 			const longRunning = expectRecord(runtime.longRunning, "humanize long-running runtime");
 			expect(longRunning.minimumSatisfied).toBe(false);
+			const holdCheckActivation = result.scheduler.activations.find(
+				activation => activation.nodeId === "longRunningHoldCheck",
+			);
+			expect(holdCheckActivation?.output?.summary).toContain("elapsed");
+			expect(holdCheckActivation?.output?.summary).toContain("remaining");
 			const summaryReviewAssignment = summaryReviewAssignments.at(-1) ?? "";
 			expect(summaryReviewAssignment).toContain('"minimumSatisfied":false');
 			expect(summaryReviewAssignment).toContain(

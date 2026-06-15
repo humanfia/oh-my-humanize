@@ -58,6 +58,10 @@
 - Fixed workflow graph loop labels so constrained TUI diagrams prioritize the
   loop condition and avoid repeating the source node id before the operator can
   see the branch decision value.
+- Fixed the workflow graph TUI dashboard so it renders a width-aware directed
+  flow map, uses arrowheads on graph connectors, keeps status color from
+  leaking into node borders, and avoids clipping compact diagrams through
+  partially visible node boxes.
 - Fixed workflow graph condition labels so compound long-running loop gates such
   as reviewer verdict plus minimum-runtime checks render as human-facing text
   instead of leaking raw workflow DSL into the TUI diagram.
@@ -81,6 +85,9 @@
 - Fixed the built-in `humanize-rlcr` flow so long-running implementation loops
   retain a bounded recent-round ledger instead of growing reviewer prompts until
   they exceed the workflow prompt budget.
+- Fixed the built-in `humanize-rlcr` long-running hold check so workflow
+  summaries show elapsed and remaining minimum-runtime progress instead of only
+  saying that the floor is pending.
 ## [15.13.3] - 2026-06-15
 
 ### Added
