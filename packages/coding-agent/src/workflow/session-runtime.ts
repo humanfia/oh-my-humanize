@@ -286,10 +286,18 @@ function activationOutputFromScriptResult(nodeId: string, result: WorkflowScript
 	return output;
 }
 
-function parseStructuredActivationOutput(output: string): WorkflowActivationOutput | undefined {
+interface StructuredActivationOutputOptions {
+	allowObjectSummaryFallback?: boolean;
+}
+
+function parseStructuredActivationOutput(
+	output: string,
+	options: StructuredActivationOutputOptions = {},
+): WorkflowActivationOutput | undefined {
 	const trimmed = output.trim();
 	const parsed = parseJsonObject(trimmed) ?? parseLastJsonObjectLine(trimmed);
 	if (!parsed || !hasActivationOutputField(parsed)) return undefined;
+	if (options.allowObjectSummaryFallback && isObjectSummaryOnly(parsed)) return undefined;
 	return validateWorkflowActivationOutput(parsed);
 }
 
@@ -314,13 +322,25 @@ function hasActivationOutputField(value: Record<string, unknown>): boolean {
 	);
 }
 
+function isObjectSummaryOnly(value: Record<string, unknown>): boolean {
+	return (
+		value.summary !== undefined &&
+		typeof value.summary === "object" &&
+		value.summary !== null &&
+		!Array.isArray(value.summary) &&
+		value.data === undefined &&
+		value.statePatch === undefined &&
+		value.artifacts === undefined
+	);
+}
+
 function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTaskResult): WorkflowActivationOutput {
 	if (result.exitCode !== 0) {
 		const reason = result.error || result.stderr || `exit code ${result.exitCode}`;
 		throw new WorkflowNodeRuntimeError(`workflow agent node "${nodeId}" failed: ${reason}`);
 	}
 	const artifacts = taskResultArtifactReferences(result);
-	const structured = parseStructuredActivationOutput(result.output);
+	const structured = parseStructuredActivationOutput(result.output, { allowObjectSummaryFallback: true });
 	if (structured) {
 		return mergeActivationArtifacts(structured, artifacts);
 	}
@@ -432,8 +452,9 @@ function parseReviewTaskOutput(
 	if (parsed) {
 		return parseReviewObject(nodeId, parsed, trimmed, gates, fallbackVerdict);
 	}
-	if (gates?.includes(trimmed)) {
-		return { verdict: trimmed, summary: trimmed };
+	const trimmedGate = declaredGateFor(trimmed, gates);
+	if (trimmedGate !== undefined) {
+		return { verdict: trimmedGate, summary: trimmed };
 	}
 	const finalLine = lastNonEmptyLine(trimmed);
 	if (finalLine && finalLine !== trimmed) {
@@ -441,13 +462,15 @@ function parseReviewTaskOutput(
 		if (finalJson) {
 			return parseReviewObject(nodeId, finalJson, trimmed, gates, fallbackVerdict);
 		}
-		if (gates?.includes(finalLine)) {
-			return { verdict: finalLine, summary: trimmed };
+		const finalLineGate = declaredGateFor(finalLine, gates);
+		if (finalLineGate !== undefined) {
+			return { verdict: finalLineGate, summary: trimmed };
 		}
 	}
 	const firstLine = firstNonEmptyLine(trimmed);
-	if (firstLine && firstLine !== trimmed && firstLine !== finalLine && gates?.includes(firstLine)) {
-		return { verdict: firstLine, summary: trimmed };
+	const firstLineExactGate = firstLine === undefined ? undefined : declaredGateFor(firstLine, gates);
+	if (firstLine && firstLine !== trimmed && firstLine !== finalLine && firstLineExactGate !== undefined) {
+		return { verdict: firstLineExactGate, summary: trimmed };
 	}
 	const firstLineGate = firstLine === undefined ? undefined : gatePrefixFromLine(firstLine, gates);
 	if (firstLineGate !== undefined) {
@@ -461,8 +484,9 @@ function parseReviewTaskOutput(
 
 function gatePrefixFromLine(line: string, gates: string[] | undefined): string | undefined {
 	if (!gates?.length) return undefined;
+	const normalizedLine = line.toLowerCase();
 	for (const gate of [...gates].sort((left, right) => right.length - left.length)) {
-		if (!line.startsWith(gate)) continue;
+		if (!normalizedLine.startsWith(gate.toLowerCase())) continue;
 		const next = line[gate.length];
 		if (next === undefined || /[\s:;,.!?-]/u.test(next)) return gate;
 	}
@@ -494,13 +518,26 @@ function parseReviewObject(
 	fallbackVerdict: string | undefined,
 ): { verdict: string; summary: string } {
 	const direct = reviewVerdictFromObject(parsed, fallbackSummary);
-	if (direct) return direct;
+	const directGate = direct === undefined ? undefined : declaredGateFor(direct.verdict, gates);
+	if (direct && (gates === undefined || directGate !== undefined)) {
+		return directGate === undefined ? direct : { ...direct, verdict: directGate };
+	}
 
 	const nested = nestedReviewVerdictFromObject(parsed, fallbackSummary);
-	if (nested) return nested;
+	const nestedGate = nested === undefined ? undefined : declaredGateFor(nested.verdict, gates);
+	if (nested && (gates === undefined || nestedGate !== undefined)) {
+		return nestedGate === undefined ? nested : { ...nested, verdict: nestedGate };
+	}
 
 	const textGate = reviewVerdictFromObjectText(parsed, fallbackSummary, gates);
 	if (textGate) return textGate;
+
+	if (direct && gates !== undefined && directGate === undefined && fallbackVerdict === undefined) {
+		return direct;
+	}
+	if (nested && gates !== undefined && nestedGate === undefined && fallbackVerdict === undefined) {
+		return nested;
+	}
 
 	const correctness = parsed.overall_correctness;
 	if (correctness === "correct" || correctness === "incorrect") {
@@ -548,14 +585,43 @@ function reviewVerdictFromObjectText(
 	if (!gates?.length) return undefined;
 	for (const summary of reviewTextCandidatesFromObject(parsed, fallbackSummary)) {
 		const finalLine = lastNonEmptyLine(summary);
-		if (finalLine !== undefined && gates.includes(finalLine)) {
-			return { verdict: finalLine, summary };
+		const exactFinalLineGate = finalLine === undefined ? undefined : declaredGateFor(finalLine, gates);
+		if (exactFinalLineGate !== undefined) {
+			return { verdict: exactFinalLineGate, summary };
+		}
+		const finalLineGate = finalLine === undefined ? undefined : gateSuffixFromLine(finalLine, gates);
+		if (finalLineGate !== undefined) {
+			return { verdict: finalLineGate, summary };
 		}
 		const firstLine = firstNonEmptyLine(summary);
 		const firstLineGate = firstLine === undefined ? undefined : gatePrefixFromLine(firstLine, gates);
 		if (firstLineGate !== undefined) {
 			return { verdict: firstLineGate, summary };
 		}
+	}
+	return undefined;
+}
+
+function declaredGateFor(verdict: string, gates: string[] | undefined): string | undefined {
+	if (!gates?.length) return undefined;
+	const exact = gates.find(gate => gate === verdict);
+	if (exact !== undefined) return exact;
+	const normalized = verdict.toLowerCase();
+	return gates.find(gate => gate.toLowerCase() === normalized);
+}
+
+function gateSuffixFromLine(line: string, gates: string[] | undefined): string | undefined {
+	if (!gates?.length) return undefined;
+	let terminal = line.trim();
+	while (terminal.length > 0) {
+		const last = terminal.at(-1);
+		if (last === undefined || !/[\s:;,.!?)}\]"'`]/u.test(last)) break;
+		terminal = terminal.slice(0, -1);
+	}
+	for (const gate of [...gates].sort((left, right) => right.length - left.length)) {
+		if (!terminal.toLowerCase().endsWith(gate.toLowerCase())) continue;
+		const previous = terminal[terminal.length - gate.length - 1];
+		if (previous === undefined || /[\s:;,.!?([{'"`-]/u.test(previous)) return gate;
 	}
 	return undefined;
 }

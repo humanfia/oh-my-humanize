@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { freezeWorkflowArtifact } from "../../src/workflow/freeze";
+import type { WorkflowNode } from "../../src/workflow/definition";
+import { type FlowFreezeResourceSnapshot, freezeWorkflowArtifact } from "../../src/workflow/freeze";
 import type { WorkflowNodeRuntimeHost } from "../../src/workflow/node-runtime";
 import { loadWorkflowArtifact } from "../../src/workflow/package-loader";
+import { resolveWorkflowPrompt } from "../../src/workflow/prompt-source";
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../../src/workflow/run-store";
 import { runWorkflow } from "../../src/workflow/runner";
+import type { WorkflowActivation } from "../../src/workflow/scheduler";
 
 interface CapturedEntry {
 	type: "custom";
@@ -227,6 +230,41 @@ describe("reference workflow replicas", () => {
 			run.activations.find(activation => activation.nodeId === "validateCandidate")?.input?.prompt?.value,
 		).toContain("Candidate summary:\ncandidate v1 needs more evidence");
 	});
+
+	it("keeps built-in KDA retry reviews stable across checkpoint restarts", async () => {
+		const artifact = await loadWorkflowArtifact(
+			path.resolve(
+				import.meta.dir,
+				"../../examples/workflows/kda-humanize-reference/kda-humanize-reference.omhflow",
+			),
+		);
+		const freeze = await freezeWorkflowArtifact(artifact);
+
+		await expectReviewPromptUsesLatestOutput(
+			freeze.definition.nodes,
+			artifact.resourceDir,
+			freeze.resourceSnapshots,
+			"humanize__implementationReview",
+			"humanize__implementRound",
+			"second Humanize implementation summary",
+		);
+		await expectReviewPromptUsesLatestOutput(
+			freeze.definition.nodes,
+			artifact.resourceDir,
+			freeze.resourceSnapshots,
+			"humanize__codeReviewGate",
+			"humanize__fixCodeReviewIssues",
+			"second Humanize code-review fix",
+		);
+		await expectReviewPromptUsesLatestOutput(
+			freeze.definition.nodes,
+			artifact.resourceDir,
+			freeze.resourceSnapshots,
+			"validateCandidate",
+			"implementCandidate",
+			"second KDA candidate summary",
+		);
+	});
 });
 
 function activationCount(activations: { nodeId: string }[], nodeId: string): number {
@@ -237,6 +275,42 @@ function nextCount(counts: Map<string, number>, key: string): number {
 	const count = (counts.get(key) ?? 0) + 1;
 	counts.set(key, count);
 	return count;
+}
+
+async function expectReviewPromptUsesLatestOutput(
+	nodes: WorkflowNode[],
+	packageRoot: string,
+	frozenResources: FlowFreezeResourceSnapshot[],
+	reviewNodeId: string,
+	outputNodeId: string,
+	expectedLatestSummary: string,
+): Promise<void> {
+	const node = nodes.find(candidate => candidate.id === reviewNodeId);
+	if (!node) throw new Error(`expected node ${reviewNodeId}`);
+	const completedActivations = [
+		completedActivation("activation-1", outputNodeId, "stale checkpoint summary"),
+		completedActivation("activation-2", outputNodeId, expectedLatestSummary),
+	];
+	const resolved = await resolveWorkflowPrompt(node, {
+		state: {},
+		completedActivations,
+		parentActivationIds: completedActivations.map(activation => activation.id),
+		packageRoot,
+		frozenResources,
+	});
+
+	expect(resolved?.value).toContain(expectedLatestSummary);
+}
+
+function completedActivation(id: string, nodeId: string, summary: string): WorkflowActivation {
+	return {
+		id,
+		nodeId,
+		graphRevisionId: "checkpoint-graph",
+		status: "completed",
+		parentActivationIds: [],
+		output: { summary },
+	};
 }
 
 async function writeKdaHumanizeReferenceFlow(dir: string): Promise<string> {
@@ -357,7 +431,7 @@ sequence:
                 output:
                   node: implementRound
                   path: /summary
-                  activation: parent
+                  activation: latest-completed
         gates:
           - continue
           - complete
@@ -392,7 +466,7 @@ sequence:
                 output:
                   node: fixReviewIssues
                   path: /summary
-                  activation: parent
+                  activation: latest-completed
         gates:
           - issues
           - clean
@@ -499,7 +573,7 @@ sequence:
                 output:
                   node: implementCandidate
                   path: /summary
-                  activation: parent
+                  activation: latest-completed
         gates:
           - revise
           - promote

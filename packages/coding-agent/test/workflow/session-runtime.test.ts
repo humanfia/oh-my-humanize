@@ -380,6 +380,40 @@ describe("session workflow runtime host", () => {
 		});
 	});
 
+	it("treats agent JSON with object summary as unstructured task output", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "build");
+		if (!node) throw new Error("expected build node");
+		const taskOutput = JSON.stringify({
+			summary: {
+				documentation_files: ["docs/shell-completion.md"],
+				tests_run: [{ command: "PYTHONPATH=src python -m pytest tests/test_shell_completion.py -q" }],
+			},
+		});
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: taskOutput,
+				agentId: "build",
+			}),
+		});
+
+		const output = await host.runAgentNode?.({
+			node,
+			activation: activation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+			model: node.model,
+		});
+
+		expect(output).toEqual({
+			summary: taskOutput,
+			data: { exitCode: 0 },
+			artifacts: ["agent-output://build"],
+		});
+	});
+
 	it("propagates abort signals to agent task requests", async () => {
 		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
 		const node = definition.nodes.find(candidate => candidate.id === "build");
@@ -627,6 +661,74 @@ describe("session workflow runtime host", () => {
 		expect(output).toEqual({
 			summary: "README.md satisfies round 1, but the Humanize loop must continue until round 10.\nCONTINUE",
 			verdict: "CONTINUE",
+		});
+	});
+
+	it("prefers declared Humanize gates over generic structured pass verdicts", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "review");
+		if (!node) throw new Error("expected review node");
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: JSON.stringify({
+					verdict: "pass",
+					overall_correctness: "correct",
+					explanation:
+						"The implementation summary satisfies the Humanize review gate; downstream KDA validation remains outside this subflow. COMPLETE",
+					confidence: 0.9,
+				}),
+			}),
+		});
+
+		const output = await host.runReviewNode?.({
+			node,
+			activation: activation(node.id),
+			agent: node.agent,
+			prompt: node.prompt,
+			model: node.model,
+			gates: ["CONTINUE", "COMPLETE", "STOP"],
+			fallbackVerdict: "CONTINUE",
+		});
+
+		expect(output).toEqual({
+			summary:
+				"The implementation summary satisfies the Humanize review gate; downstream KDA validation remains outside this subflow. COMPLETE",
+			verdict: "COMPLETE",
+		});
+	});
+
+	it("maps differently cased review gate tokens to the declared gate", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "review");
+		if (!node) throw new Error("expected review node");
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: JSON.stringify({
+					overall_correctness: "correct",
+					explanation:
+						"PROMOTE. The candidate summary matches the observed checkout diff and validation evidence.",
+					confidence: 0.91,
+				}),
+			}),
+		});
+
+		const output = await host.runReviewNode?.({
+			node,
+			activation: activation(node.id),
+			agent: node.agent,
+			prompt: node.prompt,
+			model: node.model,
+			gates: ["revise", "promote"],
+			fallbackVerdict: "revise",
+		});
+
+		expect(output).toEqual({
+			summary: "PROMOTE. The candidate summary matches the observed checkout diff and validation evidence.",
+			verdict: "promote",
 		});
 	});
 

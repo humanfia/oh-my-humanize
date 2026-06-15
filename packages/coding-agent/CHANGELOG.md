@@ -189,6 +189,24 @@
 
 ### Fixed
 
+- Fixed the built-in KDA/Humanize retry-review flows to select the latest
+  completed builder output after checkpoint restarts instead of requiring a
+  single parent activation.
+- Fixed the built-in KDA promotion prompt to require an explicit `reject` or
+  `promote` terminal gate instead of letting generic reviewer `pass` verdicts
+  fail the final promotion decision.
+- Fixed workflow review parsing to prefer declared terminal gate tokens from
+  reviewer text over generic `pass`/`fail` correctness mappings, preserving
+  custom Humanize gates such as `COMPLETE` during model-backed review nodes.
+- Fixed workflow review gate parsing to tolerate model output casing such as
+  `PROMOTE.` while returning the canonical declared gate value such as
+  `promote`.
+- Fixed workflow agent nodes so model task output that happens to contain a
+  JSON `summary` object is treated as ordinary task output instead of a
+  malformed workflow activation envelope.
+- Fixed `/workflow restart --background` so it does not report a restart as
+  started when lifecycle validation rejects the attempt before a durable
+  restart event is recorded.
 - Fixed workflow agent and review nodes so long model outputs are truncated to bounded inline summaries while preserving agent-output/local artifact references, preventing real-project workflows from failing state validation on verbose subagent results.
 - Fixed Kokoro TTS setup loading the workspace/global `@huggingface/transformers` runtime before the side-installed Kokoro runtime, which could leave `onnxruntime-node@1.26.0` bound to an older `libonnxruntime.so.1` and fail with `VERS_1.26.0` missing ([#2591](https://github.com/can1357/oh-my-pi/issues/2591)).
 - Fixed `scripts/ci-release-notes.ts` stranding curated changelog entries from intervening *silent* tags (a `vX.Y.Z` tag pushed without a GitHub Release, e.g. the `v15.12.5`/`v15.12.6` casualties of the pre-#2564 release-cancellation bug). The generator now walks `(latest-published-release, target]` — resolved via `gh release list` from the `release_github` CI job — and merges every in-range `## [X.Y.Z]` section per package, grouped by `### <category>` with bullet-level dedupe so post-release changelog flattening cannot duplicate entries. Falls back to the legacy single-version extraction when no prior published release resolves, and `OMP_RELEASE_NOTES_FLOOR=v15.12.4` overrides the lookup for manual rebuilds ([#2596](https://github.com/can1357/oh-my-pi/issues/2596)).

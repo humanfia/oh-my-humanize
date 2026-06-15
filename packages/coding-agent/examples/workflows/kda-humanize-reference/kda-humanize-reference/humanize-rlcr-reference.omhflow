@@ -107,7 +107,7 @@ sequence:
                 output:
                   node: implementRound
                   path: /summary
-                  activation: parent
+                  activation: latest-completed
         gates:
           - CONTINUE
           - COMPLETE
@@ -144,7 +144,7 @@ sequence:
                 output:
                   node: fixCodeReviewIssues
                   path: /summary
-                  activation: parent
+                  activation: latest-completed
         gates:
           - ISSUES
           - CLEAN

@@ -104,7 +104,7 @@ sequence:
                 output:
                   node: implementCandidate
                   path: /summary
-                  activation: parent
+                  activation: latest-completed
         gates:
           - revise
           - promote

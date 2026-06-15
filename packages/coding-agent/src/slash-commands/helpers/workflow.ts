@@ -908,6 +908,17 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 		nodeAbortSignalForActivation: activation => nodeAbortSignalForActivation(nodeAbortControllers, activation),
 		lifecycle,
 	});
+	const startedAttempt = reconstructWorkflowFamilies(runtime.sessionManager.getBranch())
+		.find(candidate => candidate.id === located.family.id)
+		?.attempts.find(candidate => candidate.id === attemptId);
+	if (!startedAttempt) {
+		try {
+			await runPromise;
+		} catch (error) {
+			return usage(`Workflow restart attempt failed before start: ${attemptId} - ${errorMessage(error)}`, runtime);
+		}
+		return usage(`Workflow restart attempt did not start: ${attemptId}`, runtime);
+	}
 	const active: ActiveWorkflowAttempt = {
 		attemptId,
 		familyId: located.family.id,

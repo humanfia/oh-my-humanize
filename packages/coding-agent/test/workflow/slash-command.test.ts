@@ -4196,6 +4196,57 @@ edges:
 		expect(reconstructWorkflowFamilies(entries)[0]?.attempts.at(-1)?.status).toBe("completed");
 	});
 
+	it("does not report a background restart as started when lifecycle validation rejects it", async () => {
+		const entries: CapturedEntry[] = [];
+		const freezeA = createFreeze("flowfreeze:background-restart-a", ["build"]);
+		const freezeB = createFreeze("flowfreeze:background-restart-b", ["review"]);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-background-restart-rejected" });
+		recordWorkflowFreeze(host, freezeA, { familyId: "family-background-restart-rejected" });
+		recordWorkflowFreeze(host, freezeB, { familyId: "family-background-restart-rejected" });
+		startWorkflowAttempt(host, {
+			familyId: "family-background-restart-rejected",
+			attemptId: "attempt-1",
+			freezeId: freezeA.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-1"),
+		});
+		failWorkflowAttempt(host, { attemptId: "attempt-1", error: "review rejected" });
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-background-rejected",
+			familyId: "family-background-restart-rejected",
+			attemptId: "attempt-1",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["build"],
+			state: {},
+			sourceMapping: { build: "review" },
+		});
+		const calls: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				calls.push(input.node.id);
+				return { summary: `ran ${input.node.id}` };
+			},
+		};
+		const { output, runtime } = createRuntime(entries, runtimeHost);
+
+		expect(
+			await executeAcpBuiltinSlashCommand(
+				"/workflow restart checkpoint-background-rejected --freeze-id flowfreeze:background-restart-b --background",
+				runtime,
+			),
+		).toEqual({ consumed: true });
+		await Bun.sleep(10);
+
+		expect(calls).toEqual([]);
+		expect(output.some(entry => entry.includes("Workflow background restart attempt started"))).toBeFalse();
+		expect(output.at(-1)).toContain(
+			"Workflow restart attempt failed before start: attempt-2 - Workflow restart freeze is not applied to checkpoint checkpoint-background-rejected: flowfreeze:background-restart-b",
+		);
+		expect(reconstructWorkflowFamilies(entries)[0]?.attempts.map(attempt => attempt.id)).toEqual(["attempt-1"]);
+	});
+
 	it("allocates a unique restart attempt id when generated ids would collide", async () => {
 		const entries: CapturedEntry[] = [];
 		const freeze = createFreeze("flowfreeze:restart-id", ["build"]);
