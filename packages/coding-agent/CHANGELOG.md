@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed workflow run history so stop-deadline cancellation records aborted
+  activations as `activation_aborted` instead of `activation_failed`, keeping
+  normal stop/checkpoint evidence out of failure scans.
 - Fixed the built-in `humanize-rlcr` long-running path so a reviewer-complete
   implementation waits in an interruptible hold/check loop instead of adding
   implementation rounds solely to satisfy the runtime floor.

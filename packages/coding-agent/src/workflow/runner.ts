@@ -30,6 +30,7 @@ import {
 	type WorkflowResolvedPrompt,
 } from "./prompt-source";
 import {
+	appendWorkflowActivationAborted,
 	appendWorkflowActivationCompleted,
 	appendWorkflowActivationFailed,
 	appendWorkflowActivationStarted,
@@ -395,9 +396,9 @@ async function executeAndPersistActivation(
 		const message = error instanceof Error ? error.message : String(error);
 		const abortReason = workflowNodeAbortReason(context.nodeAbortSignal ?? context.signal);
 		if (abortReason !== undefined) {
-			appendWorkflowActivationFailed(options.host, run.id, {
+			appendWorkflowActivationAborted(options.host, run.id, {
 				activationId: activation.id,
-				error: message,
+				reason: abortReason,
 			});
 			appendLifecycleActivationAborted(options, activation, node, abortReason);
 			throw error;

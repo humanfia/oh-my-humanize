@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { parseWorkflowDefinition, type WorkflowDefinition } from "../../src/workflow/definition";
 import {
+	appendWorkflowActivationAborted,
 	appendWorkflowActivationCompleted,
 	appendWorkflowActivationFailed,
 	appendWorkflowActivationStarted,
@@ -301,6 +302,36 @@ edges: []
 				parentActivationIds: ["activation-0"],
 				status: "failed",
 				error: "model unavailable",
+			},
+		]);
+	});
+
+	it("reconstructs aborted activation records without marking them failed", () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(source, { sourcePath: "workflow.yml" });
+		const run = startWorkflowRun(host, definition, { runId: "run-1" });
+
+		appendWorkflowActivationStarted(host, run.id, {
+			activationId: "activation-1",
+			nodeId: "build",
+			graphRevisionId: run.currentGraphRevisionId,
+			parentActivationIds: ["activation-0"],
+		});
+		appendWorkflowActivationAborted(host, run.id, {
+			activationId: "activation-1",
+			reason: "stop deadline elapsed",
+		});
+
+		const reconstructed = reconstructWorkflowRuns(host.getBranch());
+
+		expect(reconstructed[0]?.activations).toEqual([
+			{
+				id: "activation-1",
+				nodeId: "build",
+				graphRevisionId: "run-1:graph-0",
+				parentActivationIds: ["activation-0"],
+				status: "aborted",
+				reason: "stop deadline elapsed",
 			},
 		]);
 	});

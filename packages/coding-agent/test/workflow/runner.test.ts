@@ -452,6 +452,9 @@ edges: []
 		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
 			["build", "aborted"],
 		]);
+		expect(reconstructWorkflowRuns(host.getBranch())[0]?.activations.map(activation => activation.status)).toEqual([
+			"aborted",
+		]);
 		const families = reconstructWorkflowFamilies(host.getBranch());
 		expect(families[0]?.attempts.map(attempt => [attempt.id, attempt.status, attempt.error])).toEqual([
 			["attempt-node-abort-1", "stopped", undefined],

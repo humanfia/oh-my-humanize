@@ -67,7 +67,12 @@ export interface AppendWorkflowActivationFailedOptions {
 	error: string;
 }
 
-export type WorkflowActivationRecordStatus = "running" | "completed" | "failed";
+export interface AppendWorkflowActivationAbortedOptions {
+	activationId: string;
+	reason: string;
+}
+
+export type WorkflowActivationRecordStatus = "running" | "completed" | "failed" | "aborted";
 
 export interface WorkflowActivationRecord {
 	id: string;
@@ -79,6 +84,7 @@ export interface WorkflowActivationRecord {
 	output?: WorkflowActivationOutput;
 	modelAudit?: WorkflowModelResolutionAudit;
 	error?: string;
+	reason?: string;
 }
 
 export interface WorkflowGraphPatchProposalRecord {
@@ -96,7 +102,8 @@ export type WorkflowRunEvent =
 	| WorkflowGraphPatchProposedEvent
 	| WorkflowActivationStartedEvent
 	| WorkflowActivationCompletedEvent
-	| WorkflowActivationFailedEvent;
+	| WorkflowActivationFailedEvent
+	| WorkflowActivationAbortedEvent;
 
 export interface WorkflowRunStartedEvent {
 	event: "run_started";
@@ -145,6 +152,13 @@ export interface WorkflowActivationFailedEvent {
 	runId: string;
 	activationId: string;
 	error: string;
+}
+
+export interface WorkflowActivationAbortedEvent {
+	event: "activation_aborted";
+	runId: string;
+	activationId: string;
+	reason: string;
 }
 
 export function startWorkflowRun(
@@ -254,6 +268,20 @@ export function appendWorkflowActivationFailed(
 	host.appendCustomEntry(WORKFLOW_RUN_EVENT_TYPE, event);
 }
 
+export function appendWorkflowActivationAborted(
+	host: WorkflowRunStoreHost,
+	runId: string,
+	options: AppendWorkflowActivationAbortedOptions,
+): void {
+	const event: WorkflowActivationAbortedEvent = {
+		event: "activation_aborted",
+		runId,
+		activationId: options.activationId,
+		reason: options.reason,
+	};
+	host.appendCustomEntry(WORKFLOW_RUN_EVENT_TYPE, event);
+}
+
 export function reconstructWorkflowRuns(
 	entries: WorkflowRunStoreHost["getBranch"] extends () => infer T ? T : never,
 ): WorkflowRunSnapshot[] {
@@ -310,6 +338,15 @@ export function reconstructWorkflowRuns(
 			if (!activation) continue;
 			activation.status = "failed";
 			activation.error = event.error;
+			delete activation.reason;
+			continue;
+		}
+		if (event.event === "activation_aborted") {
+			const activation = run.activations.find(record => record.id === event.activationId);
+			if (!activation) continue;
+			activation.status = "aborted";
+			activation.reason = event.reason;
+			delete activation.error;
 		}
 	}
 	return [...runs.values()];
@@ -329,7 +366,8 @@ function isWorkflowRunEvent(value: unknown): value is WorkflowRunEvent {
 		value.event !== "graph_patch_proposed" &&
 		value.event !== "activation_started" &&
 		value.event !== "activation_completed" &&
-		value.event !== "activation_failed"
+		value.event !== "activation_failed" &&
+		value.event !== "activation_aborted"
 	) {
 		return false;
 	}
@@ -358,6 +396,9 @@ function isWorkflowRunEvent(value: unknown): value is WorkflowRunEvent {
 	}
 	if (value.event === "activation_failed") {
 		return typeof value.activationId === "string" && typeof value.error === "string";
+	}
+	if (value.event === "activation_aborted") {
+		return typeof value.activationId === "string" && typeof value.reason === "string";
 	}
 	if (typeof value.graphRevisionId !== "string") return false;
 	return isRecord(value.definitionSnapshot);
