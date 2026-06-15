@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the workflow graph TUI dashboard to use a progress summary, a wide-terminal inspector pane, compact loop/branch flow-map hints, and anchored graph layouts so long-running workflow runs are easier to monitor and intervene in.
+
 ## [16.0.0] - 2026-06-15
 
 ### Breaking Changes

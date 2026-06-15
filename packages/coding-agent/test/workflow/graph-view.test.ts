@@ -1652,6 +1652,102 @@ describe("workflow graph view rendering", () => {
 		expect(text.indexOf(" flow map ")).toBeLessThan(text.indexOf(" diagram "));
 	});
 
+	it("renders a wide workflow dashboard with a live inspector pane", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("dark theme fixture is required");
+		setThemeInstance(theme);
+		const view = createView({
+			name: "wide-inspector-dashboard",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "plan", type: "agent" },
+				{ id: "build", type: "agent", agent: "task" },
+				{ id: "review", type: "review", agent: "task" },
+				{ id: "ship", type: "script" },
+			],
+			edges: [
+				{ from: "plan", to: "build" },
+				{ from: "build", to: "review" },
+				{ from: "review", to: "build", condition: { source: 'outputs.review.verdict == "CONTINUE"' } },
+				{ from: "review", to: "ship", condition: { source: 'outputs.review.verdict == "COMPLETE"' } },
+			],
+		});
+		view.nodes[1] = { ...view.nodes[1]!, status: "running", focused: true, activationCount: 3 };
+		view.focus = {
+			nodeId: "build",
+			label: "Build",
+			role: "Builder",
+			status: "running",
+			focusAgentId: "build-3",
+			generation: 3,
+			activity: "implementing the next review fix",
+			stats: "6m12s · 8 tools",
+			recentOutput: ["patched parser", "rerunning tests"],
+			controls: ["Watch: Agent Hub build-3", "Interrupt: /workflow interrupt attempt-1 build-3 --deadline-ms 30000"],
+		};
+		view.activeAgents = [
+			{
+				activationId: "activation-build",
+				focusAgentId: "build-3",
+				nodeId: "build",
+				label: "Build",
+				role: "Builder",
+				status: "running",
+				generation: 3,
+				activity: "implementing the next review fix",
+				stats: "6m12s · 8 tools",
+				recentOutput: ["patched parser", "rerunning tests"],
+			},
+		];
+		view.actions = [
+			"Refresh: /workflow graph --family-id wide-inspector-dashboard",
+			"Stop attempt: /workflow stop attempt-1 --deadline-ms 30000",
+			"Interrupt Builder · Build: /workflow interrupt attempt-1 build-3 --deadline-ms 30000",
+		];
+		const component = new WorkflowGraphComponent(view, { refreshMs: 0 });
+
+		const lines = component.render(180);
+		const text = stripAnsi(lines.join("\n"));
+
+		expect(text).toContain("Progress:");
+		expect(text).toContain("Inspector");
+		expect(text).toContain("╭─ Focus");
+		expect(text).toContain("╭─ Live agents");
+		expect(text).toContain("╭─ Recent output");
+		expect(text).toContain("╭─ Operator");
+		expect(text).toContain("implementing the next review fix");
+		expect(text).not.toContain(" focused node ");
+		expect(text).not.toContain(" on-flight ");
+		expect(lines.map(line => visibleWidth(stripAnsi(line))).every(width => width <= 180)).toBeTrue();
+	});
+
+	it("keeps single-lane loop diagrams anchored instead of centering them across wide terminals", () => {
+		const view = createView({
+			name: "anchored-loop-dashboard",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "build", type: "agent" },
+				{ id: "review", type: "review" },
+			],
+			edges: [
+				{ from: "build", to: "review" },
+				{ from: "review", to: "build", condition: { source: 'outputs.review.verdict == "CONTINUE"' } },
+			],
+		});
+
+		const diagram = renderWorkflowGraphDiagram(view, { width: 160 });
+		const buildLine = diagram.find(line => line.includes("build"));
+		const reviewLine = diagram.find(line => line.includes("review"));
+
+		expect(buildLine).toBeDefined();
+		expect(reviewLine).toBeDefined();
+		expect((buildLine ?? "").search(/\S/u)).toBeLessThan(4);
+		expect((reviewLine ?? "").search(/\S/u)).toBeLessThan(4);
+		expect(visibleWidth(buildLine ?? "")).toBeLessThan(120);
+	});
+
 	it("keeps diagram status color from leaking into node borders", async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("dark theme fixture is required");

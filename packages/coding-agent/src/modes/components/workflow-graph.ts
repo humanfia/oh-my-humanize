@@ -102,6 +102,10 @@ export class WorkflowGraphComponent implements Component, NativeScrollbackLiveRe
 type WorkflowGraphDensity = "full" | "compact";
 
 const WORKFLOW_GRAPH_MIN_HEIGHT_BUDGET = 6;
+const WORKFLOW_GRAPH_INSPECTOR_MIN_WIDTH = 140;
+const WORKFLOW_GRAPH_INSPECTOR_MIN_PANE_WIDTH = 44;
+const WORKFLOW_GRAPH_INSPECTOR_MAX_PANE_WIDTH = 72;
+const WORKFLOW_GRAPH_PANE_GAP_WIDTH = 3;
 
 function renderWorkflowGraphBlock(
 	view: WorkflowGraphView,
@@ -126,8 +130,9 @@ function renderWorkflowGraphBlockAtDensity(
 	const recentActivityLines = workflowGraphRecentActivityLines(view, contentWidth);
 	const profile = workflowGraphCompactProfile(density, heightBudget);
 	const flowMapLines = workflowGraphFlowMapLines(view, contentWidth, density);
+	const hasDiagramInspector = workflowGraphUsesDiagramInspector(contentWidth, density, heightBudget);
 	const diagramLines = workflowGraphDiagramLines(view, contentWidth, density, heightBudget, profile.diagramChromeRows);
-	const overviewSourceLines = formatWorkflowOverviewLines(view);
+	const overviewSourceLines = workflowGraphDashboardOverviewLines(view, contentWidth);
 	const overviewLines =
 		density === "full"
 			? overviewSourceLines
@@ -157,12 +162,16 @@ function renderWorkflowGraphBlockAtDensity(
 			sections: [
 				{ lines: overviewLines },
 				...(flowMapLines.length > 0 ? [{ label: "flow map", lines: colorWorkflowDiagram(flowMapLines) }] : []),
-				...(compactFocusLines.length > 0 ? [{ label: "focused node", lines: compactFocusLines }] : []),
+				...(compactFocusLines.length > 0 && !hasDiagramInspector
+					? [{ label: "focused node", lines: compactFocusLines }]
+					: []),
 				...(density === "full" && view.subflows !== undefined && view.subflows.length > 0
 					? [{ label: "flow calls", lines: workflowGraphSubflowLines(view) }]
 					: []),
-				...(compactOnFlightLines.length > 0 ? [{ label: "on-flight", lines: compactOnFlightLines }] : []),
-				...(compactRecentActivityLines.length > 0
+				...(compactOnFlightLines.length > 0 && !hasDiagramInspector
+					? [{ label: "on-flight", lines: compactOnFlightLines }]
+					: []),
+				...(compactRecentActivityLines.length > 0 && !hasDiagramInspector
 					? [{ label: density === "full" ? "recent activity" : "recent", lines: compactRecentActivityLines }]
 					: []),
 				{ label: "diagram", lines: colorWorkflowDiagram(diagramLines) },
@@ -172,7 +181,9 @@ function renderWorkflowGraphBlockAtDensity(
 				...(density === "full" && view.lineage.length > 0
 					? [{ label: "change review", lines: workflowGraphChangeLines(view, contentWidth) }]
 					: []),
-				...(compactControlLines.length > 0 ? [{ label: "controls", lines: compactControlLines }] : []),
+				...(compactControlLines.length > 0 && !hasDiagramInspector
+					? [{ label: "controls", lines: compactControlLines }]
+					: []),
 			],
 		},
 		theme,
@@ -186,11 +197,144 @@ function workflowGraphDiagramLines(
 	heightBudget: number | undefined,
 	diagramChromeRows: number,
 ): string[] {
-	const lines = renderWorkflowGraphDiagram(view, { width });
-	if (density === "full") return lines;
-	const minRows = (heightBudget ?? 0) <= 14 ? 1 : 4;
-	const maxRows = Math.max(minRows, Math.min(lines.length, (heightBudget ?? 32) - diagramChromeRows));
-	return limitWorkflowGraphDiagramLines(lines, maxRows, view, width);
+	const split = workflowGraphDiagramSplit(width, density, heightBudget);
+	const lines = renderWorkflowGraphDiagram(view, { width: split.graphWidth });
+	const diagramLines =
+		density === "full"
+			? lines
+			: limitWorkflowGraphDiagramLines(
+					lines,
+					Math.max(
+						(heightBudget ?? 0) <= 14 ? 1 : 4,
+						Math.min(lines.length, (heightBudget ?? 32) - diagramChromeRows),
+					),
+					view,
+					split.graphWidth,
+				);
+	if (split.inspectorWidth === undefined) return diagramLines;
+	return workflowGraphDiagramWithInspector(view, diagramLines, split.graphWidth, split.inspectorWidth, density);
+}
+
+function workflowGraphUsesDiagramInspector(
+	width: number,
+	density: WorkflowGraphDensity,
+	heightBudget: number | undefined,
+): boolean {
+	if (width < WORKFLOW_GRAPH_INSPECTOR_MIN_WIDTH) return false;
+	if (density === "compact" && (heightBudget ?? 0) <= 20) return false;
+	return true;
+}
+
+function workflowGraphDiagramSplit(
+	width: number,
+	density: WorkflowGraphDensity,
+	heightBudget: number | undefined,
+): { graphWidth: number; inspectorWidth?: number } {
+	if (!workflowGraphUsesDiagramInspector(width, density, heightBudget)) return { graphWidth: width };
+	const inspectorWidth = Math.max(
+		WORKFLOW_GRAPH_INSPECTOR_MIN_PANE_WIDTH,
+		Math.min(WORKFLOW_GRAPH_INSPECTOR_MAX_PANE_WIDTH, Math.floor(width * 0.36)),
+	);
+	const graphWidth = Math.max(48, width - inspectorWidth - WORKFLOW_GRAPH_PANE_GAP_WIDTH);
+	return { graphWidth, inspectorWidth };
+}
+
+function workflowGraphDiagramWithInspector(
+	view: WorkflowGraphView,
+	diagramLines: string[],
+	graphWidth: number,
+	inspectorWidth: number,
+	density: WorkflowGraphDensity,
+): string[] {
+	const inspectorLines = workflowGraphInspectorLines(view, inspectorWidth, density);
+	const rowCount = Math.max(diagramLines.length, inspectorLines.length);
+	const rows: string[] = [];
+	for (let index = 0; index < rowCount; index += 1) {
+		const diagramLine = padWorkflowGraphLine(truncateToWidth(diagramLines[index] ?? "", graphWidth), graphWidth);
+		const inspectorLine = truncateToWidth(inspectorLines[index] ?? "", inspectorWidth);
+		rows.push(`${diagramLine}  │ ${inspectorLine}`.trimEnd());
+	}
+	return rows;
+}
+
+function workflowGraphInspectorLines(view: WorkflowGraphView, width: number, density: WorkflowGraphDensity): string[] {
+	const lines: string[] = ["Inspector"];
+	const focusLines = workflowGraphFocusLines(view, width - 2, "compact");
+	lines.push(...workflowGraphInspectorGroup("Focus", focusLines, width, density === "full" ? 4 : 2));
+	const onFlightLines = workflowGraphOnFlightLines(view, width - 2, "compact");
+	lines.push(...workflowGraphInspectorGroup("Live agents", onFlightLines, width, density === "full" ? 5 : 2));
+	const recentLines = workflowGraphRecentActivityLines(view, width - 2);
+	if (recentLines.length > 0) {
+		lines.push(...workflowGraphInspectorGroup("Recent output", recentLines, width, density === "full" ? 4 : 1));
+	}
+	const controlLines = workflowGraphControlLines(view, "compact").map(line => line.trim());
+	lines.push(...workflowGraphInspectorGroup("Operator", controlLines, width, density === "full" ? 4 : 2));
+	return lines.map(line => truncateToWidth(line, width));
+}
+
+function workflowGraphInspectorGroup(
+	label: string,
+	lines: readonly string[],
+	width: number,
+	maxLines: number,
+): string[] {
+	const rows = [`╭─ ${label}`];
+	const visibleLines = lines.length === 0 ? ["none"] : lines.slice(0, maxLines);
+	for (const line of visibleLines) rows.push(`│ ${truncateToWidth(replaceTabs(line), Math.max(8, width - 2))}`);
+	if (lines.length > visibleLines.length) rows.push(`│ +${lines.length - visibleLines.length} hidden`);
+	return rows;
+}
+
+function padWorkflowGraphLine(line: string, width: number): string {
+	const lineWidth = visibleWidth(line);
+	if (lineWidth >= width) return line;
+	return `${line}${" ".repeat(width - lineWidth)}`;
+}
+
+function workflowGraphDashboardOverviewLines(view: WorkflowGraphView, width: number): string[] {
+	const lines = formatWorkflowOverviewLines(view);
+	const progressLine = workflowGraphProgressLine(view, width);
+	if (progressLine === undefined) return lines;
+	const flowLineIndex = lines.findIndex(line => line.startsWith("Flow:"));
+	if (flowLineIndex === -1) return [progressLine, ...lines];
+	return [...lines.slice(0, flowLineIndex + 1), progressLine, ...lines.slice(flowLineIndex + 1)];
+}
+
+function workflowGraphProgressLine(view: WorkflowGraphView, width: number): string | undefined {
+	if (view.nodes.length === 0) return undefined;
+	const counts = workflowGraphStatusCounts(view);
+	const done = counts.completed + counts.checkpointed;
+	const active = counts.running + counts.frontier;
+	const repeats = view.nodes.reduce((total, node) => total + Math.max(0, (node.activationCount ?? 0) - 1), 0);
+	const barWidth = Math.max(6, Math.min(18, Math.floor(width / 12)));
+	const filled = Math.max(0, Math.min(barWidth, Math.round((done / view.nodes.length) * barWidth)));
+	const bar = `${"█".repeat(filled)}${"░".repeat(barWidth - filled)}`;
+	const statusParts = [
+		`${done}/${view.nodes.length} done`,
+		active > 0 ? `${active} active` : undefined,
+		counts.failed > 0 ? `${counts.failed} failed` : undefined,
+		counts.aborted > 0 ? `${counts.aborted} aborted` : undefined,
+		repeats > 0 ? `${repeats} repeats` : undefined,
+	].filter((part): part is string => part !== undefined);
+	return `Progress: ${bar} ${statusParts.join(" · ")}`;
+}
+
+function workflowGraphStatusCounts(view: WorkflowGraphView): Record<WorkflowGraphNodeStatus, number> {
+	return view.nodes.reduce<Record<WorkflowGraphNodeStatus, number>>(
+		(counts, node) => {
+			counts[node.status] += 1;
+			return counts;
+		},
+		{
+			aborted: 0,
+			checkpointed: 0,
+			completed: 0,
+			failed: 0,
+			frontier: 0,
+			pending: 0,
+			running: 0,
+		},
+	);
 }
 
 function workflowGraphCompactProfile(
@@ -419,10 +563,13 @@ function workflowGraphCompactPathLine(view: WorkflowGraphView, width: number): s
 
 function workflowGraphFlowMapLines(view: WorkflowGraphView, width: number, density: WorkflowGraphDensity): string[] {
 	if (view.nodes.length === 0) return [];
-	const maxRows = density === "full" ? 4 : 1;
+	const compactWide = density === "compact" && width >= WORKFLOW_GRAPH_INSPECTOR_MIN_WIDTH;
+	const maxRows = density === "full" ? 4 : compactWide ? 3 : 1;
 	const nodeRows = workflowGraphFlowMapNodeRows(view, width, density === "full" ? 3 : 1);
 	const hintRows =
-		density === "full" ? workflowGraphFlowMapHintRows(view, width, Math.max(0, maxRows - nodeRows.length)) : [];
+		density === "full" || compactWide
+			? workflowGraphFlowMapHintRows(view, width, Math.max(0, maxRows - nodeRows.length))
+			: [];
 	return [...nodeRows, ...hintRows].slice(0, maxRows);
 }
 
@@ -477,8 +624,8 @@ function workflowGraphFlowMapHintRows(view: WorkflowGraphView, width: number, ma
 			return `${edge.from} ⟲ ${edge.to}${condition}`;
 		});
 	const hints = [
-		branches.length > 0 ? `Branches: ${branches.slice(0, 2).join("  ·  ")}` : undefined,
 		loops.length > 0 ? `Loops: ${loops.slice(0, 2).join("  ·  ")}` : undefined,
+		branches.length > 0 ? `Branches: ${branches.slice(0, 2).join("  ·  ")}` : undefined,
 	].filter((line): line is string => line !== undefined);
 	return hints.slice(0, maxRows).map(line => truncateToWidth(line, Math.max(20, width)));
 }
