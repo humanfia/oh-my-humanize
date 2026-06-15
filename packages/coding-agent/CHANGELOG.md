@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Changed the workflow Operator Deck to show a compact Operator rail above node details, keeping the selected live agent, Agent Hub handoff, steering, interrupt, stop, and change actions visible before deeper monitoring sections.
 - Changed the workflow Operator Deck to surface live workflow agents as switchable transcript-monitor tabs before on-flight details, making parallel workflow agents feel like focusable subagents.
 - Changed workflow graph condition labels in the dashboard diagram to render as compact decision chips such as `if CONTINUE`, while keeping full conditions in route/review detail text.
 - Changed the workflow dashboard topology summary to describe independent root nodes as parallel roots instead of calling the flow linear.

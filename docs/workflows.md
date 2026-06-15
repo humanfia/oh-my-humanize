@@ -204,9 +204,10 @@ subflow/function-call boundaries, current node status, per-node run counts, and
 live lanes for active agent progress. Conditional edges use compact decision
 chips such as `if CONTINUE`, while the full route condition remains available in
 the routes and review details. The right Operator Deck is the human intervention
-surface: it shows the focused node, transcript monitor tabs for active workflow
-agents, immediate controls, on-flight work, recent output, and compact
-node-state lanes.
+surface: its top Operator rail keeps the selected live agent and its watch,
+Agent Hub, steer, interrupt, stop, and change affordances visible before the
+focused node, transcript monitor tabs, on-flight work, recent output, and
+compact node-state lanes.
 
 ![Workflow dashboard with parallel agent transcript tabs](images/workflow-dashboard-agent-tabs.png)
 
@@ -218,7 +219,9 @@ or return to the workflow dashboard. When several agent nodes are on-flight, the
 `Agent tabs` row acts as the switcher: the selected tab is the node the Operator
 Deck will steer, while the On-flight section keeps the rest visible. Interrupt
 controls keep the human-facing node label so parallel agents with the same role
-remain distinguishable.
+remain distinguishable. The Operator rail mirrors the selected tab, so the
+default dashboard always shows what the next watch, steer, interrupt, stop, or
+change action will target before the operator opens deeper details.
 
 Nested subflows are displayed as function-like calls. The parent flow remains
 the outer call frame, while imported subflow nodes keep their own names, entry

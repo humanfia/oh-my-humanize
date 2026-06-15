@@ -444,6 +444,10 @@ function workflowGraphLiveWorkbenchLines(
 	const maxTabs =
 		density === "full" ? 4 : width >= WORKFLOW_GRAPH_WORKBENCH_MIN_WIDTH && profile.onFlightLines > 0 ? 2 : 0;
 	const lines: string[] = [];
+	const railLines = workflowGraphOperatorRailLines(view, width);
+	if (railLines.length > 0) {
+		lines.push(...workflowGraphWorkbenchGroup("Operator rail", railLines, width, density === "full" ? 2 : 1));
+	}
 	if (maxFocus > 0) lines.push(...workflowGraphWorkbenchGroup("Focus: selected node", focusLines, width, maxFocus));
 	if (maxTabs > 0) {
 		const tabLines = workflowGraphAgentTabLines(view, width);
@@ -476,6 +480,34 @@ function workflowGraphLiveWorkbenchLines(
 		);
 	}
 	return lines.map(line => truncateToWidth(line, width));
+}
+
+function workflowGraphOperatorRailLines(view: WorkflowGraphView, width: number): string[] {
+	const selected = workflowGraphSelectedAgentTarget(view);
+	const subject = selected ?? view.focus?.nodeId ?? view.currentAttempt?.id ?? "workflow";
+	const primaryTokens = [`◉ monitor ${compactWorkflowGraphNodeId(subject)}`];
+	if (selected !== undefined) {
+		primaryTokens.push("◆ hub", "↵ steer");
+	}
+	const safetyTokens: string[] = [];
+	if (workflowGraphHasAction(view, "Interrupt")) safetyTokens.push("! interrupt");
+	if (workflowGraphHasAction(view, "Stop attempt")) safetyTokens.push("■ stop");
+	if (workflowGraphHasAction(view, "Request change") || workflowGraphHasAction(view, "Propose change")) {
+		safetyTokens.push("± change");
+	}
+	return [primaryTokens.join("  "), safetyTokens.join("  ")]
+		.filter(line => line.length > 0)
+		.map(line => truncateToWidth(line, Math.max(20, width)));
+}
+
+function workflowGraphSelectedAgentTarget(view: WorkflowGraphView): string | undefined {
+	const focusAgentId = view.focus?.focusAgentId;
+	if (focusAgentId !== undefined) return focusAgentId;
+	return view.activeAgents?.[0]?.focusAgentId;
+}
+
+function workflowGraphHasAction(view: WorkflowGraphView, actionLabel: string): boolean {
+	return view.actions.some(action => action.startsWith(actionLabel));
 }
 
 function workflowGraphWorkbenchGroup(

@@ -1855,6 +1855,13 @@ describe("workflow graph view rendering", () => {
 
 		const text = stripAnsi(component.render(180).join("\n"));
 
+		expect(text).toContain("Operator rail");
+		expect(text).toContain("◉ monitor buildUi");
+		expect(text).toContain("◆ hub");
+		expect(text).toContain("↵ steer");
+		expect(text).toContain("! interrupt");
+		expect(text).toContain("■ stop");
+		expect(text.indexOf("Operator rail")).toBeLessThan(text.indexOf("Focus: selected node"));
 		expect(text).toContain("Agent tabs: transcript monitors");
 		expect(text).toContain("[1] ● buildUi · 1m04s");
 		expect(text).toContain("[2] ○ buildApi · 42s");
