@@ -274,6 +274,55 @@ describe("workflow artifact registry", () => {
 		expect(summaryReviewAssignments.at(-1) ?? "").toContain('"minimumSatisfied":false');
 	});
 
+	it("derives bundled Humanize RLCR long-running intent from default approval and task contract", async () => {
+		const spec = await resolveWorkflowFlowSpec("humanize-rlcr", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		await Bun.write(
+			path.join(taskDir, "task.md"),
+			[
+				"# Long-running RLCR default approval",
+				"",
+				"Goal: run a realistic project-flow-task evaluation through Humanize RLCR.",
+				"Acceptance: the workflow must run for at least eight hours before a COMPLETE reviewer verdict can exit.",
+				"Timeout: five days.",
+			].join("\n"),
+		);
+		const host = createRunHost();
+
+		const result = await runWorkflow({
+			host,
+			definition: freeze.definition,
+			runId: "humanize-default-approval-long-running",
+			startNodeId: "planCompliancePrecheck",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runHumanInput: async () => ({
+					response: "Approve",
+				}),
+				runAgentTask: async request => ({
+					exitCode: 0,
+					output:
+						request.nodeId === "codexSummaryReview"
+							? "COMPLETE\nThe implementation appears aligned, but the long-running floor is not met."
+							: `completed ${request.nodeId}`,
+				}),
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 7,
+		});
+
+		const humanize = expectRecord(result.scheduler.state.humanize, "humanize state");
+		const operatorGate = expectRecord(humanize.operatorGate, "humanize operator gate");
+		expect(operatorGate.decision).toBe("proceed");
+		expect(operatorGate.longRunningRequested).toBe(true);
+		expect(operatorGate.minimumSatisfied).toBe(false);
+		expect(result.scheduler.frontierNodeIds).toEqual(["implementRound"]);
+	});
+
 	it("keeps bundled Humanize RLCR reviewer prompts bounded across long-running implementation loops", async () => {
 		const spec = await resolveWorkflowFlowSpec("humanize-rlcr", { cwd: process.cwd(), flowDirs: [] });
 		const artifact = await loadWorkflowArtifact(spec.path);

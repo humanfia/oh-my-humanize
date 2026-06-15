@@ -9,14 +9,29 @@ const response =
 			? output.summary
 			: "";
 const normalized = response.toLowerCase();
-const decision = normalized.includes("stop") ? "stop" : normalized.includes("hold") ? "hold" : normalized.includes("proceed") ? "proceed" : "unknown";
+let taskContract = "";
+try {
+	taskContract = await Bun.file("task.md").text();
+} catch {
+	taskContract = "";
+}
+const normalizedContract = taskContract.toLowerCase();
+const decision = /\bstop\b/u.test(normalized)
+	? "stop"
+	: /\bhold\b/u.test(normalized)
+		? "hold"
+		: /\b(?:proceed|approve|approved)\b/u.test(normalized)
+			? "proceed"
+			: "unknown";
 const recordedAtMs = Date.now();
 const minimumRuntimeMs = 8 * 60 * 60 * 1000;
 const maximumRuntimeMs = 5 * 24 * 60 * 60 * 1000;
+const operatorLongRunningPattern =
+	/\b8[-\s]*hours?\b|\beight[-\s]+hours?\b|\bat\s+least\s+eight[-\s]+hours?\b|\blong[-\s]?running\b|\b5[-\s]*days?\b|\bfive[-\s]+days?\b|\bshort\s+smoke\b/u;
+const contractLongRunningPattern =
+	/\b8[-\s]*hours?\b|\beight[-\s]+hours?\b|\bat\s+least\s+eight[-\s]+hours?\b|\b5[-\s]*days?\b|\bfive[-\s]+days?\b/u;
 const longRunningRequested =
-	/\b8\s*hours?\b|\beight\s+hours?\b|\blong[-\s]?running\b|\b5\s*days?\b|\bfive\s+days?\b|\bshort\s+smoke\b/u.test(
-		normalized,
-	);
+	operatorLongRunningPattern.test(normalized) || contractLongRunningPattern.test(normalizedContract);
 
 return {
 	summary: `operator gate recorded with decision ${decision}`,

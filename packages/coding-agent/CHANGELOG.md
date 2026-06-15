@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Fixed the built-in `humanize-rlcr` operator gate so the default human
+  approval response `Approve` is treated as `proceed`, and explicit eight-hour
+  or five-day task contracts in `task.md` preserve long-running RLCR loops even
+  when the interactive approval text is terse.
 - Fixed workflow graph loop labels so constrained TUI diagrams prioritize the
   loop condition and avoid repeating the source node id before the operator can
   see the branch decision value.
