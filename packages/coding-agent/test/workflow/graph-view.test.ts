@@ -1440,12 +1440,12 @@ describe("workflow graph view rendering", () => {
 
 		const text = stripAnsi(component.render(120).join("\n"));
 
-		expect(text).toContain("on-flight");
+		expect(text).toContain("On-flight");
 		expect(text).toContain(
 			"Agent Hub: double-left or observe to watch; Enter steers the selected agent; Esc returns.",
 		);
 		expect(text).toContain("● Builder · Build round live · round 3 - editing implementation");
-		expect(text).toContain("watch/intervene buildRound");
+		expect(text).toContain("(buildRound)");
 		expect(text).not.toContain("activation-build");
 	});
 
@@ -1548,7 +1548,7 @@ describe("workflow graph view rendering", () => {
 		expect(view.actions.join("\n")).not.toContain("Focused prompt");
 	});
 
-	it("renders the live TUI graph as an operator cockpit before the diagram", async () => {
+	it("renders the live TUI graph as a resident workflow dashboard before the diagram", async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("dark theme fixture is required");
 		setThemeInstance(theme);
@@ -1586,15 +1586,16 @@ describe("workflow graph view rendering", () => {
 
 		const text = stripAnsi(component.render(120).join("\n"));
 
+		expect(text).toContain("Workflow Dashboard");
+		expect(text).toContain("Flow Lens");
+		expect(text).toContain("Live Workbench");
 		expect(text).toContain("Flow: branch points 1 / loops 1 · 3 nodes");
 		expect(text).toContain("Focus: live Reviewer · Review round");
-		expect(text).toContain(
-			"Agent Hub: double-left or observe to watch; Enter steers the selected agent; Esc returns.",
-		);
-		expect(text).toContain(" on-flight ");
+		expect(text).toContain("On-flight:");
+		expect(text).toContain("Agent Hub");
 		expect(text).toContain("● Reviewer · Review round live");
 		expect(text.indexOf("Flow: branch points 1 / loops 1")).toBeLessThan(text.indexOf("diagram"));
-		expect(text.indexOf(" on-flight ")).toBeLessThan(text.indexOf("diagram"));
+		expect(text.indexOf("On-flight:")).toBeLessThan(text.indexOf("diagram"));
 		expect(text).not.toContain(" cockpit ");
 		expect(text).not.toContain("agent:task");
 		expect(text).not.toContain("activation-review");
@@ -1642,17 +1643,17 @@ describe("workflow graph view rendering", () => {
 		const text = stripAnsi(rendered.join("\n"));
 		const mapLine = text.split("\n").find(line => line.includes("[● build ×4]"));
 
-		expect(text).toContain(" flow map ");
+		expect(text).toContain("Flow Lens");
 		expect(mapLine).toBeDefined();
 		expect(mapLine).toContain("plan");
 		expect(mapLine).toContain("inspect");
 		expect(mapLine).toContain("─▶");
 		expect(mapLine).not.toContain("->");
 		expect(visibleWidth(mapLine!)).toBeLessThanOrEqual(156);
-		expect(text.indexOf(" flow map ")).toBeLessThan(text.indexOf(" diagram "));
+		expect(text.indexOf("Flow Lens")).toBeLessThan(text.indexOf("diagram"));
 	});
 
-	it("renders a wide workflow dashboard with a live inspector pane", async () => {
+	it("renders a wide workflow dashboard with a live workbench pane", async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("dark theme fixture is required");
 		setThemeInstance(theme);
@@ -1710,15 +1711,18 @@ describe("workflow graph view rendering", () => {
 		const lines = component.render(180);
 		const text = stripAnsi(lines.join("\n"));
 
+		expect(text).toContain("Workflow Dashboard");
 		expect(text).toContain("Progress:");
-		expect(text).toContain("Inspector");
-		expect(text).toContain("╭─ Focus");
-		expect(text).toContain("╭─ Live agents");
-		expect(text).toContain("╭─ Recent output");
-		expect(text).toContain("╭─ Operator");
+		expect(text).toContain("Flow Lens");
+		expect(text).toContain("Live Workbench");
+		expect(text).toContain("Focus");
+		expect(text).toContain("On-flight");
+		expect(text).toContain("Recent output");
+		expect(text).toContain("Controls");
 		expect(text).toContain("implementing the next review fix");
 		expect(text).not.toContain(" focused node ");
 		expect(text).not.toContain(" on-flight ");
+		expect(text).not.toContain("--deadline-ms");
 		expect(lines.map(line => visibleWidth(stripAnsi(line))).every(width => width <= 180)).toBeTrue();
 	});
 
@@ -1844,12 +1848,12 @@ describe("workflow graph view rendering", () => {
 		const text = stripAnsi(lines.join("\n"));
 
 		expect(lines.length).toBeLessThanOrEqual(24);
-		expect(text).toContain("Workflow graph");
+		expect(text).toContain("Workflow Dashboard");
 		expect(text).toContain("Flow: branch points 2 / joins 2 / loops 1");
-		expect(text).toContain("focused node");
-		expect(text).toContain("on-flight");
+		expect(text).toContain("Focus");
+		expect(text).toContain("On-flight");
 		expect(text).toContain("diagram");
-		expect(text).toContain("controls");
+		expect(text).toContain("Controls");
 		expect(text).toContain("diagram rows hidden");
 		expect(text).toContain("9m12s");
 		expect(text).toContain("Refresh");
@@ -1865,14 +1869,14 @@ describe("workflow graph view rendering", () => {
 		expect(mediumLines.length).toBeLessThanOrEqual(40);
 		expect(mediumText).not.toContain("workflow graph rows hidden");
 		expect(mediumText).toContain("diagram rows hidden");
-		expect(mediumText).toContain("flow map");
+		expect(mediumText).toContain("Flow Lens");
 		expect(mediumText).toContain("[○ plan] ─▶ [○ inspect] ─▶ [○ build]");
 
 		const tinyLines = new WorkflowGraphComponent(view, { refreshMs: 0, heightProvider: () => 10 }).render(96);
 		const tinyText = stripAnsi(tinyLines.join("\n"));
 
 		expect(tinyLines.length).toBeLessThanOrEqual(10);
-		expect(tinyText).toContain("Workflow graph");
+		expect(tinyText).toContain("Workflow Dashboard");
 		expect(tinyText).toContain("Flow: branch points 2 / joins 2 / loops 1");
 		expect(tinyText).toContain("diagram");
 		expect(tinyText).not.toContain("workflow graph rows hidden");

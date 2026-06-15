@@ -5,7 +5,6 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { renderOutputBlock } from "../../tui/output-block";
 import type { State } from "../../tui/types";
 import {
 	formatWorkflowChangeReviewLines,
@@ -101,11 +100,22 @@ export class WorkflowGraphComponent implements Component, NativeScrollbackLiveRe
 
 type WorkflowGraphDensity = "full" | "compact";
 
+interface WorkflowGraphCompactProfile {
+	overviewLines: number;
+	focusLines: number;
+	onFlightLines: number;
+	recentActivityLines: number;
+	controlLines: number;
+	diagramChromeRows: number;
+	pathLine: boolean;
+}
+
 const WORKFLOW_GRAPH_MIN_HEIGHT_BUDGET = 6;
-const WORKFLOW_GRAPH_INSPECTOR_MIN_WIDTH = 140;
-const WORKFLOW_GRAPH_INSPECTOR_MIN_PANE_WIDTH = 44;
-const WORKFLOW_GRAPH_INSPECTOR_MAX_PANE_WIDTH = 72;
+const WORKFLOW_GRAPH_WORKBENCH_MIN_WIDTH = 118;
+const WORKFLOW_GRAPH_WORKBENCH_MIN_PANE_WIDTH = 38;
+const WORKFLOW_GRAPH_WORKBENCH_MAX_PANE_WIDTH = 72;
 const WORKFLOW_GRAPH_PANE_GAP_WIDTH = 3;
+const WORKFLOW_GRAPH_FRAME_CHROME_WIDTH = 4;
 
 function renderWorkflowGraphBlock(
 	view: WorkflowGraphView,
@@ -124,70 +134,128 @@ function renderWorkflowGraphBlockAtDensity(
 	density: WorkflowGraphDensity,
 	heightBudget: number | undefined,
 ): string[] {
-	const contentWidth = safeWidth - 8;
-	const focusLines = workflowGraphFocusLines(view, contentWidth, density);
-	const onFlightLines = workflowGraphOnFlightLines(view, contentWidth, density);
-	const recentActivityLines = workflowGraphRecentActivityLines(view, contentWidth);
+	const contentWidth = Math.max(20, safeWidth - WORKFLOW_GRAPH_FRAME_CHROME_WIDTH);
 	const profile = workflowGraphCompactProfile(density, heightBudget);
-	const flowMapLines = workflowGraphFlowMapLines(view, contentWidth, density);
-	const hasDiagramInspector = workflowGraphUsesDiagramInspector(contentWidth, density, heightBudget);
-	const diagramLines = workflowGraphDiagramLines(view, contentWidth, density, heightBudget, profile.diagramChromeRows);
-	const overviewSourceLines = workflowGraphDashboardOverviewLines(view, contentWidth);
+	const headerLines = workflowGraphDashboardHeaderLines(view, contentWidth, density, profile);
+	const bodyLines = workflowGraphDashboardBodyLines(view, contentWidth, density, heightBudget, profile);
+	return renderWorkflowGraphDashboardFrame(view, safeWidth, [...headerLines, ...bodyLines]);
+}
+
+function workflowGraphDashboardHeaderLines(
+	view: WorkflowGraphView,
+	width: number,
+	density: WorkflowGraphDensity,
+	profile: WorkflowGraphCompactProfile,
+): string[] {
+	const overviewSourceLines = workflowGraphDashboardOverviewLines(view, width);
 	const overviewLines =
 		density === "full"
 			? overviewSourceLines
 			: limitWorkflowGraphOverviewLines(
 					overviewSourceLines,
 					profile.overviewLines,
-					profile.pathLine ? workflowGraphCompactPathLine(view, contentWidth) : undefined,
+					profile.pathLine ? workflowGraphCompactPathLine(view, width) : undefined,
 				);
-	const compactFocusLines =
-		density === "full" ? focusLines : limitWorkflowGraphLines(focusLines, profile.focusLines, "focus");
-	const compactOnFlightLines =
-		density === "full" ? onFlightLines : limitWorkflowGraphLines(onFlightLines, profile.onFlightLines, "on-flight");
-	const compactRecentActivityLines =
-		density === "full"
-			? recentActivityLines
-			: limitWorkflowGraphLines(recentActivityLines, profile.recentActivityLines, "activity");
-	const controlLines = workflowGraphControlLines(view, density);
-	const compactControlLines =
-		density === "full" ? controlLines : limitWorkflowGraphLines(controlLines, profile.controlLines, "controls");
-	return renderOutputBlock(
-		{
-			header: "Workflow graph",
-			headerMeta: view.familyId,
-			state: workflowGraphState(view),
-			width: safeWidth,
-			contentPaddingLeft: 2,
-			sections: [
-				{ lines: overviewLines },
-				...(flowMapLines.length > 0 ? [{ label: "flow map", lines: colorWorkflowDiagram(flowMapLines) }] : []),
-				...(compactFocusLines.length > 0 && !hasDiagramInspector
-					? [{ label: "focused node", lines: compactFocusLines }]
-					: []),
-				...(density === "full" && view.subflows !== undefined && view.subflows.length > 0
-					? [{ label: "flow calls", lines: workflowGraphSubflowLines(view) }]
-					: []),
-				...(compactOnFlightLines.length > 0 && !hasDiagramInspector
-					? [{ label: "on-flight", lines: compactOnFlightLines }]
-					: []),
-				...(compactRecentActivityLines.length > 0 && !hasDiagramInspector
-					? [{ label: density === "full" ? "recent activity" : "recent", lines: compactRecentActivityLines }]
-					: []),
-				{ label: "diagram", lines: colorWorkflowDiagram(diagramLines) },
-				...(density === "full" && view.selectedRoutes !== undefined && view.selectedRoutes.length > 0
-					? [{ label: "routes", lines: workflowGraphSelectedRouteLines(view) }]
-					: []),
-				...(density === "full" && view.lineage.length > 0
-					? [{ label: "change review", lines: workflowGraphChangeLines(view, contentWidth) }]
-					: []),
-				...(compactControlLines.length > 0 && !hasDiagramInspector
-					? [{ label: "controls", lines: compactControlLines }]
-					: []),
-			],
-		},
-		theme,
+	return overviewLines.map((line, index) =>
+		index === 0 ? workflowGraphDashboardPrimaryLine(line, width) : workflowGraphDashboardMetricLine(line, width),
 	);
+}
+
+function workflowGraphDashboardBodyLines(
+	view: WorkflowGraphView,
+	width: number,
+	density: WorkflowGraphDensity,
+	heightBudget: number | undefined,
+	profile: WorkflowGraphCompactProfile,
+): string[] {
+	const layout = workflowGraphDashboardLayout(width, density, heightBudget);
+	if (layout.kind === "wide") return workflowGraphDashboardWideBodyLines(view, layout, density, heightBudget, profile);
+	return workflowGraphDashboardStackedBodyLines(view, width, density, heightBudget, profile);
+}
+
+interface WorkflowGraphDashboardWideLayout {
+	kind: "wide";
+	graphWidth: number;
+	workbenchWidth: number;
+}
+
+interface WorkflowGraphDashboardStackedLayout {
+	kind: "stacked";
+}
+
+type WorkflowGraphDashboardLayout = WorkflowGraphDashboardWideLayout | WorkflowGraphDashboardStackedLayout;
+
+function workflowGraphDashboardLayout(
+	width: number,
+	density: WorkflowGraphDensity,
+	heightBudget: number | undefined,
+): WorkflowGraphDashboardLayout {
+	if (width < WORKFLOW_GRAPH_WORKBENCH_MIN_WIDTH) return { kind: "stacked" };
+	if (density === "compact" && (heightBudget ?? 0) <= 20) return { kind: "stacked" };
+	const workbenchWidth = Math.max(
+		WORKFLOW_GRAPH_WORKBENCH_MIN_PANE_WIDTH,
+		Math.min(WORKFLOW_GRAPH_WORKBENCH_MAX_PANE_WIDTH, Math.floor(width * 0.34)),
+	);
+	const graphWidth = Math.max(48, width - workbenchWidth - WORKFLOW_GRAPH_PANE_GAP_WIDTH);
+	return { kind: "wide", graphWidth, workbenchWidth };
+}
+
+function workflowGraphDashboardWideBodyLines(
+	view: WorkflowGraphView,
+	layout: WorkflowGraphDashboardWideLayout,
+	density: WorkflowGraphDensity,
+	heightBudget: number | undefined,
+	profile: WorkflowGraphCompactProfile,
+): string[] {
+	const graphLines = workflowGraphFlowLensLines(view, layout.graphWidth, density, heightBudget, profile);
+	const workbenchLines = workflowGraphLiveWorkbenchLines(view, layout.workbenchWidth, density, profile);
+	const rowCount = Math.max(graphLines.length, workbenchLines.length);
+	const rows: string[] = [];
+	for (let index = 0; index < rowCount; index += 1) {
+		const graphLine = padWorkflowGraphLine(
+			truncateToWidth(graphLines[index] ?? "", layout.graphWidth),
+			layout.graphWidth,
+		);
+		const workbenchLine = truncateToWidth(workbenchLines[index] ?? "", layout.workbenchWidth);
+		rows.push(
+			`${graphLine}  ${theme.fg("borderMuted", "│")} ${padWorkflowGraphLine(workbenchLine, layout.workbenchWidth)}`.trimEnd(),
+		);
+	}
+	return rows;
+}
+
+function workflowGraphDashboardStackedBodyLines(
+	view: WorkflowGraphView,
+	width: number,
+	density: WorkflowGraphDensity,
+	heightBudget: number | undefined,
+	profile: WorkflowGraphCompactProfile,
+): string[] {
+	if (density === "compact" && (heightBudget ?? 0) <= 14) {
+		return workflowGraphFlowLensLines(view, width, density, heightBudget, profile);
+	}
+	return [
+		...workflowGraphFlowLensLines(view, width, density, heightBudget, profile),
+		"",
+		...workflowGraphLiveWorkbenchLines(view, width, density, profile),
+	];
+}
+
+function workflowGraphFlowLensLines(
+	view: WorkflowGraphView,
+	width: number,
+	density: WorkflowGraphDensity,
+	heightBudget: number | undefined,
+	profile: WorkflowGraphCompactProfile,
+): string[] {
+	const flowMapLines =
+		density === "compact" && (heightBudget ?? 0) <= 14 ? [] : workflowGraphFlowMapLines(view, width, density);
+	const diagramLines = workflowGraphDiagramLines(view, width, density, heightBudget, profile.diagramChromeRows);
+	const lines = [workflowGraphDashboardSectionLabel("Flow Lens · flow map")];
+	if (flowMapLines.length > 0) lines.push(...colorWorkflowDiagram(flowMapLines));
+	lines.push(workflowGraphDashboardSectionLabel("diagram"));
+	lines.push(...colorWorkflowDiagram(diagramLines));
+	return lines.map(line => truncateToWidth(line, width));
 }
 
 function workflowGraphDiagramLines(
@@ -197,92 +265,165 @@ function workflowGraphDiagramLines(
 	heightBudget: number | undefined,
 	diagramChromeRows: number,
 ): string[] {
-	const split = workflowGraphDiagramSplit(width, density, heightBudget);
-	const lines = renderWorkflowGraphDiagram(view, { width: split.graphWidth });
-	const diagramLines =
-		density === "full"
-			? lines
-			: limitWorkflowGraphDiagramLines(
-					lines,
-					Math.max(
-						(heightBudget ?? 0) <= 14 ? 1 : 4,
-						Math.min(lines.length, (heightBudget ?? 32) - diagramChromeRows),
-					),
-					view,
-					split.graphWidth,
-				);
-	if (split.inspectorWidth === undefined) return diagramLines;
-	return workflowGraphDiagramWithInspector(view, diagramLines, split.graphWidth, split.inspectorWidth, density);
-}
-
-function workflowGraphUsesDiagramInspector(
-	width: number,
-	density: WorkflowGraphDensity,
-	heightBudget: number | undefined,
-): boolean {
-	if (width < WORKFLOW_GRAPH_INSPECTOR_MIN_WIDTH) return false;
-	if (density === "compact" && (heightBudget ?? 0) <= 20) return false;
-	return true;
-}
-
-function workflowGraphDiagramSplit(
-	width: number,
-	density: WorkflowGraphDensity,
-	heightBudget: number | undefined,
-): { graphWidth: number; inspectorWidth?: number } {
-	if (!workflowGraphUsesDiagramInspector(width, density, heightBudget)) return { graphWidth: width };
-	const inspectorWidth = Math.max(
-		WORKFLOW_GRAPH_INSPECTOR_MIN_PANE_WIDTH,
-		Math.min(WORKFLOW_GRAPH_INSPECTOR_MAX_PANE_WIDTH, Math.floor(width * 0.36)),
+	const lines = renderWorkflowGraphDiagram(view, { width });
+	if (density === "full") return lines;
+	return limitWorkflowGraphDiagramLines(
+		lines,
+		Math.max((heightBudget ?? 0) <= 14 ? 1 : 4, Math.min(lines.length, (heightBudget ?? 32) - diagramChromeRows)),
+		view,
+		width,
 	);
-	const graphWidth = Math.max(48, width - inspectorWidth - WORKFLOW_GRAPH_PANE_GAP_WIDTH);
-	return { graphWidth, inspectorWidth };
 }
 
-function workflowGraphDiagramWithInspector(
+function workflowGraphLiveWorkbenchLines(
 	view: WorkflowGraphView,
-	diagramLines: string[],
-	graphWidth: number,
-	inspectorWidth: number,
+	width: number,
 	density: WorkflowGraphDensity,
+	profile: WorkflowGraphCompactProfile,
 ): string[] {
-	const inspectorLines = workflowGraphInspectorLines(view, inspectorWidth, density);
-	const rowCount = Math.max(diagramLines.length, inspectorLines.length);
-	const rows: string[] = [];
-	for (let index = 0; index < rowCount; index += 1) {
-		const diagramLine = padWorkflowGraphLine(truncateToWidth(diagramLines[index] ?? "", graphWidth), graphWidth);
-		const inspectorLine = truncateToWidth(inspectorLines[index] ?? "", inspectorWidth);
-		rows.push(`${diagramLine}  │ ${inspectorLine}`.trimEnd());
-	}
-	return rows;
-}
-
-function workflowGraphInspectorLines(view: WorkflowGraphView, width: number, density: WorkflowGraphDensity): string[] {
-	const lines: string[] = ["Inspector"];
-	const focusLines = workflowGraphFocusLines(view, width - 2, "compact");
-	lines.push(...workflowGraphInspectorGroup("Focus", focusLines, width, density === "full" ? 4 : 2));
+	const focusLines = workflowGraphWorkbenchFocusLines(view, width, density);
 	const onFlightLines = workflowGraphOnFlightLines(view, width - 2, "compact");
-	lines.push(...workflowGraphInspectorGroup("Live agents", onFlightLines, width, density === "full" ? 5 : 2));
 	const recentLines = workflowGraphRecentActivityLines(view, width - 2);
-	if (recentLines.length > 0) {
-		lines.push(...workflowGraphInspectorGroup("Recent output", recentLines, width, density === "full" ? 4 : 1));
-	}
 	const controlLines = workflowGraphControlLines(view, "compact").map(line => line.trim());
-	lines.push(...workflowGraphInspectorGroup("Operator", controlLines, width, density === "full" ? 4 : 2));
+	const maxFocus = density === "full" ? 5 : profile.focusLines;
+	const maxOnFlight = density === "full" ? 5 : profile.onFlightLines;
+	const maxRecent = density === "full" ? 4 : profile.recentActivityLines;
+	const maxControls = density === "full" ? 5 : profile.controlLines;
+	const lines: string[] = [workflowGraphDashboardSectionLabel("Live Workbench")];
+	if (maxFocus > 0) lines.push(...workflowGraphWorkbenchGroup("Focus", focusLines, width, maxFocus));
+	if (maxOnFlight > 0) lines.push(...workflowGraphWorkbenchGroup("On-flight", onFlightLines, width, maxOnFlight));
+	if (recentLines.length > 0 && maxRecent > 0) {
+		lines.push(...workflowGraphWorkbenchGroup("Recent output", recentLines, width, maxRecent));
+	}
+	if (density === "full" && view.subflows !== undefined && view.subflows.length > 0) {
+		lines.push(...workflowGraphWorkbenchGroup("flow calls", workflowGraphSubflowLines(view), width, 3));
+	}
+	if (density === "full" && view.selectedRoutes !== undefined && view.selectedRoutes.length > 0) {
+		lines.push(...workflowGraphWorkbenchGroup("routes", workflowGraphSelectedRouteLines(view), width, 3));
+	}
+	if (density === "full" && view.lineage.length > 0) {
+		lines.push(...workflowGraphWorkbenchGroup("change review", workflowGraphChangeLines(view, width), width, 3));
+	}
+	if (maxControls > 0) lines.push(...workflowGraphWorkbenchGroup("Controls", controlLines, width, maxControls));
 	return lines.map(line => truncateToWidth(line, width));
 }
 
-function workflowGraphInspectorGroup(
+function workflowGraphWorkbenchGroup(
 	label: string,
 	lines: readonly string[],
 	width: number,
 	maxLines: number,
 ): string[] {
-	const rows = [`╭─ ${label}`];
+	const rows = [workflowGraphDashboardSubsectionLabel(label)];
 	const visibleLines = lines.length === 0 ? ["none"] : lines.slice(0, maxLines);
-	for (const line of visibleLines) rows.push(`│ ${truncateToWidth(replaceTabs(line), Math.max(8, width - 2))}`);
-	if (lines.length > visibleLines.length) rows.push(`│ +${lines.length - visibleLines.length} hidden`);
+	for (const line of visibleLines) {
+		rows.push(`${theme.fg("borderMuted", "│")} ${truncateToWidth(replaceTabs(line), Math.max(8, width - 2))}`);
+	}
+	if (lines.length > visibleLines.length) {
+		rows.push(`${theme.fg("borderMuted", "│")} ${theme.fg("dim", `+${lines.length - visibleLines.length} hidden`)}`);
+	}
 	return rows;
+}
+
+function workflowGraphWorkbenchFocusLines(
+	view: WorkflowGraphView,
+	width: number,
+	density: WorkflowGraphDensity,
+): string[] {
+	const lines = workflowGraphFocusLines(view, width, "compact");
+	const sourceLines = lines.length > 0 ? lines : workflowGraphOnFlightLines(view, width, "compact").slice(0, 1);
+	return sourceLines.map(line => {
+		const compact = compactWorkflowGraphFocusControlLine(compactWorkflowGraphStatusLine(line, density));
+		return truncateToWidth(replaceTabs(compact), Math.max(20, width));
+	});
+}
+
+function compactWorkflowGraphFocusControlLine(line: string): string {
+	return line
+		.replace(/^control: Watch: Agent Hub (.+)$/u, "watch: Agent Hub $1")
+		.replace(/^control: Interrupt: .+$/u, "interrupt: selected live agent")
+		.replace(/^control: Steer: .+$/u, "steer: Enter attaches · Esc returns");
+}
+
+function workflowGraphDashboardPrimaryLine(line: string, width: number): string {
+	const status = workflowGraphStatusFromRunLine(line);
+	const glyph = workflowGraphStatusGlyph(status);
+	const color = workflowGraphStatusColor(status);
+	return truncateToWidth(`${theme.fg(color, glyph)} ${theme.bold(line)}`, width);
+}
+
+function workflowGraphDashboardMetricLine(line: string, width: number): string {
+	const separator = line.indexOf(":");
+	if (separator === -1) return truncateToWidth(line, width);
+	const label = theme.fg("muted", line.slice(0, separator + 1));
+	const value = line.slice(separator + 1);
+	return truncateToWidth(`${label}${value}`, width);
+}
+
+function workflowGraphStatusFromRunLine(line: string): WorkflowGraphNodeStatus {
+	if (line.includes(" failed")) return "failed";
+	if (line.includes(" completed")) return "completed";
+	if (line.includes(" stopped")) return "checkpointed";
+	if (line.includes(" running")) return "running";
+	return "pending";
+}
+
+function workflowGraphDashboardSectionLabel(label: string): string {
+	return `${theme.fg("accent", "▌")} ${theme.bold(label)}`;
+}
+
+function workflowGraphDashboardSubsectionLabel(label: string): string {
+	return `${theme.fg("borderMuted", "╭─")} ${theme.fg("muted", label)}`;
+}
+
+function renderWorkflowGraphDashboardFrame(
+	view: WorkflowGraphView,
+	width: number,
+	contentLines: readonly string[],
+): string[] {
+	const borderColor = workflowGraphDashboardBorderColor(view);
+	const border = (text: string) => theme.fg(borderColor, text);
+	const innerWidth = Math.max(0, width - WORKFLOW_GRAPH_FRAME_CHROME_WIDTH);
+	const rows = [
+		renderWorkflowGraphDashboardBar("╭", "╮", "Workflow Dashboard", view.familyId, width, border),
+		...contentLines.map(line => renderWorkflowGraphDashboardContentLine(line, innerWidth, border)),
+		renderWorkflowGraphDashboardBar("╰", "╯", undefined, undefined, width, border),
+	];
+	return rows;
+}
+
+function renderWorkflowGraphDashboardBar(
+	left: string,
+	right: string,
+	label: string | undefined,
+	meta: string | undefined,
+	width: number,
+	border: (text: string) => string,
+): string {
+	const leftText = label === undefined ? left : `${left}─ ${label}${meta === undefined ? "" : ` · ${meta}`} `;
+	const leftWidth = visibleWidth(leftText);
+	const rightWidth = visibleWidth(right);
+	const fill = "─".repeat(Math.max(0, width - leftWidth - rightWidth));
+	return `${border(leftText)}${border(fill)}${border(right)}`;
+}
+
+function renderWorkflowGraphDashboardContentLine(
+	line: string,
+	innerWidth: number,
+	border: (text: string) => string,
+): string {
+	const clipped = truncateToWidth(line, innerWidth);
+	const padded = padWorkflowGraphLine(clipped, innerWidth);
+	return `${border("│")} ${padded} ${border("│")}`;
+}
+
+function workflowGraphDashboardBorderColor(view: WorkflowGraphView): ThemeColor {
+	const state = workflowGraphState(view);
+	if (state === "error") return "error";
+	if (state === "warning") return "warning";
+	if (state === "running" || state === "pending") return "accent";
+	if (state === "success") return "success";
+	return "border";
 }
 
 function padWorkflowGraphLine(line: string, width: number): string {
@@ -340,15 +481,7 @@ function workflowGraphStatusCounts(view: WorkflowGraphView): Record<WorkflowGrap
 function workflowGraphCompactProfile(
 	density: WorkflowGraphDensity,
 	heightBudget: number | undefined,
-): {
-	overviewLines: number;
-	focusLines: number;
-	onFlightLines: number;
-	recentActivityLines: number;
-	controlLines: number;
-	diagramChromeRows: number;
-	pathLine: boolean;
-} {
+): WorkflowGraphCompactProfile {
 	if (density === "full") {
 		return {
 			overviewLines: Number.POSITIVE_INFINITY,
@@ -389,17 +522,28 @@ function workflowGraphCompactProfile(
 			onFlightLines: 1,
 			recentActivityLines: 0,
 			controlLines: 2,
-			diagramChromeRows: 17,
+			diagramChromeRows: 21,
+			pathLine: false,
+		};
+	}
+	if ((heightBudget ?? 0) <= 40) {
+		return {
+			overviewLines: 5,
+			focusLines: 1,
+			onFlightLines: 1,
+			recentActivityLines: 0,
+			controlLines: 2,
+			diagramChromeRows: 22,
 			pathLine: false,
 		};
 	}
 	return {
 		overviewLines: 5,
-		focusLines: 1,
-		onFlightLines: 1,
-		recentActivityLines: 0,
-		controlLines: 2,
-		diagramChromeRows: 18,
+		focusLines: 3,
+		onFlightLines: 2,
+		recentActivityLines: 2,
+		controlLines: 3,
+		diagramChromeRows: 28,
 		pathLine: false,
 	};
 }
@@ -531,13 +675,6 @@ function workflowGraphPreviousNodeBox(
 	return undefined;
 }
 
-function limitWorkflowGraphLines(lines: string[], maxLines: number, label: string): string[] {
-	if (maxLines <= 0) return [];
-	if (lines.length <= maxLines) return lines;
-	if (maxLines <= 1) return lines.slice(0, 1);
-	return [...lines.slice(0, maxLines - 1), `+${lines.length - maxLines + 1} ${label} hidden`];
-}
-
 function limitWorkflowGraphOverviewLines(lines: string[], maxLines: number, pathLine: string | undefined): string[] {
 	if (maxLines <= 0) return [];
 	const sourceLines = pathLine === undefined ? lines : [...lines, pathLine];
@@ -563,7 +700,7 @@ function workflowGraphCompactPathLine(view: WorkflowGraphView, width: number): s
 
 function workflowGraphFlowMapLines(view: WorkflowGraphView, width: number, density: WorkflowGraphDensity): string[] {
 	if (view.nodes.length === 0) return [];
-	const compactWide = density === "compact" && width >= WORKFLOW_GRAPH_INSPECTOR_MIN_WIDTH;
+	const compactWide = density === "compact" && width >= WORKFLOW_GRAPH_WORKBENCH_MIN_WIDTH;
 	const maxRows = density === "full" ? 4 : compactWide ? 3 : 1;
 	const nodeRows = workflowGraphFlowMapNodeRows(view, width, density === "full" ? 3 : 1);
 	const hintRows =
