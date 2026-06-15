@@ -44,6 +44,7 @@ export class SessionFocusController {
 		this.#focusedAgentId = id;
 		this.#attachedSession = session;
 		this.#registryUnsubscribe ??= this.registry.onChange(e => this.#onRegistryEvent(e));
+		this.ctx.setWorkflowGraphMonitorVisible(false);
 		await this.#attach(session);
 		this.ctx.showStatus(`Viewing agent ${id} — type to steer, / controls main, Esc returns, ←← hops parent`);
 	}
@@ -64,6 +65,7 @@ export class SessionFocusController {
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = undefined;
 		await this.#attach(this.ctx.session);
+		this.ctx.setWorkflowGraphMonitorVisible(true);
 		this.ctx.showStatus("Returned to main session");
 	}
 

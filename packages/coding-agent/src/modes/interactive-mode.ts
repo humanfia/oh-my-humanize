@@ -387,6 +387,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;
 	#workflowMonitorComponent?: Component;
+	#workflowMonitorVisible = true;
 	#onboardingContainer?: Container;
 
 	isInitialized = false;
@@ -3096,7 +3097,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		disposeWorkflowMonitorComponent(this.#workflowMonitorComponent);
 		this.workflowMonitorContainer.clear();
 		this.#workflowMonitorComponent = component;
-		this.workflowMonitorContainer.addChild(component);
+		if (this.#workflowMonitorVisible) {
+			this.workflowMonitorContainer.addChild(component);
+		}
+		this.ui.requestRender();
+	}
+
+	setWorkflowGraphMonitorVisible(visible: boolean): void {
+		if (this.#workflowMonitorVisible === visible) return;
+		this.#workflowMonitorVisible = visible;
+		this.workflowMonitorContainer.clear();
+		if (visible && this.#workflowMonitorComponent) {
+			this.workflowMonitorContainer.addChild(this.#workflowMonitorComponent);
+		}
 		this.ui.requestRender();
 	}
 

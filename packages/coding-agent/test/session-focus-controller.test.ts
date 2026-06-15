@@ -50,6 +50,7 @@ interface Harness {
 		resetTranscriptAnchors: () => number;
 		renderInitialMessages: () => number;
 		mainUnsubscribe: () => number;
+		workflowMonitorVisible: () => boolean;
 	};
 }
 
@@ -61,6 +62,7 @@ function makeHarness(): Harness {
 	let resetTranscriptAnchors = 0;
 	let renderInitialMessages = 0;
 	let mainUnsubscribe = 0;
+	let workflowMonitorVisible = true;
 
 	const ctx = {
 		session: main.session,
@@ -87,6 +89,9 @@ function makeHarness(): Harness {
 		renderInitialMessages: () => {
 			renderInitialMessages++;
 		},
+		setWorkflowGraphMonitorVisible: (visible: boolean) => {
+			workflowMonitorVisible = visible;
+		},
 		updateEditorBorderColor() {},
 		ui: { requestRender() {} },
 		showStatus() {},
@@ -109,6 +114,7 @@ function makeHarness(): Harness {
 			resetTranscriptAnchors: () => resetTranscriptAnchors,
 			renderInitialMessages: () => renderInitialMessages,
 			mainUnsubscribe: () => mainUnsubscribe,
+			workflowMonitorVisible: () => workflowMonitorVisible,
 		},
 	};
 }
@@ -141,6 +147,19 @@ describe("SessionFocusController", () => {
 		const event = { type: "message_start", message: { role: "user" } };
 		await worker.emit(event);
 		expect(h.handledEvents).toEqual([event]);
+	});
+
+	it("hides the persistent workflow monitor while focused on a worker session and restores it on return", async () => {
+		const h = makeHarness();
+		const worker = makeSessionStub();
+		registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID);
+
+		expect(h.counts.workflowMonitorVisible()).toBe(true);
+		await h.controller.focusAgent("Worker");
+		expect(h.counts.workflowMonitorVisible()).toBe(false);
+
+		await h.controller.unfocus();
+		expect(h.counts.workflowMonitorVisible()).toBe(true);
 	});
 
 	it("mid-turn attach synthesizes agent_start, and an orphaned assistant message_update gets a synthesized message_start", async () => {

@@ -199,6 +199,8 @@ export interface InteractiveModeContext {
 	present(content: Component | readonly Component[]): void;
 	/** Replace the persistent workflow monitor panel without appending to transcript scrollback. */
 	showWorkflowGraphMonitor(component: Component): void;
+	/** Temporarily show or hide the persistent workflow monitor without replacing it. */
+	setWorkflowGraphMonitorVisible(visible: boolean): void;
 	/**
 	 * Dispose every live block in the transcript (stopping timers/subscriptions)
 	 * and clear it. Used before a full rebuild so animated/streaming blocks do not

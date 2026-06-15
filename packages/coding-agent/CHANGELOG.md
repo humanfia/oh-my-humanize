@@ -39,6 +39,9 @@
 
 ### Fixed
 
+- Fixed focused workflow agent views so the resident workflow monitor is hidden
+  while the operator is attached to the live agent, then restored when returning
+  to the main session.
 - Fixed the built-in KDA/Humanize retry-review flows to select the latest
   completed builder output after checkpoint restarts instead of requiring a
   single parent activation.
