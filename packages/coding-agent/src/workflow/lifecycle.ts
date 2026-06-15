@@ -911,7 +911,11 @@ function assertWorkflowRestartAllowed(host: WorkflowLifecycleStoreHost, options:
 	const freeze = family.freezes.find(candidate => candidate.id === options.freezeId);
 	if (freeze === undefined)
 		throw new WorkflowLifecycleError(`Workflow freeze not found for restart: ${options.freezeId}`);
-	if (options.freezeId === checkpointAttempt.freezeId) return;
+	const startNodeIds = resolveWorkflowRestartStartNodeIds(family, checkpoint, freeze);
+	if (options.freezeId === checkpointAttempt.freezeId) {
+		assertWorkflowRestartStartNodeIds(options, startNodeIds);
+		return;
+	}
 	const applied = family.changeRequests.some(
 		request =>
 			request.status === "approved" &&
@@ -926,6 +930,100 @@ function assertWorkflowRestartAllowed(host: WorkflowLifecycleStoreHost, options:
 			`Workflow restart freeze is not applied to checkpoint ${options.checkpointId}: ${options.freezeId}`,
 		);
 	}
+	assertWorkflowRestartStartNodeIds(options, startNodeIds);
+}
+
+export function resolveWorkflowRestartStartNodeIds(
+	family: WorkflowRunFamilySnapshot,
+	checkpoint: WorkflowCheckpointSnapshot,
+	freeze: FlowFreeze,
+): string[] {
+	const nodeIds = new Set(freeze.definition.nodes.map(node => node.id));
+	const frontierMappings = [
+		...approvedCheckpointFrontierMappings(family, checkpoint, freeze.id),
+		...migrationFrontierMappings(freeze.definition),
+	];
+	const startNodeIds: string[] = [];
+	for (const frontierNodeId of checkpoint.frontierNodeIds) {
+		for (const mapped of restartFrontierCandidates(frontierNodeId, checkpoint, frontierMappings)) {
+			if (nodeIds.has(mapped)) {
+				pushUnique(startNodeIds, mapped);
+				break;
+			}
+		}
+	}
+	return startNodeIds;
+}
+
+function assertWorkflowRestartStartNodeIds(options: RestartWorkflowAttemptOptions, startNodeIds: string[]): void {
+	if (startNodeIds.length === 0) {
+		throw new WorkflowLifecycleError(`Workflow checkpoint has no restartable frontier: ${options.checkpointId}`);
+	}
+	const requestedStartNodeIds = requestedWorkflowRestartStartNodeIds(options);
+	const allowed = new Set(startNodeIds);
+	for (const nodeId of requestedStartNodeIds) {
+		if (!allowed.has(nodeId)) {
+			throw new WorkflowLifecycleError(
+				`Workflow restart start node "${nodeId}" is not reachable from checkpoint frontier: ${startNodeIds.join(", ")}`,
+			);
+		}
+	}
+	const requested = new Set(requestedStartNodeIds);
+	const missing = startNodeIds.filter(nodeId => !requested.has(nodeId));
+	if (missing.length > 0) {
+		throw new WorkflowLifecycleError(
+			`Workflow restart is missing checkpoint frontier start node: ${missing.join(", ")}`,
+		);
+	}
+}
+
+function requestedWorkflowRestartStartNodeIds(options: RestartWorkflowAttemptOptions): string[] {
+	const startNodeIds: string[] = [];
+	pushUnique(startNodeIds, options.startNodeId);
+	for (const nodeId of options.startNodeIds ?? []) pushUnique(startNodeIds, nodeId);
+	return startNodeIds;
+}
+
+function migrationFrontierMappings(definition: WorkflowDefinition): Array<Record<string, string>> {
+	return definition.migrations?.map(migration => migration.frontierMapping) ?? [];
+}
+
+function approvedCheckpointFrontierMappings(
+	family: WorkflowRunFamilySnapshot,
+	checkpoint: WorkflowCheckpointSnapshot,
+	freezeId: string,
+): Array<Record<string, string>> {
+	return family.changeRequests
+		.filter(
+			request =>
+				request.status === "approved" &&
+				(request.checkpointId === undefined || request.checkpointId === checkpoint.id) &&
+				(request.attemptId === undefined || request.attemptId === checkpoint.attemptId) &&
+				request.applications.some(
+					application => application.target === "freeze" && application.freezeId === freezeId,
+				),
+		)
+		.map(request => request.frontierMapping);
+}
+
+function restartFrontierCandidates(
+	frontierNodeId: string,
+	checkpoint: WorkflowCheckpointSnapshot,
+	approvedMappings: Array<Record<string, string>>,
+): string[] {
+	const candidates: string[] = [];
+	for (const mapping of approvedMappings) {
+		const mapped = mapping[frontierNodeId];
+		if (mapped !== undefined) candidates.push(mapped);
+	}
+	const savedMapping = checkpoint.sourceMapping[frontierNodeId];
+	if (savedMapping !== undefined) candidates.push(savedMapping);
+	candidates.push(frontierNodeId);
+	return candidates;
+}
+
+function pushUnique(values: string[], value: string): void {
+	if (!values.includes(value)) values.push(value);
 }
 
 function expectWorkflowFamily(host: WorkflowLifecycleStoreHost, familyId: string): WorkflowRunFamilySnapshot {

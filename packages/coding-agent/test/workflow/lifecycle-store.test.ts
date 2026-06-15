@@ -539,6 +539,142 @@ describe("workflow lifecycle event store", () => {
 		).toThrow("Workflow restart freeze is not applied to checkpoint checkpoint-1: flowfreeze:b");
 		expect(host.entries).toHaveLength(entryCount);
 	});
+
+	it("rejects restart start nodes outside the checkpoint frontier", () => {
+		const host = createHost();
+		const freeze = createFreeze("flowfreeze:a", ["build", "review"]);
+
+		startWorkflowFamily(host, { familyId: "family-1" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-1" });
+		startWorkflowAttempt(host, {
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			freezeId: freeze.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-1"),
+		});
+		requestWorkflowAttemptStop(host, { attemptId: "attempt-1", deadlineMs: 10 });
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-1",
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["review"],
+			state: {},
+			sourceMapping: { review: "review" },
+		});
+		const entryCount = host.entries.length;
+
+		expect(() =>
+			restartWorkflowAttempt(host, {
+				familyId: "family-1",
+				attemptId: "attempt-2",
+				checkpointId: "checkpoint-1",
+				freezeId: freeze.id,
+				startNodeId: "build",
+				runtimeBindingSnapshot: binding("binding-2"),
+			}),
+		).toThrow('Workflow restart start node "build" is not reachable from checkpoint frontier: review');
+		expect(host.entries).toHaveLength(entryCount);
+	});
+
+	it("rejects changed-freeze restarts that skip the approved frontier mapping", () => {
+		const host = createHost();
+		const freezeA = createFreeze("flowfreeze:a", ["build", "review"]);
+		const freezeB = createFreeze("flowfreeze:b", ["build", "verify"]);
+
+		startWorkflowFamily(host, { familyId: "family-1" });
+		recordWorkflowFreeze(host, freezeA, { familyId: "family-1" });
+		startWorkflowAttempt(host, {
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			freezeId: freezeA.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-1"),
+		});
+		requestWorkflowAttemptStop(host, { attemptId: "attempt-1", deadlineMs: 10 });
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-1",
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["review"],
+			state: {},
+			sourceMapping: { review: "verify" },
+		});
+		proposeWorkflowChangeRequest(host, {
+			changeRequestId: "change-1",
+			familyId: "family-1",
+			checkpointId: "checkpoint-1",
+			actor: "human:sihao",
+			origin: "human",
+			reason: "restart at verification",
+			operations: [{ op: "add_node", node: { id: "verify", type: "script" } }],
+			frontierMapping: { review: "verify" },
+		});
+		approveWorkflowChangeRequest(host, { changeRequestId: "change-1", actor: "human:sihao" });
+		recordWorkflowFreeze(host, freezeB, { familyId: "family-1" });
+		recordWorkflowChangeRequestApplied(host, {
+			changeRequestId: "change-1",
+			actor: "human:sihao",
+			target: "freeze",
+			freezeId: freezeB.id,
+		});
+		const entryCount = host.entries.length;
+
+		expect(() =>
+			restartWorkflowAttempt(host, {
+				familyId: "family-1",
+				attemptId: "attempt-2",
+				checkpointId: "checkpoint-1",
+				freezeId: freezeB.id,
+				startNodeId: "build",
+				runtimeBindingSnapshot: binding("binding-2"),
+			}),
+		).toThrow('Workflow restart start node "build" is not reachable from checkpoint frontier: verify');
+		expect(host.entries).toHaveLength(entryCount);
+	});
+
+	it("rejects restart requests that omit checkpoint frontier siblings", () => {
+		const host = createHost();
+		const freeze = createFreeze("flowfreeze:a", ["build", "left", "right"]);
+
+		startWorkflowFamily(host, { familyId: "family-1" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-1" });
+		startWorkflowAttempt(host, {
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			freezeId: freeze.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-1"),
+		});
+		requestWorkflowAttemptStop(host, { attemptId: "attempt-1", deadlineMs: 10 });
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-1",
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["left", "right"],
+			state: {},
+			sourceMapping: { left: "left", right: "right" },
+		});
+		const entryCount = host.entries.length;
+
+		expect(() =>
+			restartWorkflowAttempt(host, {
+				familyId: "family-1",
+				attemptId: "attempt-2",
+				checkpointId: "checkpoint-1",
+				freezeId: freeze.id,
+				startNodeId: "left",
+				runtimeBindingSnapshot: binding("binding-2"),
+			}),
+		).toThrow("Workflow restart is missing checkpoint frontier start node: right");
+		expect(host.entries).toHaveLength(entryCount);
+	});
 });
 
 function binding(id: string) {

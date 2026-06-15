@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed workflow restarts so lifecycle primitives reject start nodes that do
+  not come from the checkpoint frontier or its approved migration mapping,
+  preventing lower-level callers from bypassing restart frontier validation.
 - Fixed `.omhflow` production freezes so declared change request files are
   parsed and validated before the frozen artifact can start, catching malformed
   graph patch operations at freeze time instead of later change review.
