@@ -26,6 +26,7 @@ import {
 import { declareWorkerHostEntry } from "@oh-my-pi/pi-utils/worker-host";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
+import { discardParkedWorkerThreadMessages, parkWorkerThreadEntrypointMessages } from "./worker-thread-message-buffer";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -64,6 +65,7 @@ async function showHelp(config: CliConfig): Promise<void> {
  */
 async function runSmokeTest(): Promise<void> {
 	const { smokeTestSyncWorker, startServer } = await import("@oh-my-pi/omp-stats");
+	const { smokeTestJsEvalWorker } = await import("./eval/js/context-manager");
 	const { smokeTestTinyTitleWorker } = await import("./tiny/title-client");
 	const { smokeTestSttWorker } = await import("./stt/asr-client");
 	const { smokeTestTtsWorker } = await import("./tts/tts-client");
@@ -81,6 +83,7 @@ async function runSmokeTest(): Promise<void> {
 		statsServer.stop();
 	}
 
+	await smokeTestJsEvalWorker();
 	await smokeTestTinyTitleWorker();
 	await smokeTestSttWorker();
 	await smokeTestTtsWorker();
@@ -102,8 +105,6 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		// this dispatch completes — so anything the parent posted right after
 		// spawning (the smoke ping, the first parse request) would be dropped.
 		// Park early events and replay them once the module's handler is live.
-		// (The tab/eval workers are immune: `parentPort.on("message")` queues
-		// until a listener attaches.)
 		const scope = globalThis as unknown as { onmessage: ((event: MessageEvent) => void) | null };
 		const pending: MessageEvent[] = [];
 		const buffer = (event: MessageEvent): void => {
@@ -118,11 +119,23 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		return true;
 	}
 	if (arg === TAB_WORKER_ARG) {
-		await import("./tools/browser/tab-worker-entry");
+		parkWorkerThreadEntrypointMessages();
+		try {
+			await import("./tools/browser/tab-worker-entry");
+		} catch (error) {
+			discardParkedWorkerThreadMessages();
+			throw error;
+		}
 		return true;
 	}
 	if (arg === JS_EVAL_WORKER_ARG) {
-		await import("./eval/js/worker-entry");
+		parkWorkerThreadEntrypointMessages();
+		try {
+			await import("./eval/js/worker-entry");
+		} catch (error) {
+			discardParkedWorkerThreadMessages();
+			throw error;
+		}
 		return true;
 	}
 	if (arg === STT_WORKER_ARG) {
@@ -246,11 +259,9 @@ export async function runCli(argv: string[]): Promise<void> {
 		return;
 	}
 
-	// Worker-thread entry dispatch must run before the first `await`: the
-	// stats sync worker's buffering onmessage handler is installed in the
-	// synchronous prefix of `runWorkerEntrypoint`, and Bun flushes the
-	// worker's parked initial messages as soon as the entry module's
-	// top-level evaluation finishes.
+	// Worker-thread entry dispatch must run before the first `await`: stats
+	// parks `globalThis.onmessage` events, and tab/eval park `parentPort`
+	// messages in the synchronous prefix of `runWorkerEntrypoint`.
 	if (TINY_WORKER_ARGS.has(resolvedArgv[0] ?? "")) {
 		await runTinyWorker();
 		return;

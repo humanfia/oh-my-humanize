@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Fixed source-CLI worker-host startup for JS eval and tab workers by buffering
+  early parent-port messages until the hidden worker entrypoint installs its
+  listener, preventing workflow JS script nodes from timing out during worker
+  cold start.
 - Fixed auto-retry classification for provider gateway failures such as
   Cloudflare 520 responses, so long-running workflow subagents can recover
   through the existing AgentSession retry path.

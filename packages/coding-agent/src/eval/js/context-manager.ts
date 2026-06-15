@@ -125,6 +125,25 @@ export async function disposeAllVmContexts(): Promise<void> {
 	await Promise.all(all.map(session => killSession(session, new ToolError("JS context disposed"), { force: false })));
 }
 
+export async function smokeTestJsEvalWorker({
+	timeoutMs = WORKER_INIT_TIMEOUT_MS,
+}: {
+	timeoutMs?: number;
+} = {}): Promise<void> {
+	const worker = spawnJsWorker();
+	const session: JsSession = {
+		sessionKey: "smoke",
+		worker,
+		state: "alive",
+		pending: new Map(),
+	};
+	try {
+		await initWorker(session, { cwd: process.cwd(), sessionId: "smoke" }, timeoutMs);
+	} finally {
+		await worker.terminate().catch(() => undefined);
+	}
+}
+
 async function runOnce(
 	session: JsSession,
 	options: {

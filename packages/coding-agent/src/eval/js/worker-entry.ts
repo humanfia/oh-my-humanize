@@ -1,4 +1,5 @@
 import { parentPort } from "node:worker_threads";
+import { replayParkedWorkerThreadMessages } from "../../worker-thread-message-buffer";
 import { WorkerCore } from "./worker-core";
 import type { Transport, WorkerInbound, WorkerOutbound } from "./worker-protocol";
 
@@ -10,6 +11,7 @@ const transport: Transport = {
 	onMessage: handler => {
 		const wrap = (data: unknown): void => handler(data as WorkerInbound);
 		port.on("message", wrap);
+		replayParkedWorkerThreadMessages(wrap);
 		return () => port.off("message", wrap);
 	},
 	close: () => {
