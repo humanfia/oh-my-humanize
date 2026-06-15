@@ -43,6 +43,20 @@ const firstEvidenceValue = keys => {
 	}
 	return undefined;
 };
+const evidenceValues = keys => {
+	const values = [];
+	for (const key of keys) {
+		const value = implementationData[key];
+		if (value === undefined) continue;
+		if (Array.isArray(value)) {
+			values.push(...value);
+		} else {
+			values.push(value);
+		}
+	}
+	if (values.length === 0) return undefined;
+	return values.length === 1 ? values[0] : values;
+};
 const roundNumber = currentRound + 1;
 const entry = {
 	round: roundNumber,
@@ -54,16 +68,26 @@ const entry = {
 		status: boundedEvidenceValue(implementationData.status, "not-reported"),
 		changedFiles: boundedEvidenceValue(firstEvidenceValue(["changedFiles", "changed_files"]), "not-reported"),
 		negativeTests: boundedEvidenceValue(
-			firstEvidenceValue([
+			evidenceValues([
 				"negativeAndRegressionRiskScenarios",
 				"negative_tests_or_regression_risks",
+				"negative_test_evidence",
+				"regression_risk_scenarios",
 				"negativeTests",
 			]),
 			"required-before-complete",
 		),
-		verification: boundedEvidenceValue(implementationData.verification, "required-before-complete"),
+		verification: boundedEvidenceValue(
+			evidenceValues(["verification", "verification_commands", "verificationCommands"]),
+			"required-before-complete",
+		),
 		acceptanceDelta: boundedEvidenceValue(
-			firstEvidenceValue(["acceptanceCriteriaEvidence", "acceptance_evidence", "acceptanceEvidence"]),
+			evidenceValues([
+				"acceptanceCriteriaEvidence",
+				"acceptance_criteria_evidence",
+				"acceptance_evidence",
+				"acceptanceEvidence",
+			]),
 			"reviewer-must-check",
 		),
 		longRunningMinimum: longRunningRequested ? (minimumSatisfied ? "satisfied" : "not-yet-satisfied") : "not-requested",

@@ -244,9 +244,10 @@ describe("workflow artifact registry", () => {
 								status: "implementation_verified_not_long_running_final",
 								summary: "implemented evaluator and tests",
 								changed_files: ["src/evaluator.ts", "test/evaluator.test.ts"],
-								verification: [{ command: "bun test", result: "pass" }],
-								negative_tests_or_regression_risks: ["division by zero throws"],
-								acceptance_evidence: [
+								verification_commands: [{ command: "bun test", result: "pass" }],
+								negative_test_evidence: ["division by zero throws"],
+								regression_risk_scenarios: ["invalid parser state is reported"],
+								acceptance_criteria_evidence: [
 									{
 										criterion: "verify locally",
 										evidence: "bun test passed",
@@ -257,9 +258,10 @@ describe("workflow artifact registry", () => {
 								status: "implementation_verified_not_long_running_final",
 								summary: "implemented evaluator and tests",
 								changed_files: ["src/evaluator.ts", "test/evaluator.test.ts"],
-								verification: [{ command: "bun test", result: "pass" }],
-								negative_tests_or_regression_risks: ["division by zero throws"],
-								acceptance_evidence: [
+								verification_commands: [{ command: "bun test", result: "pass" }],
+								negative_test_evidence: ["division by zero throws"],
+								regression_risk_scenarios: ["invalid parser state is reported"],
+								acceptance_criteria_evidence: [
 									{
 										criterion: "verify locally",
 										evidence: "bun test passed",
@@ -289,6 +291,7 @@ describe("workflow artifact registry", () => {
 		expect(summaryReviewAssignment).toContain("src/evaluator.ts");
 		expect(summaryReviewAssignment).toContain('"command":"bun test"');
 		expect(summaryReviewAssignment).toContain("division by zero throws");
+		expect(summaryReviewAssignment).toContain("invalid parser state is reported");
 		expect(summaryReviewAssignment).toContain("bun test passed");
 		expect(summaryReviewAssignment).not.toContain('"changedFiles":"not-reported"');
 		expect(summaryReviewAssignment).not.toContain('"verification":"required-before-complete"');
