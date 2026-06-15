@@ -243,9 +243,10 @@ describe("workflow artifact registry", () => {
 							output: JSON.stringify({
 								status: "implementation_verified_not_long_running_final",
 								summary: "implemented evaluator and tests",
+								changed_files: ["src/evaluator.ts", "test/evaluator.test.ts"],
 								verification: [{ command: "bun test", result: "pass" }],
-								negativeAndRegressionRiskScenarios: ["division by zero throws"],
-								acceptanceCriteriaEvidence: [
+								negative_tests_or_regression_risks: ["division by zero throws"],
+								acceptance_evidence: [
 									{
 										criterion: "verify locally",
 										evidence: "bun test passed",
@@ -255,9 +256,10 @@ describe("workflow artifact registry", () => {
 							data: {
 								status: "implementation_verified_not_long_running_final",
 								summary: "implemented evaluator and tests",
+								changed_files: ["src/evaluator.ts", "test/evaluator.test.ts"],
 								verification: [{ command: "bun test", result: "pass" }],
-								negativeAndRegressionRiskScenarios: ["division by zero throws"],
-								acceptanceCriteriaEvidence: [
+								negative_tests_or_regression_risks: ["division by zero throws"],
+								acceptance_evidence: [
 									{
 										criterion: "verify locally",
 										evidence: "bun test passed",
@@ -284,10 +286,14 @@ describe("workflow artifact registry", () => {
 		expect(result.scheduler.activations.find(activation => activation.status === "failed")?.error).toBeUndefined();
 		expect(summaryReviewAssignments).toHaveLength(1);
 		const summaryReviewAssignment = summaryReviewAssignments[0] ?? "";
+		expect(summaryReviewAssignment).toContain("src/evaluator.ts");
 		expect(summaryReviewAssignment).toContain('"command":"bun test"');
 		expect(summaryReviewAssignment).toContain("division by zero throws");
+		expect(summaryReviewAssignment).toContain("bun test passed");
+		expect(summaryReviewAssignment).not.toContain('"changedFiles":"not-reported"');
 		expect(summaryReviewAssignment).not.toContain('"verification":"required-before-complete"');
 		expect(summaryReviewAssignment).not.toContain('"negativeTests":"required-before-complete"');
+		expect(summaryReviewAssignment).not.toContain('"acceptanceDelta":"reviewer-must-check"');
 	});
 
 	it("routes bundled Humanize RLCR through a hold loop after implementation completes before the long-running gate is satisfied", async () => {

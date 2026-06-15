@@ -37,6 +37,12 @@ const boundedEvidenceValue = (value, fallback) => {
 		preview: serialized.slice(0, evidenceValueLimit),
 	};
 };
+const firstEvidenceValue = keys => {
+	for (const key of keys) {
+		if (implementationData[key] !== undefined) return implementationData[key];
+	}
+	return undefined;
+};
 const roundNumber = currentRound + 1;
 const entry = {
 	round: roundNumber,
@@ -46,13 +52,20 @@ const entry = {
 	implementationSummary: boundedImplementationSummary,
 	evidence: {
 		status: boundedEvidenceValue(implementationData.status, "not-reported"),
-		changedFiles: boundedEvidenceValue(implementationData.changedFiles, "not-reported"),
+		changedFiles: boundedEvidenceValue(firstEvidenceValue(["changedFiles", "changed_files"]), "not-reported"),
 		negativeTests: boundedEvidenceValue(
-			implementationData.negativeAndRegressionRiskScenarios,
+			firstEvidenceValue([
+				"negativeAndRegressionRiskScenarios",
+				"negative_tests_or_regression_risks",
+				"negativeTests",
+			]),
 			"required-before-complete",
 		),
 		verification: boundedEvidenceValue(implementationData.verification, "required-before-complete"),
-		acceptanceDelta: boundedEvidenceValue(implementationData.acceptanceCriteriaEvidence, "reviewer-must-check"),
+		acceptanceDelta: boundedEvidenceValue(
+			firstEvidenceValue(["acceptanceCriteriaEvidence", "acceptance_evidence", "acceptanceEvidence"]),
+			"reviewer-must-check",
+		),
 		longRunningMinimum: longRunningRequested ? (minimumSatisfied ? "satisfied" : "not-yet-satisfied") : "not-requested",
 	},
 };

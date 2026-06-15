@@ -8,6 +8,9 @@
   as activation data, allowing the built-in `humanize-rlcr` summary reviewer to
   see concrete verification and negative-test evidence instead of placeholder
   fields.
+- Fixed the built-in `humanize-rlcr` round ledger so common snake_case
+  implementation yield fields are normalized into reviewer evidence instead of
+  falling back to placeholder values.
 - Fixed session materialization so workflow events appended while a background
   run is starting or stopping remain on the visible JSONL session file instead
   of being written to a replaced file handle.
