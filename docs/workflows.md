@@ -218,9 +218,10 @@ the rail collapses to one action row so intervention controls stay visible while
 less urgent detail is clipped. Live agent targets are labeled as `monitor`;
 non-live frontier or focused nodes are labeled as `focus` so the dashboard does
 not imply an Agent Hub transcript exists when there is no running agent to
-attach to. When a checkpointed attempt can resume, `restart` is promoted into
-the same rail so the next safe lifecycle action is visible without opening the
-command list.
+attach to. The right panel is titled `Live Workbench` only when actual work is
+running; stopped and checkpoint-frontier views use `Operator Deck`. When a
+checkpointed attempt can resume, `restart` is promoted into the same rail so the
+next safe lifecycle action is visible without opening the command list.
 
 ![Workflow dashboard with parallel agent transcript tabs](images/workflow-dashboard-agent-tabs.png)
 

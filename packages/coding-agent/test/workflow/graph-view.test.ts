@@ -676,6 +676,8 @@ describe("workflow graph view rendering", () => {
 
 		expect(tuiText).toContain("◎ focus review");
 		expect(tuiText).toContain("▶ restart");
+		expect(tuiText).toContain("╭─ Operator Deck");
+		expect(tuiText).not.toContain("Live Workbench");
 		expect(tuiText).toContain("1 frontier");
 		expect(tuiText).toContain("frontier: ◇ review");
 		expect(tuiText).not.toContain("1 active");

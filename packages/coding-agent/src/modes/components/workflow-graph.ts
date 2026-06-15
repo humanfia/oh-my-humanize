@@ -290,7 +290,7 @@ function workflowGraphDashboardWideBodyLines(
 		padWorkflowGraphPanelContentLines(graphContentLines, panelContentRows),
 	);
 	const workbenchLines = renderWorkflowGraphDashboardPanel(
-		"Live Workbench · Operator Deck",
+		workflowGraphWorkbenchTitle(view),
 		layout.workbenchWidth,
 		padWorkflowGraphPanelContentLines(workbenchContentLines, panelContentRows),
 		workflowGraphLiveWorkbenchAccent(view),
@@ -367,12 +367,20 @@ function workflowGraphDashboardStackedBodyLines(
 		),
 		"",
 		...renderWorkflowGraphDashboardPanel(
-			"Live Workbench · Operator Deck",
+			workflowGraphWorkbenchTitle(view),
 			width,
 			workflowGraphLiveWorkbenchLines(view, width - WORKFLOW_GRAPH_FRAME_CHROME_WIDTH, density, profile),
 			workflowGraphLiveWorkbenchAccent(view),
 		),
 	];
+}
+
+function workflowGraphWorkbenchTitle(view: WorkflowGraphView): string {
+	return workflowGraphHasLiveWork(view) ? "Live Workbench · Operator Deck" : "Operator Deck";
+}
+
+function workflowGraphHasLiveWork(view: WorkflowGraphView): boolean {
+	return (view.activeAgents ?? []).length > 0 || view.nodes.some(node => node.status === "running");
 }
 
 function workflowGraphFlowLensLines(
@@ -756,7 +764,7 @@ function renderWorkflowGraphDashboardPanel(
 
 function workflowGraphLiveWorkbenchAccent(view: WorkflowGraphView): ThemeColor {
 	if (view.nodes.some(node => node.status === "failed")) return "error";
-	if ((view.activeAgents ?? []).length > 0 || view.nodes.some(node => node.status === "running")) return "accent";
+	if (workflowGraphHasLiveWork(view)) return "accent";
 	if (view.changes.proposed > 0) return "warning";
 	if (view.currentAttempt?.status === "completed") return "success";
 	return "borderMuted";
