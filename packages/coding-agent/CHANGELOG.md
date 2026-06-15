@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed workflow graph condition labels so compound long-running loop gates such
+  as reviewer verdict plus minimum-runtime checks render as human-facing text
+  instead of leaking raw workflow DSL into the TUI diagram.
 - Fixed workflow restarts so lifecycle primitives reject start nodes that do
   not come from the checkpoint frontier or its approved migration mapping,
   preventing lower-level callers from bypassing restart frontier validation.

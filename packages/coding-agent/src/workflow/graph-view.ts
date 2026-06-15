@@ -1,6 +1,13 @@
 import { Ellipsis, sliceByColumn, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { workflowAgentTaskIdForNode } from "./agent-task-id";
-import { evaluateWorkflowCondition } from "./condition";
+import {
+	evaluateWorkflowCondition,
+	parseWorkflowCondition,
+	type WorkflowComparisonCondition,
+	type WorkflowConditionAst,
+	type WorkflowConditionLiteral,
+	type WorkflowConditionOperator,
+} from "./condition";
 import type { WorkflowNode } from "./definition";
 import { formatWorkflowNodeDisplayName, formatWorkflowNodeRole } from "./display";
 import type {
@@ -1075,44 +1082,86 @@ export function formatWorkflowSelectedRoute(route: WorkflowGraphSelectedRouteVie
 
 export function formatWorkflowConditionLabel(condition: string): string {
 	const trimmed = condition.trim();
-	const negated = trimmed.match(/^!\((.*)\)$/u);
-	if (negated?.[1] !== undefined) {
-		const simple = parseSimpleWorkflowCondition(negated[1].trim());
-		if (simple !== undefined) return formatSimpleWorkflowCondition(simple, true);
+	try {
+		return formatWorkflowConditionAst(parseWorkflowCondition(trimmed).ast);
+	} catch {
+		return trimmed;
 	}
-	const simple = parseSimpleWorkflowCondition(trimmed);
-	if (simple !== undefined) return formatSimpleWorkflowCondition(simple, false);
-	return trimmed;
 }
 
-interface SimpleWorkflowCondition {
-	reference: string;
-	operator: "==" | "!=";
-	value: string;
-}
-
-function parseSimpleWorkflowCondition(condition: string): SimpleWorkflowCondition | undefined {
-	const match = condition.match(/^((?:state|outputs)(?:\.[A-Za-z0-9_-]+)+)\s*(==|!=)\s*"((?:\\.|[^"])*)"$/u);
-	const reference = match?.[1];
-	const operator = match?.[2];
-	const value = match?.[3];
-	if (reference === undefined || (operator !== "==" && operator !== "!=") || value === undefined) return undefined;
-	return { reference, operator, value: unescapeWorkflowConditionString(value) };
-}
-
-function formatSimpleWorkflowCondition(condition: SimpleWorkflowCondition, negated: boolean): string {
-	const isPositive = condition.operator === "==" ? !negated : negated;
-	const relation = isPositive ? "is" : "is not";
-	return `${formatWorkflowConditionSubject(condition.reference)} ${relation} ${condition.value}`;
-}
-
-function formatWorkflowConditionSubject(reference: string): string {
-	if (reference.startsWith("state.")) return formatWorkflowConditionPath(reference.slice("state.".length).split("."));
-	if (reference.startsWith("outputs.")) {
-		const [nodeId, ...fields] = reference.slice("outputs.".length).split(".");
-		return formatWorkflowConditionPath([nodeId ?? "", ...fields]);
+function formatWorkflowConditionAst(ast: WorkflowConditionAst): string {
+	switch (ast.kind) {
+		case "comparison":
+			return formatWorkflowComparisonCondition(ast);
+		case "exists":
+			return `${formatWorkflowConditionSubjectPath(ast.path)} is present`;
+		case "and":
+		case "or":
+			return `${formatWorkflowConditionAst(ast.left)} ${ast.kind} ${formatWorkflowConditionAst(ast.right)}`;
+		case "not":
+			if (ast.expression.kind === "comparison") {
+				return formatWorkflowComparisonCondition({
+					...ast.expression,
+					operator: invertWorkflowComparisonOperator(ast.expression.operator),
+				});
+			}
+			if (ast.expression.kind === "exists") {
+				return `${formatWorkflowConditionSubjectPath(ast.expression.path)} is absent`;
+			}
+			return `not (${formatWorkflowConditionAst(ast.expression)})`;
 	}
-	return reference;
+}
+
+function formatWorkflowComparisonCondition(condition: WorkflowComparisonCondition): string {
+	const subject = formatWorkflowConditionSubjectPath(condition.leftPath);
+	const relation = formatWorkflowComparisonRelation(condition.operator);
+	const value = formatWorkflowConditionLiteral(condition.right);
+	return `${subject} ${relation} ${value}`;
+}
+
+function formatWorkflowComparisonRelation(operator: WorkflowConditionOperator): string {
+	switch (operator) {
+		case "==":
+			return "is";
+		case "!=":
+			return "is not";
+		case ">":
+			return "is greater than";
+		case ">=":
+			return "is at least";
+		case "<":
+			return "is less than";
+		case "<=":
+			return "is at most";
+	}
+}
+
+function invertWorkflowComparisonOperator(operator: WorkflowConditionOperator): WorkflowConditionOperator {
+	switch (operator) {
+		case "==":
+			return "!=";
+		case "!=":
+			return "==";
+		case ">":
+			return "<=";
+		case ">=":
+			return "<";
+		case "<":
+			return ">=";
+		case "<=":
+			return ">";
+	}
+}
+
+function formatWorkflowConditionLiteral(value: WorkflowConditionLiteral): string {
+	return value === null ? "null" : String(value);
+}
+
+function formatWorkflowConditionSubjectPath(path: readonly string[]): string {
+	const [root, outputNodeId, ...outputFields] = path;
+	if (root === "state") return formatWorkflowConditionPath(path.slice(1));
+	if (root === "outputs") return formatWorkflowConditionPath([outputNodeId ?? "", ...outputFields]);
+	return formatWorkflowConditionPath([...path]);
 }
 
 function formatWorkflowConditionPath(parts: string[]): string {
@@ -1128,10 +1177,6 @@ function formatWorkflowConditionIdentifier(identifier: string): string {
 		.replace(/[_-]+/gu, " ")
 		.replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
 		.toLowerCase();
-}
-
-function unescapeWorkflowConditionString(value: string): string {
-	return value.replace(/\\(["\\])/gu, "$1");
 }
 
 function padCell(text: string, width: number): string {

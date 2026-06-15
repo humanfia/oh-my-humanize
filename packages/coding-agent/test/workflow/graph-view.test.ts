@@ -8,6 +8,7 @@ import type { WorkflowDefinition } from "../../src/workflow/definition";
 import type { FlowFreeze } from "../../src/workflow/freeze";
 import {
 	buildWorkflowGraphView,
+	formatWorkflowConditionLabel,
 	renderWorkflowGraphDiagram,
 	renderWorkflowGraphText,
 	type WorkflowGraphView,
@@ -889,6 +890,19 @@ describe("workflow graph view rendering", () => {
 		expect(diagram).toContain("reviewInvestigation back to writeInves");
 		expect(diagram).toContain("when review investigation verdict is not CONTINUE");
 		expect(diagram).not.toContain("outputs.reviewInvestigation.verdict");
+	});
+
+	it("renders compound long-running loop conditions as human-facing labels", () => {
+		const label = formatWorkflowConditionLabel(
+			'outputs.codexSummaryReview.verdict != "COMPLETE" || state.humanize.operatorGate.minimumSatisfied == false',
+		);
+
+		expect(label).toBe(
+			"codex summary review verdict is not COMPLETE or humanize operator gate minimum satisfied is false",
+		);
+		expect(label).not.toContain("outputs.");
+		expect(label).not.toContain("state.");
+		expect(label).not.toContain("||");
 	});
 
 	it("surfaces parsed review verdicts and selected routes separately from summary text", () => {
