@@ -243,30 +243,16 @@ describe("workflow artifact registry", () => {
 							output: JSON.stringify({
 								status: "implementation_verified_not_long_running_final",
 								summary: "implemented evaluator and tests",
-								changed_files: ["src/evaluator.ts", "test/evaluator.test.ts"],
-								verification_commands: [{ command: "bun test", result: "pass" }],
-								negative_test_evidence: ["division by zero throws"],
-								regression_risk_scenarios: ["invalid parser state is reported"],
-								acceptance_criteria_evidence: [
-									{
-										criterion: "verify locally",
-										evidence: "bun test passed",
-									},
-								],
+								changedFiles: ["src/evaluator.ts", "test/evaluator.test.ts"],
+								acceptanceEvidence: ["Post-fix focused test passed: bun test"],
+								negativeAndRegressionScenarios: ["division by zero throws", "invalid parser state is reported"],
 							}),
 							data: {
 								status: "implementation_verified_not_long_running_final",
 								summary: "implemented evaluator and tests",
-								changed_files: ["src/evaluator.ts", "test/evaluator.test.ts"],
-								verification_commands: [{ command: "bun test", result: "pass" }],
-								negative_test_evidence: ["division by zero throws"],
-								regression_risk_scenarios: ["invalid parser state is reported"],
-								acceptance_criteria_evidence: [
-									{
-										criterion: "verify locally",
-										evidence: "bun test passed",
-									},
-								],
+								changedFiles: ["src/evaluator.ts", "test/evaluator.test.ts"],
+								acceptanceEvidence: ["Post-fix focused test passed: bun test"],
+								negativeAndRegressionScenarios: ["division by zero throws", "invalid parser state is reported"],
 							},
 						};
 					}
@@ -289,10 +275,9 @@ describe("workflow artifact registry", () => {
 		expect(summaryReviewAssignments).toHaveLength(1);
 		const summaryReviewAssignment = summaryReviewAssignments[0] ?? "";
 		expect(summaryReviewAssignment).toContain("src/evaluator.ts");
-		expect(summaryReviewAssignment).toContain('"command":"bun test"');
+		expect(summaryReviewAssignment).toContain("Post-fix focused test passed: bun test");
 		expect(summaryReviewAssignment).toContain("division by zero throws");
 		expect(summaryReviewAssignment).toContain("invalid parser state is reported");
-		expect(summaryReviewAssignment).toContain("bun test passed");
 		expect(summaryReviewAssignment).not.toContain('"changedFiles":"not-reported"');
 		expect(summaryReviewAssignment).not.toContain('"verification":"required-before-complete"');
 		expect(summaryReviewAssignment).not.toContain('"negativeTests":"required-before-complete"');

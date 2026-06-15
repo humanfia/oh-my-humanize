@@ -57,6 +57,23 @@ const evidenceValues = keys => {
 	if (values.length === 0) return undefined;
 	return values.length === 1 ? values[0] : values;
 };
+const acceptanceEvidence = evidenceValues([
+	"acceptanceCriteriaEvidence",
+	"acceptance_criteria_evidence",
+	"acceptance_evidence",
+	"acceptanceEvidence",
+]);
+const verificationEvidence =
+	evidenceValues(["verification", "verification_commands", "verificationCommands", "verificationEvidence"]) ??
+	acceptanceEvidence;
+const negativeEvidence = evidenceValues([
+	"negativeAndRegressionRiskScenarios",
+	"negativeAndRegressionScenarios",
+	"negative_tests_or_regression_risks",
+	"negative_test_evidence",
+	"regression_risk_scenarios",
+	"negativeTests",
+]);
 const roundNumber = currentRound + 1;
 const entry = {
 	round: roundNumber,
@@ -67,29 +84,9 @@ const entry = {
 	evidence: {
 		status: boundedEvidenceValue(implementationData.status, "not-reported"),
 		changedFiles: boundedEvidenceValue(firstEvidenceValue(["changedFiles", "changed_files"]), "not-reported"),
-		negativeTests: boundedEvidenceValue(
-			evidenceValues([
-				"negativeAndRegressionRiskScenarios",
-				"negative_tests_or_regression_risks",
-				"negative_test_evidence",
-				"regression_risk_scenarios",
-				"negativeTests",
-			]),
-			"required-before-complete",
-		),
-		verification: boundedEvidenceValue(
-			evidenceValues(["verification", "verification_commands", "verificationCommands"]),
-			"required-before-complete",
-		),
-		acceptanceDelta: boundedEvidenceValue(
-			evidenceValues([
-				"acceptanceCriteriaEvidence",
-				"acceptance_criteria_evidence",
-				"acceptance_evidence",
-				"acceptanceEvidence",
-			]),
-			"reviewer-must-check",
-		),
+		negativeTests: boundedEvidenceValue(negativeEvidence, "required-before-complete"),
+		verification: boundedEvidenceValue(verificationEvidence, "required-before-complete"),
+		acceptanceDelta: boundedEvidenceValue(acceptanceEvidence, "reviewer-must-check"),
 		longRunningMinimum: longRunningRequested ? (minimumSatisfied ? "satisfied" : "not-yet-satisfied") : "not-requested",
 	},
 };

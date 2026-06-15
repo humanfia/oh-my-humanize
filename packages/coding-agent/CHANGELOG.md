@@ -11,7 +11,9 @@
 - Fixed the built-in `humanize-rlcr` round ledger so common snake_case
   implementation yield fields for changed files, verification commands,
   negative/regression evidence, and acceptance evidence are normalized into
-  reviewer evidence instead of falling back to placeholder values.
+  reviewer evidence instead of falling back to placeholder values, with
+  acceptance evidence reused as verification context when agents report local
+  verification there.
 - Fixed session materialization so workflow events appended while a background
   run is starting or stopping remain on the visible JSONL session file instead
   of being written to a replaced file handle.
