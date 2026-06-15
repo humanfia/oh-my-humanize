@@ -154,6 +154,40 @@ edges: []
 		expect(freeze.resourceSnapshots.map(snapshot => snapshot.path)).toEqual(["changes/promote.json"]);
 	});
 
+	it("rejects declared change request files with unsupported operations before production freeze", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "release", "changes"), { recursive: true });
+		const flowPath = path.join(dir, "release.omhflow");
+		await Bun.write(
+			path.join(dir, "release", "changes", "bad.json"),
+			JSON.stringify({
+				id: "bad-change",
+				operations: [{ op: "teleport_node", nodeId: "build" }],
+			}),
+		);
+		await Bun.write(
+			flowPath,
+			omhflowSource(`
+change_request:
+  id: bad-change
+  file: changes/bad.json
+nodes:
+  build:
+    type: script
+    script:
+      inline: |
+        return { summary: "built" };
+edges: []
+`),
+		);
+
+		const artifact = await loadWorkflowArtifact(flowPath);
+
+		await expect(freezeWorkflowArtifact(artifact)).rejects.toThrow(
+			'changes/bad.json: operations.0: unsupported workflow change operation "teleport_node"',
+		);
+	});
+
 	it("rejects change request file declarations that escape the resource directory", async () => {
 		const dir = await createTempDir();
 		await fs.mkdir(path.join(dir, "release"), { recursive: true });

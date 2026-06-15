@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { parseWorkflowChangeRequestFile } from "./change-request-file";
 import type {
 	WorkflowDefinition,
 	WorkflowNode,
@@ -76,6 +77,7 @@ export async function freezeWorkflowArtifact(artifact: WorkflowArtifact): Promis
 	validateNodeRuntimeContracts(artifact.definition);
 	const resourceReferences = collectResourceReferences(artifact);
 	await validateReferencedResources(artifact.resourceDir, resourceReferences);
+	await validateDeclaredChangeRequestFiles(artifact);
 	const resourceHashes = await hashResourceDirectory(artifact.resourceDir);
 	const resourceSnapshots = await snapshotReferencedResources(artifact.resourceDir, resourceReferences);
 	const canonicalGraphHash = contentHash(stableStringify(canonicalGraph(artifact.definition)));
@@ -259,6 +261,25 @@ async function ensureResourceDirectory(resourceDir: string): Promise<void> {
 async function validateReferencedResources(resourceDir: string, references: string[]): Promise<void> {
 	for (const reference of references) {
 		await resolveResourcePath(resourceDir, reference);
+	}
+}
+
+async function validateDeclaredChangeRequestFiles(artifact: WorkflowArtifact): Promise<void> {
+	for (const request of artifact.changeRequests) {
+		const resolved = await resolveResourcePath(artifact.resourceDir, request.path);
+		let raw: unknown;
+		try {
+			raw = await Bun.file(resolved).json();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			throw new WorkflowFreezeError(`${request.path}: workflow change request file must parse as JSON: ${message}`);
+		}
+		try {
+			parseWorkflowChangeRequestFile(raw, request.path);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			throw new WorkflowFreezeError(message);
+		}
 	}
 }
 

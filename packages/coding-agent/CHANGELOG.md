@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed `.omhflow` production freezes so declared change request files are
+  parsed and validated before the frozen artifact can start, catching malformed
+  graph patch operations at freeze time instead of later change review.
 - Fixed workflow shell script nodes so frozen data resources are materialized
   for the run and exposed through `OMP_WORKFLOW_RESOURCE_DIR`, including
   headless `omp workflow start`; the built-in `recflow-audit-events-cockpit`
