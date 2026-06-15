@@ -4,9 +4,13 @@
 
 ### Fixed
 
+- Fixed auto-retry classification for provider gateway failures such as
+  Cloudflare 520 responses, so long-running workflow subagents can recover
+  through the existing AgentSession retry path.
 - Fixed the built-in `humanize-rlcr` flow so long-running implementation loops
   retain a bounded recent-round ledger instead of growing reviewer prompts until
   they exceed the workflow prompt budget.
+
 ## [15.13.2] - 2026-06-15
 
 ### Added
