@@ -63,9 +63,11 @@ describe("workflow artifact registry", () => {
 				source: "builtin",
 			});
 			expect(spec.path).toBe(path.join(getBuiltinWorkflowRoot(), name, `${name}.omhflow`));
-			await expect(freezeWorkflowArtifact(await loadWorkflowArtifact(spec.path))).resolves.toMatchObject({
+			const freeze = await freezeWorkflowArtifact(await loadWorkflowArtifact(spec.path));
+			expect(freeze).toMatchObject({
 				definition: { name },
 			});
+			expect(freeze.definition.capabilities?.tools ?? []).not.toContain("shell");
 		}
 	});
 

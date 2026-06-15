@@ -68,7 +68,7 @@ capabilities:
   tools:
     - ask
     - eval
-    - shell
+    - bash
 migrations:
   - from: implementation-loop
     to: review-loop

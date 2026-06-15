@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Changed the workflow Operator Deck to surface live workflow agents as switchable transcript-monitor tabs before on-flight details, making parallel workflow agents feel like focusable subagents.
+- Changed the workflow dashboard wide canvas to use available terminal width for loop diagrams, add a compact Node pulse lane in the Operator Deck, and render operator actions as command-free controls.
 - Changed the workflow dashboard into a wider operator flight deck with equal-height Flow Lens/Operator Deck panels, richer live-agent context, human-facing gate labels, and responsive wide-screen workbench sizing.
 - Changed the workflow dashboard wide layout to spend more of the available terminal height on focused graph context, so long loop workflows show neighboring nodes instead of collapsing to a single-node lens.
 - Changed the workflow dashboard to render Flow Lens and Live Workbench as responsive TUI panels, tightened default node boxes, and added loopback direction arrows so long-running workflow structure is easier to read at a glance.
@@ -12,6 +14,7 @@
 
 ### Fixed
 
+- Fixed bundled practical workflow artifacts that still declared the non-canonical `shell` tool capability, so runtime binding diagnostics use the canonical `bash` capability that the workflow host can resolve.
 - Fixed workflow monitor activation in the TUI so the welcome/onboarding panel is removed from the current viewport when a workflow dashboard becomes active.
 
 ## [16.0.0] - 2026-06-15

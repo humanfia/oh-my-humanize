@@ -1741,7 +1741,85 @@ describe("workflow graph view rendering", () => {
 		expect(lines.map(line => visibleWidth(stripAnsi(line))).every(width => width <= 180)).toBeTrue();
 	});
 
-	it("keeps single-lane loop diagrams anchored instead of centering them across wide terminals", () => {
+	it("renders active workflow agents as switchable transcript monitor tabs before on-flight details", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("dark theme fixture is required");
+		setThemeInstance(theme);
+		const view = createView({
+			name: "parallel-agent-tabs",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "plan", type: "script" },
+				{ id: "buildUi", type: "agent", agent: "task" },
+				{ id: "buildApi", type: "agent", agent: "task" },
+				{ id: "review", type: "review", waitFor: ["buildUi", "buildApi"] },
+			],
+			edges: [
+				{ from: "plan", to: "buildUi" },
+				{ from: "plan", to: "buildApi" },
+				{ from: "buildUi", to: "review" },
+				{ from: "buildApi", to: "review" },
+			],
+		});
+		view.nodes[1] = { ...view.nodes[1]!, status: "running", focused: true, activationCount: 1 };
+		view.nodes[2] = { ...view.nodes[2]!, status: "running", focused: true, activationCount: 1 };
+		view.focus = {
+			nodeId: "buildUi",
+			label: "Build ui",
+			role: "Builder",
+			status: "running",
+			focusAgentId: "buildUi",
+			stats: "1m04s · 3 tools",
+			activity: "patching the dashboard",
+		};
+		view.activeAgents = [
+			{
+				activationId: "activation-ui",
+				focusAgentId: "buildUi",
+				nodeId: "buildUi",
+				label: "Build ui",
+				role: "Builder",
+				status: "running",
+				stats: "1m04s · 3 tools",
+				activity: "patching the dashboard",
+			},
+			{
+				activationId: "activation-api",
+				focusAgentId: "buildApi",
+				nodeId: "buildApi",
+				label: "Build api",
+				role: "Builder",
+				status: "running",
+				stats: "42s · 2 tools",
+				activity: "checking workflow bindings",
+			},
+		];
+		view.actions = [
+			"Refresh: /workflow graph --family-id parallel-agent-tabs",
+			"Stop attempt: /workflow stop attempt-1 --deadline-ms 30000",
+			"Interrupt Builder · Build ui: /workflow interrupt attempt-1 buildUi --deadline-ms 30000",
+			"Open Agent Hub: double-left or observe key; watch/intervene buildUi",
+		];
+		const component = new WorkflowGraphComponent(view, { refreshMs: 0 });
+
+		const text = stripAnsi(component.render(180).join("\n"));
+
+		expect(text).toContain("Agent tabs: transcript monitors");
+		expect(text).toContain("[1] ● buildUi · 1m04s");
+		expect(text).toContain("[2] ○ buildApi · 42s");
+		expect(text).toContain("switch: Agent Hub tab/arrow keys");
+		expect(text).toContain("live lanes · agent progress");
+		expect(text).toContain("buildApi");
+		expect(text).toContain("checking workflow bindings");
+		expect(text).toContain("Builder: Build ui live · 1m04s");
+		expect(text).toContain("activity: patching the dashboard");
+		expect(text).toContain("! Interrupt Builder · Build ui");
+		expect(text.indexOf("Controls: operator actions")).toBeLessThan(text.indexOf("On-flight: live agents"));
+		expect(text).not.toContain("--deadline-ms");
+	});
+
+	it("uses wide terminal space for loop diagrams instead of pinning them to the left edge", () => {
 		const view = createView({
 			name: "anchored-loop-dashboard",
 			version: 1,
@@ -1759,12 +1837,17 @@ describe("workflow graph view rendering", () => {
 		const diagram = renderWorkflowGraphDiagram(view, { width: 160 });
 		const buildLine = diagram.find(line => line.includes("build"));
 		const reviewLine = diagram.find(line => line.includes("review"));
+		const loopLabelLine = diagram.find(line => line.includes("back to build"));
+		const rendered = diagram.join("\n");
 
 		expect(buildLine).toBeDefined();
 		expect(reviewLine).toBeDefined();
-		expect((buildLine ?? "").search(/\S/u)).toBeLessThan(4);
-		expect((reviewLine ?? "").search(/\S/u)).toBeLessThan(4);
-		expect(visibleWidth(buildLine ?? "")).toBeLessThan(120);
+		expect(loopLabelLine).toBeDefined();
+		expect((buildLine ?? "").search(/\S/u)).toBeGreaterThan(24);
+		expect((reviewLine ?? "").search(/\S/u)).toBeGreaterThan(24);
+		expect(visibleWidth(loopLabelLine ?? "")).toBeGreaterThan(110);
+		expect(rendered).toContain("▲");
+		expect(diagram.every(line => visibleWidth(line) <= 160)).toBeTrue();
 	});
 
 	it("keeps diagram status color from leaking into node borders", async () => {

@@ -386,7 +386,7 @@ function layoutWorkflowGraph(view: WorkflowGraphView, width: number | undefined)
 	}
 	const maxRankSize = Math.max(1, ...ranks.map(rank => rank.length));
 	const nodeWidth = workflowGraphNodeWidth(width, maxRankSize, backEdges.length);
-	const totalWidth = workflowGraphCanvasWidth(width, rankWidth(maxRankSize, nodeWidth));
+	const totalWidth = workflowGraphCanvasWidth(width, rankWidth(maxRankSize, nodeWidth), backEdges.length);
 	const labelWidth =
 		width === undefined || !Number.isFinite(width) ? totalWidth : Math.max(totalWidth, Math.floor(width));
 	return {
@@ -458,9 +458,12 @@ function rankWidth(rankSize: number, nodeWidth: number): number {
 	return rankSize * nodeWidth + Math.max(0, rankSize - 1) * NODE_GAP_WIDTH;
 }
 
-function workflowGraphCanvasWidth(width: number | undefined, rankContentWidth: number): number {
+function workflowGraphCanvasWidth(width: number | undefined, rankContentWidth: number, loopRailCount: number): number {
 	if (width === undefined || !Number.isFinite(width)) return rankContentWidth;
-	return Math.max(1, rankContentWidth);
+	const visualWidth = Math.max(1, Math.floor(width));
+	const loopRailReserve = workflowGraphLoopRailReserve(loopRailCount);
+	const availableCanvasWidth = Math.max(1, visualWidth - loopRailReserve);
+	return Math.max(rankContentWidth, availableCanvasWidth);
 }
 
 function renderWorkflowGraphRank(rankIndex: number, layout: WorkflowGraphLayout): string[] {

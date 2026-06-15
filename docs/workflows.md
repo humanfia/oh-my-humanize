@@ -195,6 +195,37 @@ interrupt, approve changes, or restart attempts.
 flow, a direct `.omhflow` path, a workflow YAML file, or a directory containing
 `workflow.yml`.
 
+### Workflow Dashboard
+
+When a workflow is running, the TUI keeps a resident dashboard instead of
+printing a new graph into scrollback on every refresh. The left Flow Lens is the
+topology canvas: it shows directed edges, loopback rails, branch hints,
+subflow/function-call boundaries, current node status, per-node run counts, and
+live lanes for active agent progress. The right Operator Deck is the human
+intervention surface: it shows the focused node, transcript monitor tabs for
+active workflow agents, immediate controls, on-flight work, recent output, and
+compact node-state lanes.
+
+![Workflow dashboard with parallel agent transcript tabs](images/workflow-dashboard-agent-tabs.png)
+
+Treat a running agent or review node like a workflow-owned subagent. The
+dashboard exposes each live agent as an Agent Hub target with a stable tab label
+and focus id. Use the Agent Hub view to inspect the agent transcript, watch tool
+calls, steer the selected agent, interrupt one agent without stopping siblings,
+or return to the workflow dashboard. When several agent nodes are on-flight, the
+`Agent tabs` row acts as the switcher: the selected tab is the node the Operator
+Deck will steer, while the On-flight section keeps the rest visible. Interrupt
+controls keep the human-facing node label so parallel agents with the same role
+remain distinguishable.
+
+Nested subflows are displayed as function-like calls. The parent flow remains
+the outer call frame, while imported subflow nodes keep their own names, entry
+points, exits, and resource prefix available for inspection. If a node inside an
+imported subflow becomes active, it appears in the same active-agent monitor and
+can be opened through Agent Hub just like a top-level workflow agent. Namespace
+and source-mapping details stay in diagnostics so the default view remains a
+programmer cockpit rather than a lifecycle dump.
+
 ## Non-Interactive Use
 
 Use `omp workflow` for scripting, CI-style checks, or deterministic workflow

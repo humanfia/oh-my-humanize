@@ -16,6 +16,7 @@ import {
 	formatWorkflowSelectedRoute,
 	formatWorkflowSubflow,
 	renderWorkflowGraphDiagram,
+	type WorkflowGraphActiveAgentView,
 	type WorkflowGraphNodeStatus,
 	type WorkflowGraphView,
 } from "../../workflow/graph-view";
@@ -113,7 +114,7 @@ const WORKFLOW_GRAPH_MIN_HEIGHT_BUDGET = 6;
 const WORKFLOW_GRAPH_WORKBENCH_MIN_WIDTH = 118;
 const WORKFLOW_GRAPH_WORKBENCH_MIN_PANE_WIDTH = 38;
 const WORKFLOW_GRAPH_WORKBENCH_MAX_PANE_WIDTH = 72;
-const WORKFLOW_GRAPH_WORKBENCH_ULTRAWIDE_MAX_PANE_WIDTH = 112;
+const WORKFLOW_GRAPH_WORKBENCH_ULTRAWIDE_MAX_PANE_WIDTH = 96;
 const WORKFLOW_GRAPH_PANE_GAP_WIDTH = 3;
 const WORKFLOW_GRAPH_FRAME_CHROME_WIDTH = 4;
 const WORKFLOW_GRAPH_FLOW_MAP_HINT_MIN_WIDTH = 93;
@@ -157,9 +158,63 @@ function workflowGraphDashboardHeaderLines(
 					profile.overviewLines,
 					profile.pathLine ? workflowGraphCompactPathLine(view, width) : undefined,
 				);
+	const deckLines = workflowGraphDashboardHeaderDeckLines(overviewLines, width, profile.overviewLines);
+	if (deckLines.length > 0) return deckLines;
 	return overviewLines.map((line, index) =>
 		index === 0 ? workflowGraphDashboardPrimaryLine(line, width) : workflowGraphDashboardMetricLine(line, width),
 	);
+}
+
+function workflowGraphDashboardHeaderDeckLines(lines: readonly string[], width: number, maxRows: number): string[] {
+	if (width < 96 || maxRows <= 1) return [];
+	const lineByLabel = new Map<string, string>();
+	const usedLines = new Set<string>();
+	for (const line of lines) {
+		const separator = line.indexOf(":");
+		if (separator === -1) continue;
+		lineByLabel.set(line.slice(0, separator), line);
+	}
+	const pick = (label: string): string | undefined => {
+		const line = lineByLabel.get(label);
+		if (line !== undefined) usedLines.add(line);
+		return line;
+	};
+	const rows = [
+		workflowGraphDashboardSegmentLine(
+			[pick("Run"), pick("Flow")].filter((line): line is string => line !== undefined),
+			width,
+		),
+		workflowGraphDashboardSegmentLine(
+			[pick("Progress"), pick("Focus")].filter((line): line is string => line !== undefined),
+			width,
+		),
+		workflowGraphDashboardSegmentLine(
+			[pick("Ops"), pick("Changes")].filter((line): line is string => line !== undefined),
+			width,
+		),
+	].filter(line => line.length > 0);
+	for (const line of lines) {
+		if (usedLines.has(line)) continue;
+		rows.push(workflowGraphDashboardSegmentLine([line], width));
+	}
+	return rows.slice(0, Math.min(rows.length, Math.max(1, maxRows)));
+}
+
+function workflowGraphDashboardSegmentLine(lines: readonly string[], width: number): string {
+	if (lines.length === 0) return "";
+	const separator = theme.fg("borderMuted", "  │  ");
+	return truncateToWidth(lines.map(workflowGraphDashboardSegment).join(separator), width);
+}
+
+function workflowGraphDashboardSegment(line: string): string {
+	const separator = line.indexOf(":");
+	if (separator === -1) return line;
+	const labelText = line.slice(0, separator + 1);
+	const valueText = line.slice(separator + 1);
+	const status = labelText === "Run:" ? workflowGraphStatusFromRunLine(line) : undefined;
+	const glyph =
+		status === undefined ? "" : `${theme.fg(workflowGraphStatusColor(status), workflowGraphStatusGlyph(status))} `;
+	return `${glyph}${theme.fg("muted", labelText)}${valueText}`;
 }
 
 function workflowGraphDashboardBodyLines(
@@ -195,7 +250,7 @@ function workflowGraphDashboardLayout(
 	if (density === "compact" && (heightBudget ?? 0) <= 20) return { kind: "stacked" };
 	const maximumWorkbenchWidth =
 		width >= 220 ? WORKFLOW_GRAPH_WORKBENCH_ULTRAWIDE_MAX_PANE_WIDTH : WORKFLOW_GRAPH_WORKBENCH_MAX_PANE_WIDTH;
-	const preferredWorkbenchRatio = width >= 220 ? 0.38 : 0.34;
+	const preferredWorkbenchRatio = width >= 220 ? 0.32 : 0.34;
 	const workbenchWidth = Math.max(
 		WORKFLOW_GRAPH_WORKBENCH_MIN_PANE_WIDTH,
 		Math.min(maximumWorkbenchWidth, Math.floor(width * preferredWorkbenchRatio)),
@@ -337,8 +392,16 @@ function workflowGraphFlowLensLines(
 	if (legend !== undefined && (density === "full" || (width >= 90 && (heightBudget ?? 0) >= 42))) {
 		lines.push(colorWorkflowStatusLine(legend));
 	}
-	lines.push(workflowGraphDashboardSubsectionLabel("diagram · focus viewport"));
+	lines.push(workflowGraphDashboardSubsectionLabel("diagram · topology canvas"));
 	lines.push(...colorWorkflowDiagram(diagramLines));
+	const liveLaneLines =
+		density === "full" || heightBudget === undefined || heightBudget >= 44
+			? workflowGraphFlowLensLiveLaneLines(view, width, density)
+			: [];
+	if (liveLaneLines.length > 0) {
+		lines.push(workflowGraphDashboardSubsectionLabel("live lanes · agent progress"));
+		lines.push(...liveLaneLines);
+	}
 	return lines.map(line => truncateToWidth(line, width));
 }
 
@@ -375,11 +438,29 @@ function workflowGraphLiveWorkbenchLines(
 	const maxControls = density === "full" ? 5 : profile.controlLines;
 	const maxRoutes = density === "full" ? 3 : profile.recentActivityLines > 0 ? 2 : 0;
 	const maxChanges = density === "full" ? 3 : profile.recentActivityLines > 0 ? 2 : 0;
+	const maxPulse = density === "full" ? 4 : profile.recentActivityLines > 0 ? 2 : 0;
+	const maxTabs =
+		density === "full" ? 4 : width >= WORKFLOW_GRAPH_WORKBENCH_MIN_WIDTH && profile.onFlightLines > 0 ? 2 : 0;
 	const lines: string[] = [];
-	if (maxFocus > 0) lines.push(...workflowGraphWorkbenchGroup("Focus", focusLines, width, maxFocus));
-	if (maxOnFlight > 0) lines.push(...workflowGraphWorkbenchGroup("On-flight", onFlightLines, width, maxOnFlight));
+	if (maxFocus > 0) lines.push(...workflowGraphWorkbenchGroup("Focus: selected node", focusLines, width, maxFocus));
+	if (maxTabs > 0) {
+		const tabLines = workflowGraphAgentTabLines(view, width);
+		if (tabLines.length > 0) {
+			lines.push(...workflowGraphWorkbenchGroup("Agent tabs: transcript monitors", tabLines, width, maxTabs));
+		}
+	}
+	if (maxControls > 0)
+		lines.push(...workflowGraphWorkbenchGroup("Controls: operator actions", controlLines, width, maxControls));
+	if (maxOnFlight > 0)
+		lines.push(...workflowGraphWorkbenchGroup("On-flight: live agents", onFlightLines, width, maxOnFlight));
 	if (recentLines.length > 0 && maxRecent > 0) {
-		lines.push(...workflowGraphWorkbenchGroup("Recent output", recentLines, width, maxRecent));
+		lines.push(...workflowGraphWorkbenchGroup("Recent output: tail", recentLines, width, maxRecent));
+	}
+	if (maxPulse > 0) {
+		const pulseLines = workflowGraphNodePulseLines(view, width);
+		if (pulseLines.length > 0) {
+			lines.push(...workflowGraphWorkbenchGroup("Node pulse: state lanes", pulseLines, width, maxPulse));
+		}
 	}
 	if (density === "full" && view.subflows !== undefined && view.subflows.length > 0) {
 		lines.push(...workflowGraphWorkbenchGroup("flow calls", workflowGraphSubflowLines(view), width, 3));
@@ -392,7 +473,6 @@ function workflowGraphLiveWorkbenchLines(
 			...workflowGraphWorkbenchGroup("change review", workflowGraphChangeLines(view, width), width, maxChanges),
 		);
 	}
-	if (maxControls > 0) lines.push(...workflowGraphWorkbenchGroup("Controls", controlLines, width, maxControls));
 	return lines.map(line => truncateToWidth(line, width));
 }
 
@@ -419,14 +499,158 @@ function workflowGraphWorkbenchFocusLines(
 	density: WorkflowGraphDensity,
 ): string[] {
 	const lines = workflowGraphFocusLines(view, width, "compact");
-	const sourceLines = lines.length > 0 ? lines : workflowGraphOnFlightLines(view, width, "compact").slice(0, 1);
+	const headline = workflowGraphFocusHeadline(view, density);
+	const sourceLines =
+		headline === undefined
+			? lines.length > 0
+				? lines
+				: workflowGraphOnFlightLines(view, width, "compact").slice(0, 1)
+			: [headline, ...lines.slice(1)];
 	const status = view.focus?.status ?? view.activeAgents?.[0]?.status ?? "pending";
 	return sourceLines.map((line, index) => {
 		const compact = compactWorkflowGraphFocusControlLine(compactWorkflowGraphStatusLine(line, density));
 		const prefix =
-			index === 0 ? `${theme.fg(workflowGraphStatusColor(status), workflowGraphStatusGlyph(status))} ` : "  ";
+			index === 0 && !workflowGraphLineStartsWithStatusGlyph(compact)
+				? `${theme.fg(workflowGraphStatusColor(status), workflowGraphStatusGlyph(status))} `
+				: "  ";
 		return truncateToWidth(replaceTabs(`${prefix}${compact}`), Math.max(20, width));
 	});
+}
+
+interface WorkflowGraphHeadlineSubject {
+	role: string;
+	label: string;
+	status: WorkflowGraphNodeStatus;
+	focusAgentId?: string;
+	generation?: number;
+	stats?: string;
+	activity?: string;
+	summary?: string;
+}
+
+function workflowGraphFocusHeadline(view: WorkflowGraphView, density: WorkflowGraphDensity): string | undefined {
+	const subject = workflowGraphFocusHeadlineSubject(view);
+	if (subject === undefined) return undefined;
+	const generation = subject.generation === undefined ? undefined : `round ${subject.generation}`;
+	const duration = workflowGraphDurationFromStats(subject.stats);
+	const activity = subject.activity ?? subject.summary;
+	const detail = activity === undefined ? undefined : formatWorkflowGraphHeadlineDetail(activity);
+	const parts = [generation, duration, detail].filter((part): part is string => part !== undefined && part.length > 0);
+	const status = subject.status === "running" && subject.focusAgentId !== undefined ? "live" : subject.status;
+	const suffix = parts.length === 0 ? "" : ` · ${parts.join(" · ")}`;
+	const line = `${subject.role}: ${subject.label} ${status}${suffix}`;
+	return density === "full" ? line : compactWorkflowGraphStatusLine(line, density);
+}
+
+function workflowGraphFocusHeadlineSubject(view: WorkflowGraphView): WorkflowGraphHeadlineSubject | undefined {
+	const focus = view.focus;
+	if (focus !== undefined) return focus;
+	const activeAgent = view.activeAgents?.[0];
+	if (activeAgent === undefined) return undefined;
+	return activeAgent;
+}
+
+function workflowGraphDurationFromStats(stats: string | undefined): string | undefined {
+	return stats?.match(/\b(?:\d+h\d{2}m|\d+m\d{2}s|\d+s)\b/u)?.[0];
+}
+
+function formatWorkflowGraphHeadlineDetail(value: string): string {
+	return replaceTabs(value).replace(/\s+/gu, " ").trim();
+}
+
+function workflowGraphAgentTabLines(view: WorkflowGraphView, width: number): string[] {
+	const agents = view.activeAgents ?? [];
+	if (agents.length === 0) return [];
+	const selectedNodeId = view.focus?.nodeId ?? agents[0]?.nodeId;
+	const tabs = agents.map((agent, index) =>
+		workflowGraphAgentTabToken(agent, index + 1, agent.nodeId === selectedNodeId),
+	);
+	const hint =
+		agents.length > 1
+			? "switch: Agent Hub tab/arrow keys · Enter steers selected"
+			: "open: Agent Hub transcript · Enter steers selected";
+	return [truncateToWidth(tabs.join("  "), Math.max(20, width)), truncateToWidth(hint, Math.max(20, width))];
+}
+
+function workflowGraphAgentTabToken(agent: WorkflowGraphActiveAgentView, index: number, selected: boolean): string {
+	const marker = selected ? "●" : "○";
+	const duration = workflowGraphDurationFromStats(agent.stats);
+	const detail = duration === undefined ? "" : ` · ${duration}`;
+	return `[${index}] ${marker} ${compactWorkflowGraphNodeId(agent.nodeId)}${detail}`;
+}
+
+function workflowGraphFlowLensLiveLaneLines(
+	view: WorkflowGraphView,
+	width: number,
+	density: WorkflowGraphDensity,
+): string[] {
+	const agents = view.activeAgents ?? [];
+	if (agents.length === 0 || width < 72) return [];
+	const maxAgents = density === "full" ? 4 : 3;
+	const visibleAgents = agents.slice(0, maxAgents);
+	const lines = visibleAgents.map(agent => workflowGraphFlowLensLiveLaneLine(agent, width));
+	if (agents.length > visibleAgents.length) {
+		lines.push(theme.fg("dim", `+${agents.length - visibleAgents.length} live agents hidden`));
+	}
+	return lines;
+}
+
+function workflowGraphFlowLensLiveLaneLine(agent: WorkflowGraphActiveAgentView, width: number): string {
+	const labelWidth = Math.max(10, Math.min(22, Math.floor(width * 0.16)));
+	const railWidth = Math.max(8, Math.min(28, Math.floor(width * 0.18)));
+	const label = padWorkflowGraphLine(
+		truncateToWidth(compactWorkflowGraphNodeId(agent.nodeId), labelWidth),
+		labelWidth,
+	);
+	const rail = theme.fg("accent", `${"━".repeat(Math.max(1, railWidth - 1))}▶`);
+	const duration = workflowGraphDurationFromStats(agent.stats) ?? "live";
+	const detail = workflowGraphFlowLensAgentDetail(agent);
+	const suffix = detail === undefined ? duration : `${duration} · ${detail}`;
+	const suffixWidth = Math.max(12, width - visibleWidth(label) - railWidth - 5);
+	return truncateToWidth(
+		`${theme.fg("accent", "●")} ${theme.fg("muted", label)} ${rail} ${theme.fg("muted", truncateToWidth(suffix, suffixWidth))}`,
+		width,
+	);
+}
+
+function workflowGraphFlowLensAgentDetail(agent: WorkflowGraphActiveAgentView): string | undefined {
+	const detail = agent.activity ?? agent.summary ?? agent.recentOutput?.at(-1);
+	if (detail === undefined) return undefined;
+	const normalized = formatWorkflowGraphHeadlineDetail(detail);
+	return normalized.length === 0 ? undefined : normalized;
+}
+
+function workflowGraphNodePulseLines(view: WorkflowGraphView, width: number): string[] {
+	const running = view.nodes.filter(node => node.status === "running" || node.status === "frontier");
+	const pending = view.nodes.filter(node => node.status === "pending");
+	const finished = view.nodes.filter(node => node.status === "completed" || node.status === "checkpointed");
+	const repeated = view.nodes.filter(node => (node.activationCount ?? 0) > 1);
+	const rows = [
+		workflowGraphNodePulseLine("live", running, width),
+		workflowGraphNodePulseLine("next", pending.slice(0, 3), width),
+		workflowGraphNodePulseLine("done", finished.slice(-3), width),
+		workflowGraphNodePulseLine("rounds", repeated.slice(-3), width),
+	].filter((line): line is string => line !== undefined);
+	return rows;
+}
+
+function workflowGraphNodePulseLine(
+	label: string,
+	nodes: readonly WorkflowGraphView["nodes"][number][],
+	width: number,
+): string | undefined {
+	if (nodes.length === 0) return undefined;
+	const tokens = nodes.map(node => workflowGraphNodePulseToken(node, Math.max(12, Math.floor(width / 3))));
+	return truncateToWidth(`${label}: ${tokens.join("  ·  ")}`, Math.max(20, width));
+}
+
+function workflowGraphNodePulseToken(node: WorkflowGraphView["nodes"][number], width: number): string {
+	const count = node.activationCount === undefined || node.activationCount <= 0 ? "" : ` ×${node.activationCount}`;
+	return `${workflowGraphStatusGlyph(node.status)} ${truncateToWidth(compactWorkflowGraphNodeId(node.id), width)}${count}`;
+}
+
+function workflowGraphLineStartsWithStatusGlyph(line: string): boolean {
+	return /^[✓◆◇●!×○]\s/u.test(line);
 }
 
 function compactWorkflowGraphFocusControlLine(line: string): string {
@@ -680,12 +904,18 @@ function limitWorkflowGraphDiagramLines(
 	const end = workflowGraphTrimPartialTrailingNode(lines, start, rawEnd, focusEnd);
 	const hiddenBefore = start;
 	const hiddenAfter = lines.length - end;
-	const hidden = hiddenBefore + hiddenAfter;
-	const marker =
-		hiddenBefore > 0 && hiddenAfter > 0
-			? `+${hidden} diagram rows hidden around focus`
-			: `+${hidden} diagram rows hidden`;
+	const marker = workflowGraphHiddenDiagramMarker(hiddenBefore, hiddenAfter);
 	return [...lines.slice(start, end), marker];
+}
+
+function workflowGraphHiddenDiagramMarker(hiddenBefore: number, hiddenAfter: number): string {
+	const hidden = hiddenBefore + hiddenAfter;
+	if (hiddenBefore > 0 && hiddenAfter > 0) {
+		return `+${hidden} diagram rows hidden · ${hiddenBefore} above / ${hiddenAfter} below focus`;
+	}
+	if (hiddenBefore > 0) return `+${hidden} diagram rows hidden above focus`;
+	if (hiddenAfter > 0) return `+${hidden} diagram rows hidden below focus`;
+	return "+0 diagram rows hidden";
 }
 
 function compactWorkflowGraphTinyDiagram(
@@ -850,7 +1080,10 @@ function workflowGraphFlowMapNodeRows(view: WorkflowGraphView, width: number, ma
 	for (let index = 0; index < view.nodes.length; index += 1) {
 		const node = view.nodes[index]!;
 		const token = workflowGraphFlowMapNodeToken(node, width);
-		const piece = index === 0 ? token : ` ─▶ ${token}`;
+		const previousNode = index === 0 ? undefined : view.nodes[index - 1];
+		const connector =
+			previousNode === undefined ? "" : workflowGraphFlowMapConnector(previousNode.id, node.id, view.edges);
+		const piece = index === 0 ? token : `${connector}${token}`;
 		if (row.length > 0 && visibleWidth(row) + visibleWidth(piece) > width) {
 			rows.push(row);
 			if (rows.length >= maxRows) return workflowGraphFlowMapRowsWithOverflow(rows, view.nodes.length - index);
@@ -861,6 +1094,14 @@ function workflowGraphFlowMapNodeRows(view: WorkflowGraphView, width: number, ma
 	}
 	if (row.length > 0) rows.push(row);
 	return rows;
+}
+
+function workflowGraphFlowMapConnector(
+	from: string,
+	to: string,
+	edges: readonly WorkflowGraphView["edges"][number][],
+): string {
+	return edges.some(edge => edge.from === from && edge.to === to) ? " ─▶ " : " ∥ ";
 }
 
 function workflowGraphFlowMapRowsWithOverflow(rows: string[], hiddenNodeCount: number): string[] {
@@ -952,9 +1193,22 @@ function workflowGraphHeightBudget(value: number | undefined): number | undefine
 function workflowGraphControlLines(view: WorkflowGraphView, density: WorkflowGraphDensity = "full"): string[] {
 	const lines: string[] = [];
 	for (const action of formatWorkflowControlLines(view)) {
-		lines.push(density === "full" ? `  ${action}` : `  ${compactWorkflowGraphControl(action)}`);
+		const label = density === "full" ? action : compactWorkflowGraphControl(action);
+		lines.push(`  ${decorateWorkflowGraphControl(label)}`);
 	}
 	return lines;
+}
+
+function decorateWorkflowGraphControl(label: string): string {
+	if (/^Refresh\b/u.test(label)) return `⟳ ${label}`;
+	if (/^Stop\b/u.test(label)) return `■ ${label}`;
+	if (/^Restart\b/u.test(label)) return `▶ ${label}`;
+	if (/^Interrupt\b/u.test(label)) return `! ${label}`;
+	if (/^Open Agent Hub\b/u.test(label)) return `⌘ ${label}`;
+	if (/^Steer\b/u.test(label)) return `↵ ${label}`;
+	if (/^Watch\b/u.test(label)) return `◉ ${label}`;
+	if (/^Propose change\b/u.test(label) || /^Request change\b/u.test(label)) return `± ${label}`;
+	return `• ${label}`;
 }
 
 function workflowGraphSubflowLines(view: WorkflowGraphView): string[] {
@@ -993,8 +1247,8 @@ function compactWorkflowGraphStatusLine(line: string, density: WorkflowGraphDens
 }
 
 function compactWorkflowGraphControl(action: string): string {
-	const separator = action.indexOf(" · ");
-	if (separator !== -1) return action.slice(0, separator);
+	const commandSeparator = action.search(/ · (?:\/workflow|Agent Hub|double-left)/u);
+	if (commandSeparator !== -1) return action.slice(0, commandSeparator);
 	const legacySeparator = action.indexOf(": ");
 	if (legacySeparator !== -1) return action.slice(0, legacySeparator);
 	return action;

@@ -40,7 +40,7 @@ resources:
     kind: script
 capabilities:
   tools:
-    - shell
+    - bash
 nodes:
   plan:
     type: script
