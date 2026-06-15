@@ -6,6 +6,10 @@ production attempt runs against an immutable freeze. If the flow must change,
 the operator stops the attempt, checkpoints it, applies an approved change,
 freezes the new graph, and restarts from the checkpoint.
 
+The workflow UI is still part of the interactive terminal coding tool. It is a
+workflow-mode monitoring and intervention dashboard for `omp`, not a separate
+replacement for the normal chat, tool, model, and file-editing experience.
+
 ## Artifact Shape
 
 A distributable workflow has two parts:
@@ -205,13 +209,15 @@ live lanes for active agent progress. Conditional edges use compact decision
 chips such as `if CONTINUE`, while the full route condition remains available in
 the routes and review details. The right Operator Deck is the human intervention
 surface: its top Operator rail keeps the selected live agent and its watch,
-Agent Hub, steer, interrupt, stop, and change affordances visible before the
-focused node, transcript monitor tabs, on-flight work, recent output, and
-compact node-state lanes. On short terminals, the rail collapses to one action
-row so intervention controls stay visible while less urgent detail is clipped.
-Live agent targets are labeled as `monitor`; non-live frontier or focused nodes
-are labeled as `focus` so the dashboard does not imply an Agent Hub transcript
-exists when there is no running agent to attach to.
+Agent Hub, steer, interrupt, stop, restart, and change affordances visible
+before the focused node, transcript monitor tabs, on-flight work, recent output,
+and compact node-state lanes. On short terminals, the rail collapses to one
+action row so intervention controls stay visible while less urgent detail is
+clipped. Live agent targets are labeled as `monitor`; non-live frontier or
+focused nodes are labeled as `focus` so the dashboard does not imply an Agent
+Hub transcript exists when there is no running agent to attach to. When a
+checkpointed attempt can resume, `restart` is promoted into the same rail so the
+next safe lifecycle action is visible without opening the command list.
 
 ![Workflow dashboard with parallel agent transcript tabs](images/workflow-dashboard-agent-tabs.png)
 

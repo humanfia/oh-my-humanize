@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Changed the workflow dashboard Operator rail to promote restart when a stopped or checkpointed frontier can safely resume, keeping the next lifecycle action visible beside focus and change controls.
 - Changed workflow dashboard Operator rail labels so live agent targets use `monitor`, while non-live frontier or focused nodes use `focus` instead of implying an Agent Hub monitor target exists.
 - Changed compact workflow dashboard clipping to preserve the Operator rail and collapse it to one action row, so monitor, Agent Hub, steer, interrupt, stop, and change affordances remain visible on short terminals.
 - Changed ultrawide workflow dashboard layout to reserve more width for the Operator Deck, so focused activity, recent output, routes, and change summaries remain readable while the Flow Lens still owns the graph.

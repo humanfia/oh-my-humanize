@@ -675,6 +675,7 @@ describe("workflow graph view rendering", () => {
 		const tuiText = stripAnsi(new WorkflowGraphComponent(view, { refreshMs: 0 }).render(140).join("\n"));
 
 		expect(tuiText).toContain("◎ focus review");
+		expect(tuiText).toContain("▶ restart");
 		expect(tuiText).not.toContain("◉ monitor review");
 		expect(tuiText).not.toContain("◆ hub");
 		expect(tuiText).not.toContain("↵ steer");

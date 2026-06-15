@@ -496,6 +496,7 @@ function workflowGraphOperatorRailLines(
 	const safetyTokens: string[] = [];
 	if (workflowGraphHasAction(view, "Interrupt")) safetyTokens.push("! interrupt");
 	if (workflowGraphHasAction(view, "Stop attempt")) safetyTokens.push("■ stop");
+	if (workflowGraphHasAction(view, "Restart")) safetyTokens.push("▶ restart");
 	if (workflowGraphHasAction(view, "Request change") || workflowGraphHasAction(view, "Propose change")) {
 		safetyTokens.push("± change");
 	}
