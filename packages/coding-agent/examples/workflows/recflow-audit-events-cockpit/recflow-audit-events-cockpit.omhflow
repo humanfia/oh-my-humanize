@@ -54,6 +54,20 @@ resources:
     kind: prompt
   - path: prompts/review-round.md
     kind: prompt
+  - path: seed/recflow-lab/README.md
+    kind: data
+  - path: seed/recflow-lab/package.json
+    kind: data
+  - path: seed/recflow-lab/src/cli.ts
+    kind: data
+  - path: seed/recflow-lab/src/engine.ts
+    kind: data
+  - path: seed/recflow-lab/src/types.ts
+    kind: data
+  - path: seed/recflow-lab/test/cli.test.ts
+    kind: data
+  - path: seed/recflow-lab/test/engine.test.ts
+    kind: data
 capabilities:
   agents:
     - task

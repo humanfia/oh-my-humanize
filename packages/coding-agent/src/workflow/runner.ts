@@ -1,3 +1,5 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { CanonicalModelRegistry, ModelMatchPreferences } from "../config/model-resolver";
@@ -109,6 +111,7 @@ export async function runWorkflow(options: WorkflowRunnerOptions): Promise<Workf
 		graphRevisionId: options.graphRevisionId,
 	});
 	const runtimeSignal = workflowRuntimeSignal(options);
+	const resourceDir = await materializeWorkflowResources(workflowFrozenResources(options));
 	try {
 		const scheduler = await runWorkflowScheduler(options.definition, {
 			startNodeId: options.startNodeId,
@@ -123,12 +126,13 @@ export async function runWorkflow(options: WorkflowRunnerOptions): Promise<Workf
 			nodeAbortSignalForActivation: runtimeSignal.nodeAbortSignalForActivation,
 			graphRevisionId: run.currentGraphRevisionId,
 			executeNode: async (activation, node, context) =>
-				executeAndPersistActivation(options, run, activation, node, context),
+				executeAndPersistActivation(options, run, activation, node, context, resourceDir),
 		});
 		finishLifecycleAttempt(options, scheduler, runtimeSignal.signal);
 		return { run, scheduler };
 	} finally {
 		runtimeSignal.dispose();
+		await removeMaterializedWorkflowResources(resourceDir);
 	}
 }
 
@@ -328,6 +332,7 @@ async function executeAndPersistActivation(
 	activation: WorkflowActivation,
 	node: WorkflowNode,
 	context: WorkflowSchedulerExecutionContext,
+	resourceDir: string | undefined,
 ): Promise<WorkflowActivationOutput> {
 	let started = false;
 	try {
@@ -357,6 +362,7 @@ async function executeAndPersistActivation(
 					state: context.state,
 					completedActivations: context.completedActivations,
 				},
+				resourceDir,
 			}),
 			{
 				allowedWritePaths: node.writes,
@@ -579,6 +585,39 @@ function nodeConsumesPrompt(node: WorkflowNode): boolean {
 
 function workflowFrozenResources(options: WorkflowRunnerOptions): FlowFreezeResourceSnapshot[] | undefined {
 	return options.frozenResources ?? options.lifecycle?.freeze.resourceSnapshots;
+}
+
+async function materializeWorkflowResources(
+	snapshots: FlowFreezeResourceSnapshot[] | undefined,
+): Promise<string | undefined> {
+	if (!snapshots?.length) return undefined;
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-workflow-resources-"));
+	try {
+		for (const snapshot of snapshots) {
+			await Bun.write(resolveMaterializedResourcePath(root, snapshot.path), snapshot.text);
+		}
+		return root;
+	} catch (error) {
+		await removeMaterializedWorkflowResources(root);
+		throw error;
+	}
+}
+
+async function removeMaterializedWorkflowResources(resourceDir: string | undefined): Promise<void> {
+	if (resourceDir === undefined) return;
+	await fs.rm(resourceDir, { recursive: true, force: true });
+}
+
+function resolveMaterializedResourcePath(root: string, resourcePath: string): string {
+	if (path.isAbsolute(resourcePath)) {
+		throw new WorkflowRunnerError(`workflow frozen resource path escapes the resource root: ${resourcePath}`);
+	}
+	const resolved = path.resolve(root, resourcePath);
+	const relative = path.relative(root, resolved);
+	if (relative.startsWith("..") || path.isAbsolute(relative)) {
+		throw new WorkflowRunnerError(`workflow frozen resource path escapes the resource root: ${resourcePath}`);
+	}
+	return resolved;
 }
 
 function findFrozenResourceSnapshot(

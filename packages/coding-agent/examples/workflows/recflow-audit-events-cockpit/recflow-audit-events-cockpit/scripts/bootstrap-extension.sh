@@ -2,7 +2,8 @@
 set -eu
 
 ROOT=$(pwd)
-SOURCE="$ROOT/recflow-audit-events-cockpit/seed/recflow-lab"
+: "${OMP_WORKFLOW_RESOURCE_DIR:?workflow resource directory is required}"
+SOURCE="$OMP_WORKFLOW_RESOURCE_DIR/seed/recflow-lab"
 PROJECT="$ROOT/workspace/recflow-lab"
 OUT="$ROOT/workflow-output"
 

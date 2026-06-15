@@ -58,6 +58,7 @@ export interface WorkflowScriptEvalRequest {
 	code: string;
 	language: WorkflowScriptEvalLanguage;
 	title: string;
+	resourceDir?: string;
 	context?: WorkflowScriptContext;
 }
 
@@ -67,6 +68,7 @@ export interface WorkflowShellScriptRequest {
 	code: string;
 	language: WorkflowShellScriptLanguage;
 	title: string;
+	resourceDir?: string;
 	signal?: AbortSignal;
 	context?: WorkflowScriptContext;
 }
@@ -200,6 +202,7 @@ async function runEvalWorkflowScript(
 		activation: { id: string };
 		scriptLanguage?: WorkflowScriptLanguage;
 		scriptPath?: string;
+		resourceDir?: string;
 		context?: WorkflowScriptContext;
 	},
 	options: WorkflowSessionRuntimeOptions,
@@ -219,6 +222,9 @@ async function runEvalWorkflowScript(
 		language,
 		title: input.scriptPath ?? nodeId,
 	};
+	if (input.resourceDir !== undefined) {
+		request.resourceDir = input.resourceDir;
+	}
 	if (context !== undefined) {
 		request.context = context;
 	}
@@ -250,7 +256,13 @@ function workflowEvalScriptUsesTopLevelReturn(code: string): boolean {
 async function runShellWorkflowScript(
 	nodeId: string,
 	code: string,
-	input: { activation: { id: string }; scriptPath?: string; signal?: AbortSignal; context?: WorkflowScriptContext },
+	input: {
+		activation: { id: string };
+		scriptPath?: string;
+		resourceDir?: string;
+		signal?: AbortSignal;
+		context?: WorkflowScriptContext;
+	},
 	options: WorkflowSessionRuntimeOptions,
 ): Promise<WorkflowScriptEvalResult> {
 	if (!options.runShellScript) {
@@ -263,6 +275,9 @@ async function runShellWorkflowScript(
 		language: "sh",
 		title: input.scriptPath ?? nodeId,
 	};
+	if (input.resourceDir !== undefined) {
+		request.resourceDir = input.resourceDir;
+	}
 	if (input.signal !== undefined) {
 		request.signal = input.signal;
 	}

@@ -124,6 +124,47 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 		expect(result.scheduler.state).toEqual({ ledger: { round: 1 } });
 	});
 
+	it("exposes materialized frozen resources to shell script nodes", async () => {
+		const requests: WorkflowShellScriptRequest[] = [];
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runShellScript: async request => {
+				requests.push(request);
+				if (request.resourceDir === undefined) {
+					return { exitCode: 1, output: "", error: "missing workflow resource directory" };
+				}
+				const text = await Bun.file(`${request.resourceDir}/fixtures/message.txt`).text();
+				return {
+					exitCode: 0,
+					output: JSON.stringify({
+						summary: "resource observed",
+						statePatch: [{ op: "set", path: "/resourceText", value: text }],
+					}),
+				};
+			},
+		});
+
+		const result = await runWorkflow({
+			host: new MemoryWorkflowHost(),
+			definition: frozenResourceDefinition(),
+			runId: "run-resource",
+			startNodeId: "readResource",
+			runtimeHost: host,
+			frozenResources: [
+				{
+					path: "fixtures/message.txt",
+					hash: "sha256:test",
+					text: "hello resource\n",
+					byteLength: 15,
+				},
+			],
+		});
+
+		expect(result.scheduler.state).toEqual({ resourceText: "hello resource\n" });
+		expect(requests[0]?.resourceDir).toBeDefined();
+		expect(requests[0]?.context?.resources?.root).toBe(requests[0]?.resourceDir);
+	});
+
 	it("exposes workflow context to js eval script nodes", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
@@ -270,6 +311,23 @@ function contextScriptDefinition(): WorkflowDefinition {
 			},
 		],
 		edges: [{ from: "seed", to: "record" }],
+	};
+}
+
+function frozenResourceDefinition(): WorkflowDefinition {
+	return {
+		name: "frozen-resource-context",
+		version: 1,
+		models: { roles: {}, defaults: {} },
+		nodes: [
+			{
+				id: "readResource",
+				type: "script",
+				script: { language: "sh", code: "read" },
+				writes: ["/resourceText"],
+			},
+		],
+		edges: [],
 	};
 }
 

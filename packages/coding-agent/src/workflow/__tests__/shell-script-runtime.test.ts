@@ -107,6 +107,37 @@ describe.skipIf(!zshPath)("createShellScriptRunner", () => {
 			completedActivations: [],
 		});
 	});
+
+	it("exposes the materialized resource directory through OMP_WORKFLOW_RESOURCE_DIR", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-sh-resources-");
+		previousShell = Bun.env.SHELL;
+		Bun.env.SHELL = zshPath ?? "";
+
+		const resourceDir = `${tempDir.path()}/resources`;
+		await Bun.write(`${resourceDir}/fixtures/message.txt`, "resource-ok\n");
+		const settings = await Settings.init();
+		const session: ToolSession = {
+			cwd: tempDir.path(),
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => null,
+			settings,
+		};
+		const runner = createShellScriptRunner(session);
+
+		const result = await runner({
+			activationId: "activation-3",
+			nodeId: "readResource",
+			code: 'cat "$OMP_WORKFLOW_RESOURCE_DIR/fixtures/message.txt"',
+			language: "sh",
+			title: "read-resource.sh",
+			resourceDir,
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.error).toBeUndefined();
+		expect(result.output).toBe("resource-ok");
+	});
 });
 
 function findZshPath(): string | undefined {

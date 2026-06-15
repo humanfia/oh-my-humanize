@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Fixed workflow shell script nodes so frozen data resources are materialized
+  for the run and exposed through `OMP_WORKFLOW_RESOURCE_DIR`, including
+  headless `omp workflow start`; the built-in `recflow-audit-events-cockpit`
+  flow now bootstraps its seed project from the frozen resource snapshot.
 - Fixed source-CLI worker-host startup for JS eval and tab workers by buffering
   early parent-port messages until the hidden worker entrypoint installs its
   listener, preventing workflow JS script nodes from timing out during worker

@@ -19,6 +19,7 @@ export interface WorkflowScriptNodeInput extends WorkflowNodeRuntimeInput {
 	script?: string;
 	scriptLanguage?: WorkflowScriptLanguage;
 	scriptPath?: string;
+	resourceDir?: string;
 	model?: WorkflowModelContext;
 	context?: WorkflowScriptContext;
 }
@@ -59,12 +60,18 @@ export interface WorkflowScriptContext {
 	node: Pick<WorkflowNode, "id" | "type">;
 	state: Record<string, unknown>;
 	completedActivations: WorkflowActivation[];
+	resources?: WorkflowScriptResourceContext;
+}
+
+export interface WorkflowScriptResourceContext {
+	root: string;
 }
 
 export interface WorkflowNodeRuntimeOptions {
 	modelOverride?: string;
 	signal?: AbortSignal;
 	context?: WorkflowNodeExecutionContext;
+	resourceDir?: string;
 }
 
 export class WorkflowNodeRuntimeError extends Error {
@@ -140,7 +147,10 @@ async function executeScriptNode(
 		scriptPath: node.script?.file,
 		model: node.model,
 	};
-	const context = workflowScriptContextSnapshot(node, activation, options.context);
+	if (options.resourceDir !== undefined) {
+		input.resourceDir = options.resourceDir;
+	}
+	const context = workflowScriptContextSnapshot(node, activation, options.context, options.resourceDir);
 	if (context !== undefined) {
 		input.context = context;
 	}
@@ -154,9 +164,10 @@ function workflowScriptContextSnapshot(
 	node: WorkflowNode,
 	activation: WorkflowActivation,
 	context: WorkflowNodeExecutionContext | undefined,
+	resourceDir: string | undefined,
 ): WorkflowScriptContext | undefined {
 	if (context === undefined) return undefined;
-	return {
+	const snapshot: WorkflowScriptContext = {
 		activation: {
 			id: activation.id,
 			nodeId: activation.nodeId,
@@ -170,6 +181,10 @@ function workflowScriptContextSnapshot(
 		state: structuredClone(context.state),
 		completedActivations: structuredClone(context.completedActivations),
 	};
+	if (resourceDir !== undefined) {
+		snapshot.resources = { root: resourceDir };
+	}
+	return snapshot;
 }
 
 async function executeHumanNode(

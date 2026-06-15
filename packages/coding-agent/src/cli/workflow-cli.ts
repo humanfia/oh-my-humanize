@@ -16,7 +16,12 @@ import { loadWorkflowArtifact, loadWorkflowPackage } from "../workflow/package-l
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../workflow/run-store";
 import { runWorkflow } from "../workflow/runner";
 import { DEFAULT_WORKFLOW_MAX_RUNTIME_MS } from "../workflow/runtime-timeout";
-import { createSessionWorkflowRuntimeHost, type WorkflowAgentTaskRequest } from "../workflow/session-runtime";
+import { workflowScriptEnvironment } from "../workflow/script-runtime-env";
+import {
+	createSessionWorkflowRuntimeHost,
+	type WorkflowAgentTaskRequest,
+	type WorkflowShellScriptRequest,
+} from "../workflow/session-runtime";
 
 export type WorkflowAction = "list" | "freeze" | "start" | "install" | "uninstall";
 
@@ -167,7 +172,7 @@ async function handleStart(command: WorkflowCommandArgs): Promise<void> {
 	const runtimeHost = createSessionWorkflowRuntimeHost({
 		cwd,
 		runEvalScript: async request => runHeadlessEvalScript(request.code, request.language),
-		runShellScript: async request => runHeadlessShellScript(cwd, request.code, request.signal),
+		runShellScript: async request => runHeadlessShellScript(cwd, request),
 		runAgentTask: async request => runHeadlessAgentTask(cwd, request),
 	});
 	const lifecycle =
@@ -358,14 +363,14 @@ async function runHeadlessEvalScript(
 
 async function runHeadlessShellScript(
 	cwd: string,
-	code: string,
-	signal: AbortSignal | undefined,
+	request: WorkflowShellScriptRequest,
 ): Promise<{ exitCode: number; output: string; error?: string; language: "sh" }> {
-	const child = Bun.spawn(["sh", "-c", code], {
+	const child = Bun.spawn(["sh", "-c", request.code], {
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",
-		signal,
+		signal: request.signal,
+		env: workflowScriptEnvironment(request, Bun.env),
 	});
 	const [stdout, stderr, exitCode] = await Promise.all([
 		streamText(child.stdout),
