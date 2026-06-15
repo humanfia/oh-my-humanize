@@ -106,6 +106,10 @@ When that deadline elapses, `omp` stops scheduling new nodes, aborts in-flight
 nodes, and records a checkpoint that can be restarted. Use `--max-runtime-ms`
 when a shorter smoke or validation bound is needed.
 
+Long-running evidence has a separate lower bound: a Project x Flow x Task run
+must remain active for more than eight hours to count as long-running. Shorter
+runs are useful smoke evidence, but they are not long-running validation.
+
 In the demo graph, expect the implementation loop to revisit the build and
 summary-review nodes until the reviewer returns `COMPLETE`, then the code-review
 loop runs until the reviewer returns `CLEAN`. Node badges show how many times

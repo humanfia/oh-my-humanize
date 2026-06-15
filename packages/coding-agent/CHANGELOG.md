@@ -8,6 +8,10 @@
   in JS eval scripts and `OMP_WORKFLOW_CONTEXT` for shell scripts), and upgraded
   the built-in `humanize-rlcr` flow to maintain a durable multi-round RLCR
   ledger with reviewer-controlled loop evidence.
+- Added durable operator-gate tracking to the built-in `humanize-rlcr` flow,
+  including the long-running validation floor: more than eight hours minimum and
+  five days default maximum. Summary and final reviewers now receive that state
+  and are instructed not to treat shorter runs as long-running completion.
 - Added a workflow max-runtime guard: `/workflow start`, `/workflow restart`,
   and `omp workflow start` default to a five-day runtime limit and accept
   `--max-runtime-ms` for shorter bounded runs; elapsed runs stop scheduling,

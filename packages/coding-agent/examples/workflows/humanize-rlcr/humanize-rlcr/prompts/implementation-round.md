@@ -11,6 +11,10 @@ implementation work, route analysis tasks to review consultation, and write
 enough evidence for Codex-style summary review to judge whether every acceptance
 criterion is complete.
 
+If the durable state says `operatorGate.longRunningRequested` is true, this is
+a long-running validation run. Eight hours is the minimum runtime; do not frame a
+short smoke pass as final long-running completion.
+
 Before claiming completion, provide:
 
 - acceptance-criteria evidence,

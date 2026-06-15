@@ -124,6 +124,8 @@ describe("workflow artifact registry", () => {
 		const host = createRunHost();
 		let implementationRound = 0;
 		let summaryReviewRound = 0;
+		let humanQuestion = "";
+		const summaryReviewAssignments: string[] = [];
 
 		const result = await runWorkflow({
 			host,
@@ -133,9 +135,13 @@ describe("workflow artifact registry", () => {
 			runtimeHost: createSessionWorkflowRuntimeHost({
 				cwd: taskDir,
 				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
-				runHumanInput: async () => ({
-					response: "proceed: this changes documentation-facing behavior and validation evidence.",
-				}),
+				runHumanInput: async request => {
+					humanQuestion = request.question;
+					return {
+						response:
+							"proceed: this changes documentation-facing behavior and validation evidence. This is intended as long-running validation with an eight hour minimum and five day maximum.",
+					};
+				},
 				runAgentTask: async request => {
 					if (request.nodeId === "implementRound") {
 						implementationRound++;
@@ -146,6 +152,7 @@ describe("workflow artifact registry", () => {
 					}
 					if (request.nodeId === "codexSummaryReview") {
 						summaryReviewRound++;
+						summaryReviewAssignments.push(request.task.assignment);
 						return {
 							exitCode: 0,
 							output:
@@ -172,11 +179,25 @@ describe("workflow artifact registry", () => {
 		});
 
 		const nodeIds = result.scheduler.activations.map(activation => activation.nodeId);
+		expect(humanQuestion).toContain("eight hours is the minimum");
+		expect(nodeIds.filter(nodeId => nodeId === "recordOperatorGate")).toHaveLength(1);
 		expect(nodeIds.filter(nodeId => nodeId === "implementRound")).toHaveLength(2);
 		expect(nodeIds.filter(nodeId => nodeId === "writeRoundSummary")).toHaveLength(2);
 		expect(result.scheduler.activations.every(activation => activation.status === "completed")).toBe(true);
 		expect(result.scheduler.frontierNodeIds).toEqual([]);
 		const humanize = expectRecord(result.scheduler.state.humanize, "humanize state");
+		const operatorGate = expectRecord(humanize.operatorGate, "humanize operator gate");
+		expect(operatorGate.decision).toBe("proceed");
+		expect(operatorGate.longRunningRequested).toBe(true);
+		expect(operatorGate.minimumRuntimeMs).toBe(28_800_000);
+		expect(operatorGate.maximumRuntimeMs).toBe(432_000_000);
+		expect(operatorGate.minimumSatisfied).toBe(false);
+		const runtime = expectRecord(humanize.runtime, "humanize runtime");
+		const longRunning = expectRecord(runtime.longRunning, "humanize long-running runtime");
+		expect(longRunning.minimumSatisfied).toBe(false);
+		const latestSummaryReviewAssignment = summaryReviewAssignments.at(-1) ?? "";
+		expect(latestSummaryReviewAssignment).toContain('"minimumRuntimeMs":28800000');
+		expect(latestSummaryReviewAssignment).toContain('"minimumSatisfied":false');
 		const ledger = expectRecord(humanize.ledger, "humanize ledger");
 		const rounds = expectArray(ledger.rounds, "humanize ledger rounds");
 		expect(ledger.currentRound).toBe(2);

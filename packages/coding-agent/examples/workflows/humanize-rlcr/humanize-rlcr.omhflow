@@ -47,6 +47,8 @@ resources:
     kind: prompt
   - path: scripts/plan-compliance-precheck.js
     kind: script
+  - path: scripts/record-operator-gate.js
+    kind: script
   - path: scripts/init-goal-tracker.js
     kind: script
   - path: scripts/write-round-summary.js
@@ -86,6 +88,16 @@ sequence:
             humanize:
               state: /humanize
       reads:
+        - /humanize
+  - node:
+      id: recordOperatorGate
+      type: script
+      script:
+        language: js
+        file: scripts/record-operator-gate.js
+      reads:
+        - /humanize
+      writes:
         - /humanize
   - node:
       id: initializeGoalTracker
