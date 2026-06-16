@@ -137,6 +137,63 @@ describe("workflow artifact registry", () => {
 		).resolves.toContain("verified task contract");
 	});
 
+	it("blocks bundled agent build/review loop before agents when task contract is missing", async () => {
+		const spec = await resolveWorkflowFlowSpec("agent-build-review-loop", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+
+		const result = await runWorkflow({
+			host: createRunHost(),
+			definition: freeze.definition,
+			runId: "agent-build-review-missing-task-contract",
+			startNodeId: "initializeLoop",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runShellScript: request => runShellWorkflowScript(taskDir, request),
+				runAgentTask: async request => ({ exitCode: 0, output: `unexpected ${request.nodeId}` }),
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 2,
+		});
+
+		const failed = result.scheduler.activations.find(activation => activation.status === "failed");
+		expect(result.scheduler.activations.map(activation => activation.nodeId)).toEqual(["initializeLoop"]);
+		expect(failed?.error).toContain("task.md");
+		expect(result.scheduler.frontierNodeIds).toEqual([]);
+	});
+
+	it("blocks bundled agent build/review loop before agents when task validation command is missing", async () => {
+		const spec = await resolveWorkflowFlowSpec("agent-build-review-loop", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		await Bun.write(path.join(taskDir, "task.md"), "Objective: make a reviewable project improvement.");
+
+		const result = await runWorkflow({
+			host: createRunHost(),
+			definition: freeze.definition,
+			runId: "agent-build-review-missing-validation-command",
+			startNodeId: "initializeLoop",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runShellScript: request => runShellWorkflowScript(taskDir, request),
+				runAgentTask: async request => ({ exitCode: 0, output: `unexpected ${request.nodeId}` }),
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 2,
+		});
+
+		const failed = result.scheduler.activations.find(activation => activation.status === "failed");
+		expect(result.scheduler.activations.map(activation => activation.nodeId)).toEqual(["initializeLoop"]);
+		expect(failed?.error).toContain("Validation Command");
+		expect(result.scheduler.frontierNodeIds).toEqual([]);
+	});
+
 	it("records bundled KDA task contracts before workspace inspection", async () => {
 		const spec = await resolveWorkflowFlowSpec("kda-humanize", { cwd: process.cwd(), flowDirs: [] });
 		const artifact = await loadWorkflowArtifact(spec.path);

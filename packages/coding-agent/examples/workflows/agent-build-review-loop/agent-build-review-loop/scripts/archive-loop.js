@@ -1,14 +1,14 @@
 const archivePath = "workflow-output/final-agent-loop-archive.md";
-const taskText = await readOptionalText("task.md");
+const taskText = await readRequiredTaskText();
 const progressText = await readOptionalText("progress.md");
-const verifyCommand = taskValidationCommand(taskText);
+const verifyCommand = requiredTaskValidationCommand(taskText);
 const verification = await runTaskVerification(verifyCommand);
 const archive = [
 	"# Agent Build/Review Loop Archive",
 	"",
 	"## Task",
 	"",
-	taskText.trim() ? boundedLines(taskText, 160) : "No task.md was present.",
+	boundedLines(taskText, 160),
 	"",
 	"## Progress",
 	"",
@@ -55,21 +55,15 @@ async function readOptionalText(filePath) {
 	}
 }
 
-function taskValidationCommand(taskText) {
+function requiredTaskValidationCommand(taskText) {
 	for (const line of taskText.split(/\r?\n/u)) {
 		const match = /^\s*(?:verify|verification command|validation command)\s*:\s*(.+)\s*$/iu.exec(line);
 		if (match?.[1]) return match[1].trim();
 	}
-	return "";
+	throw new Error("agent-build-review-loop task.md must declare a Validation Command");
 }
 
 async function runTaskVerification(command) {
-	if (!command) {
-		return {
-			status: "not-specified",
-			output: "No verification command declared in task.md.",
-		};
-	}
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: process.cwd(),
 		stdout: "pipe",
@@ -95,4 +89,12 @@ function boundedLines(text, limit) {
 	const kept = lines.slice(0, limit);
 	if (lines.length > limit) kept.push(`[truncated ${lines.length - limit} additional lines]`);
 	return kept.join("\n");
+}
+
+async function readRequiredTaskText() {
+	const taskText = await readOptionalText("task.md");
+	if (!taskText.trim()) {
+		throw new Error("agent-build-review-loop requires a task.md contract in the project root");
+	}
+	return taskText;
 }

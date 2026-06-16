@@ -5,15 +5,15 @@ if (!(await fileExists(progressPath))) {
 	await Bun.write(progressPath, "# Agent Build/Review Progress\n\n");
 }
 
-const taskText = await readOptionalText("task.md");
-const verifyCommand = taskValidationCommand(taskText);
+const taskText = await readRequiredTaskText();
+const verifyCommand = requiredTaskValidationCommand(taskText);
 const verification = await runTaskVerification(verifyCommand);
 const snapshot = [
 	"# Initial Loop Snapshot",
 	"",
 	"## Task",
 	"",
-	taskText.trim() ? boundedLines(taskText, 120) : "No task.md was present.",
+	boundedLines(taskText, 120),
 	"",
 	"## Workspace Snapshot",
 	"",
@@ -62,21 +62,23 @@ async function readOptionalText(filePath) {
 	}
 }
 
-function taskValidationCommand(taskText) {
+async function readRequiredTaskText() {
+	const taskText = await readOptionalText("task.md");
+	if (!taskText.trim()) {
+		throw new Error("agent-build-review-loop requires a task.md contract in the project root");
+	}
+	return taskText;
+}
+
+function requiredTaskValidationCommand(taskText) {
 	for (const line of taskText.split(/\r?\n/u)) {
 		const match = /^\s*(?:verify|verification command|validation command)\s*:\s*(.+)\s*$/iu.exec(line);
 		if (match?.[1]) return match[1].trim();
 	}
-	return "";
+	throw new Error("agent-build-review-loop task.md must declare a Validation Command");
 }
 
 async function runTaskVerification(command) {
-	if (!command) {
-		return {
-			status: "not-specified",
-			output: "No verification command declared in task.md.",
-		};
-	}
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: process.cwd(),
 		stdout: "pipe",

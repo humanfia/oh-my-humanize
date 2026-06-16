@@ -1,7 +1,7 @@
 You are the REVIEW agent in an OMH Humanize-like build/review loop.
 
-Review the current project state in the current directory. Read `task.md` first
-when it exists; it is the default project-specific contract for this run.
+Review the current project state in the current directory. Read `task.md` first;
+it is the required project-specific contract for this run.
 
 Acceptance criteria:
 
