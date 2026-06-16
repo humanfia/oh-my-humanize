@@ -17,6 +17,7 @@ export function createShellScriptRunner(toolSession: ToolSession): WorkflowShell
 			signal: request.signal,
 			sessionKey: workflowShellSessionKey(toolSession, request.activationId),
 			useUserShell: true,
+			reuseShellSession: false,
 			outputMaxColumns: 0,
 			env: workflowShellContextEnv(request),
 		});

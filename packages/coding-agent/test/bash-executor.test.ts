@@ -581,6 +581,29 @@ exit 64
 		expect(afterAbort.output.trim()).toBe("unset");
 	});
 
+	it("runs one-shot commands without retaining shell state when session reuse is disabled", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const sessionKey = "workflow-one-shot";
+		await executeBash("export PI_WORKFLOW_ONESHOT=leaked", {
+			cwd: tempDir,
+			timeout: 5000,
+			sessionKey,
+			reuseShellSession: false,
+		});
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: this is a bash variable expansion
+		const result = await executeBash('printf "%s\\n" "${PI_WORKFLOW_ONESHOT:-unset}"', {
+			cwd: tempDir,
+			timeout: 5000,
+			sessionKey,
+			reuseShellSession: false,
+		});
+
+		expect(result.output.trim()).toBe("unset");
+	});
+
 	it("runs overlapping calls on the same session key concurrently", async () => {
 		if (process.platform === "win32") return;
 

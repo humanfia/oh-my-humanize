@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { resetSettingsForTest, Settings } from "../../src/config/settings";
+import * as bashExecutor from "../../src/exec/bash-executor";
 import type { ToolSession } from "../../src/tools";
 import { createShellScriptRunner } from "../../src/workflow/shell-script-runtime";
 
@@ -42,6 +43,7 @@ function createToolSession(cwd: string): ToolSession {
 
 afterEach(async () => {
 	resetSettingsForTest();
+	vi.restoreAllMocks();
 	await Promise.all(tempDirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
 });
 
@@ -115,6 +117,35 @@ describe("workflow shell script runtime adapter", () => {
 		expect(result.output).toContain("before failure");
 		expect(result.error).toBe("exit code 7");
 		expect(result.language).toBe("sh");
+	});
+
+	it("runs each activation through a one-shot shell so long workflow loops do not accumulate shell sessions", async () => {
+		const cwd = await createTempDir();
+		const executeSpy = vi.spyOn(bashExecutor, "executeBash").mockResolvedValue({
+			exitCode: 0,
+			output: '{"summary":"ok"}',
+			cancelled: false,
+			truncated: false,
+			totalLines: 1,
+			totalBytes: 16,
+			outputLines: 1,
+			outputBytes: 16,
+		});
+		const runner = createShellScriptRunner(createToolSession(cwd));
+
+		await runner({
+			activationId: "activation-hold-180",
+			nodeId: "longRunningHold",
+			code: 'printf \'{"summary":"ok"}\\n\'',
+			language: "sh",
+			title: "hold",
+		});
+
+		expect(executeSpy).toHaveBeenCalledTimes(1);
+		expect(executeSpy.mock.calls[0]?.[1]).toMatchObject({
+			sessionKey: "workflow-shell-test:workflow:activation-hold-180",
+			reuseShellSession: false,
+		});
 	});
 
 	it("returns cancellation promptly when shell workflow scripts are aborted", async () => {

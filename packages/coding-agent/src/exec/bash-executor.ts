@@ -25,6 +25,8 @@ export interface BashExecutorOptions {
 	env?: Record<string, string>;
 	/** Run through the configured user shell instead of brush parsing directly. */
 	useUserShell?: boolean;
+	/** Reuse a persistent native shell session when possible. Defaults to true. */
+	reuseShellSession?: boolean;
 	/** Per-call override for the persisted output column cap. */
 	outputMaxColumns?: number;
 	/** Artifact path/id for full output storage */
@@ -232,9 +234,11 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	// parallel bash calls overlap on the same key, the first one owns the
 	// persistent session; the rest degrade to isolated one-shot shells — the
 	// same path quarantined sessions take.
+	const reuseShellSession = options?.reuseShellSession !== false;
 	const sessionBusy = shellSessionsInUse.has(sessionKey);
-	let shellSession = persistentSessionBroken || sessionBusy ? undefined : shellSessions.get(sessionKey);
-	if (!shellSession && !persistentSessionBroken && !sessionBusy) {
+	let shellSession =
+		reuseShellSession && !persistentSessionBroken && !sessionBusy ? shellSessions.get(sessionKey) : undefined;
+	if (!shellSession && reuseShellSession && !persistentSessionBroken && !sessionBusy) {
 		shellSession = new Shell({
 			sessionEnv: shellEnv,
 			snapshotPath: snapshotPath ?? undefined,

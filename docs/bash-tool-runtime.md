@@ -104,6 +104,11 @@ Tool-call executions pass `sessionKey: this.session.getSessionId?.()`, when avai
 
 Concurrent calls never share one `Shell`: the native session runs one command at a time and `Shell.abort()` kills every in-flight run on it. `executeBash()` tracks in-flight keys in `shellSessionsInUse`; while a key is busy, overlapping calls skip the cache and run through one-shot `executeShell()` (same isolation as quarantined sessions). Only the owning call releases the in-use flag or deletes the cached session in its `finally`.
 
+Callers that need bounded process lifetime can pass `reuseShellSession: false`.
+That path runs through one-shot `executeShell()` even when a `sessionKey` is
+present, so shell state is not retained and long activation loops do not
+accumulate persistent native shell sessions.
+
 ## Shell config and snapshot behavior
 
 At each call, executor loads settings shell config (`shell`, `env`, optional `prefix`).

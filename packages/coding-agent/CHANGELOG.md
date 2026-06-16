@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- Fixed workflow shell script nodes to run through one-shot shell executions instead of accumulating persistent shell sessions across long activation loops.
 - Fixed workflow dashboard role labels for builder fixer nodes whose ids mention review, so on-flight repair agents are not shown as reviewers.
 - Fixed bundled KDA Humanize nested code review so the implementation is reviewed before the fixer runs, and fixer prompts receive the blocking review findings before looping back to the gate.
 - Fixed bundled KDA Humanize so long-running task contracts enter a duration hold/check loop before evidence recording and promotion instead of completing immediately after candidate validation.
