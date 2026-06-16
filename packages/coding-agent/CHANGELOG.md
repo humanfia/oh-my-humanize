@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- Fixed bundled Humanize RLCR operator-gate parsing so an explicit leading `Proceed` is not overwritten by later instructions that mention stop/checkpoint handling.
 - Fixed workflow launch validation so nested state conditions must be declared in the flow schema, checkpoint restarts cannot skip incomplete join inputs, and runtime binding hard failures only block frontier nodes that are about to execute.
 - Fixed workflow review verdict extraction preferring incidental later gate mentions over an explicit first-line verdict, and made active `/workflow stop` requests immediately persist as `stop_requested` before waiting for the stop deadline.
 - Fixed `omp workflow` headless commands showing TypeScript stack traces for workflow artifact lookup/load errors such as ambiguous bundled/`OMHFLOW_DIR` flow names or directory paths passed where a `.omhflow` file is required; they now print a concise user-facing diagnostic and exit nonzero.

@@ -426,6 +426,49 @@ describe("workflow artifact registry", () => {
 		expect(result.scheduler.frontierNodeIds).toEqual(["longRunningHold"]);
 	});
 
+	it("keeps the explicit Humanize operator decision when later instructions mention stop", async () => {
+		const spec = await resolveWorkflowFlowSpec("humanize-rlcr", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		await Bun.write(
+			path.join(taskDir, "task.md"),
+			[
+				"# Long-running RLCR explicit operator decision",
+				"",
+				"Goal: preserve the operator's explicit first decision while recording stop/checkpoint constraints.",
+				"Acceptance: the workflow records proceed, not stop, when the response begins with Proceed.",
+			].join("\n"),
+		);
+		const host = createRunHost();
+
+		const result = await runWorkflow({
+			host,
+			definition: freeze.definition,
+			runId: "humanize-explicit-proceed-with-stop-instructions",
+			startNodeId: "planCompliancePrecheck",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runHumanInput: async () => ({
+					response:
+						"Proceed. Preserve workflow-output evidence, stop/checkpoint behavior, and stop/quarantine if an OMH infra bug appears.",
+				}),
+				runAgentTask: async request => ({
+					exitCode: 0,
+					output: `completed ${request.nodeId}`,
+				}),
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 4,
+		});
+
+		const humanize = expectRecord(result.scheduler.state.humanize, "humanize state");
+		const operatorGate = expectRecord(humanize.operatorGate, "humanize operator gate");
+		expect(operatorGate.decision).toBe("proceed");
+	});
+
 	it("keeps bundled Humanize RLCR in a hold loop without growing implementation prompts", async () => {
 		const spec = await resolveWorkflowFlowSpec("humanize-rlcr", { cwd: process.cwd(), flowDirs: [] });
 		const artifact = await loadWorkflowArtifact(spec.path);

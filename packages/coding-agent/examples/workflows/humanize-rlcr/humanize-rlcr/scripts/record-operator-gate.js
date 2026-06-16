@@ -16,13 +16,7 @@ try {
 	taskContract = "";
 }
 const normalizedContract = taskContract.toLowerCase();
-const decision = /\bstop\b/u.test(normalized)
-	? "stop"
-	: /\bhold\b/u.test(normalized)
-		? "hold"
-		: /\b(?:proceed|approve|approved)\b/u.test(normalized)
-			? "proceed"
-			: "unknown";
+const decision = operatorDecision(normalized);
 const recordedAtMs = Date.now();
 const minimumRuntimeMs = 8 * 60 * 60 * 1000;
 const maximumRuntimeMs = 5 * 24 * 60 * 60 * 1000;
@@ -67,3 +61,20 @@ return {
 		},
 	],
 };
+
+function operatorDecision(text) {
+	const lines = text
+		.split(/\r?\n/u)
+		.map(line => line.trim())
+		.filter(Boolean);
+	for (const line of lines) {
+		const match = /^(?:[-*]\s*)?(?:decision\s*[:=-]\s*)?(proceed|approve|approved|hold|stop)\b/u.exec(line);
+		if (match) return normalizeDecision(match[1]);
+	}
+	const match = /\b(proceed|approve|approved|hold|stop)\b/u.exec(text);
+	return match ? normalizeDecision(match[1]) : "unknown";
+}
+
+function normalizeDecision(token) {
+	return token === "approve" || token === "approved" ? "proceed" : token;
+}
