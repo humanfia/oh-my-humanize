@@ -2,11 +2,15 @@ Validate the candidate against the KDA task contract and plan.
 
 {{candidateSummary}}
 
+Nested Humanize handoff:
+{{humanizeHandoff}}
+
 Decide whether this candidate is ready to be promoted into the project.
 
 Return `promote` only when:
 
 - the candidate directly addresses the contract;
+- the candidate uses or explicitly reconciles the nested Humanize handoff;
 - the declared validation, benchmark, or evidence requirement passed, or the
   contract explicitly allows manual evidence;
 - risks and rollback notes are clear;

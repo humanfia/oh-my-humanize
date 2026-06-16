@@ -137,8 +137,8 @@ steering, and workflow mutation are TUI-first.
 ## KDA Workflow
 
 Use `kda-humanize` when a task needs a KDA-style outer flow that
-defines a contract, inspects the workspace, drafts a plan, then calls Humanize
-as a reusable subflow before candidate validation and promotion.
+loads a task contract, inspects the workspace, drafts a plan, then calls
+Humanize as a reusable subflow before candidate validation and promotion.
 
 Prepare a project directory:
 
@@ -167,16 +167,19 @@ Run it in the TUI:
 
 The resident graph should show the imported Humanize subflow as a function-like
 call boundary, while diagnostics keep source mapping and namespace details
-available for inspection. The operator first supplies the task contract, then
-the outer KDA flow inspects the workspace, drafts a plan, enters the imported
-Humanize loop, validates the candidate, and records promotion evidence.
+available for inspection. The outer KDA flow first loads `task.md` as the
+immutable task contract, inspects the workspace, drafts a plan, enters the
+imported Humanize loop, validates the candidate against the nested Humanize
+handoff, and records promotion evidence.
 
-For non-interactive validation, freeze the packaged artifact. A full headless
-start is intentionally not the KDA workflow path because the first node asks the
-human operator to define the task contract:
+For non-interactive validation, freeze the packaged artifact or run a bounded
+headless smoke from a project directory that contains `task.md`. Full KDA runs
+still become TUI-first once the imported Humanize subflow reaches its human
+understanding gate:
 
 ```sh
 omp workflow freeze kda-humanize --json
+omp workflow start kda-humanize --json --max-activations 1
 ```
 
 ## Interactive Use

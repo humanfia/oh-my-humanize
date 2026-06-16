@@ -15,6 +15,11 @@ If `operatorGate.longRunningRequested` is true, `finish` requires
 `runtime.longRunning.minimumSatisfied` to be true. Eight hours is the minimum
 for long-running evidence; below that, this is only smoke evidence.
 
-Return `finish` only when the workflow should finalize. If final alignment is
-not satisfied, do not return `finish`; explain whether implementation,
+Return `finish` only when the workflow should finalize.
+
+Return `rework` when final alignment is not satisfied and the workflow should
+route back through the fix/review loop. Explain whether implementation,
 code-review fix, design adjudication, or human steering is needed.
+
+Put exactly one control token on the final non-empty line: `finish` or
+`rework`.

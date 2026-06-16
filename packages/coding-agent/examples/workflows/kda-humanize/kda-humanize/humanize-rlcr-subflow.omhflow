@@ -44,151 +44,193 @@ resources:
     kind: prompt
   - path: prompts/finalize.md
     kind: prompt
-sequence:
-  - node:
-      id: planCompliance
-      type: review
-      agent: reviewer
-      model:
-        role: reviewer
-      reads:
-        - /plan
-      prompt:
-        template:
-          file: prompts/plan-compliance.md
-          bindings:
-            plan:
-              state: /plan
-      gates:
-        - PASS
-        - FAIL_RELEVANCE
-        - FAIL_BRANCH_SWITCH
-      fallbackVerdict: FAIL_RELEVANCE
-  - node:
-      id: planUnderstandingQuiz
-      type: human
-      reads:
-        - /plan
-      prompt:
-        template:
-          file: prompts/plan-quiz.md
-          bindings:
-            plan:
-              state: /plan
-  - node:
-      id: initializeGoalTracker
-      type: agent
-      agent: task
-      model:
-        role: builder
-      reads:
-        - /plan
-      writes:
-        - /goalTracker
-      prompt:
-        template:
-          file: prompts/goal-tracker.md
-          bindings:
-            plan:
-              state: /plan
-  - template:
-      kind: retry_until
-      body:
-        id: implementRound
-        type: agent
-        agent: task
-        model:
-          role: builder
-        reads:
-          - /plan
-          - /goalTracker
-        writes:
-          - /implementationSummary
-        prompt:
-          template:
-            file: prompts/implement-round.md
-            bindings:
-              plan:
-                state: /plan
-      review:
-        id: implementationReview
-        type: review
-        agent: reviewer
-        model:
-          role: reviewer
-        reads:
-          - /summary
-        prompt:
-          template:
-            file: prompts/implementation-review.md
-            bindings:
-              summary:
-                output:
-                  node: implementRound
-                  path: /summary
-                  activation: latest-completed
-        gates:
-          - CONTINUE
-          - COMPLETE
-          - STOP
-        fallbackVerdict: CONTINUE
-      retryWhen: outputs.implementationReview.verdict == "CONTINUE"
-  - template:
-      kind: retry_until
-      body:
-        id: fixCodeReviewIssues
-        type: agent
-        agent: task
-        model:
-          role: builder
-        reads:
-          - /plan
-          - /implementationSummary
-        writes:
-          - /codeReviewFix
-        prompt:
-          template:
-            file: prompts/fix-code-review.md
-            bindings:
-              plan:
-                state: /plan
-      review:
-        id: codeReviewGate
-        type: review
-        agent: reviewer
-        model:
-          role: reviewer
-        reads:
-          - /summary
-        prompt:
-          template:
-            file: prompts/code-review.md
-            bindings:
-              fixSummary:
-                output:
-                  node: fixCodeReviewIssues
-                  path: /summary
-                  activation: latest-completed
-        gates:
-          - ISSUES
-          - CLEAN
-        fallbackVerdict: ISSUES
-      retryWhen: outputs.codeReviewGate.verdict == "ISSUES"
-  - node:
-      id: finalize
-      type: agent
-      agent: task
-      model:
-        role: builder
-      reads:
-        - /plan
-        - /goalTracker
-      writes:
-        - /finalizeSummary
-      prompt:
-        template:
-          file: prompts/finalize.md
-          bindings:
-            plan:
-              state: /plan
+  - path: scripts/record-operator-gate.js
+    kind: script
+  - path: scripts/stop-subflow.js
+    kind: script
+nodes:
+  - id: planCompliance
+    type: review
+    agent: reviewer
+    model:
+      role: reviewer
+    reads:
+      - /plan
+    prompt:
+      template:
+        file: prompts/plan-compliance.md
+        bindings:
+          plan:
+            state: /plan
+    gates:
+      - PASS
+      - FAIL_RELEVANCE
+      - FAIL_BRANCH_SWITCH
+    fallbackVerdict: FAIL_RELEVANCE
+  - id: planUnderstandingQuiz
+    type: human
+    reads:
+      - /plan
+    prompt:
+      template:
+        file: prompts/plan-quiz.md
+        bindings:
+          plan:
+            state: /plan
+  - id: recordOperatorGate
+    type: script
+    script:
+      language: js
+      file: scripts/record-operator-gate.js
+    reads:
+      - /plan
+    writes:
+      - /humanize
+  - id: stopSubflow
+    type: script
+    script:
+      language: js
+      file: scripts/stop-subflow.js
+    reads:
+      - /humanize
+  - id: initializeGoalTracker
+    type: agent
+    agent: task
+    model:
+      role: builder
+    reads:
+      - /plan
+    writes:
+      - /goalTracker
+    prompt:
+      template:
+        file: prompts/goal-tracker.md
+        bindings:
+          plan:
+            state: /plan
+  - id: implementRound
+    type: agent
+    agent: task
+    model:
+      role: builder
+    reads:
+      - /plan
+      - /goalTracker
+    writes:
+      - /implementationSummary
+    prompt:
+      template:
+        file: prompts/implement-round.md
+        bindings:
+          plan:
+            state: /plan
+  - id: implementationReview
+    type: review
+    agent: reviewer
+    model:
+      role: reviewer
+    reads:
+      - /summary
+    prompt:
+      template:
+        file: prompts/implementation-review.md
+        bindings:
+          summary:
+            output:
+              node: implementRound
+              path: /summary
+              activation: latest-completed
+    gates:
+      - CONTINUE
+      - COMPLETE
+      - STOP
+    fallbackVerdict: CONTINUE
+  - id: fixCodeReviewIssues
+    type: agent
+    agent: task
+    model:
+      role: builder
+    reads:
+      - /plan
+      - /implementationSummary
+    writes:
+      - /codeReviewFix
+    prompt:
+      template:
+        file: prompts/fix-code-review.md
+        bindings:
+          plan:
+            state: /plan
+  - id: codeReviewGate
+    type: review
+    agent: reviewer
+    model:
+      role: reviewer
+    reads:
+      - /summary
+    prompt:
+      template:
+        file: prompts/code-review.md
+        bindings:
+          fixSummary:
+            output:
+              node: fixCodeReviewIssues
+              path: /summary
+              activation: latest-completed
+    gates:
+      - ISSUES
+      - CLEAN
+    fallbackVerdict: ISSUES
+  - id: finalize
+    type: agent
+    agent: task
+    model:
+      role: builder
+    reads:
+      - /plan
+      - /goalTracker
+    writes:
+      - /finalizeSummary
+    prompt:
+      template:
+        file: prompts/finalize.md
+        bindings:
+          plan:
+            state: /plan
+edges:
+  - from: planCompliance
+    to: planUnderstandingQuiz
+    when: outputs.planCompliance.verdict == "PASS"
+  - from: planCompliance
+    to: stopSubflow
+    when: outputs.planCompliance.verdict != "PASS"
+  - from: planUnderstandingQuiz
+    to: recordOperatorGate
+  - from: recordOperatorGate
+    to: initializeGoalTracker
+    when: state.humanize.operatorGate.decision == "proceed"
+  - from: recordOperatorGate
+    to: stopSubflow
+    when: state.humanize.operatorGate.decision != "proceed"
+  - from: initializeGoalTracker
+    to: implementRound
+  - from: implementRound
+    to: implementationReview
+  - from: implementationReview
+    to: implementRound
+    when: outputs.implementationReview.verdict == "CONTINUE"
+  - from: implementationReview
+    to: stopSubflow
+    when: outputs.implementationReview.verdict == "STOP"
+  - from: implementationReview
+    to: fixCodeReviewIssues
+    when: outputs.implementationReview.verdict == "COMPLETE"
+  - from: fixCodeReviewIssues
+    to: codeReviewGate
+  - from: codeReviewGate
+    to: fixCodeReviewIssues
+    when: outputs.codeReviewGate.verdict == "ISSUES"
+  - from: codeReviewGate
+    to: finalize
+    when: outputs.codeReviewGate.verdict == "CLEAN"
 ```

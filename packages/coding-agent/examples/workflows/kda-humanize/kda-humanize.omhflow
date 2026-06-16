@@ -29,8 +29,8 @@ capabilities:
   tools:
     - eval
 resources:
-  - path: prompts/task-contract.md
-    kind: prompt
+  - path: scripts/load-task-contract.js
+    kind: script
   - path: prompts/workspace-inspection.md
     kind: prompt
   - path: prompts/draft-plan.md
@@ -45,12 +45,13 @@ resources:
     kind: script
 sequence:
   - node:
-      id: defineTaskContract
-      type: human
+      id: loadTaskContract
+      type: script
+      script:
+        language: js
+        file: scripts/load-task-contract.js
       writes:
         - /taskContract
-      prompt:
-        file: prompts/task-contract.md
   - node:
       id: inspectWorkspace
       type: agent
@@ -98,6 +99,7 @@ sequence:
         reads:
           - /taskContract
           - /plan
+          - /finalizeSummary
         writes:
           - /candidate
         prompt:
@@ -108,6 +110,8 @@ sequence:
                 state: /taskContract
               plan:
                 state: /plan
+              humanizeHandoff:
+                state: /finalizeSummary
       review:
         id: validateCandidate
         type: review
@@ -117,6 +121,7 @@ sequence:
         reads:
           - /candidate
           - /summary
+          - /finalizeSummary
         prompt:
           template:
             file: prompts/validation.md
@@ -126,6 +131,8 @@ sequence:
                   node: implementCandidate
                   path: /summary
                   activation: latest-completed
+              humanizeHandoff:
+                state: /finalizeSummary
         gates:
           - revise
           - promote
@@ -141,6 +148,7 @@ sequence:
         - /taskContract
         - /plan
         - /candidate
+        - /finalizeSummary
       writes:
         - /evidence
   - node:

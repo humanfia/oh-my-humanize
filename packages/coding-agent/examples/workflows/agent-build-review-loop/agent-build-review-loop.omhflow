@@ -27,9 +27,9 @@ stateSchema:
     verdict: string
     archive: object
 resources:
-  - path: scripts/initialize-loop.sh
+  - path: scripts/initialize-loop.js
     kind: script
-  - path: scripts/archive-loop.sh
+  - path: scripts/archive-loop.js
     kind: script
   - path: prompts/build-round.md
     kind: prompt
@@ -37,6 +37,7 @@ resources:
     kind: prompt
 capabilities:
   tools:
+    - eval
     - bash
   agents:
     - task
@@ -46,8 +47,8 @@ sequence:
       id: initializeLoop
       type: script
       script:
-        language: sh
-        file: scripts/initialize-loop.sh
+        language: js
+        file: scripts/initialize-loop.js
       writes:
         - /progress
   - template:
@@ -89,8 +90,8 @@ sequence:
       reads:
         - /verdict
       script:
-        language: sh
-        file: scripts/archive-loop.sh
+        language: js
+        file: scripts/archive-loop.js
       writes:
         - /archive
 ```

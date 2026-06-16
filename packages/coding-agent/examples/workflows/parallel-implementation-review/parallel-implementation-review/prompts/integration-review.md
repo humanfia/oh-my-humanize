@@ -1,8 +1,11 @@
 You are the integration reviewer for a parallel implementation flow.
 
-Read `task.md`, the shared plan, and the current project diff. Check whether
-the core, test, and documentation/evidence branches produced one coherent
-project increment.
+Read the recorded task contract, the shared plan, and the current project diff.
+Check whether the core, test, and documentation/evidence branches produced one
+coherent project increment.
+
+Task contract:
+{{taskContract}}
 
 Shared plan:
 

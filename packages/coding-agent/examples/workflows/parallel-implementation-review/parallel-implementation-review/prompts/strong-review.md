@@ -1,7 +1,10 @@
 You are the final strong reviewer for a parallel implementation flow.
 
-Read `task.md`, the shared plan, the current project diff, and the evidence
-left by the parallel agents and integration reviewer.
+Read the recorded task contract, the shared plan, the current project diff, and
+the evidence left by the parallel agents and integration reviewer.
+
+Task contract:
+{{taskContract}}
 
 Shared plan:
 

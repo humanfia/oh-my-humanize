@@ -20,6 +20,8 @@ changePolicy:
 
 ```yaml workflow
 resources:
+  - path: scripts/precheck-task-contract.js
+    kind: script
   - path: prompts/scope.md
     kind: prompt
   - path: prompts/implement-core.md
@@ -33,18 +35,34 @@ resources:
   - path: prompts/strong-review.md
     kind: prompt
 capabilities:
+  tools:
+    - eval
   agents:
     - task
     - reviewer
 sequence:
+  - node:
+      id: precheckTaskContract
+      type: script
+      script:
+        language: js
+        file: scripts/precheck-task-contract.js
+      writes:
+        - /taskContract
   - node:
       id: scope
       type: agent
       agent: task
       model:
         role: builder
+      reads:
+        - /taskContract
       prompt:
-        file: prompts/scope.md
+        template:
+          file: prompts/scope.md
+          bindings:
+            taskContract:
+              state: /taskContract
       writes:
         - /plan
   - parallel:
@@ -56,12 +74,15 @@ sequence:
             role: builder
           reads:
             - /plan
+            - /taskContract
           prompt:
             template:
               file: prompts/implement-core.md
               bindings:
                 plan:
                   state: /plan
+                taskContract:
+                  state: /taskContract
       - node:
           id: implementTests
           type: agent
@@ -70,12 +91,15 @@ sequence:
             role: builder
           reads:
             - /plan
+            - /taskContract
           prompt:
             template:
               file: prompts/implement-tests.md
               bindings:
                 plan:
                   state: /plan
+                taskContract:
+                  state: /taskContract
       - node:
           id: implementDocs
           type: agent
@@ -84,12 +108,15 @@ sequence:
             role: builder
           reads:
             - /plan
+            - /taskContract
           prompt:
             template:
               file: prompts/implement-docs.md
               bindings:
                 plan:
                   state: /plan
+                taskContract:
+                  state: /taskContract
     join:
       id: integrationReview
       type: review
@@ -98,12 +125,15 @@ sequence:
         role: reviewer
       reads:
         - /plan
+        - /taskContract
       prompt:
         template:
           file: prompts/integration-review.md
           bindings:
             plan:
               state: /plan
+            taskContract:
+              state: /taskContract
       gates:
         - reviewed
   - node:
@@ -114,12 +144,15 @@ sequence:
         role: reviewer
       reads:
         - /plan
+        - /taskContract
       prompt:
         template:
           file: prompts/strong-review.md
           bindings:
             plan:
               state: /plan
+            taskContract:
+              state: /taskContract
       gates:
         - reject
         - promote

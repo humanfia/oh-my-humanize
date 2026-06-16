@@ -4,6 +4,7 @@ const state = workflowContext.state && typeof workflowContext.state === "object"
 const taskContract = state.taskContract ?? {};
 const plan = state.plan ?? {};
 const candidate = state.candidate ?? {};
+const humanizeHandoff = state.finalizeSummary ?? {};
 const validationActivations = workflowContext.completedActivations.filter(
 	activation => activation.nodeId === "validateCandidate",
 );
@@ -16,6 +17,7 @@ const evidence = {
 	status: "recorded",
 	taskContract,
 	plan,
+	humanizeHandoff,
 	candidate,
 	validationVerdict: promotionVerdict,
 	validationActivationCount: validationActivations.length,
@@ -39,6 +41,12 @@ await Bun.write(
 		JSON.stringify(plan, null, 2),
 		"```",
 		"",
+		"## Nested Humanize Handoff",
+		"",
+		"```json",
+		JSON.stringify(humanizeHandoff, null, 2),
+		"```",
+		"",
 		"## Candidate",
 		"",
 		"```json",
@@ -54,7 +62,7 @@ await Bun.write(
 );
 
 return {
-	summary: "recorded KDA evidence from task contract, plan, candidate, and validation verdict",
+	summary: "recorded KDA evidence from task contract, plan, nested Humanize handoff, candidate, and validation verdict",
 	statePatch: [{ op: "set", path: "/evidence", value: evidence }],
 	artifacts: ["local://workflow-output/kda-evidence.md"],
 };

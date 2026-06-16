@@ -120,6 +120,7 @@ describe("workflow artifact registry", () => {
 			startNodeId: "initializeLoop",
 			runtimeHost: createSessionWorkflowRuntimeHost({
 				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
 				runShellScript: request => runShellWorkflowScript(taskDir, request),
 			}),
 			packageRoot: artifact.resourceDir,
@@ -134,6 +135,307 @@ describe("workflow artifact registry", () => {
 		await expect(
 			Bun.file(path.join(taskDir, "workflow-output", "initial-loop-snapshot.md")).text(),
 		).resolves.toContain("verified task contract");
+	});
+
+	it("records bundled KDA task contracts before workspace inspection", async () => {
+		const spec = await resolveWorkflowFlowSpec("kda-humanize", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		const taskContract = [
+			"Objective: compare two parser hardening candidates.",
+			"Validation Command: bun test parser.test.ts",
+			"Promotion: choose only evidence-backed changes.",
+		].join("\n");
+		await Bun.write(path.join(taskDir, "task.md"), taskContract);
+		let inspectionAssignment = "";
+
+		const result = await runWorkflow({
+			host: createRunHost(),
+			definition: freeze.definition,
+			runId: "kda-task-contract-recording",
+			startNodeId: "loadTaskContract",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runAgentTask: async request => {
+					if (request.nodeId === "inspectWorkspace") {
+						inspectionAssignment = request.task.assignment;
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "workspace inspected",
+								statePatch: [{ op: "set", path: "/workspace", value: "parser workspace" }],
+							}),
+						};
+					}
+					return { exitCode: 0, output: `completed ${request.nodeId}` };
+				},
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 2,
+		});
+
+		expect(result.scheduler.activations.map(activation => activation.nodeId)).toEqual([
+			"loadTaskContract",
+			"inspectWorkspace",
+		]);
+		expect(result.scheduler.frontierNodeIds).toEqual(["draftPlan"]);
+		expect(result.scheduler.state.taskContract).toBe(taskContract);
+		expect(inspectionAssignment).toContain("compare two parser hardening candidates");
+	});
+
+	it("blocks bundled KDA when nested Humanize plan compliance fails", async () => {
+		const spec = await resolveWorkflowFlowSpec("kda-humanize", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		await Bun.write(
+			path.join(taskDir, "task.md"),
+			"Objective: make a bounded parser improvement. Validation Command: bun test parser.test.ts",
+		);
+
+		const result = await runWorkflow({
+			host: createRunHost(),
+			definition: freeze.definition,
+			runId: "kda-humanize-plan-compliance-fail",
+			startNodeId: "loadTaskContract",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runHumanInput: async request => {
+					throw new Error(`unexpected human gate ${request.nodeId}`);
+				},
+				runAgentTask: async request => {
+					if (request.nodeId === "inspectWorkspace") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "workspace inspected",
+								statePatch: [{ op: "set", path: "/workspace", value: "parser workspace" }],
+							}),
+						};
+					}
+					if (request.nodeId === "draftPlan") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "drafted unsafe branch-switching plan",
+								statePatch: [{ op: "set", path: "/plan", value: "switch branches before editing parser" }],
+							}),
+						};
+					}
+					if (request.nodeId === "humanize__planCompliance") {
+						return {
+							exitCode: 0,
+							output: "The plan leaves the current worktree and is not safe for this KDA run.\nFAIL_RELEVANCE",
+						};
+					}
+					return { exitCode: 0, output: `unexpected ${request.nodeId}` };
+				},
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 8,
+		});
+
+		const nodeIds = result.scheduler.activations.map(activation => activation.nodeId);
+		const failed = result.scheduler.activations.find(activation => activation.status === "failed");
+		expect(nodeIds).toContain("humanize__stopSubflow");
+		expect(nodeIds).not.toContain("humanize__implementRound");
+		expect(nodeIds).not.toContain("implementCandidate");
+		expect(failed?.nodeId).toBe("humanize__stopSubflow");
+		expect(failed?.error).toContain("FAIL_RELEVANCE");
+	});
+
+	it("feeds bundled KDA nested Humanize handoff into candidate implementation", async () => {
+		const spec = await resolveWorkflowFlowSpec("kda-humanize", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		await Bun.write(
+			path.join(taskDir, "task.md"),
+			"Objective: harden parser recovery. Validation Command: bun test parser.test.ts",
+		);
+		let candidateAssignment = "";
+
+		const result = await runWorkflow({
+			host: createRunHost(),
+			definition: freeze.definition,
+			runId: "kda-humanize-handoff",
+			startNodeId: "loadTaskContract",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runHumanInput: async () => ({ response: "proceed: parser recovery and regression evidence are in scope." }),
+				runAgentTask: async request => {
+					if (request.nodeId === "inspectWorkspace") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "workspace inspected",
+								statePatch: [{ op: "set", path: "/workspace", value: "parser workspace" }],
+							}),
+						};
+					}
+					if (request.nodeId === "draftPlan") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "drafted parser plan",
+								statePatch: [{ op: "set", path: "/plan", value: "patch parser recovery and test it" }],
+							}),
+						};
+					}
+					if (request.nodeId === "humanize__planCompliance") {
+						return { exitCode: 0, output: "Plan is relevant and safe.\nPASS" };
+					}
+					if (request.nodeId === "humanize__initializeGoalTracker") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "goal tracker ready",
+								statePatch: [{ op: "set", path: "/goalTracker", value: "parser recovery goal" }],
+							}),
+						};
+					}
+					if (request.nodeId === "humanize__implementRound") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "nested implementation complete",
+								statePatch: [{ op: "set", path: "/implementationSummary", value: "parser recovery patched" }],
+							}),
+						};
+					}
+					if (request.nodeId === "humanize__implementationReview") {
+						return { exitCode: 0, output: "Nested implementation has enough evidence.\nCOMPLETE" };
+					}
+					if (request.nodeId === "humanize__fixCodeReviewIssues") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "code review clean",
+								statePatch: [{ op: "set", path: "/codeReviewFix", value: "no blockers" }],
+							}),
+						};
+					}
+					if (request.nodeId === "humanize__codeReviewGate") {
+						return { exitCode: 0, output: "No blockers remain.\nCLEAN" };
+					}
+					if (request.nodeId === "humanize__finalize") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "nested Humanize handoff summary",
+								statePatch: [{ op: "set", path: "/finalizeSummary", value: "nested Humanize handoff summary" }],
+							}),
+						};
+					}
+					if (request.nodeId === "implementCandidate") {
+						candidateAssignment = request.task.assignment;
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "candidate implementation used nested handoff",
+								statePatch: [{ op: "set", path: "/candidate", value: "parser candidate" }],
+							}),
+						};
+					}
+					return { exitCode: 0, output: `completed ${request.nodeId}` };
+				},
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 15,
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.status === "failed")?.error).toBeUndefined();
+		expect(result.scheduler.frontierNodeIds).toEqual(["validateCandidate"]);
+		expect(candidateAssignment).toContain("nested Humanize handoff summary");
+	});
+
+	it("blocks bundled parallel implementation review before agents when task contract is missing", async () => {
+		const spec = await resolveWorkflowFlowSpec("parallel-implementation-review", {
+			cwd: process.cwd(),
+			flowDirs: [],
+		});
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+
+		const result = await runWorkflow({
+			host: createRunHost(),
+			definition: freeze.definition,
+			runId: "parallel-contract-missing",
+			startNodeId: "precheckTaskContract",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runAgentTask: async request => ({ exitCode: 0, output: `unexpected ${request.nodeId}` }),
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 2,
+		});
+
+		const failed = result.scheduler.activations.find(activation => activation.status === "failed");
+		expect(result.scheduler.activations.map(activation => activation.nodeId)).toEqual(["precheckTaskContract"]);
+		expect(failed?.error).toContain("task.md");
+	});
+
+	it("feeds bundled parallel implementation review task contracts into scope planning", async () => {
+		const spec = await resolveWorkflowFlowSpec("parallel-implementation-review", {
+			cwd: process.cwd(),
+			flowDirs: [],
+		});
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		const taskContract = [
+			"# Parallel parser task",
+			"",
+			"Goal: implement parser recovery with tests and operator evidence.",
+			"Validation Command: bun test parser.test.ts",
+		].join("\n");
+		await Bun.write(path.join(taskDir, "task.md"), taskContract);
+		let scopeAssignment = "";
+
+		const result = await runWorkflow({
+			host: createRunHost(),
+			definition: freeze.definition,
+			runId: "parallel-contract-bound",
+			startNodeId: "precheckTaskContract",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runAgentTask: async request => {
+					if (request.nodeId === "scope") {
+						scopeAssignment = request.task.assignment;
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "parallel scope planned",
+								statePatch: [{ op: "set", path: "/plan", value: "split parser recovery work" }],
+							}),
+						};
+					}
+					return { exitCode: 0, output: `completed ${request.nodeId}` };
+				},
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 2,
+		});
+
+		expect(result.scheduler.activations.map(activation => activation.nodeId)).toEqual([
+			"precheckTaskContract",
+			"scope",
+		]);
+		expect(result.scheduler.state.taskContract).toContain("parser recovery");
+		expect(scopeAssignment).toContain("parser recovery");
+		expect(scopeAssignment).toContain("Validation Command: bun test parser.test.ts");
 	});
 
 	it("runs explicit control-flow primitive example artifacts in a generic workspace", async () => {
@@ -620,6 +922,81 @@ describe("workflow artifact registry", () => {
 		expect(precheck.status).toBe("needs-operator-confirmation");
 		expect(precheck.branchSwitchingRequested).toBe(true);
 		expect(precheck.taskSource).toBe("task.md");
+	});
+
+	it("routes bundled Humanize final alignment rework back through code review before finalize", async () => {
+		const spec = await resolveWorkflowFlowSpec("humanize-rlcr", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		await Bun.write(
+			path.join(taskDir, "task.md"),
+			[
+				"# Final alignment rework",
+				"",
+				"Goal: require one final alignment correction before completion.",
+				"Acceptance: final alignment can route back through fix/review instead of failing.",
+			].join("\n"),
+		);
+		let finalAlignmentCount = 0;
+
+		const result = await runWorkflow({
+			host: createRunHost(),
+			definition: freeze.definition,
+			runId: "humanize-final-alignment-rework",
+			startNodeId: "planCompliancePrecheck",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+				runShellScript: request => runShellWorkflowScript(taskDir, request),
+				runHumanInput: async () => ({ response: "proceed: bounded final alignment rework smoke." }),
+				runAgentTask: async request => {
+					if (request.nodeId === "implementRound") {
+						return {
+							exitCode: 0,
+							output: JSON.stringify({
+								summary: "implementation evidence ready",
+								data: {
+									changedFiles: ["src/parser.ts"],
+									verification: ["bun test parser.test.ts passed"],
+									negativeTests: ["invalid parser state remains rejected"],
+									acceptanceEvidence: ["final alignment correction can be reviewed"],
+								},
+							}),
+						};
+					}
+					if (request.nodeId === "codexSummaryReview") {
+						return { exitCode: 0, output: "Implementation evidence is sufficient.\nCOMPLETE" };
+					}
+					if (request.nodeId === "fixReviewIssues") {
+						return { exitCode: 0, output: "fixed the final alignment mismatch" };
+					}
+					if (request.nodeId === "codexCodeReview") {
+						return { exitCode: 0, output: "No blocking issues remain.\nCLEAN" };
+					}
+					if (request.nodeId === "finalAlignmentCheck") {
+						finalAlignmentCount++;
+						return {
+							exitCode: 0,
+							output:
+								finalAlignmentCount === 1
+									? "The final state still needs one correction.\nrework"
+									: "The final state now matches the task.\nfinish",
+						};
+					}
+					return { exitCode: 0, output: `completed ${request.nodeId}` };
+				},
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 18,
+		});
+
+		const nodeIds = result.scheduler.activations.map(activation => activation.nodeId);
+		expect(result.scheduler.activations.find(activation => activation.status === "failed")?.error).toBeUndefined();
+		expect(nodeIds.filter(nodeId => nodeId === "finalAlignmentCheck")).toHaveLength(2);
+		expect(nodeIds.filter(nodeId => nodeId === "fixReviewIssues")).toHaveLength(2);
+		expect(nodeIds.at(-1)).toBe("finalize");
 	});
 
 	it("keeps bundled Humanize RLCR in a hold loop without growing implementation prompts", async () => {

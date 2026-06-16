@@ -223,6 +223,8 @@ nodes:
       - /humanize
     gates:
       - finish
+      - rework
+    fallbackVerdict: rework
   - id: finalize
     type: script
     script:
@@ -279,5 +281,9 @@ edges:
     to: finalAlignmentCheck
     when: outputs.codexCodeReview.verdict != "ISSUES"
   - from: finalAlignmentCheck
+    to: fixReviewIssues
+    when: outputs.finalAlignmentCheck.verdict == "rework"
+  - from: finalAlignmentCheck
     to: finalize
+    when: outputs.finalAlignmentCheck.verdict == "finish"
 ```
