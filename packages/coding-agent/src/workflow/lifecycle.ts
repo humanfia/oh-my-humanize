@@ -952,7 +952,42 @@ export function resolveWorkflowRestartStartNodeIds(
 			}
 		}
 	}
+	assertWorkflowRestartJoinReadiness(family, checkpoint, freeze, startNodeIds);
 	return startNodeIds;
+}
+
+function assertWorkflowRestartJoinReadiness(
+	family: WorkflowRunFamilySnapshot,
+	checkpoint: WorkflowCheckpointSnapshot,
+	freeze: FlowFreeze,
+	startNodeIds: string[],
+): void {
+	const nodesById = new Map(freeze.definition.nodes.map(node => [node.id, node]));
+	const completedNodeIds = checkpointCompletedNodeIds(family, checkpoint);
+	for (const nodeId of startNodeIds) {
+		const node = nodesById.get(nodeId);
+		if (node?.waitFor === undefined || node.waitFor.length === 0) continue;
+		const missing = node.waitFor.filter(waitForNodeId => !completedNodeIds.has(waitForNodeId));
+		if (missing.length === 0) continue;
+		throw new WorkflowLifecycleError(
+			`Workflow restart frontier node "${nodeId}" requires checkpoint frontier siblings: ${missing.join(", ")}`,
+		);
+	}
+}
+
+function checkpointCompletedNodeIds(
+	family: WorkflowRunFamilySnapshot,
+	checkpoint: WorkflowCheckpointSnapshot,
+): Set<string> {
+	const completedActivationIds = new Set(checkpoint.completedActivationIds);
+	const attempt = family.attempts.find(candidate => candidate.id === checkpoint.attemptId);
+	const nodeIds = new Set<string>();
+	for (const activation of attempt?.activations ?? []) {
+		if (activation.status === "completed" && completedActivationIds.has(activation.id)) {
+			nodeIds.add(activation.nodeId);
+		}
+	}
+	return nodeIds;
 }
 
 function assertWorkflowRestartStartNodeIds(options: RestartWorkflowAttemptOptions, startNodeIds: string[]): void {

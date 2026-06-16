@@ -146,8 +146,12 @@ function validateFreezeMetadata(artifact: WorkflowArtifact): {
 		artifact.metadata.checkpoint,
 		".omhflow frontmatter must define checkpoint.stopDeadlineMs for production freeze",
 	);
-	if (typeof checkpoint.stopDeadlineMs !== "number" || !Number.isFinite(checkpoint.stopDeadlineMs)) {
-		throw new WorkflowFreezeError(".omhflow frontmatter must define checkpoint.stopDeadlineMs for production freeze");
+	if (
+		typeof checkpoint.stopDeadlineMs !== "number" ||
+		!Number.isFinite(checkpoint.stopDeadlineMs) ||
+		checkpoint.stopDeadlineMs <= 0
+	) {
+		throw new WorkflowFreezeError(".omhflow frontmatter checkpoint.stopDeadlineMs must be a positive number");
 	}
 	const changePolicy = expectRecord(
 		artifact.metadata.changePolicy,

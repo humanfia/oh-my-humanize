@@ -16,6 +16,7 @@ import { reconstructWorkflowFamilies } from "../workflow/lifecycle";
 import { loadWorkflowArtifact, loadWorkflowPackage, WorkflowPackageError } from "../workflow/package-loader";
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../workflow/run-store";
 import { runWorkflow } from "../workflow/runner";
+import { workflowRuntimeBindingUnavailableError } from "../workflow/runtime-binding";
 import { DEFAULT_WORKFLOW_MAX_RUNTIME_MS } from "../workflow/runtime-timeout";
 import { workflowScriptEnvironment } from "../workflow/script-runtime-env";
 import {
@@ -185,13 +186,26 @@ async function handleStart(command: WorkflowCommandArgs): Promise<void> {
 		runShellScript: async request => runHeadlessShellScript(cwd, request),
 		runAgentTask: async request => runHeadlessAgentTask(cwd, request),
 	});
+	const runtimeBindingSnapshot = createHeadlessRuntimeBindingSnapshot(pkg.definition, `${runId}:binding-1`);
+	const bindingError =
+		command.flags.maxActivations === 0
+			? undefined
+			: workflowRuntimeBindingUnavailableError(runtimeBindingSnapshot, pkg.definition, startNodeIds);
+	if (bindingError !== undefined) {
+		if (command.flags.json) {
+			writeJson({ error: bindingError });
+		} else {
+			writeLine(bindingError);
+		}
+		return;
+	}
 	const lifecycle =
 		pkg.freeze !== undefined && familyId !== undefined && attemptId !== undefined
 			? {
 					familyId,
 					attemptId,
 					freeze: pkg.freeze,
-					runtimeBindingSnapshot: createHeadlessRuntimeBindingSnapshot(pkg.definition, `${runId}:binding-1`),
+					runtimeBindingSnapshot,
 				}
 			: undefined;
 	const result = await runWorkflow({
@@ -345,7 +359,9 @@ function createHeadlessRuntimeBindingSnapshot(
 		plugins: [...(definition.capabilities?.plugins ?? [])].sort(),
 		extensions: [...(definition.capabilities?.extensions ?? [])].sort(),
 		skills: [...(definition.capabilities?.skills ?? [])].sort(),
-		unavailable: definition.nodes.some(node => node.type === "human") ? ["ask"] : [],
+		unavailable: definition.nodes.some(node => node.type === "human")
+			? ["tool:ask: headless workflow CLI cannot answer human nodes"]
+			: [],
 		warnings: definition.nodes.some(node => node.type === "human")
 			? ["headless workflow CLI cannot answer human nodes; use interactive /workflow start for those flows"]
 			: [],

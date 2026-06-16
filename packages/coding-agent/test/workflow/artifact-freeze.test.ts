@@ -248,6 +248,43 @@ edges: []
 		);
 	});
 
+	it("rejects non-positive checkpoint stop deadlines before production freeze", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "release"), { recursive: true });
+		const flowPath = path.join(dir, "release.omhflow");
+		await Bun.write(
+			flowPath,
+			`---
+name: invalid-deadline
+version: 1
+schema: omhflow/v1
+checkpoint:
+  stopDeadlineMs: -1
+changePolicy:
+  agentsCanPropose: true
+  humansCanApprove: true
+---
+# Invalid Deadline
+
+\`\`\`yaml workflow
+nodes:
+  build:
+    type: script
+    script:
+      inline: |
+        return { summary: "built" };
+edges: []
+\`\`\`
+`,
+		);
+
+		const artifact = await loadWorkflowArtifact(flowPath);
+
+		await expect(freezeWorkflowArtifact(artifact)).rejects.toThrow(
+			".omhflow frontmatter checkpoint.stopDeadlineMs must be a positive number",
+		);
+	});
+
 	it("accepts checkpoint policy declared in the workflow DSL block", async () => {
 		const dir = await createTempDir();
 		await fs.mkdir(path.join(dir, "release"), { recursive: true });

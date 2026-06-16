@@ -72,6 +72,7 @@ import {
 	type WorkflowRunnerLifecycleOptions,
 	type WorkflowRunnerModelResolutionOptions,
 } from "../../workflow/runner";
+import { workflowRuntimeBindingUnavailableError } from "../../workflow/runtime-binding";
 import { DEFAULT_WORKFLOW_MAX_RUNTIME_MS } from "../../workflow/runtime-timeout";
 import type { WorkflowActivation } from "../../workflow/scheduler";
 import { applyWorkflowStatePatch } from "../../workflow/state";
@@ -314,21 +315,20 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 	if (startConflict !== undefined) return usage(startConflict, runtime);
 	const modelResolution = createWorkflowModelResolution(runtime);
 	const runtimeHost = await runtime.createWorkflowRuntimeHost();
-	const runtimeBindingSnapshot =
-		pkg.freeze !== undefined && lifecycleFamilyId !== undefined && lifecycleAttemptId !== undefined
-			? await createRuntimeBindingSnapshot(
-					pkg.definition,
-					`${runId}:binding-1`,
-					modelResolution,
-					runtimeHost,
-					runtime,
-				)
-			: undefined;
+	const runtimeBindingSnapshot = await createRuntimeBindingSnapshot(
+		pkg.definition,
+		`${runId}:binding-1`,
+		modelResolution,
+		runtimeHost,
+		runtime,
+	);
+	const bindingError =
+		parsed.maxActivations === 0
+			? undefined
+			: workflowRuntimeBindingUnavailableError(runtimeBindingSnapshot, pkg.definition, startNodeIds);
+	if (bindingError !== undefined) return usage(bindingError, runtime);
 	const lifecycle =
-		pkg.freeze !== undefined &&
-		lifecycleFamilyId !== undefined &&
-		lifecycleAttemptId !== undefined &&
-		runtimeBindingSnapshot !== undefined
+		pkg.freeze !== undefined && lifecycleFamilyId !== undefined && lifecycleAttemptId !== undefined
 			? ({
 					familyId: lifecycleFamilyId,
 					attemptId: lifecycleAttemptId,
@@ -861,7 +861,12 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 			? located.family.freezes.find(candidate => candidate.id === parsed.freezeId)
 			: located.family.freezes.at(-1);
 	if (!freeze) return usage(`Workflow freeze not found: ${parsed.freezeId ?? "latest"}`, runtime);
-	const startNodeIds = resolveWorkflowRestartStartNodeIds(located.family, located.checkpoint, freeze);
+	let startNodeIds: string[];
+	try {
+		startNodeIds = resolveWorkflowRestartStartNodeIds(located.family, located.checkpoint, freeze);
+	} catch (error) {
+		return usage(errorMessage(error), runtime);
+	}
 	if (startNodeIds.length === 0) {
 		return usage(`Workflow checkpoint has no restartable frontier: ${parsed.checkpointId}`, runtime);
 	}
@@ -879,6 +884,8 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 		runtimeHost,
 		runtime,
 	);
+	const bindingError = workflowRuntimeBindingUnavailableError(runtimeBindingSnapshot, freeze.definition, startNodeIds);
+	if (bindingError !== undefined) return usage(bindingError, runtime);
 	const stopController = new AbortController();
 	const nodeAbortController = new AbortController();
 	const nodeAbortControllers = new Map<string, AbortController>();

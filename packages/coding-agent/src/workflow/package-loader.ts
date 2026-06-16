@@ -323,8 +323,8 @@ function mergeWorkflowBlockMetadata(
 function parseCheckpointPolicy(value: unknown, label: string, flowPath: string): { stopDeadlineMs: number } {
 	const record = expectRecord(value, label, flowPath);
 	const stopDeadlineMs = record.stopDeadlineMs;
-	if (typeof stopDeadlineMs !== "number" || !Number.isFinite(stopDeadlineMs)) {
-		throw new WorkflowPackageError(`${flowPath}: ${label}.stopDeadlineMs must be a finite number`);
+	if (typeof stopDeadlineMs !== "number" || !Number.isFinite(stopDeadlineMs) || stopDeadlineMs <= 0) {
+		throw new WorkflowPackageError(`${flowPath}: ${label}.stopDeadlineMs must be a positive number`);
 	}
 	return { stopDeadlineMs };
 }

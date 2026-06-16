@@ -31,6 +31,7 @@ stateSchema:
   version: 1
   shape:
     humanize: object
+    /humanize/operatorGate/minimumSatisfied: boolean
     verdict: string
 resources:
   - path: prompts/plan-understanding-quiz.md

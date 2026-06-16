@@ -210,6 +210,7 @@ stateSchema:
   version: 1
   shape:
     decision: object
+    verdict: string
 resources:
   - path: prompts/brief.md
     kind: prompt
@@ -293,13 +294,13 @@ sequence:
 		expect(artifact.definition.migrations).toEqual([
 			{ from: "search", to: "integrate", frontierMapping: { evaluate: "integrate" } },
 		]);
-		expect(artifact.definition.stateSchema).toEqual({ version: 1, shape: { decision: "object" } });
+		expect(artifact.definition.stateSchema).toEqual({ version: 1, shape: { decision: "object", verdict: "string" } });
 		expect(freeze.resourceSnapshots.map(snapshot => snapshot.path)).toEqual(["prompts/brief.md"]);
 		expect(freeze.staticCheckReport.checks.map(check => check.name)).toContain("contracts");
 		expect(freeze.staticCheckReport.checks).toContainEqual({
 			name: "state-schema",
 			status: "passed",
-			details: ["decision: object"],
+			details: ["decision: object", "verdict: string"],
 		});
 	});
 

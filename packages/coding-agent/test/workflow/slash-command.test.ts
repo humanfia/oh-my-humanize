@@ -496,6 +496,35 @@ edges:
 		]);
 	});
 
+	it("rejects workflow starts when required runtime capabilities are unavailable", async () => {
+		const dir = await createTempDir();
+		await Bun.write(
+			path.join(dir, "workflow.yml"),
+			`
+name: missing-capability-demo
+version: 1
+nodes:
+  build:
+    type: script
+edges: []
+`,
+		);
+		const entries: CapturedEntry[] = [];
+		const { output, runtime } = createRuntime(entries, {});
+
+		expect(
+			await executeAcpBuiltinSlashCommand(`/workflow start ${dir} --run-id run-missing-capability`, runtime),
+		).toEqual({
+			consumed: true,
+		});
+
+		expect(output.at(-1)).toContain(
+			"Workflow runtime binding unavailable: tool:eval: workflow runtime host does not support script nodes",
+		);
+		expect(reconstructWorkflowRuns(entries)).toEqual([]);
+		expect(reconstructWorkflowFamilies(entries)).toEqual([]);
+	});
+
 	it("reports .omhflow freeze errors during workflow start without rejecting the command", async () => {
 		const dir = await createTempDir();
 		await Bun.write(
@@ -4371,6 +4400,78 @@ edges:
 		]);
 		expect(family?.attempts[1]?.startNodeId).toBe("leftReview");
 		expect(family?.attempts[1]?.startNodeIds).toEqual(["leftReview", "rightReview"]);
+	});
+
+	it("rejects checkpoint restart frontiers that would bypass join prerequisites", async () => {
+		const entries: CapturedEntry[] = [];
+		const freeze = createFreeze(
+			"flowfreeze:join",
+			parseWorkflowDefinition(
+				`
+name: join-frontier
+version: 1
+nodes:
+  leftReview:
+    type: script
+  rightReview:
+    type: script
+  merge:
+    type: script
+    waitFor:
+      - leftReview
+      - rightReview
+edges:
+  - from: leftReview
+    to: merge
+  - from: rightReview
+    to: merge
+`,
+				{ sourcePath: "workflow.yml" },
+			),
+		);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-join-frontier" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-join-frontier" });
+		startWorkflowAttempt(host, {
+			familyId: "family-join-frontier",
+			attemptId: "attempt-1",
+			freezeId: freeze.id,
+			startNodeId: "leftReview",
+			runtimeBindingSnapshot: binding("binding-1"),
+		});
+		requestWorkflowAttemptStop(host, {
+			attemptId: "attempt-1",
+			deadlineMs: 5,
+			reason: "bad join frontier",
+		});
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-join-frontier",
+			familyId: "family-join-frontier",
+			attemptId: "attempt-1",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["merge"],
+			state: {},
+			sourceMapping: { merge: "merge" },
+		});
+		const calls: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				calls.push(input.node.id);
+				return { summary: `ran ${input.node.id}` };
+			},
+		};
+		const { output, runtime } = createRuntime(entries, runtimeHost);
+
+		expect(await executeAcpBuiltinSlashCommand("/workflow restart checkpoint-join-frontier", runtime)).toEqual({
+			consumed: true,
+		});
+
+		expect(calls).toEqual([]);
+		expect(output.at(-1)).toContain(
+			'Workflow restart frontier node "merge" requires checkpoint frontier siblings: leftReview, rightReview',
+		);
+		expect(reconstructWorkflowFamilies(entries)[0]?.attempts).toHaveLength(1);
 	});
 
 	it("restarts checkpointed workflows in the background without blocking operator control", async () => {

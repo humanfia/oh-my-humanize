@@ -178,7 +178,7 @@ export function parseWorkflowDefinition(
 	const migrations = parseMigrationRules(root.migrations, "migrations", options.sourcePath);
 	const subflows = parseSubflowDeclarations(root.subflows, "subflows", options.sourcePath);
 	validateEdgeReferences(nodes, edges, options.sourcePath);
-	validateConditionReferences(nodes, edges, options.sourcePath);
+	validateConditionReferences(nodes, edges, stateSchema, options.sourcePath);
 	validateWaitForReferences(nodes, options.sourcePath);
 	validatePromptSourceReferences(nodes, options.sourcePath);
 	validateMigrationTargets(nodes, migrations, options.sourcePath);
@@ -402,10 +402,15 @@ function validateEdgeReferences(nodes: WorkflowNode[], edges: WorkflowEdge[], so
 	}
 }
 
-function validateConditionReferences(nodes: WorkflowNode[], edges: WorkflowEdge[], sourcePath?: string): void {
+function validateConditionReferences(
+	nodes: WorkflowNode[],
+	edges: WorkflowEdge[],
+	stateSchema: WorkflowStateSchema | undefined,
+	sourcePath?: string,
+): void {
 	for (const [index, edge] of edges.entries()) {
 		if (edge.condition === undefined) continue;
-		for (const diagnostic of diagnoseWorkflowConditionReferences(edge.condition.source, nodes)) {
+		for (const diagnostic of diagnoseWorkflowConditionReferences(edge.condition.source, nodes, stateSchema)) {
 			throw new WorkflowDefinitionError(`edges.${index}.when ${diagnostic}`, sourcePath);
 		}
 	}

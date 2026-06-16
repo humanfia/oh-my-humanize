@@ -1,3 +1,5 @@
+import { type WorkflowStateSchema, workflowStateSchemaDeclaresConditionPath } from "./state-schema";
+
 export type WorkflowConditionOperator = "==" | "!=" | ">=" | "<=" | ">" | "<";
 export type WorkflowConditionLiteral = string | number | boolean | null;
 
@@ -89,6 +91,7 @@ export function collectWorkflowConditionReferences(
 export function diagnoseWorkflowConditionReferences(
 	condition: string | WorkflowConditionExpression,
 	nodes: readonly WorkflowConditionReferenceNode[],
+	stateSchema?: WorkflowStateSchema,
 ): string[] {
 	const nodesById = new Map(nodes.map(node => [node.id, node]));
 	const diagnostics: string[] = [];
@@ -98,7 +101,13 @@ export function diagnoseWorkflowConditionReferences(
 			diagnostics.push("must reference state.* or outputs.*");
 			continue;
 		}
-		if (root !== "outputs") continue;
+		if (root === "state") {
+			const pointer = conditionStateReferenceToJsonPointer(reference.path);
+			if (!workflowStateSchemaDeclaresConditionPath(pointer, stateSchema)) {
+				diagnostics.push(`references undeclared state path "${pointer}"`);
+			}
+			continue;
+		}
 		if (outputNodeId === undefined) {
 			diagnostics.push("must reference outputs.<nodeId>.*");
 			continue;
@@ -120,6 +129,16 @@ export function diagnoseWorkflowConditionReferences(
 		}
 	}
 	return diagnostics;
+}
+
+function conditionStateReferenceToJsonPointer(path: string[]): string {
+	const segments = path.slice(1);
+	if (segments.length === 0) return "/";
+	return `/${segments.map(escapeJsonPointerSegment).join("/")}`;
+}
+
+function escapeJsonPointerSegment(segment: string): string {
+	return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
 function collectAstReferences(ast: WorkflowConditionAst, references: WorkflowConditionReference[]): void {

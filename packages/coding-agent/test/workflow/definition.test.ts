@@ -91,6 +91,56 @@ edges: []
 		).toThrow("schema.yml: stateSchema.shape.verdict must be string, number, boolean, object, array, or null");
 	});
 
+	it("accepts state condition references declared by nested state schema paths", () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: typed-state-condition
+version: 1
+stateSchema:
+  version: 1
+  shape:
+    decision: object
+    /decision/retry: boolean
+nodes:
+  evaluate:
+    type: script
+  repair:
+    type: script
+edges:
+  - from: evaluate
+    to: repair
+    when: state.decision.retry == true
+`,
+			{ sourcePath: "condition.yml" },
+		);
+
+		expect(definition.edges[0]?.condition?.source).toBe("state.decision.retry == true");
+	});
+
+	it("rejects state condition references outside declared state schema paths", () => {
+		const source = `
+name: invalid-state-condition
+version: 1
+stateSchema:
+  version: 1
+  shape:
+    decision: object
+nodes:
+  evaluate:
+    type: script
+  repair:
+    type: script
+edges:
+  - from: evaluate
+    to: repair
+    when: state.decision.retry == true
+`;
+
+		expect(() => parseWorkflowDefinition(source, { sourcePath: "condition.yml" })).toThrow(
+			'condition.yml: edges.0.when references undeclared state path "/decision/retry"',
+		);
+	});
+
 	it("rejects review fallback verdicts outside declared gates", () => {
 		expect(() =>
 			parseWorkflowDefinition(
