@@ -97,18 +97,19 @@ describe("workflow artifact registry", () => {
 		}
 	});
 
-	it("executes bundled agent build/review verification declared by the task artifact", async () => {
+	it("records bundled agent build/review verification without executing heavy task commands during initialization", async () => {
 		const spec = await resolveWorkflowFlowSpec("agent-build-review-loop", { cwd: process.cwd(), flowDirs: [] });
 		const artifact = await loadWorkflowArtifact(spec.path);
 		const freeze = await freezeWorkflowArtifact(artifact);
 		const taskDir = await createTempDir();
+		const sentinelPath = path.join(taskDir, "should-not-run-in-initialize");
 		await Bun.write(
 			path.join(taskDir, "task.md"),
 			[
 				"# Task-declared verification",
 				"",
 				"Goal: prove the built-in flow reads the task contract instead of assuming a project stack.",
-				"Validation Command: printf 'verified task contract\\n' && test -f task.md",
+				"Validation Command: touch should-not-run-in-initialize && printf 'verified task contract\\n'",
 			].join("\n"),
 		);
 		const host = createRunHost();
@@ -131,17 +132,22 @@ describe("workflow artifact registry", () => {
 		expect(result.scheduler.activations.map(activation => activation.nodeId)).toEqual(["initializeLoop"]);
 		expect(result.scheduler.frontierNodeIds).toEqual(["buildRound"]);
 		const progress = expectRecord(result.scheduler.state.progress, "agent build/review progress");
-		expect(progress.verification).toBe("pass");
+		expect(progress.verification).toBe("declared");
+		expect(progress.validationCommand).toBe(
+			"touch should-not-run-in-initialize && printf 'verified task contract\\n'",
+		);
+		await expect(Bun.file(sentinelPath).exists()).resolves.toBe(false);
 		await expect(
 			Bun.file(path.join(taskDir, "workflow-output", "initial-loop-snapshot.md")).text(),
-		).resolves.toContain("verified task contract");
+		).resolves.toContain("touch should-not-run-in-initialize");
 	});
 
-	it("accepts bundled agent build/review validation commands on the line after the task heading", async () => {
+	it("records bundled agent build/review validation commands on the line after the task heading", async () => {
 		const spec = await resolveWorkflowFlowSpec("agent-build-review-loop", { cwd: process.cwd(), flowDirs: [] });
 		const artifact = await loadWorkflowArtifact(spec.path);
 		const freeze = await freezeWorkflowArtifact(artifact);
 		const taskDir = await createTempDir();
+		const sentinelPath = path.join(taskDir, "multiline-should-not-run-in-initialize");
 		await Bun.write(
 			path.join(taskDir, "task.md"),
 			[
@@ -150,7 +156,7 @@ describe("workflow artifact registry", () => {
 				"Goal: match the distributable task.md format used by Phase 3 run contracts.",
 				"",
 				"Validation Command:",
-				"printf 'verified multiline task contract\\n' && test -f task.md",
+				"touch multiline-should-not-run-in-initialize && printf 'verified multiline task contract\\n'",
 			].join("\n"),
 		);
 
@@ -172,10 +178,14 @@ describe("workflow artifact registry", () => {
 		expect(result.scheduler.activations.map(activation => activation.nodeId)).toEqual(["initializeLoop"]);
 		expect(result.scheduler.frontierNodeIds).toEqual(["buildRound"]);
 		const progress = expectRecord(result.scheduler.state.progress, "agent build/review progress");
-		expect(progress.verification).toBe("pass");
+		expect(progress.verification).toBe("declared");
+		expect(progress.validationCommand).toBe(
+			"touch multiline-should-not-run-in-initialize && printf 'verified multiline task contract\\n'",
+		);
+		await expect(Bun.file(sentinelPath).exists()).resolves.toBe(false);
 		await expect(
 			Bun.file(path.join(taskDir, "workflow-output", "initial-loop-snapshot.md")).text(),
-		).resolves.toContain("verified multiline task contract");
+		).resolves.toContain("touch multiline-should-not-run-in-initialize");
 	});
 
 	it("blocks bundled agent build/review loop before agents when task contract is missing", async () => {

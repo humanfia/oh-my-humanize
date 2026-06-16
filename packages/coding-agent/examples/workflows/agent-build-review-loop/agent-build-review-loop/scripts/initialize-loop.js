@@ -7,7 +7,6 @@ if (!(await fileExists(progressPath))) {
 
 const taskText = await readRequiredTaskText();
 const verifyCommand = requiredTaskValidationCommand(taskText);
-const verification = await runTaskVerification(verifyCommand);
 const snapshot = [
 	"# Initial Loop Snapshot",
 	"",
@@ -20,10 +19,10 @@ const snapshot = [
 	"Workspace file listing is intentionally omitted from this portable flow script.",
 	"Agents and reviewers should inspect the current project diff and task contract directly.",
 	"",
-	"## Initial Verification Result",
+	"## Declared Verification Command",
 	"",
 	"```text",
-	verification.output,
+	verifyCommand,
 	"```",
 	"",
 ].join("\n");
@@ -31,7 +30,7 @@ const snapshot = [
 await Bun.write(snapshotPath, snapshot);
 
 return {
-	summary: `initialized agent build/review loop with task-declared verification (${verification.status})`,
+	summary: "initialized agent build/review loop with task-declared verification command",
 	statePatch: [
 		{
 			op: "set",
@@ -39,7 +38,8 @@ return {
 			value: {
 				file: progressPath,
 				snapshot: snapshotPath,
-				verification: verification.status,
+				validationCommand: verifyCommand,
+				verification: "declared",
 			},
 		},
 	],
@@ -95,27 +95,6 @@ function firstFollowingCommandLine(lines, startIndex) {
 
 function isTaskSectionHeading(line) {
 	return line.startsWith("#") || /^[A-Z][A-Za-z /-]{0,80}:\s*$/u.test(line);
-}
-
-async function runTaskVerification(command) {
-	const proc = Bun.spawn(["sh", "-c", command], {
-		cwd: process.cwd(),
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	const output = [stdout, stderr]
-		.filter(text => text.trim().length > 0)
-		.join("\n")
-		.trim();
-	return {
-		status: exitCode === 0 ? "pass" : "fail",
-		output: output || `verification command exited with code ${exitCode}`,
-	};
 }
 
 function boundedLines(text, limit) {
