@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Fixed `omp workflow` headless commands showing TypeScript stack traces for workflow artifact lookup/load errors such as ambiguous bundled/`OMHFLOW_DIR` flow names or directory paths passed where a `.omhflow` file is required; they now print a concise user-facing diagnostic and exit nonzero.
 - Fixed workflow dashboard monitor targeting so stale focused-agent ids without a matching active workflow agent no longer advertise Agent Hub, hub, or steer controls.
 - Fixed workflow dashboard on-flight wording so running program or human work is labeled as live work instead of live agents when no Agent Hub target exists.
 - Fixed bundled practical workflow artifacts that still declared the non-canonical `shell` tool capability, so runtime binding diagnostics use the canonical `bash` capability that the workflow host can resolve.

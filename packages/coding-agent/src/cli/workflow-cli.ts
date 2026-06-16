@@ -6,13 +6,14 @@ import {
 	listWorkflowFlowSpecs,
 	resolveWorkflowFlowSpec,
 	uninstallWorkflowArtifact,
+	WorkflowArtifactRegistryError,
 	type WorkflowFlowSpec,
 } from "../workflow/artifact-registry";
 import type { WorkflowDefinition } from "../workflow/definition";
 import { type FlowFreeze, freezeWorkflowArtifact } from "../workflow/freeze";
 import type { RuntimeBindingSnapshot } from "../workflow/lifecycle";
 import { reconstructWorkflowFamilies } from "../workflow/lifecycle";
-import { loadWorkflowArtifact, loadWorkflowPackage } from "../workflow/package-loader";
+import { loadWorkflowArtifact, loadWorkflowPackage, WorkflowPackageError } from "../workflow/package-loader";
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../workflow/run-store";
 import { runWorkflow } from "../workflow/runner";
 import { DEFAULT_WORKFLOW_MAX_RUNTIME_MS } from "../workflow/runtime-timeout";
@@ -82,22 +83,31 @@ export function resolveWorkflowCommandArgs(
 }
 
 export async function runWorkflowCommand(command: WorkflowCommandArgs): Promise<void> {
-	switch (command.action) {
-		case "list":
-			await handleList(command);
+	try {
+		switch (command.action) {
+			case "list":
+				await handleList(command);
+				return;
+			case "freeze":
+				await handleFreeze(command);
+				return;
+			case "start":
+				await handleStart(command);
+				return;
+			case "install":
+				await handleInstall(command);
+				return;
+			case "uninstall":
+				await handleUninstall(command);
+				return;
+		}
+	} catch (error) {
+		if (error instanceof WorkflowArtifactRegistryError || error instanceof WorkflowPackageError) {
+			writeError(`${error.message}\n`);
+			process.exitCode = 1;
 			return;
-		case "freeze":
-			await handleFreeze(command);
-			return;
-		case "start":
-			await handleStart(command);
-			return;
-		case "install":
-			await handleInstall(command);
-			return;
-		case "uninstall":
-			await handleUninstall(command);
-			return;
+		}
+		throw error;
 	}
 }
 
@@ -468,6 +478,10 @@ function writeLine(line = ""): void {
 
 function writeJson(value: unknown): void {
 	writeLine(JSON.stringify(value));
+}
+
+function writeError(line: string): void {
+	process.stderr.write(line);
 }
 
 function dim(value: string): string {
