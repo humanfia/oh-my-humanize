@@ -1,15 +1,36 @@
+let taskText = "";
+try {
+	taskText = await Bun.file("task.md").text();
+} catch {
+	taskText = "";
+}
+
+const trimmedTask = taskText.trim();
+const branchSwitchingRequested =
+	/\b(?:switch|checkout|change)\s+(?:to\s+)?(?:branch|worktree)\b|\bgit\s+checkout\b|\bbase\s+branch\s*:\s*(?!main\b)[^\n]+/iu.test(
+		trimmedTask,
+	);
+const status =
+	trimmedTask.length === 0
+		? "operator-contract-required"
+		: branchSwitchingRequested
+			? "needs-operator-confirmation"
+			: "ready-for-human-gate";
+const precheck = {
+	status,
+	taskSource: trimmedTask.length === 0 ? "operator prompt" : "task.md",
+	branchSwitchingRequested,
+	taskPreview: trimmedTask.slice(0, 1200),
+	checkedAtMs: Date.now(),
+};
+
 return {
-	summary: "plan compliance precheck passed",
+	summary: `task contract precheck recorded: ${status}`,
 	statePatch: [
 		{
 			op: "set",
 			path: "/humanize",
-			value: {
-				precheck: {
-					status: "pass",
-					branchSwitching: false,
-				},
-			},
+			value: { precheck },
 		},
 	],
 };

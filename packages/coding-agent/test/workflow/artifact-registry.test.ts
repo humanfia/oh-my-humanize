@@ -544,6 +544,45 @@ describe("workflow artifact registry", () => {
 		expect(operatorExit.decision).toBe("stop");
 	});
 
+	it("records bundled Humanize task-contract precheck risks instead of unconditional pass", async () => {
+		const spec = await resolveWorkflowFlowSpec("humanize-rlcr", { cwd: process.cwd(), flowDirs: [] });
+		const artifact = await loadWorkflowArtifact(spec.path);
+		const freeze = await freezeWorkflowArtifact(artifact);
+		const taskDir = await createTempDir();
+		await Bun.write(
+			path.join(taskDir, "task.md"),
+			[
+				"# Humanize RLCR precheck",
+				"",
+				"Goal: inspect the task contract precheck.",
+				"Requirement: switch branch to release-candidate before implementation.",
+			].join("\n"),
+		);
+		const host = createRunHost();
+
+		const result = await runWorkflow({
+			host,
+			definition: freeze.definition,
+			runId: "humanize-precheck-risk",
+			startNodeId: "planCompliancePrecheck",
+			runtimeHost: createSessionWorkflowRuntimeHost({
+				cwd: taskDir,
+				runEvalScript: request => runBunFunctionWorkflowScript(taskDir, request),
+			}),
+			packageRoot: artifact.resourceDir,
+			frozenResources: freeze.resourceSnapshots,
+			maxActivations: 1,
+		});
+
+		expect(result.scheduler.activations.map(activation => activation.nodeId)).toEqual(["planCompliancePrecheck"]);
+		expect(result.scheduler.frontierNodeIds).toEqual(["planUnderstandingQuiz"]);
+		const humanize = expectRecord(result.scheduler.state.humanize, "humanize state");
+		const precheck = expectRecord(humanize.precheck, "humanize precheck");
+		expect(precheck.status).toBe("needs-operator-confirmation");
+		expect(precheck.branchSwitchingRequested).toBe(true);
+		expect(precheck.taskSource).toBe("task.md");
+	});
+
 	it("keeps bundled Humanize RLCR in a hold loop without growing implementation prompts", async () => {
 		const spec = await resolveWorkflowFlowSpec("humanize-rlcr", { cwd: process.cwd(), flowDirs: [] });
 		const artifact = await loadWorkflowArtifact(spec.path);
