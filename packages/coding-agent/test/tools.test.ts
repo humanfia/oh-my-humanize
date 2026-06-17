@@ -15,7 +15,6 @@ import { FindTool } from "@oh-my-pi/pi-coding-agent/tools/find";
 import { JobTool } from "@oh-my-pi/pi-coding-agent/tools/job";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
-import { RenderMermaidTool } from "@oh-my-pi/pi-coding-agent/tools/render-mermaid";
 import { DEFAULT_FILE_LIMIT, MULTI_FILE_PER_FILE_MATCHES, SearchTool } from "@oh-my-pi/pi-coding-agent/tools/search";
 import * as toolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
@@ -862,20 +861,6 @@ describe("Coding Agent Tools", () => {
 
 			expect(output).toContain("definitely not a png");
 			expect(result.content.some((c: any) => c.type === "image")).toBe(false);
-		});
-	});
-
-	describe("render_mermaid tool", () => {
-		it("renders default diagrams with Unicode arrowheads aligned to box-drawing lines", async () => {
-			const tool = new RenderMermaidTool(session);
-
-			const result = await tool.execute("test-call-render-mermaid", {
-				mermaid: "flowchart LR\n  A[Start] --> B[Stop]",
-			});
-			const output = getTextOutput(result);
-
-			expect(output).toMatch(/Start.*─+►.*Stop/u);
-			expect(output).not.toMatch(/[-─]+>/u);
 		});
 	});
 

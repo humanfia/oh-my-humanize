@@ -568,7 +568,7 @@ function spawnInlineWorker(): WorkerHandle {
 		},
 		close: () => {},
 	};
-	new WorkerCore(workerTransport);
+	const core = new WorkerCore(workerTransport);
 	return {
 		mode: "inline",
 		send: msg =>
@@ -604,6 +604,7 @@ function spawnInlineWorker(): WorkerHandle {
 		async terminate() {
 			hostListeners.clear();
 			workerListeners.clear();
+			core.dispose();
 		},
 	};
 }
