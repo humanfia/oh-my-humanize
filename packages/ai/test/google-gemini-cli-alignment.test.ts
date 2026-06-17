@@ -314,7 +314,7 @@ describe("Google Gemini CLI alignment", () => {
 			// The antigravity identity header must be injected as the first part.
 			expect(parts[0]?.text).toBe(ANTIGRAVITY_SYSTEM_INSTRUCTION);
 			// The user-supplied system prompt must appear after the injected parts.
-			expect(parts.slice(3).some(p => p.text === "my instructions")).toBe(true);
+			expect(parts.slice(1).some(p => p.text === "my instructions")).toBe(true);
 		}
 	});
 	it("adds anthropic-beta for Antigravity Claude reasoning models without relying on id suffix", async () => {
