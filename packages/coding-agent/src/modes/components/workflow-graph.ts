@@ -212,7 +212,7 @@ function workflowGraphDashboardHeaderDeckLines(lines: readonly string[], width: 
 			width,
 		),
 		workflowGraphDashboardSegmentLine(
-			[pick("Ops"), pick("Changes")].filter((line): line is string => line !== undefined),
+			[pick("Ops"), pick("Flow changes")].filter((line): line is string => line !== undefined),
 			width,
 		),
 	].filter(line => line.length > 0);
@@ -1151,11 +1151,11 @@ function limitWorkflowGraphOverviewLines(lines: string[], maxLines: number, path
 
 function workflowGraphOperationsLine(lines: readonly string[]): string | undefined {
 	const onFlight = workflowGraphOverviewValue(lines, "On-flight:");
-	const changes = workflowGraphOverviewValue(lines, "Changes:");
+	const changes = workflowGraphOverviewValue(lines, "Flow changes:");
 	if (onFlight === undefined && changes === undefined) return undefined;
 	const parts = [
 		onFlight === undefined ? undefined : `on-flight ${onFlight}`,
-		changes === undefined ? undefined : `changes ${changes}`,
+		changes === undefined ? undefined : `flow changes ${changes}`,
 	].filter((part): part is string => part !== undefined);
 	if (parts.length === 0) return undefined;
 	return `Ops: ${parts.join(" · ")}`;

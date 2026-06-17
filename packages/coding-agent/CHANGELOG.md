@@ -21,6 +21,7 @@
 ### Fixed
 
 - Fixed workflow shell script nodes to run through one-shot shell executions instead of accumulating persistent shell sessions across long activation loops.
+- Fixed workflow graph and dashboard mutation counters to label themselves as `Flow changes`, so they are not confused with project working-tree changes.
 - Fixed workflow dashboard role labels for builder fixer nodes whose ids mention review, so on-flight repair agents are not shown as reviewers.
 - Fixed workflow launch validation so nested state conditions must be declared in the flow schema, checkpoint restarts cannot skip incomplete join inputs, and runtime binding hard failures only block frontier nodes that are about to execute.
 - Fixed workflow review verdict extraction preferring incidental later gate mentions over an explicit first-line verdict, and made active `/workflow stop` requests immediately persist as `stop_requested` before waiting for the stop deadline.

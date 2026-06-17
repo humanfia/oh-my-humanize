@@ -5539,7 +5539,7 @@ edges:
 		expect(output[0]).toContain("Objective: upgrade review before validation");
 		expect(output[0]).toContain("Overview:");
 		expect(output[0]).toContain("- Run: attempt-strong failed from checkpoint-weak");
-		expect(output[0]).toContain("- Changes: 1 approved");
+		expect(output[0]).toContain("- Flow changes: 1 approved");
 		expect(output[0]).toContain("- Frontier: runValidation to runValidation");
 		expect(output[0]).toContain("Diagram:");
 		expect(output[0]).toContain("│◆ planner");

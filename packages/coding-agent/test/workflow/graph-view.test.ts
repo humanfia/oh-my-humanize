@@ -403,6 +403,24 @@ describe("workflow graph view rendering", () => {
 		expect(text).not.toContain("Flow: linear · 2 nodes");
 	});
 
+	it("labels workflow graph mutation counts as flow changes, not project changes", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("dark theme fixture is required");
+		setThemeInstance(theme);
+		const view = singleNodeView("running");
+		view.changes = { approved: 1, proposed: 0, rejected: 0 };
+
+		const text = renderWorkflowGraphText(view);
+		const tuiText = stripAnsi(
+			new WorkflowGraphComponent(view, { refreshMs: 0, heightProvider: () => 40 }).render(120).join("\n"),
+		);
+
+		expect(text).toContain("- Flow changes: 1 approved");
+		expect(text).not.toContain("- Changes: 1 approved");
+		expect(tuiText).toContain("Flow changes: 1 approved");
+		expect(tuiText).not.toContain("Ops: changes 1 approved");
+	});
+
 	it("surfaces running workflow agents as operator-visible live work items", () => {
 		const freeze = createFreeze({
 			name: "agent-observability",

@@ -1848,7 +1848,7 @@ export function formatWorkflowOverviewLines(view: WorkflowGraphView): string[] {
 	lines.push(`Flow: ${formatWorkflowViewTopology(view)} · ${view.nodes.length} ${pluralNode(view.nodes.length)}`);
 	lines.push(`Focus: ${formatWorkflowOperatorFocus(view)}`);
 	lines.push(`On-flight: ${formatWorkflowOnFlightSummary(view)}`);
-	lines.push(`Changes: ${formatWorkflowChangeCounts(view.changes)}`);
+	lines.push(`Flow changes: ${formatWorkflowChangeCounts(view.changes)}`);
 	if (view.checkpoint !== undefined) {
 		lines.push(`Frontier: ${formatCheckpointFrontier(view.checkpoint)}`);
 		if ((view.checkpoint.omittedAbortedOutputs ?? 0) > 0) {
