@@ -33,6 +33,8 @@
 - Fixed workflow monitor activation in the TUI so the welcome/onboarding panel is removed from the current viewport when a workflow dashboard becomes active.
 - Fixed workflow-owned task agents remaining live after their node result was captured, so completed workflow activations preserve transcripts without continuing to mutate workspaces or receive IRC wakeups outside the workflow frontier.
 - Fixed Agent Hub labeling for parked agents that have no reviver, showing them as history-only transcript entries instead of implying they can be revived.
+- Fixed `agent://` reads for running workflow agents to explain that live transcripts live under `history://`, instead of looking like missing finalized artifacts.
+- Fixed workflow lifecycle commands so `/workflow stop` and `/workflow interrupt` accept a unique dashboard-displayed short attempt id while rejecting ambiguous short ids with full-id guidance.
 
 ### Removed
 

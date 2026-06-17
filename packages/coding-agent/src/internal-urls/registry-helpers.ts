@@ -2,7 +2,7 @@
  * Shared helpers for internal-url protocol handlers that resolve IDs against
  * registered agent sessions.
  */
-import { AgentRegistry } from "../registry/agent-registry";
+import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
 
 /**
  * Snapshot of artifacts dirs for every registered session, deduped.
@@ -22,4 +22,12 @@ export function artifactsDirsFromRegistry(): string[] {
 		if (!dirs.includes(dir)) dirs.push(dir);
 	}
 	return dirs;
+}
+
+export function findRegisteredAgentRef(id: string): AgentRef | undefined {
+	const registry = AgentRegistry.global();
+	const exact = registry.get(id);
+	if (exact !== undefined) return exact;
+	const lower = id.toLowerCase();
+	return registry.list().find(candidate => candidate.id.toLowerCase() === lower);
 }

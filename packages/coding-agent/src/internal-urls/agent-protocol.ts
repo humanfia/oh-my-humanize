@@ -15,7 +15,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { applyQuery, pathToQuery } from "./json-query";
-import { artifactsDirsFromRegistry } from "./registry-helpers";
+import { artifactsDirsFromRegistry, findRegisteredAgentRef } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 /**
@@ -85,6 +85,17 @@ export class AgentProtocolHandler implements ProtocolHandler {
 
 		if (!foundPath) {
 			const availableStr = availableIds.size > 0 ? [...availableIds].join(", ") : "none";
+			const ref = findRegisteredAgentRef(outputId);
+			if (ref !== undefined) {
+				throw new Error(
+					[
+						`Output not ready: ${outputId}`,
+						`Agent ${ref.id} is ${ref.status}; agent:// resolves finalized output artifacts, not live transcripts.`,
+						`Read the transcript with history://${ref.id}.`,
+						`Available finalized outputs: ${availableStr}`,
+					].join("\n"),
+				);
+			}
 			throw new Error(`Not found: ${outputId}\nAvailable: ${availableStr}`);
 		}
 

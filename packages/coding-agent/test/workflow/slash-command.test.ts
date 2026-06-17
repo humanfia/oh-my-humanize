@@ -2562,6 +2562,97 @@ edges: []
 		]);
 	});
 
+	it("stops a uniquely matched displayed attempt id", async () => {
+		const entries: CapturedEntry[] = [];
+		const freeze = createFreeze("flowfreeze:short-stop", ["build"]);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-short-stop" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-short-stop" });
+		startWorkflowAttempt(host, {
+			familyId: "family-short-stop",
+			attemptId: "workflow-abc123:attempt-1",
+			freezeId: freeze.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-short-stop"),
+		});
+		appendWorkflowAttemptActivationStarted(host, {
+			attemptId: "workflow-abc123:attempt-1",
+			activationId: "activation-1",
+			nodeId: "build",
+			parentActivationIds: [],
+		});
+		const { output, runtime } = createRuntime(entries);
+
+		expect(await executeAcpBuiltinSlashCommand("/workflow stop attempt-1 --deadline-ms 5", runtime)).toEqual({
+			consumed: true,
+		});
+
+		const family = reconstructWorkflowFamilies(entries)[0];
+		expect(
+			output.some(entry => entry.includes("Workflow checkpoint: workflow-abc123:attempt-1:checkpoint-1")),
+		).toBeTrue();
+		expect(family?.attempts[0]?.status).toBe("stopped");
+		expect(family?.checkpoints[0]).toMatchObject({
+			id: "workflow-abc123:attempt-1:checkpoint-1",
+			frontierNodeIds: ["build"],
+		});
+	});
+
+	it("rejects ambiguous displayed attempt ids", async () => {
+		const entries: CapturedEntry[] = [];
+		const freeze = createFreeze("flowfreeze:ambiguous-short-stop", ["build"]);
+		const host = createHostFromEntries(entries);
+		for (const familyId of ["family-left", "family-right"]) {
+			const attemptId = `${familyId}:attempt-1`;
+			startWorkflowFamily(host, { familyId });
+			recordWorkflowFreeze(host, freeze, { familyId });
+			startWorkflowAttempt(host, {
+				familyId,
+				attemptId,
+				freezeId: freeze.id,
+				startNodeId: "build",
+				runtimeBindingSnapshot: binding(`binding-${familyId}`),
+			});
+		}
+		const { output, runtime } = createRuntime(entries);
+
+		expect(await executeAcpBuiltinSlashCommand("/workflow stop attempt-1 --deadline-ms 5", runtime)).toEqual({
+			consumed: true,
+		});
+
+		expect(output[0]).toContain("Workflow attempt id is ambiguous: attempt-1");
+		expect(output[0]).toContain("family-left:attempt-1");
+		expect(output[0]).toContain("family-right:attempt-1");
+		expect(
+			reconstructWorkflowFamilies(entries).flatMap(family => family.attempts.map(attempt => attempt.status)),
+		).toEqual(["running", "running"]);
+	});
+
+	it("does not suffix-match partial attempt ids that contain a scope separator", async () => {
+		const entries: CapturedEntry[] = [];
+		const freeze = createFreeze("flowfreeze:partial-scoped-stop", ["build"]);
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-partial-scoped-stop" });
+		recordWorkflowFreeze(host, freeze, { familyId: "family-partial-scoped-stop" });
+		startWorkflowAttempt(host, {
+			familyId: "family-partial-scoped-stop",
+			attemptId: "workflow-abc123:run-live:attempt-1",
+			freezeId: freeze.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-partial-scoped-stop"),
+		});
+		const { output, runtime } = createRuntime(entries);
+
+		expect(await executeAcpBuiltinSlashCommand("/workflow stop run-live:attempt-1 --deadline-ms 5", runtime)).toEqual(
+			{
+				consumed: true,
+			},
+		);
+
+		expect(output[0]).toBe("Workflow attempt not found: run-live:attempt-1");
+		expect(reconstructWorkflowFamilies(entries)[0]?.attempts[0]?.status).toBe("running");
+	});
+
 	it("persists workflow-only checkpoints so printed resume ids reopen", async () => {
 		const cwd = await createTempDir();
 		const sessionDir = path.join(cwd, "sessions");

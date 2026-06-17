@@ -243,6 +243,58 @@ describe("workflow graph view rendering", () => {
 		expect(visibleWidth(loopLabelLine!)).toBeLessThanOrEqual(96);
 	});
 
+	it("keeps the full executable attempt id visible in stop actions", () => {
+		const view = createView({
+			name: "stop-id-contract",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [{ id: "review", type: "review" }],
+			edges: [],
+		});
+		view.currentAttempt = {
+			id: "workflow-abc123:attempt-1",
+			status: "running",
+			runtimeBindingId: "binding-1",
+		};
+		view.actions = [
+			"Refresh: /workflow graph --family-id stop-id-contract",
+			"Stop attempt: /workflow stop workflow-abc123:attempt-1 --deadline-ms 30000",
+		];
+
+		const rendered = renderWorkflowGraphText(view);
+
+		expect(rendered).toContain("Run: attempt-1 running");
+		expect(rendered).toContain("Stop attempt · /workflow stop workflow-abc123:attempt-1 --deadline-ms 30000");
+		expect(rendered).not.toContain("Stop attempt · /workflow stop attempt-1 --deadline-ms 30000");
+	});
+
+	it("keeps stop command affordances visible in the dashboard controls", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("dark theme fixture is required");
+		setThemeInstance(theme);
+		const view = createView({
+			name: "stop-command-dashboard",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [{ id: "review", type: "review" }],
+			edges: [],
+		});
+		view.currentAttempt = {
+			id: "workflow-abc123:attempt-1",
+			status: "running",
+			runtimeBindingId: "binding-1",
+		};
+		view.actions = [
+			"Refresh: /workflow graph --family-id stop-command-dashboard",
+			"Stop attempt: /workflow stop workflow-abc123:attempt-1 --deadline-ms 30000",
+		];
+
+		const text = stripAnsi(new WorkflowGraphComponent(view, { refreshMs: 0 }).render(180).join("\n"));
+
+		expect(text).toContain("Stop attempt · /workflow stop");
+		expect(text).not.toContain("■ Stop attempt\n");
+	});
+
 	it("keeps loop diagrams inside the requested terminal width at common sizes", () => {
 		const view = createView({
 			name: "responsive-loop-control",

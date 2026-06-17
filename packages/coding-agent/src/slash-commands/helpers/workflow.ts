@@ -172,6 +172,11 @@ interface ActiveWorkflowAttempt {
 	finished: Promise<void>;
 }
 
+interface ResolvedWorkflowAttempt {
+	family: WorkflowRunFamilySnapshot;
+	attempt: WorkflowRunAttemptSnapshot;
+}
+
 export async function handleWorkflowAcp(
 	command: ParsedSlashCommand,
 	runtime: SlashCommandRuntime,
@@ -653,9 +658,9 @@ async function handleStopCommand(rest: string, runtime: SlashCommandRuntime): Pr
 	const parsed = parseWorkflowStopArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
 	const families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
-	const family = families.find(candidate => candidate.attempts.some(attempt => attempt.id === parsed.attemptId));
-	const attempt = family?.attempts.find(candidate => candidate.id === parsed.attemptId);
-	if (!family || !attempt) return usage(`Workflow attempt not found: ${parsed.attemptId}`, runtime);
+	const resolved = resolveWorkflowAttempt(families, parsed.attemptId);
+	if (typeof resolved === "string") return usage(resolved, runtime);
+	const { family, attempt } = resolved;
 	if (attempt.status !== "running") {
 		return usage(`Workflow attempt is not running: ${attempt.id} (${attempt.status})`, runtime);
 	}
@@ -725,9 +730,9 @@ async function handleInterruptCommand(rest: string, runtime: SlashCommandRuntime
 	const parsed = parseWorkflowInterruptArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
 	const families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
-	const family = families.find(candidate => candidate.attempts.some(attempt => attempt.id === parsed.attemptId));
-	const attempt = family?.attempts.find(candidate => candidate.id === parsed.attemptId);
-	if (!family || !attempt) return usage(`Workflow attempt not found: ${parsed.attemptId}`, runtime);
+	const resolved = resolveWorkflowAttempt(families, parsed.attemptId);
+	if (typeof resolved === "string") return usage(resolved, runtime);
+	const { family, attempt } = resolved;
 	if (attempt.status !== "running") {
 		return usage(`Workflow attempt is not running: ${attempt.id} (${attempt.status})`, runtime);
 	}
@@ -1484,6 +1489,44 @@ function watchWorkflowAttemptCompletion(runtime: SlashCommandRuntime, active: Ac
 
 function findActiveWorkflowAttempt(runtime: SlashCommandRuntime, attemptId: string): ActiveWorkflowAttempt | undefined {
 	return activeWorkflowAttemptMap(runtime).get(attemptId);
+}
+
+function resolveWorkflowAttempt(
+	families: WorkflowRunFamilySnapshot[],
+	attemptId: string,
+): ResolvedWorkflowAttempt | string {
+	const exact = findWorkflowAttemptByInput(families, attemptId, "exact");
+	if (exact.length === 1) return exact[0]!;
+	if (exact.length > 1) return ambiguousWorkflowAttemptMessage(attemptId, exact);
+	if (attemptId.includes(":")) return `Workflow attempt not found: ${attemptId}`;
+	const suffix = findWorkflowAttemptByInput(families, attemptId, "suffix");
+	if (suffix.length === 1) return suffix[0]!;
+	if (suffix.length > 1) return ambiguousWorkflowAttemptMessage(attemptId, suffix);
+	return `Workflow attempt not found: ${attemptId}`;
+}
+
+function findWorkflowAttemptByInput(
+	families: WorkflowRunFamilySnapshot[],
+	attemptId: string,
+	mode: "exact" | "suffix",
+): ResolvedWorkflowAttempt[] {
+	const matches: ResolvedWorkflowAttempt[] = [];
+	for (const family of families) {
+		for (const attempt of family.attempts) {
+			if (mode === "exact" ? attempt.id === attemptId : attempt.id.endsWith(`:${attemptId}`)) {
+				matches.push({ family, attempt });
+			}
+		}
+	}
+	return matches;
+}
+
+function ambiguousWorkflowAttemptMessage(attemptId: string, matches: ResolvedWorkflowAttempt[]): string {
+	return [
+		`Workflow attempt id is ambiguous: ${attemptId}`,
+		"Use a full attempt id:",
+		...matches.map(match => `- ${match.attempt.id}`),
+	].join("\n");
 }
 
 function nodeAbortSignalForActivation(

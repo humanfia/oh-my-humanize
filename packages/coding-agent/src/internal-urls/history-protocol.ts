@@ -13,6 +13,7 @@ import type { AgentRef } from "../registry/agent-registry";
 import { AgentRegistry } from "../registry/agent-registry";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import { loadSessionMessagesReadOnly } from "../session/session-loader";
+import { findRegisteredAgentRef } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 /** Humanize a last-activity timestamp as `Ns/Nm/Nh/Nd ago`. */
@@ -51,12 +52,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			};
 		}
 
-		let ref = registry.get(agentId);
-		if (!ref) {
-			// Case-insensitive fallback: agent ids are human-typed (e.g. AuthLoader).
-			const lower = agentId.toLowerCase();
-			ref = registry.list().find(candidate => candidate.id.toLowerCase() === lower);
-		}
+		const ref = findRegisteredAgentRef(agentId);
 		if (!ref) {
 			const known = registry.list().map(candidate => candidate.id);
 			const knownStr = known.length > 0 ? known.join(", ") : "none";
