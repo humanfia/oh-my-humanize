@@ -54,6 +54,20 @@ interface WorkflowStartPackage {
 
 type WorkflowStoreEntry = Pick<CustomEntry, "type" | "customType" | "data"> | SessionEntry;
 
+export interface WorkflowStartSignalTarget {
+	once(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+	off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+}
+
+export interface WorkflowCommandRuntime {
+	signalTarget?: WorkflowStartSignalTarget;
+}
+
+interface WorkflowStartSignalController {
+	signal: AbortSignal;
+	dispose(): void;
+}
+
 const ACTIONS = new Set<WorkflowAction>(["list", "freeze", "start", "install", "uninstall"]);
 
 export function resolveWorkflowCommandArgs(
@@ -83,7 +97,10 @@ export function resolveWorkflowCommandArgs(
 	};
 }
 
-export async function runWorkflowCommand(command: WorkflowCommandArgs): Promise<void> {
+export async function runWorkflowCommand(
+	command: WorkflowCommandArgs,
+	runtime: WorkflowCommandRuntime = {},
+): Promise<void> {
 	try {
 		switch (command.action) {
 			case "list":
@@ -93,7 +110,7 @@ export async function runWorkflowCommand(command: WorkflowCommandArgs): Promise<
 				await handleFreeze(command);
 				return;
 			case "start":
-				await handleStart(command);
+				await handleStart(command, runtime);
 				return;
 			case "install":
 				await handleInstall(command);
@@ -165,7 +182,7 @@ async function handleFreeze(command: WorkflowCommandArgs): Promise<void> {
 	writeLine(`Resources: ${freeze.resourceHashes.length}`);
 }
 
-async function handleStart(command: WorkflowCommandArgs): Promise<void> {
+async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowCommandRuntime): Promise<void> {
 	const target = requiredArg(command, "start <flow-or-path>");
 	const cwd = path.resolve(command.flags.cwd ?? getProjectDir());
 	const spec = await resolveWorkflowFlowSpec(target, { cwd });
@@ -199,6 +216,7 @@ async function handleStart(command: WorkflowCommandArgs): Promise<void> {
 		}
 		return;
 	}
+	const startSignal = createWorkflowStartSignalController(runtime.signalTarget ?? process);
 	const lifecycle =
 		pkg.freeze !== undefined && familyId !== undefined && attemptId !== undefined
 			? {
@@ -221,8 +239,12 @@ async function handleStart(command: WorkflowCommandArgs): Promise<void> {
 		...(command.flags.maxNodeActivations !== undefined
 			? { maxNodeActivations: command.flags.maxNodeActivations }
 			: {}),
+		signal: startSignal.signal,
+		nodeAbortSignal: startSignal.signal,
 		maxRuntimeMs: command.flags.maxRuntimeMs ?? DEFAULT_WORKFLOW_MAX_RUNTIME_MS,
 		...(lifecycle !== undefined ? { lifecycle } : {}),
+	}).finally(() => {
+		startSignal.dispose();
 	});
 	const runs = reconstructWorkflowRuns(host.getBranch());
 	const families = reconstructWorkflowFamilies(host.getBranch());
@@ -289,6 +311,28 @@ async function handleStart(command: WorkflowCommandArgs): Promise<void> {
 	if (result.scheduler.frontierNodeIds.length > 0) {
 		writeLine(`Frontier: ${result.scheduler.frontierNodeIds.join(", ")}`);
 	}
+}
+
+export function createWorkflowStartSignalController(
+	target: WorkflowStartSignalTarget = process,
+): WorkflowStartSignalController {
+	const controller = new AbortController();
+	const abortFrom = (event: "SIGINT" | "SIGTERM"): void => {
+		if (!controller.signal.aborted) {
+			controller.abort(`workflow interrupted by ${event}`);
+		}
+	};
+	const onSigint = (): void => abortFrom("SIGINT");
+	const onSigterm = (): void => abortFrom("SIGTERM");
+	target.once("SIGINT", onSigint);
+	target.once("SIGTERM", onSigterm);
+	return {
+		signal: controller.signal,
+		dispose: () => {
+			target.off("SIGINT", onSigint);
+			target.off("SIGTERM", onSigterm);
+		},
+	};
 }
 
 async function handleInstall(command: WorkflowCommandArgs): Promise<void> {

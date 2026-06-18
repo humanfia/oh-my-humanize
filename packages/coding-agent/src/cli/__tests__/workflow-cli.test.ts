@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { runWorkflowCommand } from "../workflow-cli";
+import { runWorkflowCommand, type WorkflowStartSignalTarget } from "../workflow-cli";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -10,7 +11,12 @@ describe("workflow CLI", () => {
 	it("prints ambiguous flow lookup errors without a source stack trace", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-ambiguous-flow-");
 		const root = tempDir.path();
-		await Bun.write(`${root}/humanize-rlcr/humanize-rlcr.omhflow`, "");
+		const firstRoot = `${root}/first`;
+		const secondRoot = `${root}/second`;
+		await Bun.write(`${firstRoot}/humanize-rlcr/humanize-rlcr.omhflow`, workflowAmbiguousHumanizeRlcrFlow());
+		await Bun.write(`${firstRoot}/humanize-rlcr/humanize-rlcr/scripts/noop.sh`, "#!/bin/sh\nprintf '{}\\n'\n");
+		await Bun.write(`${secondRoot}/humanize-rlcr/humanize-rlcr.omhflow`, workflowAmbiguousHumanizeRlcrFlow());
+		await Bun.write(`${secondRoot}/humanize-rlcr/humanize-rlcr/scripts/noop.sh`, "#!/bin/sh\nprintf '{}\\n'\n");
 		const originalFlowDir = process.env.OMHFLOW_DIR;
 		const originalExitCode = process.exitCode;
 		const stdout: string[] = [];
@@ -23,7 +29,7 @@ describe("workflow CLI", () => {
 			stderr.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
 			return true;
 		});
-		process.env.OMHFLOW_DIR = root;
+		process.env.OMHFLOW_DIR = [firstRoot, secondRoot].join(path.delimiter);
 		process.exitCode = undefined;
 		try {
 			await runWorkflowCommand({
@@ -101,7 +107,118 @@ describe("workflow CLI", () => {
 		expect(result.run).toMatchObject({ status: "completed", completed: 1, failed: 0 });
 		expect(result.runs[0]?.stateKeys).toEqual(["message"]);
 	});
+
+	it("checkpoints headless workflow starts on SIGINT instead of leaving a run alive", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-sigint-");
+		const root = tempDir.path();
+		await Bun.write(`${root}/sigint-stop.omhflow`, workflowSigintStopFlow());
+		await Bun.write(`${root}/sigint-stop/scripts/hold.sh`, workflowSigintHoldScript());
+		const output: string[] = [];
+		const signalTarget = new FakeWorkflowStartSignalTarget();
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+
+		const timer = setTimeout(() => {
+			signalTarget.emit("SIGINT");
+		}, 30);
+		timer.unref?.();
+		try {
+			await runWorkflowCommand(
+				{
+					action: "start",
+					args: [`${root}/sigint-stop.omhflow`],
+					flags: {
+						cwd: root,
+						json: true,
+						runId: "sigint-stop-run",
+						familyId: "sigint-stop-family",
+					},
+				},
+				{ signalTarget },
+			);
+		} finally {
+			clearTimeout(timer);
+		}
+
+		const result = JSON.parse(output.join("").trim()) as {
+			run: { status: string; frontier: string[] };
+			families: { attempts: { status: string }[]; checkpoints: { frontier: string[] }[] }[];
+		};
+		expect(result.run.status).toBe("stopped");
+		expect(result.run.frontier).toEqual(["hold"]);
+		expect(result.families[0]?.attempts[0]?.status).toBe("stopped");
+		expect(result.families[0]?.checkpoints[0]?.frontier).toEqual(["hold"]);
+		expect(signalTarget.listenerCount("SIGINT")).toBe(0);
+		expect(signalTarget.listenerCount("SIGTERM")).toBe(0);
+	});
 });
+
+class FakeWorkflowStartSignalTarget implements WorkflowStartSignalTarget {
+	#listeners = new Map<"SIGINT" | "SIGTERM", Set<() => void>>();
+
+	once(event: "SIGINT" | "SIGTERM", listener: () => void): void {
+		this.#listenersFor(event).add(listener);
+	}
+
+	off(event: "SIGINT" | "SIGTERM", listener: () => void): void {
+		this.#listenersFor(event).delete(listener);
+	}
+
+	emit(event: "SIGINT" | "SIGTERM"): void {
+		for (const listener of [...this.#listenersFor(event)]) {
+			this.off(event, listener);
+			listener();
+		}
+	}
+
+	listenerCount(event: "SIGINT" | "SIGTERM"): number {
+		return this.#listenersFor(event).size;
+	}
+
+	#listenersFor(event: "SIGINT" | "SIGTERM"): Set<() => void> {
+		let listeners = this.#listeners.get(event);
+		if (listeners === undefined) {
+			listeners = new Set();
+			this.#listeners.set(event, listeners);
+		}
+		return listeners;
+	}
+}
+
+function workflowAmbiguousHumanizeRlcrFlow(): string {
+	return [
+		"---",
+		"name: humanize-rlcr",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: humanize-rlcr",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# Ambiguous humanize-rlcr fixture",
+		"",
+		"```yaml workflow",
+		"resources:",
+		"  - path: scripts/noop.sh",
+		"    kind: script",
+		"sequence:",
+		"  - node:",
+		"      id: noop",
+		"      type: script",
+		"      script:",
+		"        language: sh",
+		"        file: scripts/noop.sh",
+		"```",
+	].join("\n");
+}
 
 function workflowResourceSmokeFlow(): string {
 	return [
@@ -151,4 +268,41 @@ function workflowResourceSmokeScript(): string {
 		'message=$(cat "$OMP_WORKFLOW_RESOURCE_DIR/data/message.txt")',
 		'printf \'{"summary":"resource observed","statePatch":[{"op":"set","path":"/message","value":"%s"}]}\\n\' "$message"',
 	].join("\n");
+}
+
+function workflowSigintStopFlow(): string {
+	return [
+		"---",
+		"name: sigint-stop",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: sigint-stop",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# SIGINT stop",
+		"",
+		"```yaml workflow",
+		"resources:",
+		"  - path: scripts/hold.sh",
+		"    kind: script",
+		"sequence:",
+		"  - node:",
+		"      id: hold",
+		"      type: script",
+		"      script:",
+		"        language: sh",
+		"        file: scripts/hold.sh",
+		"```",
+	].join("\n");
+}
+
+function workflowSigintHoldScript(): string {
+	return ["#!/bin/sh", "set -eu", "sleep 2", 'printf \'{"summary":"unexpected completion"}\\n\''].join("\n");
 }
