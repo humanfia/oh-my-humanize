@@ -2490,7 +2490,7 @@ function formatWorkflowDashboardHelp(): string {
 		"",
 		"Visible guide path:",
 		"- Collapsed and compact dashboards keep /workflow help visible.",
-		"- Use /workflow help agents to inspect or steer focused nodes.",
+		"- Use /workflow help agents to inspect agents, steer live agents, or interrupt focused program nodes.",
 		"- Use /workflow status help for inspection commands.",
 	].join("\n");
 }
@@ -2522,6 +2522,7 @@ function formatWorkflowAgentsHelp(): string {
 		"Program, verifier, and checkpointed nodes:",
 		"- Use /workflow status to see the focused node and next operator action.",
 		"- Use /workflow manager --family-id <id> for lifecycle records, checkpoints, and recent node outputs.",
+		"- Interrupt a running non-agent node with /workflow interrupt <attempt-id> <node-id>.",
 		"- Use /workflow graph --family-id <id> to redraw the flow map when the resident dashboard is collapsed.",
 	].join("\n");
 }

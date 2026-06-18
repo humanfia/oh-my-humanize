@@ -281,6 +281,11 @@ remain distinguishable. The Operator rail mirrors the selected tab, so the
 default dashboard always shows what the next watch, steer, interrupt, stop, or
 change action will target before the operator opens deeper details.
 
+Running program and verifier nodes are not steerable agent transcripts, but they
+are still inspectable and interruptible. The dashboard and `/workflow help
+agents` expose the node-level interrupt command before the whole-attempt stop
+when a focused non-agent node is running.
+
 Nested subflows are displayed as function-like calls. The parent flow remains
 the outer call frame, while imported subflow nodes keep their own names, entry
 points, exits, and resource prefix available for inspection. If a node inside an

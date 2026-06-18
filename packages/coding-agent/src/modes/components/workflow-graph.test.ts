@@ -10,23 +10,25 @@ describe("WorkflowGraphComponent display modes", () => {
 		await initTheme();
 	});
 
-	it("collapses the resident dashboard to one restorable status row", () => {
+	it("collapses the resident dashboard to restorable status and guide rows", () => {
 		const component = new WorkflowGraphComponent(workflowGraphViewFixture(), {
 			displayModeProvider: () => "collapsed",
 		});
 
 		const lines = component.render(120).map(stripAnsi);
+		const text = lines.join("\n");
 
-		expect(lines).toHaveLength(1);
-		expect(lines[0]).toContain("Workflow attempt-1 running");
-		expect(lines[0]).toContain("9/11 done");
-		expect(lines[0]).toContain("/workflow help");
-		expect(lines[0]).toContain("/workflow help agents");
-		expect(lines[0]).toContain("/workflow dashboard show");
-		expect(lines[0]).not.toContain("Workflow Dashboard");
+		expect(lines.length).toBeLessThanOrEqual(4);
+		expect(text).toContain("Workflow attempt-1 running");
+		expect(text).toContain("9/11 done");
+		expect(text).toContain("/workflow help");
+		expect(text).toContain("/workflow help agents");
+		expect(text).toContain("/workflow dashboard show");
+		expect(text).toContain("/workflow interrupt");
+		expect(text).not.toContain("Workflow Dashboard");
 	});
 
-	it("prioritizes visible recovery affordances in narrow collapsed mode", () => {
+	it("prioritizes focused node interruption in narrow collapsed mode", () => {
 		const component = new WorkflowGraphComponent(workflowGraphViewFixture(), {
 			displayModeProvider: () => "collapsed",
 		});
@@ -36,7 +38,8 @@ describe("WorkflowGraphComponent display modes", () => {
 		expect(line).toContain("/workflow help");
 		expect(line).toContain("/workflow help agents");
 		expect(line).toContain("/workflow dashboard show");
-		expect(line).toContain("/workflow stop");
+		expect(line).toContain("/workflow interrupt");
+		expect(line).not.toContain("/workflow stop");
 	});
 
 	it("forces compact mode to keep the monitor materially shorter than full mode", () => {
@@ -69,6 +72,7 @@ describe("WorkflowGraphComponent display modes", () => {
 
 		expect(compact).toContain("/workflow dashboard show");
 		expect(compact).toContain("/workflow dashboard collapse");
+		expect(compact).toContain("/workflow interrupt");
 	});
 });
 
@@ -142,6 +146,7 @@ function workflowGraphViewFixture(): WorkflowGraphView {
 		lineage: [],
 		actions: [
 			"Refresh",
+			"Interrupt Program · Long running hold: /workflow interrupt attempt-1 longRunningHold --deadline-ms 30000",
 			"Stop attempt · /workflow stop attempt-1 --deadline-ms 30000",
 			"Propose change · /workflow request-change <file> --family-id r4-palletsitsdang-perf-20d",
 		],

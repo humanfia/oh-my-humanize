@@ -251,7 +251,14 @@ export function buildWorkflowGraphView(
 		nodes,
 		edges,
 		lineage: family.changeRequests.map(formatLineage),
-		actions: formatWorkflowGraphActions(family, currentAttempt, currentCheckpoint, options, activeAgents),
+		actions: formatWorkflowGraphActions(
+			family,
+			currentAttempt,
+			currentCheckpoint,
+			options,
+			activeAgents,
+			currentFreeze?.definition.nodes ?? [],
+		),
 	};
 	if (selectedRoutes.length > 0) view.selectedRoutes = selectedRoutes;
 	if (focus !== undefined) view.focus = focus;
@@ -1698,6 +1705,14 @@ function buildWorkflowGraphFocus(
 	if (node.summary !== undefined) focus.summary = node.summary;
 	if (node.error !== undefined) focus.error = node.error;
 	if (node.reason !== undefined) focus.reason = node.reason;
+	if (
+		node.status === "running" &&
+		currentAttempt !== undefined &&
+		currentAttempt.status === "running" &&
+		currentAttempt.activations.some(activation => activation.status === "running" && activation.nodeId === node.id)
+	) {
+		focus.controls = [`Interrupt: /workflow interrupt ${currentAttempt.id} ${node.id} --deadline-ms 30000`];
+	}
 	return focus;
 }
 
@@ -2053,6 +2068,7 @@ function formatWorkflowGraphActions(
 	currentCheckpoint: WorkflowCheckpointSnapshot | undefined,
 	options: WorkflowGraphViewOptions,
 	activeAgents: readonly WorkflowGraphActiveAgentView[],
+	nodes: readonly WorkflowNode[],
 ): string[] {
 	const latestFreeze = family.freezes.at(-1);
 	const actions = [`Refresh: /workflow graph --family-id ${family.id}`];
@@ -2060,6 +2076,9 @@ function formatWorkflowGraphActions(
 		actions.push(`Stop attempt: /workflow stop ${currentAttempt.id} --deadline-ms 30000`);
 		if (currentAttempt.activations.some(activation => activation.status === "running")) {
 			const hasLiveAttempt = options.liveAttemptIds === undefined || options.liveAttemptIds.has(currentAttempt.id);
+			if (hasLiveAttempt) {
+				actions.push(...formatWorkflowNonAgentInterruptActions(currentAttempt, activeAgents, nodes));
+			}
 			if (!hasLiveAttempt || activeAgents.length === 0) {
 				actions.push(`Status: /workflow manager --family-id ${family.id}`);
 			} else {
@@ -2098,6 +2117,27 @@ function formatWorkflowGraphActions(
 		if (runningResume !== undefined)
 			actions.push(`Resume in progress: ${runningResume.id} from ${currentCheckpoint.id}`);
 		else actions.push(`Restart: /workflow restart ${currentCheckpoint.id} --background`);
+	}
+	return actions;
+}
+
+function formatWorkflowNonAgentInterruptActions(
+	currentAttempt: WorkflowRunAttemptSnapshot,
+	activeAgents: readonly WorkflowGraphActiveAgentView[],
+	nodes: readonly WorkflowNode[],
+): string[] {
+	const activeAgentActivationIds = new Set(activeAgents.map(agent => agent.activationId));
+	const nodesById = new Map(nodes.map(node => [node.id, node]));
+	const actions: string[] = [];
+	for (const activation of currentAttempt.activations) {
+		if (activation.status !== "running" || activeAgentActivationIds.has(activation.id)) continue;
+		const node = nodesById.get(activation.nodeId);
+		if (node !== undefined && workflowNodeIsAgentLike(node)) continue;
+		const role = node === undefined ? "Node" : formatWorkflowNodeRole(node);
+		const label = formatWorkflowNodeDisplayName(activation.nodeId);
+		actions.push(
+			`Interrupt ${role} · ${label}: /workflow interrupt ${currentAttempt.id} ${activation.nodeId} --deadline-ms 30000`,
+		);
 	}
 	return actions;
 }

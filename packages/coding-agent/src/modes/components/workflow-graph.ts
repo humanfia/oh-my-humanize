@@ -397,11 +397,11 @@ function workflowGraphDashboardStackedBodyLines(
 	profile: WorkflowGraphCompactProfile,
 ): string[] {
 	if (density === "compact" && (heightBudget ?? 0) <= 14) {
-		return renderWorkflowGraphDashboardPanel(
-			"Flow Lens · Canvas",
-			width,
-			workflowGraphFlowLensLines(view, width - WORKFLOW_GRAPH_FRAME_CHROME_WIDTH, density, heightBudget, profile),
-		);
+		const contentWidth = width - WORKFLOW_GRAPH_FRAME_CHROME_WIDTH;
+		return renderWorkflowGraphDashboardPanel("Flow Lens · Canvas", width, [
+			...workflowGraphTinyCompactOperatorLines(view, contentWidth),
+			...workflowGraphFlowLensLines(view, contentWidth, density, heightBudget, profile),
+		]);
 	}
 	return [
 		...renderWorkflowGraphDashboardPanel(
@@ -421,6 +421,14 @@ function workflowGraphDashboardStackedBodyLines(
 
 function workflowGraphWorkbenchTitle(view: WorkflowGraphView): string {
 	return workflowGraphHasLiveWork(view) ? "Live Workbench · Operator Deck" : "Operator Deck";
+}
+
+function workflowGraphTinyCompactOperatorLines(view: WorkflowGraphView, width: number): string[] {
+	const primaryAction = workflowGraphCollapsedPrimaryAction(view);
+	const railLines = workflowGraphOperatorRailLines(view, width, "compact");
+	const lines = [...railLines, primaryAction].filter((line): line is string => line !== undefined && line.length > 0);
+	if (lines.length === 0) return [];
+	return lines.slice(0, 2).map(line => truncateToWidth(`Action: ${line}`, Math.max(20, width)));
 }
 
 function workflowGraphHasLiveWork(view: WorkflowGraphView): boolean {
@@ -877,7 +885,7 @@ function renderWorkflowGraphCollapsedRows(view: WorkflowGraphView, width: number
 	].filter((part): part is string => part !== undefined && part.length > 0);
 	const guideParts = ["/workflow help", "/workflow help agents", "/workflow dashboard show"];
 	const primaryAction = workflowGraphCollapsedPrimaryAction(view);
-	if (width >= 112) {
+	if (width >= 160) {
 		const parts = [...summaryParts.slice(0, 2), ...guideParts, primaryAction, summaryParts[2]].filter(
 			(part): part is string => part !== undefined && part.length > 0,
 		);
@@ -920,13 +928,26 @@ function workflowGraphProgressSummary(view: WorkflowGraphView): string {
 }
 
 function workflowGraphCollapsedPrimaryAction(view: WorkflowGraphView): string | undefined {
-	const action =
-		workflowGraphCollapsedActionCommand(view, "restart") ??
-		workflowGraphCollapsedActionCommand(view, "stop") ??
-		workflowGraphCollapsedActionCommand(view, "interrupt") ??
-		workflowGraphCollapsedActionCommand(view, "change");
+	const action = workflowGraphCollapsedPrimaryActionForOrder(view, workflowGraphCollapsedPrimaryActionOrder(view));
 	if (action === undefined) return undefined;
 	return `${action.label} ${action.command}`;
+}
+
+function workflowGraphCollapsedPrimaryActionOrder(view: WorkflowGraphView): readonly WorkflowGraphActionKind[] {
+	const isRunning = view.currentAttempt?.status === "running" || view.focus?.status === "running";
+	if (isRunning) return ["interrupt", "stop", "change", "restart"];
+	return ["restart", "interrupt", "stop", "change"];
+}
+
+function workflowGraphCollapsedPrimaryActionForOrder(
+	view: WorkflowGraphView,
+	order: readonly WorkflowGraphActionKind[],
+): { label: string; command: string } | undefined {
+	for (const kind of order) {
+		const action = workflowGraphCollapsedActionCommand(view, kind);
+		if (action !== undefined) return action;
+	}
+	return undefined;
 }
 
 function workflowGraphCollapsedActionCommand(
@@ -1455,7 +1476,7 @@ function workflowGraphFittedTailRows(safeHeight: number): number {
 }
 
 function workflowGraphRowsActionAnchor(lines: readonly string[]): number | undefined {
-	const index = lines.findIndex(line => line.includes("Operator rail"));
+	const index = lines.findIndex(line => line.includes("Operator rail") || line.includes("Action:"));
 	return index === -1 ? undefined : index;
 }
 
