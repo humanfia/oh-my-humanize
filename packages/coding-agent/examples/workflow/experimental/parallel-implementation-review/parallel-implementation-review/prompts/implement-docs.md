@@ -29,7 +29,7 @@ Before yielding:
 - do not write reserved workflow-node artifacts:
   `workflow-output/validation-<tuple-id>.json`,
   `workflow-output/evidence-contract-guard-<tuple-id>.json`,
-  `workflow-output/strong-review-<tuple-id>.json`, or any final decision /
+  `workflow-output/final-review-<tuple-id>.json`, or any final decision /
   promotion artifact. Those filenames are owned only by later workflow nodes;
 - include any commands or manual checks that support the documentation claim;
 - call out any user-facing behavior still missing from the implementation.

@@ -12,6 +12,7 @@ const trustedFinalValidationArtifacts = validationMatch.trustedFinalFiles.filter
 	isFinalDeclaredValidationArtifact(file, tupleId),
 );
 const untrustedFinalValidationArtifacts = finalValidationArtifacts.filter(file => !trustedFinalValidationArtifacts.includes(file));
+const genericValidationAliases = genericValidationAliasArtifacts(evidenceFiles);
 const supersededFailedValidationArtifacts =
 	trustedFinalValidationArtifacts.length > 0
 		? validationMatch.failedFiles.filter(file => !isFinalDeclaredValidationArtifact(file, tupleId))
@@ -62,6 +63,12 @@ if (!manualEvidenceAllowed && untrustedFinalValidationArtifacts.length > 0) {
 	);
 }
 
+if (genericValidationAliases.length > 0) {
+	reasons.push(
+		`generic validation aliases found: ${genericValidationAliases.join(", ")}; validation evidence must be tuple-scoped and producer-owned`,
+	);
+}
+
 if (!manualEvidenceAllowed && failedValidationArtifacts.length > 0) {
 	reasons.push(
 		`conflicting failed validation evidence found under workflow-output/: ${failedValidationArtifacts.join(", ")}; rerun the declared validation after all lane work and leave one unambiguous final validation record`,
@@ -95,6 +102,7 @@ const diagnostic = {
 		final_validation_artifacts: finalValidationArtifacts.slice(0, 80),
 		trusted_final_validation_artifacts: trustedFinalValidationArtifacts.slice(0, 80),
 		untrusted_final_validation_artifacts: untrustedFinalValidationArtifacts.slice(0, 80),
+		generic_validation_aliases: genericValidationAliases.slice(0, 80),
 		failed_validation_artifacts: failedValidationArtifacts.slice(0, 80),
 		superseded_failed_validation_artifacts: supersededFailedValidationArtifacts.slice(0, 80),
 		premature_decision_artifacts: prematureDecisionArtifacts.slice(0, 80),
@@ -102,10 +110,11 @@ const diagnostic = {
 	checked_at_ms: Date.now(),
 };
 const guardArtifact = `workflow-output/evidence-contract-guard${tupleId ? `-${tupleId}` : ""}.json`;
+const guardSummaryArtifact = `workflow-output/evidence-contract-summary${tupleId ? `-${tupleId}` : ""}.txt`;
 
 await Bun.write(guardArtifact, `${JSON.stringify(diagnostic, null, 2)}\n`);
 await Bun.write(
-	"workflow-output/validation.txt",
+	guardSummaryArtifact,
 	[
 		"Parallel implementation review validation contract",
 		"",
@@ -126,6 +135,9 @@ await Bun.write(
 		...(untrustedFinalValidationArtifacts.length > 0
 			? untrustedFinalValidationArtifacts.map(file => `- ${file}`)
 			: ["- (none)"]),
+		"",
+		"Generic validation aliases:",
+		...(genericValidationAliases.length > 0 ? genericValidationAliases.map(file => `- ${file}`) : ["- (none)"]),
 		"",
 		"Failed validation artifacts:",
 		...(failedValidationArtifacts.length > 0 ? failedValidationArtifacts.map(file => `- ${file}`) : ["- (none)"]),
@@ -338,8 +350,12 @@ function isFinalDeclaredValidationArtifact(file, currentTupleId) {
 	return /(^|\/)validation-[^/]+\.json$/iu.test(file);
 }
 
+function genericValidationAliasArtifacts(files) {
+	return files.filter(file => /^workflow-output\/(?:validation|verify|test|tests)\.(?:json|md|txt|log)$/iu.test(file));
+}
+
 function isPrematureDecisionArtifact(file) {
-	return /(^|\/)(strong-review|final-(?:archive|decision|promotion)|promotion-decision)[^/]*\.(?:json|md|txt)$/iu.test(
+	return /(^|\/)(strong-review|final-(?:review|archive|decision|promotion)|promotion-decision)[^/]*\.(?:json|md|txt)$/iu.test(
 		file,
 	);
 }
@@ -493,7 +509,6 @@ function ignoredEvidencePath(file) {
 function ignoredEvidenceArtifact(file) {
 	return (
 		file === "workflow-output/integration-review.json" ||
-		file === "workflow-output/validation.txt" ||
 		/(^|\/)evidence-contract-guard[^/]*\.json$/iu.test(file) ||
 		/(^|\/)strong-review[^/]*\.(?:json|txt|md)$/iu.test(file) ||
 		/(^|\/)rollback-notes[^/]*\.(?:json|txt|md)$/iu.test(file) ||

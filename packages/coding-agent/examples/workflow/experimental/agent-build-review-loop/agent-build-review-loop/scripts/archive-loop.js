@@ -17,6 +17,12 @@ if (changedFiles.length === 0 && !allowsNoChange(taskText) && !isRejectArchive) 
 if (evidenceFiles.length === 0) {
 	throw new Error("agent-build-review-loop cannot archive without loop evidence artifacts");
 }
+const downstreamClaimFiles = await downstreamCompletionClaimFiles(evidenceFiles);
+if (downstreamClaimFiles.length > 0) {
+	throw new Error(
+		`agent-build-review-loop cannot archive because round evidence claims downstream workflow node completion: ${downstreamClaimFiles.join(", ")}`,
+	);
+}
 const archive = [
 	"# Agent Build/Review Loop Archive",
 	"",
@@ -171,6 +177,24 @@ async function loopEvidenceFiles() {
 		return [];
 	}
 	return files.sort((left, right) => left.localeCompare(right, "en"));
+}
+
+async function downstreamCompletionClaimFiles(files) {
+	const claimFiles = [];
+	for (const file of files) {
+		if (!/^workflow-output\/round-\d+\//u.test(file)) continue;
+		const text = await readOptionalText(file);
+		if (claimsDownstreamWorkflowNodeCompletion(text)) claimFiles.push(file);
+	}
+	return claimFiles;
+}
+
+function claimsDownstreamWorkflowNodeCompletion(text) {
+	return (
+		/"(?:semanticArchiveGuard|archiveLoop)"\s*:\s*"complete"/u.test(text) ||
+		/\b(?:semanticArchiveGuard|archiveLoop)\s*[:=]\s*complete\b/iu.test(text) ||
+		/\b(?:semantic archive guard|archive loop)\s+complete(?:d)?\b/iu.test(text)
+	);
 }
 
 function ignoredEvidencePath(file) {

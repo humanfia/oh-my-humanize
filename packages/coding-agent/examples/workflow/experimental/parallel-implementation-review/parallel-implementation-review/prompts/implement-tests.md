@@ -25,7 +25,7 @@ Before yielding:
 - do not write reserved workflow-node artifacts:
   `workflow-output/validation-<tuple-id>.json`,
   `workflow-output/evidence-contract-guard-<tuple-id>.json`,
-  `workflow-output/strong-review-<tuple-id>.json`, or any final decision /
+  `workflow-output/final-review-<tuple-id>.json`, or any final decision /
   promotion artifact. Those filenames are owned only by later workflow nodes;
 - if you run validation, record the exact task `Validation Command` string in a
   JSON field named `command`, the exact task `Validation Environment` key/value

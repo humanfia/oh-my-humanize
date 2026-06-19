@@ -53,6 +53,11 @@ visibility mutation such as `git add -N`. Also reject when the evidence
 contract guard verdict is `REPAIR`; the guard's reasons must be treated as
 blocking pre-promotion evidence, not as optional reviewer advice.
 
+Do not write `workflow-output/final-review-<tuple-id>.json`,
+`workflow-output/strong-review-<tuple-id>.json`, or final archive files. This
+node owns the verdict text; the following finalizer node owns durable final
+review artifacts.
+
 Write a concise review first, then put exactly one token on the final non-empty
 line: `reject` or `promote`.
 

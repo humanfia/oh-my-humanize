@@ -63,8 +63,8 @@ return {
 
 async function writeValidationArtifact({ tupleId, validationCommand, validationEnvironment, result, exitCode, stdout, stderr }) {
 	const suffix = tupleId ? `-${tupleId}` : "";
-	const stdoutArtifact = `workflow-output/validation${suffix}.stdout.txt`;
-	const stderrArtifact = `workflow-output/validation${suffix}.stderr.txt`;
+	const stdoutArtifact = `workflow-output/validation${suffix}.stdout`;
+	const stderrArtifact = `workflow-output/validation${suffix}.stderr`;
 	const artifactPath = `workflow-output/validation${suffix}.json`;
 	await Bun.write(stdoutArtifact, stdout);
 	await Bun.write(stderrArtifact, stderr);

@@ -34,7 +34,7 @@ Docs / operator evidence lane:
 Summarize changed files, verification evidence, unresolved risks, lane/workspace
 conflicts, and the highest-priority follow-up for the final strong reviewer.
 This node records integration evidence; it does not decide promotion and must
-not create final promotion artifacts such as `workflow-output/strong-review.*`
+not create final promotion artifacts such as `workflow-output/final-review.*`
 or `workflow-output/final-archive.*`.
 It must also not write `workflow-output/validation-<tuple-id>.json` or
 `workflow-output/evidence-contract-guard-<tuple-id>.json`; the following
@@ -57,4 +57,5 @@ is intentionally not a flow contract artifact.
 
 Do not put a standalone verdict token such as `pass`, `reviewed`, `promote`,
 `reject`, `clean`, or `complete` on the final line. The only promotion decision
-belongs to the following strong-review node.
+belongs to the following strong-review node, and the durable final-review
+artifact belongs to the finalizer node after that decision.

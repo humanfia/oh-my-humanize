@@ -1,6 +1,7 @@
 const review = latestActivationOutput("reviewRound");
 const reviewVerdict = normalizeVerdict(review.data?.verdict ?? review.summary);
-const setupBlockerEvidenceFiles = await findSetupBlockerEvidenceFiles();
+const reviewSummary = typeof review.summary === "string" ? review.summary : "";
+const setupBlockerEvidenceFiles = await findSetupBlockerEvidenceFiles(reviewSummary);
 
 let decision = reviewVerdict === "continue" ? "continue" : "complete";
 let reason =
@@ -17,7 +18,7 @@ const route = {
 	decision,
 	reason,
 	reviewVerdict,
-	reviewSummary: review.summary ?? "",
+	reviewSummary,
 	setupBlockerEvidenceFiles,
 	checkedAtMs: Date.now(),
 };
@@ -45,17 +46,18 @@ function normalizeVerdict(value) {
 	return /\bcontinue\b/u.test(text) ? "continue" : "complete";
 }
 
-async function findSetupBlockerEvidenceFiles() {
-	const files = [];
+async function findSetupBlockerEvidenceFiles(reviewSummary) {
+	const files = new Set();
+	if (isSetupBlockerText(reviewSummary)) files.add("reviewRound:summary");
 	try {
 		const glob = new Bun.Glob("workflow-output/**/*");
 		for await (const file of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
-			if (isSetupBlockerFileName(file) || (await fileContainsSetupBlocker(file))) files.push(file);
+			if (isSetupBlockerFileName(file) || (await fileContainsSetupBlocker(file))) files.add(file);
 		}
 	} catch {
-		return [];
+		return Array.from(files).sort();
 	}
-	return files.sort();
+	return Array.from(files).sort();
 }
 
 function isSetupBlockerFileName(file) {
@@ -67,8 +69,17 @@ async function fileContainsSetupBlocker(file) {
 		const source = Bun.file(file);
 		if (source.size > 128_000) return false;
 		const text = await source.text();
-		return /\bsetup[- ]blocker\b/i.test(text);
+		return isSetupBlockerText(text);
 	} catch {
 		return false;
 	}
+}
+
+function isSetupBlockerText(text) {
+	return (
+		/\bsetup[- ]blocker\b/iu.test(text) ||
+		/\bmissing validation dependencies after preflight\b/iu.test(text) ||
+		/\bvalidation (?:copy|sandbox|environment).{0,120}\bmissing dependency\b/ius.test(text) ||
+		/\bclean-copy validation (?:is )?impossible\b/iu.test(text)
+	);
 }

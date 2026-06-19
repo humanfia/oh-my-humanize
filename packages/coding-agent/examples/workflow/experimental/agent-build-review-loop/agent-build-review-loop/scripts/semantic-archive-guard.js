@@ -19,8 +19,11 @@ for (const file of changedFiles) {
 	if (finding !== null) findings.push(finding);
 }
 findings.push(...(await dependencyBootstrapFindings()));
+findings.push(...(await downstreamCompletionClaimFindings()));
 
-const blockingFindings = explicitAllowance ? [] : findings;
+const blockingFindings = explicitAllowance
+	? findings.filter(finding => finding.category !== "low-semantic-content")
+	: findings;
 const verdict = blockingFindings.length === 0 ? "PASS" : "REPAIR";
 const diagnostic = {
 	verdict,
@@ -77,9 +80,26 @@ async function dependencyBootstrapFindings() {
 	return findings;
 }
 
+async function downstreamCompletionClaimFindings() {
+	const findings = [];
+	const files = await workflowOutputFiles();
+	for (const file of files) {
+		if (!/^workflow-output\/round-\d+\//u.test(file)) continue;
+		const text = await readOptionalText(file);
+		if (!claimsDownstreamWorkflowNodeCompletion(text)) continue;
+		findings.push({
+			file,
+			reason: "round evidence claims downstream workflow node completion",
+			policy:
+				"Build and review agents may record evidence, but only the semanticArchiveGuard and archiveLoop workflow nodes may claim their own completion.",
+		});
+	}
+	return findings;
+}
+
 async function workflowOutputFiles() {
 	try {
-		const glob = new Bun.Glob("workflow-output/*");
+		const glob = new Bun.Glob("workflow-output/**/*");
 		const files = [];
 		for await (const file of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
 			files.push(file);
@@ -145,6 +165,7 @@ function analyzeTextFile(file, text) {
 	if (!suspiciousRepeat && !suspiciousLowUnique && !paddingWord) return null;
 	return {
 		file,
+		category: "low-semantic-content",
 		reason: "high-repetition low-semantic text content before archive",
 		lineCount: lines.length,
 		uniqueLineCount: counts.size,
@@ -153,6 +174,14 @@ function analyzeTextFile(file, text) {
 		uniqueRatio: Number(uniqueRatio.toFixed(3)),
 		repeatedLinePreview: topLine.slice(0, 160),
 	};
+}
+
+function claimsDownstreamWorkflowNodeCompletion(text) {
+	return (
+		/"(?:semanticArchiveGuard|archiveLoop)"\s*:\s*"complete"/u.test(text) ||
+		/\b(?:semanticArchiveGuard|archiveLoop)\s*[:=]\s*complete\b/iu.test(text) ||
+		/\b(?:semantic archive guard|archive loop)\s+complete(?:d)?\b/iu.test(text)
+	);
 }
 
 function normalizeLine(line) {

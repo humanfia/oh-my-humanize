@@ -63,6 +63,10 @@ General loop contract:
 - Do not modify task-local validation harnesses to install, update, or bootstrap
   dependencies after preflight. Missing validation dependencies are a setup
   blocker to report, not semantic project progress.
+- Do not write files that claim downstream workflow nodes completed. In
+  particular, build rounds must not create `archive-output.json`, final archive
+  files, or any JSON/text that says `semanticArchiveGuard` or `archiveLoop` is
+  `complete`. Those claims belong only to their workflow nodes.
 - Append exactly one new line to `progress.md` in this format:
   `ROUND <n>: <short concrete action>; validation=<command or not-run>; result=<pass|fail|not-run>`
 - The next round number is one more than the number of existing `ROUND ` lines.

@@ -4,11 +4,11 @@ const verdict = verdictFromWorkflowState();
 const evidenceContract = objectState("/evidenceContract");
 const changedFiles = await changedProjectFiles();
 const evidenceFiles = await workflowEvidenceFiles();
-const strongReviewArtifact = `workflow-output/strong-review${tupleId ? `-${tupleId}` : ""}.json`;
+const finalReviewArtifact = `workflow-output/final-review${tupleId ? `-${tupleId}` : ""}.json`;
 const finalArchiveArtifact = `workflow-output/final-parallel-implementation-review-archive${tupleId ? `-${tupleId}` : ""}.md`;
 const payload = {
 	tuple_id: tupleId,
-	artifact: strongReviewArtifact,
+	artifact: finalReviewArtifact,
 	producer_node: "finalizeStrongReview",
 	producer_kind: "workflow-script",
 	strong_review: {
@@ -21,8 +21,8 @@ const payload = {
 	checked_at_ms: Date.now(),
 };
 
-await Bun.write(strongReviewArtifact, `${JSON.stringify(payload, null, 2)}\n`);
-await Bun.write(finalArchiveArtifact, archiveText({ taskText, payload, strongReviewArtifact, finalArchiveArtifact }));
+await Bun.write(finalReviewArtifact, `${JSON.stringify(payload, null, 2)}\n`);
+await Bun.write(finalArchiveArtifact, archiveText({ taskText, payload, finalReviewArtifact, finalArchiveArtifact }));
 
 return {
 	summary: `final strong review archived with verdict ${verdict}`,
@@ -124,10 +124,18 @@ async function workflowEvidenceFiles() {
 		.split(/\r?\n/u)
 		.map(line => line.trim())
 		.filter(Boolean)
+		.filter(file => !ignoredEvidenceFile(file))
 		.sort((left, right) => left.localeCompare(right, "en"));
 }
 
-function archiveText({ taskText, payload, strongReviewArtifact, finalArchiveArtifact }) {
+function ignoredEvidenceFile(file) {
+	return (
+		/^workflow-output\/(?:validation|verify|test|tests)\.(?:json|md|txt|log)$/iu.test(file) ||
+		/(^|\/)(?:strong-review|final-review|final-parallel-implementation-review-archive)[^/]*\.(?:json|md|txt)$/iu.test(file)
+	);
+}
+
+function archiveText({ taskText, payload, finalReviewArtifact, finalArchiveArtifact }) {
 	return [
 		"# Parallel Implementation Review Archive",
 		"",
@@ -135,9 +143,9 @@ function archiveText({ taskText, payload, strongReviewArtifact, finalArchiveArti
 		"",
 		payload.strong_review.verdict,
 		"",
-		"## Strong Review Artifact",
+		"## Final Review Artifact",
 		"",
-		strongReviewArtifact,
+		finalReviewArtifact,
 		"",
 		"## Final Archive Artifact",
 		"",
