@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+## [16.1.3] - 2026-06-19
+
+### Added
+
+- Added regression test pinning that `openai-completions` emits a `thinking` block for `reasoning_content` deltas even when `delta.content` is explicitly JSON `null` (the DeepSeek-format dual-key pattern used by custom GLM/Qwen reasoning providers). See [#2996](https://github.com/can1357/oh-my-pi/issues/2996).
+
+### Changed
+
+- Improved the thinking loop guard to treat assistant text loops as retryable errors
+- Refined text normalization logic to reduce false positives in the thinking loop detector
+
+### Fixed
+
+- Fixed Ollama chat requests sending image payloads to text-only models. Image blocks are now omitted and replaced with the standard non-vision placeholder for models without vision support, while vision-capable Ollama models continue to receive images. ([#3009](https://github.com/can1357/oh-my-pi/pull/3009) by [@serverinspector](https://github.com/serverinspector))
+- Fixed `SqliteAuthCredentialStore.close()` leaking one-off prepared statements created by inline `this.#db.prepare()` calls in `#authCredentialsTableExists`, `#readAuthSchemaVersion`, `#inferAuthSchemaVersion`, `#migrateAuthSchemaV0ToV1`, `#backfillCredentialIdentityKeys`, and `updateAuthCredential`. Each statement is now wrapped in `try/finally` with `stmt.finalize()`, and the `close()` method finalizes `#insertUsageCostStmt` and `#listUsageCostsStmt` which were previously missed. This caused EBUSY on Windows when tests tried to delete temp dirs containing open SQLite handles.
+
+## [16.1.2] - 2026-06-19
+
+### Added
+
+- Added improved JSON repair capabilities for Anthropic tool arguments
+- Added authentication broker discovery to sync credentials between local SQLite and remote state
+
+### Fixed
+
+- Improved error feedback and transparency for malformed Anthropic tool call arguments
+- Added automatic fallback for unsupported OpenAI reasoning effort levels
+- Improved reliability when handling invalid reasoning parameter errors across OpenAI-compatible APIs
+- Fixed OpenAI-compatible Chat Completions, Responses, and Azure Responses requests to retry once with the nearest provider-supported reasoning effort when an endpoint rejects `xhigh`/`minimal`-style effort values.
+
+## [16.1.0] - 2026-06-19
+
+### Added
+
+- Added utility functions to strip schema descriptions for optimized LLM context usage
+
+## [16.0.10] - 2026-06-18
+
+### Added
+
+- Replaced the old legacy XML-ish `pi` owned tool-calling dialect with the new sigil-delimited format (`§` call header with inline `key=value` scalars, `«…»` verbatim body fence for the dominant string argument, `¤` reasoning, `‡‡` tool result) using single-token markers that never occur in source code. Verbatim fences escalate Markdown-style (`««…»»`) so re-rendered history never collides with payload content, and the scanner gates a bare `§` on an exact known-tool name to avoid swallowing prose. Round-trips and streams through the existing scanner contract at ~46% fewer tokens than the legacy format on typical calls; selectable via `tools.format` or `PI_DIALECT=pi`.
+
+### Changed
+
+- Updated `pi` dialect formatting to use a token-frugal, sigil-delimited format (`§`, `¤`, `‡‡`)
+- Updated `pi` dialect body fences to automatically escalate when content contains fence markers
+- Changed `pi` dialect tool results response format to `‡‡` blocks
+
+### Fixed
+
+- Fixed Bedrock application inference profile ARNs to route requests to the ARN's region instead of the default Bedrock runtime region. ([#3004](https://github.com/can1357/oh-my-pi/issues/3004))
+
 ## [16.0.9] - 2026-06-18
 
 ### Fixed

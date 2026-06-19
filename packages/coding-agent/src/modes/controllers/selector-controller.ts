@@ -27,7 +27,7 @@ import {
 	theme,
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
-import type { ResetCreditRedeemOutcome } from "../../session/auth-storage";
+import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { FileSessionStorage } from "../../session/session-storage";
@@ -320,9 +320,19 @@ export class SelectorController {
 				for (const child of this.ctx.chatContainer.children) {
 					if (child instanceof AssistantMessageComponent) {
 						child.setHideThinkingBlock(value as boolean);
-						child.invalidate();
 					}
 				}
+				// Full clear + replay so blocks frozen in committed scrollback on
+				// ED3-risk terminals retire their stale snapshots too (see
+				// InputController.toggleThinkingBlockVisibility).
+				this.ctx.ui.resetDisplay();
+				break;
+			case "display.cacheMissMarker":
+				// Rebuild re-runs the usage-based detection under the new setting so
+				// markers appear/disappear; full reset retires any already committed
+				// to native scrollback (mirrors hideThinking).
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
 				break;
 			case "tui.tight":
 				setTuiTight(value as boolean);
@@ -1151,7 +1161,7 @@ export class SelectorController {
 	async showResetUsageSelector(): Promise<void> {
 		const session = this.ctx.session;
 		this.ctx.showStatus("Checking saved rate-limit resets…", { dim: true });
-		let statuses: Awaited<ReturnType<typeof session.listResetCredits>>;
+		let statuses: ResetCreditAccountStatus[];
 		try {
 			statuses = await session.listResetCredits();
 		} catch (error) {

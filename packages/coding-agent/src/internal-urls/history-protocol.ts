@@ -13,7 +13,6 @@ import type { AgentRef } from "../registry/agent-registry";
 import { AgentRegistry } from "../registry/agent-registry";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import { loadSessionMessagesReadOnly } from "../session/session-loader";
-import { findRegisteredAgentRef } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 /** Humanize a last-activity timestamp as `Ns/Nm/Nh/Nd ago`. */
@@ -41,9 +40,12 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async resolve(url: InternalUrl): Promise<InternalResource> {
 		const agentId = url.rawHost || url.hostname;
 		const registry = AgentRegistry.global();
+		// Advisor transcripts are observability-only — surfaced in the Agent Hub, never
+		// in the agent-facing roster. Hide them from the index, lookup, and completions.
+		const visible = registry.list().filter(ref => ref.kind !== "advisor");
 
 		if (!agentId) {
-			const content = this.#renderIndex(registry.list());
+			const content = this.#renderIndex(visible);
 			return {
 				url: url.href,
 				content,
@@ -52,9 +54,15 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			};
 		}
 
-		const ref = findRegisteredAgentRef(agentId);
+		let ref = registry.get(agentId);
+		if (ref?.kind === "advisor") ref = undefined;
 		if (!ref) {
-			const known = registry.list().map(candidate => candidate.id);
+			// Case-insensitive fallback: agent ids are human-typed (e.g. AuthLoader).
+			const lower = agentId.toLowerCase();
+			ref = visible.find(candidate => candidate.id.toLowerCase() === lower);
+		}
+		if (!ref) {
+			const known = visible.map(candidate => candidate.id);
 			const knownStr = known.length > 0 ? known.join(", ") : "none";
 			throw new Error(`Unknown agent: ${agentId}\nKnown agents: ${knownStr}\nList all with history://`);
 		}
@@ -101,6 +109,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async complete(): Promise<UrlCompletion[]> {
 		return AgentRegistry.global()
 			.list()
+			.filter(ref => ref.kind !== "advisor")
 			.map(ref => ({
 				value: ref.id,
 				description: `${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,

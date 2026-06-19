@@ -3,8 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { applyCliRuntimeApiKey, submitInteractiveInput } from "@oh-my-pi/pi-coding-agent/main";
+import {
+	applyCliRuntimeApiKey,
+	applyResolvedSystemPromptInputs,
+	submitInteractiveInput,
+} from "@oh-my-pi/pi-coding-agent/main";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { CreateAgentSessionOptions } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { discoverTitleSystemPromptFile } from "@oh-my-pi/pi-coding-agent/system-prompt";
 
@@ -63,6 +68,18 @@ describe("applyCliRuntimeApiKey", () => {
 		} finally {
 			authStorage.close();
 		}
+	});
+});
+
+describe("applyResolvedSystemPromptInputs", () => {
+	it("routes SYSTEM.md content through template-aware session options", () => {
+		const options: CreateAgentSessionOptions = {};
+
+		applyResolvedSystemPromptInputs(options, "project system prompt", "append prompt");
+
+		expect(options.customSystemPrompt).toBe("project system prompt");
+		expect(options.appendSystemPrompt).toBe("append prompt");
+		expect(options.systemPrompt).toBeUndefined();
 	});
 });
 

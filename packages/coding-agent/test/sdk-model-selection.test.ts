@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -129,6 +130,19 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		expect(session.model?.provider).toBe("runtime-provider");
 		expect(session.model?.id).toBe("runtime-reasoning-model");
 		expect(session.thinkingLevel).toBe("off");
+	});
+
+	test("normalizes max default thinking level from settings", async () => {
+		const settings = Settings.isolated({ defaultThinkingLevel: "max" });
+
+		const { session } = await createAgentSession({
+			...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
+			settings,
+		});
+
+		expect(session.model?.provider).toBe("runtime-provider");
+		expect(session.model?.id).toBe("runtime-reasoning-model");
+		expect(session.thinkingLevel).toBe(Effort.XHigh);
 	});
 
 	test("selects the settings default model without synchronously validating auth", async () => {
@@ -334,7 +348,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		}
 	});
 
-	test("restores role model from extension provider after startup resume", async () => {
+	test("restores role model max selector from extension provider after startup resume", async () => {
 		const defaultModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!defaultModel) {
 			throw new Error("Expected bundled anthropic default model");
@@ -363,7 +377,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 					id: "smol-model",
 					parentId: "default-model",
 					timestamp,
-					model: "runtime-provider/runtime-model",
+					model: "runtime-provider/runtime-reasoning-model:max",
 					role: "smol",
 				},
 			]
@@ -392,7 +406,8 @@ describe("createAgentSession deferred model pattern resolution", () => {
 
 		try {
 			expect(session.model?.provider).toBe("runtime-provider");
-			expect(session.model?.id).toBe("runtime-model");
+			expect(session.model?.id).toBe("runtime-reasoning-model");
+			expect(session.thinkingLevel).toBe(Effort.XHigh);
 		} finally {
 			await session.dispose();
 			authStorage.close();
