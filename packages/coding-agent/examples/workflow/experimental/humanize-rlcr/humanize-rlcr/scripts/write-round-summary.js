@@ -29,6 +29,11 @@ if (downstreamClaimKeys.length > 0) {
 		`implementation round evidence cannot claim downstream review or final-alignment results: ${downstreamClaimKeys.join(", ")}`,
 	);
 }
+if (usesNondurableArtifactReference(JSON.stringify(implementationOutput))) {
+	throw new Error(
+		"implementation round evidence cannot use nondurable artifact references; copy validation stdout/stderr/status into workflow-output and reference workspace-local files",
+	);
+}
 const evidenceValueLimit = 4000;
 const boundedEvidenceValue = (value, fallback) => {
 	if (value === undefined) return fallback;
@@ -144,4 +149,11 @@ function downstreamReviewClaimKeys(value) {
 		}
 	}
 	return keys.sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function usesNondurableArtifactReference(text) {
+	return (
+		/\b(?:validation|stdout|stderr|evidence|harness|status).{0,160}\bartifact:\/\/\d+\b/ius.test(text) ||
+		/\bartifact:\/\/\d+\b.{0,160}\b(?:validation|stdout|stderr|evidence|harness|status)\b/ius.test(text)
+	);
 }

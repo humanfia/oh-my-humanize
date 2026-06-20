@@ -113,6 +113,7 @@ const statusLines = status.stdout
 	.filter(line => line.length > 0);
 const untrackedFiles = statusLines.filter(line => line.startsWith("?? ")).map(changedPathFromStatus);
 const untrackedProjectFiles = untrackedFiles.filter(path => !isWorkflowArtifactPath(path));
+const nondurableArtifactFiles = await nondurableArtifactReferenceFiles();
 const semanticRatio = regular.total === 0 ? 1 : semantic.total / regular.total;
 const mechanicalOverhead = Math.max(0, regular.total - semantic.total);
 const mechanicalOverheadRatio = regular.total === 0 ? 0 : mechanicalOverhead / regular.total;
@@ -152,6 +153,14 @@ if (untrackedProjectFiles.length > 0) {
 	);
 }
 
+if (nondurableArtifactFiles.length > 0) {
+	reasons.push(
+		`implementation evidence uses nondurable artifact references; copy validation stdout/stderr/status into workflow-output before review: ${nondurableArtifactFiles
+			.slice(0, 8)
+			.join(", ")}`,
+	);
+}
+
 const verdict = reasons.length === 0 ? "PASS" : "REPAIR";
 const diagnostic = {
 	verdict,
@@ -181,6 +190,7 @@ const diagnostic = {
 	semanticRatio,
 	untrackedFiles: untrackedFiles.slice(0, 40),
 	untrackedProjectFiles: untrackedProjectFiles.slice(0, 40),
+	nondurableArtifactFiles: nondurableArtifactFiles.slice(0, 40),
 	checkedAtMs: Date.now(),
 };
 
@@ -235,4 +245,36 @@ function declaresBroadChangeAllowance(text) {
 		if (broadChangeAllowancePattern.test(line)) return true;
 	}
 	return false;
+}
+
+async function nondurableArtifactReferenceFiles() {
+	const files = [];
+	try {
+		const glob = new Bun.Glob("workflow-output/**/*");
+		for await (const file of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
+			if (!/^workflow-output\/(?:implementation|review-fix|round-\d+-summary|round-\d+\/)/u.test(file)) {
+				continue;
+			}
+			const text = await readOptionalText(file);
+			if (usesNondurableArtifactReference(text)) files.push(file);
+		}
+	} catch {
+		return [];
+	}
+	return files.sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function usesNondurableArtifactReference(text) {
+	return (
+		/\b(?:validation|stdout|stderr|evidence|harness|status).{0,160}\bartifact:\/\/\d+\b/ius.test(text) ||
+		/\bartifact:\/\/\d+\b.{0,160}\b(?:validation|stdout|stderr|evidence|harness|status)\b/ius.test(text)
+	);
+}
+
+async function readOptionalText(filePath) {
+	try {
+		return await Bun.file(filePath).text();
+	} catch {
+		return "";
+	}
 }

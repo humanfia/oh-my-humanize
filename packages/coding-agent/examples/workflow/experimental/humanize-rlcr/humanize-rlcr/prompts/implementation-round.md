@@ -36,6 +36,11 @@ Delta discipline is part of the task contract:
   churn, stop and ask for steering instead of continuing.
 - Revert or justify every changed project file. If the diff is broader than the
   acceptance surface, ask for human steering instead of continuing.
+- If you run validation, copy the raw stdout and stderr into durable
+  workspace-local files under `workflow-output/` and reference those paths in
+  your evidence. Do not cite transient `artifact://...` handles for validation,
+  status, stdout, stderr, or evidence; downstream guards reject nondurable
+  artifact references before summary review.
 
 
 Before claiming completion, provide:

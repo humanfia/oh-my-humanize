@@ -252,6 +252,30 @@ describe("humanize-rlcr flow contract", () => {
 		expect(result.data.reasons.join("\n")).toContain("mechanical whitespace/style overhead exceeds task diff gate");
 	});
 
+	it("requires repair when implementation evidence uses nondurable artifact urls", async () => {
+		const repo = await createGitRepo();
+		await fs.mkdir(path.join(repo, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(repo, "task.md"), "Objective:\nAdd focused tests.\n");
+		await Bun.write(path.join(repo, "existing.txt"), "baseline\n");
+		await runCommand(["git", "add", "task.md", "existing.txt"], repo);
+		await runCommand(["git", "commit", "-m", "init"], repo);
+		await Bun.write(path.join(repo, "existing.txt"), "baseline\nsemantic change\n");
+		await Bun.write(
+			path.join(repo, "workflow-output", "implementation-round-example.json"),
+			JSON.stringify({
+				validation: {
+					status: "passed",
+					rawOutputArtifact: "artifact://18",
+				},
+			}),
+		);
+
+		const result = await runDiffDisciplineGuard(repo);
+
+		expect(result.data.verdict).toBe("REPAIR");
+		expect(result.data.reasons.join("\n")).toContain("nondurable artifact references");
+	});
+
 	it("rejects implementation round evidence that claims downstream review completion", async () => {
 		await expect(
 			runWriteRoundSummary(
@@ -266,6 +290,24 @@ describe("humanize-rlcr flow contract", () => {
 				await createTempDir(),
 			),
 		).rejects.toThrow("implementation round evidence cannot claim downstream review or final-alignment results");
+	});
+
+	it("rejects implementation round evidence that uses nondurable artifact urls", async () => {
+		await expect(
+			runWriteRoundSummary(
+				{
+					summary: "implemented focused tests",
+					data: {
+						changedFiles: ["src/lib.rs"],
+						verification: {
+							status: "passed",
+							rawOutputArtifact: "artifact://18",
+						},
+					},
+				},
+				await createTempDir(),
+			),
+		).rejects.toThrow("implementation round evidence cannot use nondurable artifact references");
 	});
 
 	it("writes durable round and summary-review evidence for each implementation round", async () => {
