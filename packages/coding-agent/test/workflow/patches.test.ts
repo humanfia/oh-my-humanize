@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { parseWorkflowChangeRequestFile } from "../../src/workflow/change-request-file";
 import { parseWorkflowDefinition } from "../../src/workflow/definition";
 import {
 	applyWorkflowGraphPatch,
@@ -400,6 +401,65 @@ edges:
 					activation: "latest-completed",
 				},
 				after: { kind: "inline", text: "Use the static fallback plan." },
+			},
+		]);
+	});
+
+	it("preserves foreach and child workflow metadata in change request nodes", () => {
+		const request = parseWorkflowChangeRequestFile(
+			{
+				operations: [
+					{
+						op: "add_node",
+						node: {
+							id: "fanout",
+							type: "foreach",
+							foreach: {
+								items: "/pullRequests",
+								key: "/number",
+								concurrency: 3,
+								failureMode: "allSettled",
+								output: { path: "/reviewResults" },
+								body: { workflow: { path: "./pr-review.omhflow" } },
+							},
+						},
+					},
+					{
+						op: "add_node",
+						node: {
+							id: "invokeChild",
+							type: "workflow",
+							workflow: { path: "./child.omhflow" },
+						},
+					},
+				],
+			},
+			"change.json",
+		);
+
+		expect(request.operations).toEqual([
+			{
+				op: "add_node",
+				node: {
+					id: "fanout",
+					type: "foreach",
+					foreach: {
+						items: "/pullRequests",
+						key: "/number",
+						concurrency: 3,
+						failureMode: "allSettled",
+						output: { path: "/reviewResults" },
+						body: { kind: "workflow", workflow: { path: "./pr-review.omhflow" } },
+					},
+				},
+			},
+			{
+				op: "add_node",
+				node: {
+					id: "invokeChild",
+					type: "workflow",
+					workflow: { path: "./child.omhflow" },
+				},
 			},
 		]);
 	});

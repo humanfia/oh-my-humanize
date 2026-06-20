@@ -541,6 +541,54 @@ describe("workflow graph view rendering", () => {
 		);
 	});
 
+	it("summarizes dynamic foreach fan-outs and child workflow links without item expansion", () => {
+		const view = createView({
+			name: "dynamic-topology",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{
+					id: "fanout",
+					type: "foreach",
+					foreach: {
+						items: "/tasks",
+						key: "/id",
+						concurrency: 2,
+						failureMode: "allSettled",
+						output: { path: "/childRuns" },
+						body: {
+							kind: "workflow",
+							workflow: { path: "./child.omhflow" },
+						},
+					},
+				},
+			],
+			edges: [],
+		});
+
+		expect(view.nodes).toHaveLength(1);
+		expect(view.nodes[0]).toMatchObject({
+			id: "fanout",
+			kind: "foreach",
+		});
+		expect(view.topology).toMatchObject({
+			dynamicFanOuts: 1,
+			childWorkflows: 1,
+		});
+		expect(view.childWorkflows).toEqual([
+			{
+				nodeId: "fanout",
+				path: "./child.omhflow",
+				withinForeach: true,
+			},
+		]);
+		const text = renderWorkflowGraphText(view);
+		expect(text).toContain("Flow: dynamic fan-outs 1 / child workflows 1 · 1 node");
+		expect(text).toContain("Child workflows:");
+		expect(text).toContain("- fanout foreach invokes ./child.omhflow");
+		expect(text).not.toContain("processTask");
+	});
+
 	it("describes multiple root nodes as parallel roots instead of linear flow", () => {
 		const view = createView({
 			name: "parallel-roots",

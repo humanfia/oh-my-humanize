@@ -386,6 +386,7 @@ async function executeAndPersistActivation(
 					completedActivations: context.completedActivations,
 				},
 				resourceDir,
+				workflowBasePath: options.definition.sourcePath,
 			}),
 			executionSignal,
 		);

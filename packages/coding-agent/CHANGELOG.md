@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added workflow `foreach` dynamic fan-out and child `.omhflow` invocation primitives with collapsed graph metadata, checkpointable item lifecycle output, and examples. ([#2](https://github.com/humanfia/oh-my-humanize/issues/2))
+
 ### Changed
 
 - Changed public branding from Oh My Pi / `omp` to Oh My Humanize / `omh` across package metadata, CLI help, ACP metadata, setup/welcome surfaces, workflow docs, and README examples while preserving `omp` as a compatibility bin alias.

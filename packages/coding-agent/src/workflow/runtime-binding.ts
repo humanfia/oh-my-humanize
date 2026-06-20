@@ -46,6 +46,11 @@ function workflowNodeRuntimeCapabilities(node: WorkflowNode): string[] {
 	if (node.type === "human") return ["tool:ask"];
 	if (node.type === "agent") return ["tool:task", ...(node.agent ? [`agent:${node.agent}`] : [])];
 	if (node.type === "review") return ["tool:task", ...(node.agent ? [`agent:${node.agent}`] : [])];
+	if (node.type === "workflow") return ["tool:workflow"];
+	if (node.type === "foreach") {
+		if (node.foreach?.body.kind === "workflow") return ["tool:workflow"];
+		if (node.foreach?.body.kind === "node") return workflowNodeRuntimeCapabilities(node.foreach.body.node);
+	}
 	return [];
 }
 

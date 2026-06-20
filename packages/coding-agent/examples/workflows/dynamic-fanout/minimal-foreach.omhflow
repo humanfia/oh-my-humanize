@@ -1,0 +1,40 @@
+---
+name: minimal-foreach
+version: 1
+schema: omhflow/v1
+checkpoint:
+  stopDeadlineMs: 30000
+changePolicy:
+  agentsCanPropose: false
+  humansCanApprove: true
+---
+# Minimal Foreach
+
+```yaml workflow
+stateSchema:
+  version: 1
+  shape:
+    tasks: array
+    taskResults: object
+foreach:
+  id: processTasks
+  items: /tasks
+  itemName: task
+  key: /id
+  concurrency: 2
+  failureMode: allSettled
+  output:
+    path: /taskResults
+  body:
+    node:
+      id: processTask
+      type: script
+      script:
+        language: js
+        inline: |
+          const task = context.state.task;
+          return {
+            summary: `processed ${task.id}`,
+            data: { id: task.id, status: "done" },
+          };
+```
