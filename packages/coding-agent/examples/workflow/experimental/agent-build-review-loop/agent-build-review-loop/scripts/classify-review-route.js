@@ -101,12 +101,17 @@ function mentionsSatisfiedBuildContract(text) {
 }
 
 function taskRequiredRoundCount(text) {
+	const countWordPattern =
+		"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty";
 	const matches = [
 		...text.matchAll(
-			/\bat least\s+((?:one|two|three|four|five|six|seven|eight|nine|ten)|\d+)\s+meaningful\s+build\/review\s+cycles?\b/giu,
+			new RegExp(`\\bat least\\s+((?:${countWordPattern})|\\d+)\\s+meaningful\\s+build/review\\s+cycles?\\b`, "giu"),
 		),
 		...text.matchAll(
-			/\brequires?\s+(?:at least\s+)?((?:one|two|three|four|five|six|seven|eight|nine|ten)|\d+)\s+meaningful\s+build\/review\s+cycles?\b/giu,
+			new RegExp(
+				`\\brequires?\\s+(?:at least\\s+)?((?:${countWordPattern})|\\d+)\\s+meaningful\\s+build/review\\s+cycles?\\b`,
+				"giu",
+			),
 		),
 	];
 	const counts = matches
@@ -129,6 +134,16 @@ function parseRoundCount(text) {
 		["eight", 8],
 		["nine", 9],
 		["ten", 10],
+		["eleven", 11],
+		["twelve", 12],
+		["thirteen", 13],
+		["fourteen", 14],
+		["fifteen", 15],
+		["sixteen", 16],
+		["seventeen", 17],
+		["eighteen", 18],
+		["nineteen", 19],
+		["twenty", 20],
 	]);
 	return words.get(text.toLowerCase()) ?? null;
 }

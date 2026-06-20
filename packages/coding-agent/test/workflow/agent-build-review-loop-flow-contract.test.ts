@@ -28,6 +28,7 @@ interface ReviewRouteResult {
 	data: {
 		decision: string;
 		reason: string;
+		requiredRoundCount?: number;
 		setupBlockerEvidenceFiles: string[];
 		externalValidationBlockerEvidenceFiles?: string[];
 		terminalBlockerEvidenceFiles?: string[];
@@ -528,6 +529,35 @@ describe("agent-build-review-loop flow contract", () => {
 		expect(result.data).toMatchObject({
 			decision: "continue",
 			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: [],
+			terminalBlockerEvidenceFiles: [],
+		});
+	});
+
+	it("parses task-required round counts above ten before archive routing", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Produce at least twelve meaningful build/review cycles.\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			Array.from(
+				{ length: 4 },
+				(_, index) =>
+					`ROUND ${index + 1}: completed scoped implementation surface ${index + 1}; validation=./workflow-output/run-validation.sh; result=pass`,
+			).join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"progress.md contains 4 ROUND lines and the latest scoped clean-copy validation passed, but semanticArchiveGuard and archiveLoop evidence is missing.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "continue",
+			reviewVerdict: "continue",
+			requiredRoundCount: 12,
 			setupBlockerEvidenceFiles: [],
 			externalValidationBlockerEvidenceFiles: [],
 			terminalBlockerEvidenceFiles: [],
