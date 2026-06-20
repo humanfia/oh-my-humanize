@@ -20,6 +20,7 @@ for (const file of changedFiles) {
 }
 findings.push(...(await dependencyBootstrapFindings()));
 findings.push(...(await downstreamCompletionClaimFindings()));
+findings.push(...(await nondurableArtifactReferenceFindings()));
 
 const blockingFindings = explicitAllowance
 	? findings.filter(finding => finding.category !== "low-semantic-content")
@@ -92,6 +93,23 @@ async function downstreamCompletionClaimFindings() {
 			reason: "round evidence claims downstream workflow node completion",
 			policy:
 				"Build and review agents may record evidence, but only the semanticArchiveGuard and archiveLoop workflow nodes may claim their own completion.",
+		});
+	}
+	return findings;
+}
+
+async function nondurableArtifactReferenceFindings() {
+	const findings = [];
+	const files = await workflowOutputFiles();
+	for (const file of files) {
+		if (!/^workflow-output\/round-\d+\//u.test(file)) continue;
+		const text = await readOptionalText(file);
+		if (!usesNondurableValidationArtifact(text)) continue;
+		findings.push({
+			file,
+			reason: "round evidence uses nondurable artifact reference for validation output",
+			policy:
+				"Validation stdout/stderr must be copied into workflow-output as workspace-local durable artifacts before archive.",
 		});
 	}
 	return findings;
@@ -181,6 +199,13 @@ function claimsDownstreamWorkflowNodeCompletion(text) {
 		/"(?:semanticArchiveGuard|archiveLoop)"\s*:\s*"complete"/u.test(text) ||
 		/\b(?:semanticArchiveGuard|archiveLoop)\s*[:=]\s*complete\b/iu.test(text) ||
 		/\b(?:semantic archive guard|archive loop)\s+complete(?:d)?\b/iu.test(text)
+	);
+}
+
+function usesNondurableValidationArtifact(text) {
+	return (
+		/\b(?:validation|stdout|stderr|evidence|harness).{0,160}\bartifact:\/\/\d+\b/ius.test(text) ||
+		/\bartifact:\/\/\d+\b.{0,160}\b(?:validation|stdout|stderr|evidence|harness)\b/ius.test(text)
 	);
 }
 

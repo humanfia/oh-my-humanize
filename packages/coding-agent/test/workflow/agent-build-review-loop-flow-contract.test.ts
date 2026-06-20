@@ -102,8 +102,8 @@ describe("agent-build-review-loop flow contract", () => {
 		expect(result.data).toMatchObject({
 			decision: "reject",
 			reviewVerdict: "continue",
-			setupBlockerEvidenceFiles: ["workflow-output/setup-blocker-evidence.json"],
 		});
+		expect(result.data.setupBlockerEvidenceFiles).toContain("workflow-output/setup-blocker-evidence.json");
 		expect(result.summary).toContain("setup blocker");
 	});
 
@@ -130,6 +130,57 @@ describe("agent-build-review-loop flow contract", () => {
 			setupBlockerEvidenceFiles: ["workflow-output/round-2/validation-summary.txt"],
 		});
 		expect(result.summary).toContain("setup blocker");
+	});
+
+	it("routes clean-copy missing dependency stop-condition language to reject", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-2", "build-summary.txt"),
+			[
+				"Validation:",
+				"- Result: fail",
+				"- Latest run failed during test-serve because the prepared clean copy is missing validation dependencies such as @vitejs/plugin-legacy, stylus, express, escape-html, sirv, and oxc-parser.",
+				"- Per task stop conditions, dependency bootstrap was not attempted.",
+			].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary: "Continue after validating the latest build summary.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "reject",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: ["workflow-output/round-2/build-summary.txt"],
+		});
+	});
+
+	it("routes nondurable validation artifact references to reject", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-2", "build-summary.txt"),
+			[
+				"Validation:",
+				"- Command: ./workflow-output/run-vite-validation.sh",
+				"- Result: fail",
+				"- Full latest validation stdout/stderr is captured by harness artifact artifact://20.",
+			].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary: "Review found useful work but asks for another build round.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "reject",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: ["workflow-output/round-2/build-summary.txt"],
+		});
+		expect(result.data.reason).toContain("setup blocker");
 	});
 
 	it("preserves an ordinary continue review when no setup blocker evidence exists", async () => {
@@ -192,6 +243,23 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("requires repair when round validation evidence points to nondurable artifact urls", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-2", "build-summary.txt"),
+			"Full latest validation stdout/stderr is captured by harness artifact artifact://20.\n",
+		);
+
+		const result = await runSemanticArchiveGuard(cwd);
+
+		expect(result.verdict).toBe("REPAIR");
+		const finding = result.data.findings.find(item => item.file === "workflow-output/round-2/build-summary.txt");
+		expect(finding).toMatchObject({
+			reason: "round evidence uses nondurable artifact reference for validation output",
+		});
+	});
+
 	it("rejects archiving round evidence that claims downstream guard or archive completion", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
@@ -203,6 +271,19 @@ describe("agent-build-review-loop flow contract", () => {
 		);
 
 		await expect(runArchiveLoop(cwd)).rejects.toThrow("round evidence claims downstream workflow node completion");
+	});
+
+	it("rejects archiving round evidence that references nondurable validation artifacts", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n");
+		await Bun.write(path.join(cwd, "progress.md"), "ROUND 1: validation artifact was nondurable; result=fail\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-2", "build-summary.txt"),
+			"Full latest validation stdout/stderr is captured by harness artifact artifact://20.\n",
+		);
+
+		await expect(runArchiveLoop(cwd)).rejects.toThrow("round evidence uses nondurable artifact references");
 	});
 
 	it("writes a rejected archive and fails the attempt for setup-blocker routes", async () => {

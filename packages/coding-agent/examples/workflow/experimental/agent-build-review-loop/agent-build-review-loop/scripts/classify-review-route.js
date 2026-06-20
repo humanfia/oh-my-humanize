@@ -89,6 +89,16 @@ function isSetupBlockerText(text) {
 		/\bsetup[- ]blocker\b/iu.test(text) ||
 		/\bmissing validation dependencies after preflight\b/iu.test(text) ||
 		/\bvalidation (?:copy|sandbox|environment).{0,120}\bmissing dependency\b/ius.test(text) ||
-		/\bclean-copy validation (?:is )?impossible\b/iu.test(text)
+		/\b(?:prepared\s+)?clean copy.{0,160}\bmissing validation dependencies\b/ius.test(text) ||
+		/\bvalidation dependencies\b.{0,160}\bmissing\b/ius.test(text) ||
+		/\bclean-copy validation (?:is )?impossible\b/iu.test(text) ||
+		usesNondurableValidationArtifact(text)
+	);
+}
+
+function usesNondurableValidationArtifact(text) {
+	return (
+		/\b(?:validation|stdout|stderr|evidence|harness).{0,160}\bartifact:\/\/\d+\b/ius.test(text) ||
+		/\bartifact:\/\/\d+\b.{0,160}\b(?:validation|stdout|stderr|evidence|harness)\b/ius.test(text)
 	);
 }

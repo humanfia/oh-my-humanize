@@ -24,6 +24,12 @@ if (downstreamClaimFiles.length > 0) {
 		`agent-build-review-loop cannot archive because round evidence claims downstream workflow node completion: ${downstreamClaimFiles.join(", ")}`,
 	);
 }
+const nondurableArtifactFiles = await nondurableArtifactReferenceFiles(evidenceFiles);
+if (nondurableArtifactFiles.length > 0) {
+	throw new Error(
+		`agent-build-review-loop cannot archive because round evidence uses nondurable artifact references: ${nondurableArtifactFiles.join(", ")}`,
+	);
+}
 const archive = [
 	"# Agent Build/Review Loop Archive",
 	"",
@@ -204,11 +210,28 @@ async function downstreamCompletionClaimFiles(files) {
 	return claimFiles;
 }
 
+async function nondurableArtifactReferenceFiles(files) {
+	const claimFiles = [];
+	for (const file of files) {
+		if (!/^workflow-output\/round-\d+\//u.test(file)) continue;
+		const text = await readOptionalText(file);
+		if (usesNondurableValidationArtifact(text)) claimFiles.push(file);
+	}
+	return claimFiles;
+}
+
 function claimsDownstreamWorkflowNodeCompletion(text) {
 	return (
 		/"(?:semanticArchiveGuard|archiveLoop)"\s*:\s*"complete"/u.test(text) ||
 		/\b(?:semanticArchiveGuard|archiveLoop)\s*[:=]\s*complete\b/iu.test(text) ||
 		/\b(?:semantic archive guard|archive loop)\s+complete(?:d)?\b/iu.test(text)
+	);
+}
+
+function usesNondurableValidationArtifact(text) {
+	return (
+		/\b(?:validation|stdout|stderr|evidence|harness).{0,160}\bartifact:\/\/\d+\b/ius.test(text) ||
+		/\bartifact:\/\/\d+\b.{0,160}\b(?:validation|stdout|stderr|evidence|harness)\b/ius.test(text)
 	);
 }
 
