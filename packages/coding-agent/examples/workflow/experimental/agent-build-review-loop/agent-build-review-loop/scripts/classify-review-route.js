@@ -81,7 +81,8 @@ async function isArchiveReadinessOnlyReview(text) {
 		progressRoundCount(progress) >= requiredRoundCount &&
 		mentionsPassingValidation(text) &&
 		mentionsOnlyMissingArchiveEvidence(text) &&
-		!mentionsImplementationWorkStillNeeded(text)
+		!mentionsImplementationWorkStillNeeded(text) &&
+		!mentionsTaskAcceptanceStillMissing(text)
 	);
 }
 
@@ -152,6 +153,20 @@ function mentionsImplementationWorkStillNeeded(text) {
 			text,
 		) ||
 		/\bvalidation\b.{0,80}\b(?:fail(?:ed|s|ing)|blocked|error|broken)\b/ius.test(text)
+	);
+}
+
+function mentionsTaskAcceptanceStillMissing(text) {
+	return (
+		/\btask[- ](?:specific|declared)\b.{0,160}\b(?:acceptance|surface)\b.{0,160}\b(?:not yet met|not met|unmet|no corresponding|missing)\b/ius.test(
+			text,
+		) ||
+		/\b(?:task[- ]specific acceptance|acceptance criteria)\b.{0,120}\b(?:not yet met|not met|unmet)\b/ius.test(
+			text,
+		) ||
+		/\bno corresponding\b.{0,120}\b(?:source|behavioral[- ]?test|test|implementation)\b.{0,120}\bimprovement\b/ius.test(
+			text,
+		)
 	);
 }
 

@@ -522,6 +522,42 @@ describe("agent-build-review-loop flow contract", () => {
 		expect(result.data.reason).toContain("semantic archive guard");
 	});
 
+	it("keeps building when reviewer says task-specific acceptance is not met after required rounds", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Produce at least eight meaningful build/review cycles.",
+				"Acceptance Criteria:",
+				"- Cover assets-sanitize/security edge cases before archive.",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			Array.from(
+				{ length: 8 },
+				(_, index) =>
+					`ROUND ${index + 1}: completed Vite asset surface ${index + 1}; validation=./workflow-output/run-validation.sh; result=pass`,
+			).join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"continue: progress.md contains 8 ROUND entries and the latest clean-copy validation passed, but the task-declared assets-sanitize/security surface has no corresponding source or behavioral-test improvement in the current changes. The required semantic-archive-guard/archive evidence is also absent, so task-specific acceptance is not yet met.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "continue",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: [],
+			terminalBlockerEvidenceFiles: [],
+		});
+		expect(result.data.reason).toContain("review requested another build round");
+	});
+
 	it("does not treat task text copied into the initial snapshot as setup-blocker evidence", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
