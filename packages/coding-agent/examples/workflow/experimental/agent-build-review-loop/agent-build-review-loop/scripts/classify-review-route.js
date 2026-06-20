@@ -210,7 +210,6 @@ async function fileContainsSetupBlocker(file) {
 
 function isSetupBlockerText(text) {
 	return (
-		/\bsetup[- ]blocker\b/iu.test(text) ||
 		/\bmissing validation dependencies after preflight\b/iu.test(text) ||
 		/\bvalidation (?:copy|sandbox|environment).{0,120}\bmissing dependency\b/ius.test(text) ||
 		/\b(?:prepared\s+)?clean copy.{0,160}\bmissing validation dependencies\b/ius.test(text) ||

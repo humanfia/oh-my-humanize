@@ -357,6 +357,39 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("keeps building after a single validation failure mislabeled as setup blocker", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Produce at least eight meaningful build/review cycles.\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: cooked escaped static import.meta asset URL literals before asset resolution; validation=./workflow-output/run-vite-validation.sh; result=fail\n",
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-1", "validation-summary.txt"),
+			[
+				"Round 1 validation failed after the import.meta asset URL escape regression test passed.",
+				"External/setup blocker: the clean validation copy cannot satisfy existing config fixture dependencies.",
+				"The same validation run also reports pre-existing cacheDir resolution expectation failures.",
+				"Raw stdout and stderr are preserved in this round directory.",
+			].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"Only 1 line beginning with ROUND exists in progress.md, below the task-required minimum of 8 meaningful build/review cycles. The latest declared validation command run failed, with evidence in workflow-output/round-1/ showing unresolved clean-copy config fixture dependencies and cacheDir expectation failures; only one scoped source/test improvement is present so another build round is required.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "continue",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: [],
+			terminalBlockerEvidenceFiles: [],
+		});
+	});
+
 	it("routes archive-readiness-only reviews to semantic archive guard instead of another build round", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
