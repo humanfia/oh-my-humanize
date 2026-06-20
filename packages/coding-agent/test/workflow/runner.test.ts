@@ -140,6 +140,33 @@ function isStatePatchEvent(data: unknown): boolean {
 	return isRecord(data) && data.event === "state_patch_applied";
 }
 
+interface TestTask {
+	id: string;
+	value?: number;
+}
+
+function taskFromState(input: WorkflowScriptNodeInput): TestTask {
+	const state = input.context?.state;
+	const task = isRecord(state) ? state.task : undefined;
+	if (!isRecord(task) || typeof task.id !== "string") {
+		throw new Error("expected foreach item state at task.id");
+	}
+	const result: TestTask = { id: task.id };
+	if (typeof task.value === "number") result.value = task.value;
+	return result;
+}
+
+function itemFromState(input: WorkflowScriptNodeInput): TestTask {
+	const state = input.context?.state;
+	const item = isRecord(state) ? state.item : undefined;
+	if (!isRecord(item) || typeof item.id !== "string") {
+		throw new Error("expected foreach item state at item.id");
+	}
+	const result: TestTask = { id: item.id };
+	if (typeof item.value === "number") result.value = item.value;
+	return result;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -276,6 +303,432 @@ edges: []
 				verdict: "done",
 			},
 		);
+	});
+
+	it("runs foreach item bodies with bounded concurrency and deterministic records", async () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(
+			`
+name: foreach-runner
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      itemName: task
+      key: /id
+      concurrency: 2
+      failureMode: allSettled
+      output:
+        path: /taskResults
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const firstStarted = Promise.withResolvers<void>();
+		const secondStarted = Promise.withResolvers<void>();
+		const thirdStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		const releaseSecond = Promise.withResolvers<void>();
+		const startedKeys: string[] = [];
+		let active = 0;
+		let maxActive = 0;
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				const task = taskFromState(input);
+				startedKeys.push(task.id);
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				if (task.id === "a") {
+					firstStarted.resolve();
+					await releaseFirst.promise;
+				}
+				if (task.id === "b") {
+					secondStarted.resolve();
+					await releaseSecond.promise;
+				}
+				if (task.id === "c") thirdStarted.resolve();
+				active -= 1;
+				return {
+					summary: `processed ${task.id}`,
+					data: { value: task.value },
+					artifacts: [`artifact://workflow/${task.id}.json`],
+				};
+			},
+		};
+
+		const runPromise = runWorkflow({
+			host,
+			definition,
+			runId: "foreach-runner",
+			startNodeId: "fanout",
+			runtimeHost,
+			initialState: {
+				tasks: [
+					{ id: "a", value: 1 },
+					{ id: "b", value: 2 },
+					{ id: "c", value: 3 },
+				],
+			},
+		});
+		await firstStarted.promise;
+		await secondStarted.promise;
+		const thirdBeforeRelease = await Promise.race([
+			thirdStarted.promise.then(() => "third-started"),
+			Bun.sleep(20).then(() => "blocked"),
+		]);
+		releaseFirst.resolve();
+		releaseSecond.resolve();
+		const result = await runPromise;
+
+		expect(thirdBeforeRelease).toBe("blocked");
+		expect(startedKeys).toEqual(["a", "b", "c"]);
+		expect(maxActive).toBe(2);
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["fanout", "completed"],
+		]);
+		expect(result.scheduler.state.taskResults).toEqual({
+			records: [
+				{
+					key: "a",
+					index: 0,
+					status: "completed",
+					summary: "processed a",
+					data: { value: 1 },
+					artifacts: ["artifact://workflow/a.json"],
+				},
+				{
+					key: "b",
+					index: 1,
+					status: "completed",
+					summary: "processed b",
+					data: { value: 2 },
+					artifacts: ["artifact://workflow/b.json"],
+				},
+				{
+					key: "c",
+					index: 2,
+					status: "completed",
+					summary: "processed c",
+					data: { value: 3 },
+					artifacts: ["artifact://workflow/c.json"],
+				},
+			],
+			lifecycle: {
+				queuedKeys: [],
+				runningKeys: [],
+				completedKeys: ["a", "b", "c"],
+				failedKeys: [],
+				abortedKeys: [],
+			},
+		});
+	});
+
+	it("keeps foreach allSettled records when an item body fails", async () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(
+			`
+name: foreach-all-settled
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      key: /id
+      failureMode: allSettled
+      output:
+        path: /taskResults
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				const task = itemFromState(input);
+				if (task.id === "b") throw new Error("task b failed");
+				return { summary: `processed ${task.id}`, data: { id: task.id } };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "foreach-all-settled",
+			startNodeId: "fanout",
+			runtimeHost,
+			initialState: { tasks: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+		});
+
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["fanout", "completed"],
+		]);
+		expect(result.scheduler.state.taskResults).toMatchObject({
+			records: [
+				{ key: "a", index: 0, status: "completed" },
+				{ key: "b", index: 1, status: "failed", error: "task b failed" },
+				{ key: "c", index: 2, status: "completed" },
+			],
+			lifecycle: {
+				completedKeys: ["a", "c"],
+				failedKeys: ["b"],
+			},
+		});
+	});
+
+	it("fails foreach failFast activations on the first item failure", async () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(
+			`
+name: foreach-fail-fast
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      key: /id
+      failureMode: failFast
+      output:
+        path: /taskResults
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				const task = itemFromState(input);
+				if (task.id === "b") throw new Error("task b failed");
+				return { summary: `processed ${task.id}` };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "foreach-fail-fast",
+			startNodeId: "fanout",
+			runtimeHost,
+			initialState: { tasks: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+		});
+
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["fanout", "failed"],
+		]);
+		expect(result.scheduler.activations[0]?.error).toBe('foreach node "fanout" item "b" failed: task b failed');
+		expect(result.scheduler.state).toEqual({
+			tasks: [{ id: "a" }, { id: "b" }, { id: "c" }],
+		});
+	});
+
+	it("maps child workflow invocation refs into foreach item records", async () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(
+			`
+name: foreach-child
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      key: /id
+      output:
+        path: /childRuns
+      body:
+        workflow:
+          path: ./child.omhflow
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runWorkflowNode: async input => ({
+				summary: `child ${input.itemKey}`,
+				data: { accepted: true },
+				childFamilyId: `family-${input.itemKey}`,
+				childAttemptId: `attempt-${input.itemKey}`,
+			}),
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "foreach-child",
+			startNodeId: "fanout",
+			runtimeHost,
+			initialState: { tasks: [{ id: "a" }, { id: "b" }] },
+		});
+
+		expect(result.scheduler.state.childRuns).toEqual({
+			records: [
+				{
+					key: "a",
+					index: 0,
+					status: "completed",
+					summary: "child a",
+					data: { accepted: true },
+					childFamilyId: "family-a",
+					childAttemptId: "attempt-a",
+				},
+				{
+					key: "b",
+					index: 1,
+					status: "completed",
+					summary: "child b",
+					data: { accepted: true },
+					childFamilyId: "family-b",
+					childAttemptId: "attempt-b",
+				},
+			],
+			lifecycle: {
+				queuedKeys: [],
+				runningKeys: [],
+				completedKeys: ["a", "b"],
+				failedKeys: [],
+				abortedKeys: [],
+			},
+		});
+	});
+
+	it("runs child workflow invocation nodes through the runtime host seam", async () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(
+			`
+name: child-node
+version: 1
+nodes:
+  invokeChild:
+    type: workflow
+    workflow:
+      path: ./child.omhflow
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const receivedPaths: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runWorkflowNode: async input => {
+				receivedPaths.push(input.workflowPath);
+				return {
+					summary: "child completed",
+					data: { result: "ok" },
+					childFamilyId: "family-child",
+					childAttemptId: "attempt-child-1",
+				};
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "child-node",
+			startNodeId: "invokeChild",
+			runtimeHost,
+		});
+
+		expect(receivedPaths).toEqual(["./child.omhflow"]);
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["invokeChild", "completed"],
+		]);
+		expect(result.scheduler.activations[0]?.output).toEqual({
+			summary: "child completed",
+			data: {
+				result: "ok",
+				childFamilyId: "family-child",
+				childAttemptId: "attempt-child-1",
+			},
+		});
+	});
+
+	it("preserves foreach lifecycle keys when parent cancellation aborts queued item work", async () => {
+		const host = createHost();
+		const controller = new AbortController();
+		const definition = parseWorkflowDefinition(
+			`
+name: foreach-abort
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      key: /id
+      concurrency: 1
+      failureMode: allSettled
+      output:
+        path: /taskResults
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				const task = itemFromState(input);
+				if (task.id === "b") {
+					controller.abort("operator stopped foreach");
+					throw new Error("operator stopped foreach");
+				}
+				return { summary: `processed ${task.id}` };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "foreach-abort",
+			startNodeId: "fanout",
+			runtimeHost,
+			initialState: { tasks: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+			signal: controller.signal,
+		});
+
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["fanout", "completed"],
+		]);
+		expect(result.scheduler.state.taskResults).toMatchObject({
+			records: [
+				{ key: "a", index: 0, status: "completed" },
+				{ key: "b", index: 1, status: "aborted", error: "operator stopped foreach" },
+				{ key: "c", index: 2, status: "queued" },
+			],
+			lifecycle: {
+				queuedKeys: ["c"],
+				runningKeys: [],
+				completedKeys: ["a"],
+				failedKeys: [],
+				abortedKeys: ["b"],
+			},
+		});
 	});
 
 	it("checkpoints frozen attempts that stop at the activation limit", async () => {

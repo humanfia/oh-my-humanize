@@ -602,6 +602,76 @@ edges: []
 		);
 	});
 
+	it("captures dynamic foreach and child workflow metadata in static checks", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "release"), { recursive: true });
+		const childPath = path.join(dir, "child.omhflow");
+		await Bun.write(
+			childPath,
+			omhflowSource(`
+nodes:
+  child:
+    type: script
+    script:
+      inline: |
+        return { summary: "child" };
+edges: []
+`),
+		);
+		const flowPath = path.join(dir, "release.omhflow");
+		await Bun.write(
+			flowPath,
+			omhflowSource(`
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      key: /id
+      output:
+        path: /childRuns
+      body:
+        workflow:
+          path: ./child.omhflow
+edges: []
+`),
+		);
+
+		const artifact = await loadWorkflowArtifact(flowPath);
+		const freeze = await freezeWorkflowArtifact(artifact);
+
+		expect(freeze.staticCheckReport.checks).toContainEqual({
+			name: "dynamic-topology",
+			status: "passed",
+			details: ["foreach fanout reads /tasks -> /childRuns", "child workflow fanout -> ./child.omhflow"],
+		});
+		expect(freeze.childWorkflowHashes?.map(hash => hash.path)).toEqual(["child.omhflow"]);
+		expect(freeze.childWorkflowHashes?.[0]?.hash).toMatch(/^sha256:/u);
+	});
+
+	it("rejects missing child workflow files before production freeze", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "release"), { recursive: true });
+		const flowPath = path.join(dir, "release.omhflow");
+		await Bun.write(
+			flowPath,
+			omhflowSource(`
+nodes:
+  invokeChild:
+    type: workflow
+    workflow:
+      path: ./missing-child.omhflow
+edges: []
+`),
+		);
+
+		const artifact = await loadWorkflowArtifact(flowPath);
+
+		await expect(freezeWorkflowArtifact(artifact)).rejects.toThrow(
+			'workflow child node "invokeChild" references unreadable child flow "./missing-child.omhflow"',
+		);
+	});
+
 	it("rejects pure script loops before production freeze", async () => {
 		const dir = await createTempDir();
 		await fs.mkdir(path.join(dir, "release"), { recursive: true });

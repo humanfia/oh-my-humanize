@@ -118,6 +118,96 @@ use: loop
 		await expect(loadWorkflowArtifact(flowPath)).rejects.toThrow('modules.loop.use creates a module cycle at "loop"');
 	});
 
+	it("compiles foreach as one dynamic node without static branch expansion", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "dynamic"), { recursive: true });
+		const flowPath = path.join(dir, "dynamic.omhflow");
+		await Bun.write(
+			flowPath,
+			flowSource(`
+sequence:
+  - foreach:
+      id: fanout
+      items: /tasks
+      itemName: task
+      key: /id
+      concurrency: 3
+      failureMode: allSettled
+      output:
+        path: /taskResults
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+  - node:
+      id: summarize
+      type: script
+      script:
+        inline: |
+          return { summary: "summarized" };
+`),
+		);
+
+		const artifact = await loadWorkflowArtifact(flowPath);
+
+		expect(artifact.entryNodeIds).toEqual(["fanout"]);
+		expect(artifact.definition.nodes.map(node => [node.id, node.type])).toEqual([
+			["fanout", "foreach"],
+			["summarize", "script"],
+		]);
+		expect(artifact.definition.edges.map(edge => [edge.from, edge.to])).toEqual([["fanout", "summarize"]]);
+		expect(artifact.definition.nodes[0]).toMatchObject({
+			foreach: {
+				items: "/tasks",
+				itemName: "task",
+				key: "/id",
+				concurrency: 3,
+				failureMode: "allSettled",
+				output: { path: "/taskResults" },
+				body: {
+					kind: "node",
+					node: { id: "processTask", type: "script" },
+				},
+			},
+		});
+	});
+
+	it("compiles foreach child workflow bodies as dynamic invocations", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "dynamic-child"), { recursive: true });
+		const flowPath = path.join(dir, "dynamic-child.omhflow");
+		await Bun.write(
+			flowPath,
+			flowSource(`
+foreach:
+  id: fanout
+  items: /tasks
+  output:
+    path: /childRuns
+  body:
+    workflow:
+      path: ./child.omhflow
+`),
+		);
+
+		const artifact = await loadWorkflowArtifact(flowPath);
+
+		expect(artifact.definition.nodes).toHaveLength(1);
+		expect(artifact.definition.nodes[0]).toMatchObject({
+			id: "fanout",
+			type: "foreach",
+			foreach: {
+				body: {
+					kind: "workflow",
+					workflow: { path: "./child.omhflow" },
+				},
+			},
+		});
+	});
+
 	it("rejects artifacts with multiple workflow blocks", async () => {
 		const dir = await createTempDir();
 		await fs.mkdir(path.join(dir, "multi"), { recursive: true });

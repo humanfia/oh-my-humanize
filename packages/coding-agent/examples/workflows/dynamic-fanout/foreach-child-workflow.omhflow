@@ -1,0 +1,30 @@
+---
+name: foreach-child-workflow
+version: 1
+schema: omhflow/v1
+checkpoint:
+  stopDeadlineMs: 30000
+changePolicy:
+  agentsCanPropose: false
+  humansCanApprove: true
+---
+# Foreach Child Workflow
+
+```yaml workflow
+stateSchema:
+  version: 1
+  shape:
+    tasks: array
+    childRuns: object
+foreach:
+  id: runChildForTasks
+  items: /tasks
+  key: /id
+  concurrency: 2
+  failureMode: allSettled
+  output:
+    path: /childRuns
+  body:
+    workflow:
+      path: ./foreach-child-worker.omhflow
+```

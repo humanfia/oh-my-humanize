@@ -1,0 +1,22 @@
+---
+name: foreach-child-worker
+version: 1
+schema: omhflow/v1
+checkpoint:
+  stopDeadlineMs: 30000
+changePolicy:
+  agentsCanPropose: false
+  humansCanApprove: true
+---
+# Foreach Child Worker
+
+```yaml workflow
+nodes:
+  handleTask:
+    type: script
+    script:
+      language: js
+      inline: |
+        return { summary: "child workflow handled task" };
+edges: []
+```

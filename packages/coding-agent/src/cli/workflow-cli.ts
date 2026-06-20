@@ -17,6 +17,7 @@ import {
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV,
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV,
 } from "../workflow/model-env";
+import type { WorkflowWorkflowNodeOutput } from "../workflow/node-runtime";
 import { loadWorkflowArtifact, WorkflowPackageError } from "../workflow/package-loader";
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../workflow/run-store";
 import { runWorkflow } from "../workflow/runner";
@@ -26,6 +27,7 @@ import { workflowScriptEnvironment } from "../workflow/script-runtime-env";
 import {
 	createSessionWorkflowRuntimeHost,
 	type WorkflowAgentTaskRequest,
+	type WorkflowChildWorkflowRequest,
 	type WorkflowShellScriptRequest,
 } from "../workflow/session-runtime";
 
@@ -204,6 +206,7 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 	const runtimeHost = createSessionWorkflowRuntimeHost({
 		cwd,
 		runEvalScript: async request => runHeadlessEvalScript(cwd, request.code, request.language),
+		runChildWorkflow: async request => runHeadlessChildWorkflow(cwd, host, request),
 		runShellScript: async request => runHeadlessShellScript(cwd, request),
 		runAgentTask: async request => runHeadlessAgentTask(cwd, request),
 	});
@@ -393,10 +396,8 @@ function createHeadlessRuntimeBindingSnapshot(
 	const tools = new Set<string>();
 	const agents = new Set<string>();
 	for (const node of definition.nodes) {
-		if (node.type === "script") tools.add(node.script?.language === "sh" ? "bash" : "eval");
-		if (node.type === "human") tools.add("ask");
-		if (node.type === "agent" || node.type === "review") tools.add("task");
-		if (node.agent) agents.add(node.agent);
+		for (const tool of headlessRuntimeBindingToolsForNode(node)) tools.add(tool);
+		for (const agent of headlessRuntimeBindingAgentsForNode(node)) agents.add(agent);
 	}
 	for (const tool of definition.capabilities?.tools ?? []) tools.add(tool);
 	for (const agent of definition.capabilities?.agents ?? []) agents.add(agent);
@@ -416,6 +417,100 @@ function createHeadlessRuntimeBindingSnapshot(
 			? ["headless workflow CLI cannot answer human nodes; use interactive /workflow start for those flows"]
 			: [],
 	};
+}
+
+function headlessRuntimeBindingToolsForNode(node: WorkflowStartPackage["definition"]["nodes"][number]): string[] {
+	if (node.type === "script") return [node.script?.language === "sh" ? "bash" : "eval"];
+	if (node.type === "human") return ["ask"];
+	if (node.type === "agent" || node.type === "review") return ["task"];
+	if (node.type === "workflow") return ["workflow"];
+	if (node.type === "foreach") {
+		if (node.foreach?.body.kind === "workflow") return ["workflow"];
+		if (node.foreach?.body.kind === "node") return headlessRuntimeBindingToolsForNode(node.foreach.body.node);
+	}
+	return [];
+}
+
+function headlessRuntimeBindingAgentsForNode(node: WorkflowStartPackage["definition"]["nodes"][number]): string[] {
+	if (node.agent) return [node.agent];
+	if (node.type === "foreach" && node.foreach?.body.kind === "node") {
+		return headlessRuntimeBindingAgentsForNode(node.foreach.body.node);
+	}
+	return [];
+}
+
+async function runHeadlessChildWorkflow(
+	cwd: string,
+	host: WorkflowRunStoreHost,
+	request: WorkflowChildWorkflowRequest,
+): Promise<WorkflowWorkflowNodeOutput> {
+	const childPath = resolveHeadlessChildWorkflowPath(cwd, request);
+	const pkg = await loadWorkflowStartPackage(childPath);
+	if (pkg.freeze === undefined) {
+		throw new Error(`Child workflow "${request.workflowPath}" must be a frozen .omhflow artifact`);
+	}
+	const startNodeIds = defaultWorkflowStartNodeIds(pkg.definition);
+	const startNodeId = startNodeIds[0];
+	if (!startNodeId) throw new Error(`Child workflow "${request.workflowPath}" has no start node`);
+	const runId = `${request.activationId}:child:${safeWorkflowIdPart(request.itemKey ?? request.nodeId)}`;
+	const familyId = `${runId}:family`;
+	const attemptId = `${runId}:attempt-1`;
+	const runtimeHost = createSessionWorkflowRuntimeHost({
+		cwd,
+		runEvalScript: async childRequest => runHeadlessEvalScript(cwd, childRequest.code, childRequest.language),
+		runChildWorkflow: async childRequest => runHeadlessChildWorkflow(cwd, host, childRequest),
+		runShellScript: async childRequest => runHeadlessShellScript(cwd, childRequest),
+		runAgentTask: async childRequest => runHeadlessAgentTask(cwd, childRequest),
+	});
+	const runtimeBindingSnapshot = createHeadlessRuntimeBindingSnapshot(pkg.definition, `${runId}:binding-1`);
+	const bindingError = workflowRuntimeBindingUnavailableError(runtimeBindingSnapshot, pkg.definition, startNodeIds);
+	if (bindingError !== undefined) throw new Error(bindingError);
+	const result = await runWorkflow({
+		host,
+		definition: pkg.definition,
+		runId,
+		startNodeId,
+		...(startNodeIds.length > 1 ? { startNodeIds } : {}),
+		runtimeHost,
+		packageRoot: pkg.rootPath,
+		initialState: structuredClone(request.state),
+		...(pkg.freeze !== undefined ? { frozenResources: pkg.freeze.resourceSnapshots } : {}),
+		signal: request.signal,
+		nodeAbortSignal: request.signal,
+		maxRuntimeMs: DEFAULT_WORKFLOW_MAX_RUNTIME_MS,
+		lifecycle: {
+			familyId,
+			attemptId,
+			freeze: pkg.freeze,
+			runtimeBindingSnapshot,
+		},
+	});
+	const failed = result.scheduler.activations.find(activation => activation.status === "failed");
+	if (failed !== undefined) {
+		throw new Error(`Child workflow "${request.workflowPath}" failed at node "${failed.nodeId}": ${failed.error}`);
+	}
+	const completed = result.scheduler.activations.filter(activation => activation.status === "completed");
+	return {
+		summary: completed.at(-1)?.output?.summary ?? `child workflow "${request.workflowPath}" completed`,
+		data: {
+			status: result.scheduler.limitReached ? "stopped" : "completed",
+			state: structuredClone(result.scheduler.state),
+		},
+		childFamilyId: familyId,
+		childAttemptId: attemptId,
+	};
+}
+
+function resolveHeadlessChildWorkflowPath(cwd: string, request: WorkflowChildWorkflowRequest): string {
+	if (path.isAbsolute(request.workflowPath)) return request.workflowPath;
+	if (request.workflowBasePath !== undefined) {
+		return path.resolve(path.dirname(request.workflowBasePath), request.workflowPath);
+	}
+	return path.resolve(cwd, request.workflowPath);
+}
+
+function safeWorkflowIdPart(value: string): string {
+	return value.replace(/[^A-Za-z0-9_.:-]+/gu, "-");
 }
 
 async function runHeadlessEvalScript(

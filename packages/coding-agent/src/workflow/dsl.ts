@@ -152,13 +152,16 @@ class WorkflowDslCompiler {
 		if (step.parallel !== undefined) {
 			return this.compileParallel(step, path);
 		}
+		if (step.foreach !== undefined) {
+			return this.compileForeach(step.foreach, `${path}.foreach`);
+		}
 		if (step.template !== undefined) {
 			return this.compileTemplate(step.template, `${path}.template`);
 		}
 		if (step.node !== undefined) {
 			return this.compileNode(step.node, `${path}.node`);
 		}
-		throw new WorkflowDslError(`${path} must define one of node, sequence, parallel, template, or use`);
+		throw new WorkflowDslError(`${path} must define one of node, sequence, parallel, foreach, template, or use`);
 	}
 
 	compileSequence(steps: unknown[], path: string): CompileResult {
@@ -199,6 +202,14 @@ class WorkflowDslCompiler {
 		const node = this.normalizeNode(rawNode, path);
 		this.addNode(node, path);
 		return { entries: [node.id], exits: [nodeExit(node.id)] };
+	}
+
+	compileForeach(rawForeach: unknown, path: string): CompileResult {
+		const foreach = { ...expectRecord(rawForeach, path) };
+		const id = expectString(foreach.id, `${path}.id`);
+		delete foreach.id;
+		this.addNode({ id, type: "foreach", foreach }, path);
+		return { entries: [id], exits: [nodeExit(id)] };
 	}
 
 	compileExternalModule(moduleName: string, externalModule: WorkflowDslExternalModule, path: string): CompileResult {
@@ -277,6 +288,7 @@ class WorkflowDslCompiler {
 			branch.node !== undefined ||
 			branch.sequence !== undefined ||
 			branch.parallel !== undefined ||
+			branch.foreach !== undefined ||
 			branch.template !== undefined ||
 			branch.use !== undefined
 		) {

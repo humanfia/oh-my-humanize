@@ -37,6 +37,7 @@ export interface WorkflowGraphView {
 	changes: WorkflowGraphChangeCounts;
 	topology: WorkflowGraphTopologyView;
 	subflows?: WorkflowGraphSubflowView[];
+	childWorkflows?: WorkflowGraphChildWorkflowView[];
 	activeAgents?: WorkflowGraphActiveAgentView[];
 	focus?: WorkflowGraphFocusView;
 	nodes: WorkflowGraphNodeView[];
@@ -66,6 +67,8 @@ export interface WorkflowGraphTopologyView {
 	joins: number;
 	loops: number;
 	subflows: number;
+	dynamicFanOuts?: number;
+	childWorkflows?: number;
 }
 
 export interface WorkflowGraphSubflowView {
@@ -77,6 +80,12 @@ export interface WorkflowGraphSubflowView {
 	entryNodeIds: string[];
 	exitNodeIds: string[];
 	resourcePrefix?: string;
+}
+
+export interface WorkflowGraphChildWorkflowView {
+	nodeId: string;
+	path: string;
+	withinForeach: boolean;
 }
 
 export interface WorkflowGraphActiveAgentView {
@@ -240,7 +249,14 @@ export function buildWorkflowGraphView(
 			if (edge.label !== undefined) view.label = edge.label;
 			return view;
 		}) ?? [];
-	const topology = buildWorkflowGraphTopology(nodes, edges, currentFreeze?.definition.subflows?.length ?? 0);
+	const childWorkflows = formatWorkflowChildWorkflows(currentFreeze?.definition.nodes ?? []);
+	const topology = buildWorkflowGraphTopology(
+		nodes,
+		edges,
+		currentFreeze?.definition.subflows?.length ?? 0,
+		currentFreeze?.definition.nodes ?? [],
+		childWorkflows.length,
+	);
 	const selectedRoutes = buildWorkflowGraphSelectedRoutes(currentAttempt, edges);
 	const activeAgents = formatActiveWorkflowAgents(currentAttempt, currentFreeze?.definition.nodes ?? [], options);
 	const focus = buildWorkflowGraphFocus(nodes, activeAgents, currentAttempt);
@@ -274,6 +290,7 @@ export function buildWorkflowGraphView(
 			...(subflow.resourcePrefix !== undefined ? { resourcePrefix: subflow.resourcePrefix } : {}),
 		}));
 	}
+	if (childWorkflows.length > 0) view.childWorkflows = childWorkflows;
 	if (activeAgents.length > 0) view.activeAgents = activeAgents;
 	if (family.objective !== undefined) view.objective = family.objective;
 	if (latestFreeze?.id !== undefined) view.latestFreezeId = latestFreeze.id;
@@ -313,6 +330,10 @@ export function renderWorkflowGraphText(view: WorkflowGraphView, options: Workfl
 	if (view.subflows !== undefined && view.subflows.length > 0) {
 		lines.push("Flow calls:");
 		for (const subflow of view.subflows) lines.push(`- ${formatWorkflowSubflow(subflow)}`);
+	}
+	if (view.childWorkflows !== undefined && view.childWorkflows.length > 0) {
+		lines.push("Child workflows:");
+		for (const childWorkflow of view.childWorkflows) lines.push(`- ${formatWorkflowChildWorkflow(childWorkflow)}`);
 	}
 	const onFlight = formatWorkflowOnFlightLines(view);
 	if (onFlight.length > 0) {
@@ -427,6 +448,8 @@ function buildWorkflowGraphTopology(
 	nodes: readonly WorkflowGraphNodeView[],
 	edges: readonly WorkflowGraphEdgeView[],
 	subflows: number,
+	definitionNodes: readonly WorkflowNode[],
+	childWorkflows: number,
 ): WorkflowGraphTopologyView {
 	const order = new Map(nodes.map((node, index) => [node.id, index]));
 	const outgoing = new Map<string, WorkflowGraphEdgeView[]>();
@@ -453,7 +476,11 @@ function buildWorkflowGraphTopology(
 	for (const edge of edges) {
 		if (isWorkflowBackEdge(edge, order)) loops += 1;
 	}
-	return { parallelFanOuts, branchPoints, joins, loops, subflows };
+	const topology: WorkflowGraphTopologyView = { parallelFanOuts, branchPoints, joins, loops, subflows };
+	const dynamicFanOuts = definitionNodes.filter(node => node.type === "foreach").length;
+	if (dynamicFanOuts > 0) topology.dynamicFanOuts = dynamicFanOuts;
+	if (childWorkflows > 0) topology.childWorkflows = childWorkflows;
+	return topology;
 }
 
 function isWorkflowBackEdge(edge: WorkflowGraphEdgeView, order: Map<string, number>): boolean {
@@ -1784,7 +1811,22 @@ function isFocusedWorkflowGraphNode(status: WorkflowGraphNodeStatus): boolean {
 }
 
 function formatWorkflowNodeKind(node: WorkflowNode): string {
+	if (node.type === "foreach") return "foreach";
+	if (node.type === "workflow") return "workflow";
 	return formatWorkflowNodeRole(node);
+}
+
+function formatWorkflowChildWorkflows(nodes: readonly WorkflowNode[]): WorkflowGraphChildWorkflowView[] {
+	const childWorkflows: WorkflowGraphChildWorkflowView[] = [];
+	for (const node of nodes) {
+		if (node.workflow !== undefined) {
+			childWorkflows.push({ nodeId: node.id, path: node.workflow.path, withinForeach: false });
+		}
+		if (node.foreach?.body.kind === "workflow") {
+			childWorkflows.push({ nodeId: node.id, path: node.foreach.body.workflow.path, withinForeach: true });
+		}
+	}
+	return childWorkflows;
 }
 
 function formatActiveWorkflowAgents(
@@ -2002,6 +2044,9 @@ function formatWorkflowViewTopology(view: WorkflowGraphView): string {
 
 function formatWorkflowTopologyParts(topology: WorkflowGraphTopologyView): string[] {
 	const parts: string[] = [];
+	if ((topology.dynamicFanOuts ?? 0) > 0) {
+		parts.push(`dynamic fan-outs ${topology.dynamicFanOuts}`);
+	}
 	if (topology.parallelFanOuts > 0) {
 		parts.push(`parallel fan-outs ${topology.parallelFanOuts}`);
 	}
@@ -2009,6 +2054,7 @@ function formatWorkflowTopologyParts(topology: WorkflowGraphTopologyView): strin
 	if (topology.joins > 0) parts.push(`joins ${topology.joins}`);
 	if (topology.loops > 0) parts.push(`loops ${topology.loops}`);
 	if (topology.subflows > 0) parts.push(`subflows ${topology.subflows}`);
+	if ((topology.childWorkflows ?? 0) > 0) parts.push(`child workflows ${topology.childWorkflows}`);
 	return parts;
 }
 
@@ -2174,6 +2220,11 @@ export function formatWorkflowSubflow(subflow: WorkflowGraphSubflowView): string
 	const exits = subflow.exitNodeIds.map(nodeId => formatSubflowNodeReference(subflow, nodeId)).join(", ") || "none";
 	const resources = subflow.resourcePrefix === undefined ? "" : ` · resources ${subflow.resourcePrefix}`;
 	return `${subflow.alias} calls ${subflow.name}@${subflow.version} · ${subflow.nodeCount} ${pluralNode(subflow.nodeCount)} · entry ${entries} · exit ${exits}${resources}`;
+}
+
+export function formatWorkflowChildWorkflow(childWorkflow: WorkflowGraphChildWorkflowView): string {
+	const mode = childWorkflow.withinForeach ? "foreach invokes" : "invokes";
+	return `${childWorkflow.nodeId} ${mode} ${childWorkflow.path}`;
 }
 
 function formatSubflowNodeReference(subflow: WorkflowGraphSubflowView, nodeId: string): string {

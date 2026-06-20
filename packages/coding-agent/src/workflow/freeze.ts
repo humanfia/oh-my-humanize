@@ -16,6 +16,7 @@ export interface FlowFreeze {
 	resourceDir: string;
 	mainContentHash: string;
 	resourceHashes: FlowFreezeResourceHash[];
+	childWorkflowHashes?: FlowFreezeResourceHash[];
 	resourceSnapshots: FlowFreezeResourceSnapshot[];
 	canonicalGraphHash: string;
 	sourceMapping: WorkflowArtifact["sourceMapping"];
@@ -77,9 +78,11 @@ export async function freezeWorkflowArtifact(artifact: WorkflowArtifact): Promis
 	validateNodeRuntimeContracts(artifact.definition);
 	const resourceReferences = collectResourceReferences(artifact);
 	await validateReferencedResources(artifact.resourceDir, resourceReferences);
+	await validateChildWorkflowReferences(artifact);
 	await validateDeclaredChangeRequestFiles(artifact);
 	const resourceHashes = await hashResourceDirectory(artifact.resourceDir);
 	const resourceSnapshots = await snapshotReferencedResources(artifact.resourceDir, resourceReferences);
+	const childWorkflowHashes = await hashChildWorkflowReferences(artifact);
 	const canonicalGraphHash = contentHash(stableStringify(canonicalGraph(artifact.definition)));
 	const mainContentHash = contentHash(artifact.source);
 	const schemaVersion = artifact.metadata.schema;
@@ -89,10 +92,11 @@ export async function freezeWorkflowArtifact(artifact: WorkflowArtifact): Promis
 			mainContentHash,
 			resourceHashes,
 			resourceSnapshots,
+			childWorkflowHashes,
 			canonicalGraphHash,
 		}),
 	).slice("sha256:".length)}`;
-	return {
+	const freeze: FlowFreeze = {
 		id,
 		schemaVersion,
 		flowPath: artifact.flowPath,
@@ -109,6 +113,8 @@ export async function freezeWorkflowArtifact(artifact: WorkflowArtifact): Promis
 		changeRequests: structuredClone(artifact.changeRequests),
 		definition: structuredClone(artifact.definition),
 	};
+	if (childWorkflowHashes.length > 0) freeze.childWorkflowHashes = childWorkflowHashes;
+	return freeze;
 }
 
 function buildStaticCheckReport(definition: WorkflowDefinition): WorkflowStaticCheckReport {
@@ -120,6 +126,8 @@ function buildStaticCheckReport(definition: WorkflowDefinition): WorkflowStaticC
 	];
 	const stateSchemaCheck = workflowStateSchemaCheck(definition);
 	if (stateSchemaCheck !== undefined) checks.push(stateSchemaCheck);
+	const dynamicTopologyCheck = workflowDynamicTopologyCheck(definition);
+	if (dynamicTopologyCheck !== undefined) checks.push(dynamicTopologyCheck);
 	checks.push({ name: "canonical-graph", status: "passed" });
 	return { status: "passed", checks };
 }
@@ -132,6 +140,25 @@ function workflowStateSchemaCheck(definition: WorkflowDefinition): WorkflowStati
 		details: Object.entries(definition.stateSchema.shape)
 			.sort(([left], [right]) => left.localeCompare(right))
 			.map(([field, type]) => `${field}: ${type}`),
+	};
+}
+
+function workflowDynamicTopologyCheck(definition: WorkflowDefinition): WorkflowStaticCheck | undefined {
+	const details: string[] = [];
+	for (const node of definition.nodes) {
+		if (node.foreach !== undefined) {
+			details.push(`foreach ${node.id} reads ${node.foreach.items} -> ${node.foreach.output.path}`);
+			if (node.foreach.body.kind === "workflow") {
+				details.push(`child workflow ${node.id} -> ${node.foreach.body.workflow.path}`);
+			}
+		}
+		if (node.workflow !== undefined) details.push(`child workflow ${node.id} -> ${node.workflow.path}`);
+	}
+	if (details.length === 0) return undefined;
+	return {
+		name: "dynamic-topology",
+		status: "passed",
+		details,
 	};
 }
 
@@ -183,25 +210,28 @@ function validateFreezeMetadata(artifact: WorkflowArtifact): {
 
 function validateNodeRuntimeContracts(definition: WorkflowDefinition): void {
 	for (const node of definition.nodes) {
-		validateNodeStateScopes(node);
-		validatePromptReadScope(node);
-		if (node.type === "script" && !node.script?.code && !node.script?.file) {
-			throw new WorkflowFreezeError(
-				`workflow script node "${node.id}" must define inline code or a script file before production freeze`,
-			);
-		}
-		if (node.type === "agent" && !node.agent) {
-			throw new WorkflowFreezeError(
-				`workflow agent node "${node.id}" must define an agent before production freeze`,
-			);
-		}
-		if ((node.type === "human" || node.type === "review") && !node.promptSource && !node.prompt?.trim()) {
-			throw new WorkflowFreezeError(
-				`workflow ${node.type} node "${node.id}" must define a prompt before production freeze`,
-			);
-		}
+		validateNodeRuntimeContract(node);
+		if (node.foreach?.body.kind === "node") validateNodeRuntimeContract(node.foreach.body.node);
 	}
 	validateLoopProgressContracts(definition);
+}
+
+function validateNodeRuntimeContract(node: WorkflowNode): void {
+	validateNodeStateScopes(node);
+	validatePromptReadScope(node);
+	if (node.type === "script" && !node.script?.code && !node.script?.file) {
+		throw new WorkflowFreezeError(
+			`workflow script node "${node.id}" must define inline code or a script file before production freeze`,
+		);
+	}
+	if (node.type === "agent" && !node.agent) {
+		throw new WorkflowFreezeError(`workflow agent node "${node.id}" must define an agent before production freeze`);
+	}
+	if ((node.type === "human" || node.type === "review") && !node.promptSource && !node.prompt?.trim()) {
+		throw new WorkflowFreezeError(
+			`workflow ${node.type} node "${node.id}" must define a prompt before production freeze`,
+		);
+	}
 }
 
 function validateNodeStateScopes(node: WorkflowNode): void {
@@ -358,19 +388,77 @@ function collectResourceReferences(artifact: WorkflowArtifact): string[] {
 	const references: string[] = [];
 	const definition = artifact.definition;
 	for (const node of definition.nodes) {
-		if (node.promptSource?.kind === "file") {
-			references.push(node.promptSource.path);
-		}
-		if (node.promptSource?.kind === "template") {
-			references.push(node.promptSource.file);
-		}
-		if (node.script?.file) {
-			references.push(node.script.file);
-		}
+		references.push(...collectNodeResourceReferences(node));
+		if (node.foreach?.body.kind === "node") references.push(...collectNodeResourceReferences(node.foreach.body.node));
 	}
 	for (const resource of definition.resources ?? []) references.push(resource.path);
 	for (const request of artifact.changeRequests) references.push(request.path);
 	return references;
+}
+
+function collectNodeResourceReferences(node: WorkflowNode): string[] {
+	const references: string[] = [];
+	if (node.promptSource?.kind === "file") {
+		references.push(node.promptSource.path);
+	}
+	if (node.promptSource?.kind === "template") {
+		references.push(node.promptSource.file);
+	}
+	if (node.script?.file) {
+		references.push(node.script.file);
+	}
+	return references;
+}
+
+async function validateChildWorkflowReferences(artifact: WorkflowArtifact): Promise<void> {
+	for (const node of artifact.definition.nodes) {
+		if (node.workflow !== undefined) {
+			await validateChildWorkflowReference(artifact.flowPath, node.id, node.workflow.path);
+		}
+		if (node.foreach?.body.kind === "workflow") {
+			await validateChildWorkflowReference(artifact.flowPath, node.id, node.foreach.body.workflow.path);
+		}
+	}
+}
+
+async function hashChildWorkflowReferences(artifact: WorkflowArtifact): Promise<FlowFreezeResourceHash[]> {
+	const root = path.dirname(artifact.flowPath);
+	const hashes: FlowFreezeResourceHash[] = [];
+	const seen = new Set<string>();
+	for (const childPath of collectChildWorkflowReferences(artifact.definition)) {
+		const resolved = path.resolve(root, childPath);
+		const relative = path.relative(root, resolved).split(path.sep).join("/");
+		if (seen.has(relative)) continue;
+		seen.add(relative);
+		hashes.push({
+			path: relative,
+			hash: await fileHash(resolved),
+		});
+	}
+	return hashes.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function collectChildWorkflowReferences(definition: WorkflowDefinition): string[] {
+	const references: string[] = [];
+	for (const node of definition.nodes) {
+		if (node.workflow !== undefined) references.push(node.workflow.path);
+		if (node.foreach?.body.kind === "workflow") references.push(node.foreach.body.workflow.path);
+	}
+	return references;
+}
+
+async function validateChildWorkflowReference(flowPath: string, nodeId: string, childPath: string): Promise<void> {
+	const resolved = path.resolve(path.dirname(flowPath), childPath);
+	if (path.extname(resolved) !== ".omhflow") {
+		throw new WorkflowFreezeError(`workflow child node "${nodeId}" must reference a .omhflow file: "${childPath}"`);
+	}
+	try {
+		const stat = await fs.stat(resolved);
+		if (stat.isFile()) return;
+	} catch {
+		throw new WorkflowFreezeError(`workflow child node "${nodeId}" references unreadable child flow "${childPath}"`);
+	}
+	throw new WorkflowFreezeError(`workflow child node "${nodeId}" references unreadable child flow "${childPath}"`);
 }
 
 async function resolveResourcePath(resourceDir: string, resourcePath: string): Promise<string> {
