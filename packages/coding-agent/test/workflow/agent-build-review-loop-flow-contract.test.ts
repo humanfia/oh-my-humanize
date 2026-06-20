@@ -29,6 +29,9 @@ interface ReviewRouteResult {
 		decision: string;
 		reason: string;
 		setupBlockerEvidenceFiles: string[];
+		externalValidationBlockerEvidenceFiles?: string[];
+		terminalBlockerEvidenceFiles?: string[];
+		reviewDecisionTrailFile?: string;
 		reviewVerdict?: string;
 	};
 	statePatch: Array<{
@@ -253,6 +256,47 @@ describe("agent-build-review-loop flow contract", () => {
 			setupBlockerEvidenceFiles: ["workflow-output/round-2/build-summary.txt"],
 		});
 		expect(result.data.reason).toContain("setup blocker");
+	});
+
+	it("routes repeated external validation blockers to reject instead of another build round", async () => {
+		const cwd = await createTempDir();
+		for (const round of [1, 2, 3]) {
+			await fs.mkdir(path.join(cwd, "workflow-output", `round-${round}`), { recursive: true });
+			await Bun.write(
+				path.join(cwd, "workflow-output", `round-${round}`, "validation-summary.txt"),
+				[
+					"Command: ./workflow-output/run-vite-validation.sh",
+					"Result: fail",
+					"Failure: clean-copy validation reached test-serve and failed in playground/tailwind-sourcemap/__tests__/tailwind-sourcemap.spec.ts with page.goto timeout after 30000ms.",
+					"This failure is outside the task scope and repeated after real scoped asset-platform work.",
+				].join("\n"),
+			);
+		}
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary: "The latest validation did not pass, so continue.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "reject",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: [
+				"workflow-output/round-1/validation-summary.txt",
+				"workflow-output/round-2/validation-summary.txt",
+				"workflow-output/round-3/validation-summary.txt",
+			],
+		});
+		expect(result.data.reason).toContain("terminal validation blocker");
+		await expect(Bun.file(path.join(cwd, "workflow-output", "review-route-1.json")).json()).resolves.toMatchObject({
+			decision: "reject",
+			externalValidationBlockerEvidenceFiles: [
+				"workflow-output/round-1/validation-summary.txt",
+				"workflow-output/round-2/validation-summary.txt",
+				"workflow-output/round-3/validation-summary.txt",
+			],
+		});
 	});
 
 	it("preserves an ordinary continue review when no setup blocker evidence exists", async () => {

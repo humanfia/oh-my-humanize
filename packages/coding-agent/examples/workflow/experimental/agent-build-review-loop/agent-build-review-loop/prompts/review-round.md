@@ -11,6 +11,11 @@ Acceptance criteria:
   acceptance evidence rather than inventing a loop count.
 - Return `continue` if the task contract declares a verification command and the
   latest run did not pass.
+- If validation repeatedly fails on the same clearly out-of-scope, unrelated, or
+  environment-only blocker after real scoped work, still return `continue` so
+  the route classifier can reject/archive, but explicitly name it as a terminal
+  external validation blocker. Do not ask the builder to fix unrelated suites or
+  environment flakiness as if they were in-scope findings.
 - Return `continue` if task-specific acceptance criteria are absent, ambiguous,
   or not met.
 - Return `continue` if the newest round did not make a real source, test,

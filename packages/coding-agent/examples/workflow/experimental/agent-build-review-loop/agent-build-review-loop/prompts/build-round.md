@@ -65,6 +65,10 @@ General loop contract:
   `workflow-output/round-<n>/validation-stdout.txt` and
   `workflow-output/round-<n>/validation-stderr.txt`. Summaries are not enough;
   downstream guards require the raw logs to remain in the workspace.
+- If validation fails in a clearly out-of-scope, unrelated, or environmental
+  test after real scoped work, write `workflow-output/round-<n>/validation-summary.txt`
+  and explicitly name the external blocker. Do not convert unrelated validation
+  failures into filler build rounds.
 - Do not modify task-local validation harnesses to install, update, or bootstrap
   dependencies after preflight. Missing validation dependencies are a setup
   blocker to report, not semantic project progress.

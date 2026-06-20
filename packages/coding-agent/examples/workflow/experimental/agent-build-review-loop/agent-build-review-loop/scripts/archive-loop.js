@@ -6,7 +6,10 @@ const archivePath = isRejectArchive ? "workflow-output/final-agent-loop-reject.m
 const verifyCommand = requiredTaskValidationCommand(taskText);
 assertSafeVerificationCommand(verifyCommand);
 const evidenceFiles = await loopEvidenceFiles();
-const archivedEvidenceFiles = mergedEvidenceFiles(evidenceFiles, isRejectArchive ? reviewRoute.setupBlockerEvidenceFiles : []);
+const archivedEvidenceFiles = mergedEvidenceFiles(evidenceFiles, [
+	...(isRejectArchive ? reviewRoute.setupBlockerEvidenceFiles ?? [] : []),
+	reviewRoute.reviewDecisionTrailFile,
+]);
 const roundCount = Math.max(progressRoundCount(progressText), evidenceRoundCount(evidenceFiles));
 if (roundCount === 0 && !isRejectArchive) {
 	throw new Error("agent-build-review-loop cannot archive without at least one ROUND entry in progress.md");
@@ -188,7 +191,9 @@ async function loopEvidenceFiles() {
 	try {
 		const glob = new Bun.Glob("workflow-output/**");
 		for await (const file of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
-			if (/^workflow-output\/(?:round-\d+(?:-|\/)|setup[-_]?blocker)/u.test(file)) files.push(file);
+			if (/^workflow-output\/(?:round-\d+(?:-|\/)|review-route-\d+\.json|setup[-_]?blocker)/u.test(file)) {
+				files.push(file);
+			}
 		}
 	} catch {
 		return [];
