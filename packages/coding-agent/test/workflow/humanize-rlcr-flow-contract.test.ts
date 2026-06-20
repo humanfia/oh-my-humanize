@@ -7,6 +7,7 @@ interface WorkflowActivationOutput {
 	summary?: string;
 	data?: {
 		response?: string;
+		[key: string]: unknown;
 	};
 }
 
@@ -76,6 +77,15 @@ interface FinalizeResult {
 	}>;
 }
 
+interface RoundSummaryResult {
+	summary: string;
+	statePatch: Array<{
+		op: "set";
+		path: string;
+		value: object;
+	}>;
+}
+
 const AsyncFunctionConstructor = Object.getPrototypeOf(async () => {}).constructor as new (
 	workflowContextName: string,
 	code: string,
@@ -88,6 +98,15 @@ afterEach(async () => {
 });
 
 describe("humanize-rlcr flow contract", () => {
+	it("maps undeclared Codex code-review tokens to a conservative issues verdict", async () => {
+		const flow = await Bun.file(
+			path.resolve(import.meta.dir, "../../examples/workflow/experimental/humanize-rlcr/humanize-rlcr.omhflow"),
+		).text();
+
+		expect(flow).toContain("id: codexCodeReview");
+		expect(flow).toMatch(/id:\s*codexCodeReview[\s\S]*?fallbackVerdict:\s*ISSUES/u);
+	});
+
 	it("accepts canary evidence-class acknowledgement as an explicit proceed gate", async () => {
 		const result = await runRecordOperatorGate(
 			[
@@ -156,6 +175,19 @@ describe("humanize-rlcr flow contract", () => {
 
 		expect(result.data.verdict).toBe("REPAIR");
 		expect(result.data.reasons.join("\n")).toContain("mechanical whitespace/style overhead exceeds task diff gate");
+	});
+
+	it("rejects implementation round evidence that claims downstream review completion", async () => {
+		await expect(
+			runWriteRoundSummary({
+				summary: "implemented focused tests",
+				data: {
+					changedFiles: ["src/lib.rs"],
+					reviewSummary: { status: "passed", findings: [] },
+					finalAlignmentCheck: "all done",
+				},
+			}),
+		).rejects.toThrow("implementation round evidence cannot claim downstream review or final-alignment results");
 	});
 
 	it("finalizes with a durable archive and combined staged unstaged untracked patch inventory", async () => {
@@ -227,6 +259,41 @@ async function runDiffDisciplineGuard(cwd: string): Promise<DiffGuardResult> {
 	} finally {
 		process.chdir(originalCwd);
 	}
+}
+
+async function runWriteRoundSummary(implementationOutput: WorkflowActivationOutput): Promise<RoundSummaryResult> {
+	const scriptPath = path.resolve(
+		import.meta.dir,
+		"../../examples/workflow/experimental/humanize-rlcr/humanize-rlcr/scripts/write-round-summary.js",
+	);
+	const script = await Bun.file(scriptPath).text();
+	const execute = new AsyncFunctionConstructor("workflowContext", script) as unknown as (
+		workflowContext: WorkflowContext & {
+			activation: { id: string; parentActivationIds: string[] };
+			state: {
+				humanize: {
+					operatorGate: { recordedAtMs: number };
+					ledger: { currentRound: number; rounds: unknown[]; archivedRoundCount: number };
+				};
+			};
+		},
+	) => Promise<RoundSummaryResult>;
+	return execute({
+		activation: { id: "activation-write-summary", parentActivationIds: ["activation-implementation"] },
+		completedActivations: [
+			{
+				id: "activation-implementation",
+				nodeId: "implementRound",
+				output: implementationOutput,
+			},
+		],
+		state: {
+			humanize: {
+				operatorGate: { recordedAtMs: Date.now() },
+				ledger: { currentRound: 0, rounds: [], archivedRoundCount: 0 },
+			},
+		},
+	});
 }
 
 async function runFinalize(cwd: string): Promise<FinalizeResult> {

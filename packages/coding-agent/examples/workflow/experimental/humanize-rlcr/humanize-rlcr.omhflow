@@ -202,6 +202,7 @@ nodes:
     gates:
       - ISSUES
       - CLEAN
+    fallbackVerdict: ISSUES
   - id: finalAlignmentCheck
     type: review
     agent: reviewer

@@ -46,5 +46,10 @@ Before claiming completion, provide:
 - changed files,
 - reviewer instructions from prior rounds marked fixed, deferred, or rejected.
 
+Do not claim that `codexCodeReview`, `finalAlignmentCheck`, or any downstream
+workflow node has passed or completed. Implementation evidence may prepare
+review inputs only; review and final-alignment verdicts belong to the later
+workflow nodes.
+
 If the same conceptual issue has appeared before, do not point-fix blindly:
 identify whether design/adjudication or human steering is needed.

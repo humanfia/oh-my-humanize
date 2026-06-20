@@ -22,6 +22,13 @@ const implementationData =
 	implementationOutput.data && typeof implementationOutput.data === "object" && !Array.isArray(implementationOutput.data)
 		? implementationOutput.data
 		: {};
+const normalizedEvidenceKey = key => key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+const downstreamClaimKeys = downstreamReviewClaimKeys(implementationData);
+if (downstreamClaimKeys.length > 0) {
+	throw new Error(
+		`implementation round evidence cannot claim downstream review or final-alignment results: ${downstreamClaimKeys.join(", ")}`,
+	);
+}
 const evidenceValueLimit = 4000;
 const boundedEvidenceValue = (value, fallback) => {
 	if (value === undefined) return fallback;
@@ -33,7 +40,6 @@ const boundedEvidenceValue = (value, fallback) => {
 		preview: serialized.slice(0, evidenceValueLimit),
 	};
 };
-const normalizedEvidenceKey = key => key.replace(/[^a-z0-9]/gi, "").toLowerCase();
 const evidenceValues = acceptsKey => {
 	const values = [];
 	for (const [key, value] of Object.entries(implementationData)) {
@@ -102,3 +108,19 @@ return {
 		{ op: "set", path: "/humanize/runtime", value: runtime },
 	],
 };
+
+function downstreamReviewClaimKeys(value) {
+	const keys = [];
+	for (const key of Object.keys(value)) {
+		const normalized = normalizedEvidenceKey(key);
+		if (
+			normalized === "reviewsummary" ||
+			normalized === "codexcodereview" ||
+			normalized === "finalalignmentcheck" ||
+			normalized === "finalalignment"
+		) {
+			keys.push(key);
+		}
+	}
+	return keys.sort((left, right) => left.localeCompare(right, "en"));
+}
