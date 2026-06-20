@@ -33,6 +33,7 @@ interface ReviewRouteResult {
 		terminalBlockerEvidenceFiles?: string[];
 		reviewDecisionTrailFile?: string;
 		reviewVerdict?: string;
+		reviewSummary?: string;
 	};
 	statePatch: Array<{
 		op: "set";
@@ -97,7 +98,15 @@ const ArchiveLoopFunctionConstructor = Object.getPrototypeOf(async () => {}).con
 	code: string,
 ) => (
 	workflowContext: WorkflowContext & {
-		state?: { reviewRoute?: { decision?: string; reason?: string; setupBlockerEvidenceFiles?: string[] } };
+		state?: {
+			reviewRoute?: {
+				decision?: string;
+				reason?: string;
+				reviewVerdict?: string;
+				reviewSummary?: string;
+				setupBlockerEvidenceFiles?: string[];
+			};
+		};
 	},
 ) => Promise<ArchiveLoopResult>;
 
@@ -404,7 +413,7 @@ describe("agent-build-review-loop flow contract", () => {
 		const result = await runReviewRouteClassifier(cwd, {
 			verdict: "continue",
 			summary:
-				"progress.md has 2 ROUND entries, satisfying the declared minimum, and the latest scoped validation via workflow-output/run-validation.sh passed. Another build round is still needed because task-required archive completion evidence is missing: semantic-archive-guard.json and archive output are absent, so semanticArchiveGuard/archiveLoop have not completed with the project-only changed-file inventory.",
+				"progress.md has 2 ROUND entries, satisfying the declared minimum, and the latest scoped validation via workflow-output/run-validation.sh passed. The only remaining work is task-required archive completion evidence: semantic-archive-guard.json and archive output are absent, so semanticArchiveGuard/archiveLoop have not completed with the project-only changed-file inventory.",
 		});
 
 		expect(result.data).toMatchObject({
@@ -431,7 +440,7 @@ describe("agent-build-review-loop flow contract", () => {
 		const result = await runReviewRouteClassifier(cwd, {
 			verdict: "continue",
 			summary:
-				"progress.md has 2 ROUND entries and the latest scoped clean-copy validation passed, with real source/test changes in the newest round. Another build/review route is still needed because required terminal evidence is missing: semantic-archive-guard.json/archiveLoop output and the project-only changed-file inventory required by task.md are absent, so acceptance is not yet complete.",
+				"progress.md has 2 ROUND entries and the latest scoped clean-copy validation passed, with real source/test changes in the newest round. The implementation is complete; the only missing required terminal evidence is semantic-archive-guard.json/archiveLoop output and the project-only changed-file inventory required by task.md.",
 		});
 
 		expect(result.data).toMatchObject({
@@ -458,7 +467,7 @@ describe("agent-build-review-loop flow contract", () => {
 		const result = await runReviewRouteClassifier(cwd, {
 			verdict: "continue",
 			summary:
-				"progress.md has 2 lines beginning with ROUND, satisfying the declared minimum, and the latest clean-copy validation evidence under workflow-output/round-2 shows the declared command passed. Another build round is still needed because task-required terminal evidence is missing: semantic-archive-guard.json, archive output, and changed-file inventory were not found, so semanticArchiveGuard/archiveLoop have not completed as required.",
+				"progress.md has 2 lines beginning with ROUND, satisfying the declared minimum, and the latest clean-copy validation evidence under workflow-output/round-2 shows the declared command passed. No more build work is needed; only task-required terminal evidence is missing: semantic-archive-guard.json, archive output, and changed-file inventory were not found, so semanticArchiveGuard/archiveLoop have not completed as required.",
 		});
 
 		expect(result.data).toMatchObject({
@@ -485,7 +494,7 @@ describe("agent-build-review-loop flow contract", () => {
 		const result = await runReviewRouteClassifier(cwd, {
 			verdict: "continue",
 			summary:
-				"continue: progress.md contains 2 ROUND lines and the latest scoped clean-copy validation passed, but task.md also requires semanticArchiveGuard and archiveLoop evidence with a project-only changed-file inventory; no semantic-archive-guard or archive output files are present, so another build/review/archive round is needed.",
+				"continue: progress.md contains 2 ROUND lines and the latest scoped clean-copy validation passed, but task.md also requires semanticArchiveGuard and archiveLoop evidence with a project-only changed-file inventory; no semantic-archive-guard or archive output files are present, so only the downstream archive nodes remain.",
 		});
 
 		expect(result.data).toMatchObject({
@@ -579,6 +588,41 @@ describe("agent-build-review-loop flow contract", () => {
 			verdict: "continue",
 			summary:
 				"continue: progress.md contains 8 ROUND entries and the latest clean-copy validation passed, but the task-declared assets-sanitize/security surface has no corresponding source or behavioral-test improvement in the current changes. The required semantic-archive-guard/archive evidence is also absent, so task-specific acceptance is not yet met.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "continue",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: [],
+			terminalBlockerEvidenceFiles: [],
+		});
+		expect(result.data.reason).toContain("review requested another build round");
+	});
+
+	it("keeps building when archive evidence is missing but reviewer also identifies scope gaps", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Produce at least eight meaningful build/review cycles.",
+				"Allowed paths: src/allowed.ts, tests/allowed.test.ts, workflow-output/**, progress.md.",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			Array.from(
+				{ length: 9 },
+				(_, index) =>
+					`ROUND ${index + 1}: completed scoped implementation surface ${index + 1}; validation=./workflow-output/run-validation.sh; result=pass`,
+			).join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"progress.md has 9 ROUND entries and the latest workflow-output/round-9 validation passed, but completion is not coherent yet: the required semanticArchiveGuard/archiveLoop evidence and project-only changed-file inventory are missing, and the current diff modifies src/out-of-scope.ts outside task.md's declared allowed paths. Another build round is needed to resolve the scope/evidence gaps rather than archive.",
 		});
 
 		expect(result.data).toMatchObject({
@@ -706,6 +750,25 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("requires repair when changed project files escape task allowed paths", async () => {
+		const cwd = await createTempDir();
+		await initGitRepo(cwd);
+		await fs.mkdir(path.join(cwd, "src"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			["Validation Command:", "true", "Allowed paths: src/allowed.ts, workflow-output/**, progress.md."].join("\n"),
+		);
+		await Bun.write(path.join(cwd, "src", "out-of-scope.ts"), "export const escaped = true;\n");
+
+		const result = await runSemanticArchiveGuard(cwd);
+
+		expect(result.verdict).toBe("REPAIR");
+		const finding = result.data.findings.find(item => item.file === "src/out-of-scope.ts");
+		expect(finding).toMatchObject({
+			reason: "changed file is outside task allowed paths",
+		});
+	});
+
 	it("rejects archiving round evidence that claims downstream guard or archive completion", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
@@ -777,6 +840,49 @@ describe("agent-build-review-loop flow contract", () => {
 		await expect(runArchiveLoop(cwd, { decision: "complete" })).rejects.toThrow(
 			"validation rerun evidence lacks immutable attempt logs",
 		);
+	});
+
+	it("rejects archiving changed files outside task allowed paths", async () => {
+		const cwd = await createTempDir();
+		await initGitRepo(cwd);
+		await fs.mkdir(path.join(cwd, "src"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			["Validation Command:", "true", "Allowed paths: src/allowed.ts, workflow-output/**, progress.md."].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: changed allowed behavior; validation=true; result=pass\n",
+		);
+		await Bun.write(path.join(cwd, "workflow-output", "round-1", "validation-stdout.txt"), "ok\n");
+		await Bun.write(path.join(cwd, "workflow-output", "round-1", "validation-stderr.txt"), "\n");
+		await Bun.write(path.join(cwd, "src", "out-of-scope.ts"), "export const escaped = true;\n");
+
+		await expect(runArchiveLoop(cwd, { decision: "complete" })).rejects.toThrow(
+			"changed files are outside task allowed paths",
+		);
+	});
+
+	it("rejects archiving a complete route whose reviewer still requests another build round", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n\nNo-Code Allowed: yes\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: changed allowed behavior; validation=true; result=pass\n",
+		);
+		await Bun.write(path.join(cwd, "workflow-output", "round-1", "validation-stdout.txt"), "ok\n");
+		await Bun.write(path.join(cwd, "workflow-output", "round-1", "validation-stderr.txt"), "\n");
+
+		await expect(
+			runArchiveLoop(cwd, {
+				decision: "complete",
+				reviewVerdict: "continue",
+				reviewSummary:
+					"Validation passed, but another build round is needed to resolve scope/evidence gaps before archive.",
+			}),
+		).rejects.toThrow("review route still requests build or repair work");
 	});
 
 	it("writes a rejected archive and fails the attempt for setup-blocker routes", async () => {
@@ -910,7 +1016,13 @@ async function runSemanticArchiveGuard(cwd: string): Promise<SemanticArchiveGuar
 
 async function runArchiveLoop(
 	cwd: string,
-	reviewRoute: { decision?: string; reason?: string; setupBlockerEvidenceFiles?: string[] } = { decision: "reject" },
+	reviewRoute: {
+		decision?: string;
+		reason?: string;
+		reviewVerdict?: string;
+		reviewSummary?: string;
+		setupBlockerEvidenceFiles?: string[];
+	} = { decision: "reject" },
 ): Promise<ArchiveLoopResult> {
 	const scriptPath = path.resolve(
 		import.meta.dir,
@@ -937,4 +1049,14 @@ async function createTempDir(): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omh-agent-loop-contract-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+async function initGitRepo(cwd: string): Promise<void> {
+	const proc = Bun.spawn(["git", "init"], {
+		cwd,
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+	const exitCode = await proc.exited;
+	if (exitCode !== 0) throw new Error(`git init failed in ${cwd}`);
 }

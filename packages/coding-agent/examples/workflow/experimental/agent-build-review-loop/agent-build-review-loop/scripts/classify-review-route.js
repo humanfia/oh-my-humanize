@@ -82,7 +82,8 @@ async function isArchiveReadinessOnlyReview(text) {
 		mentionsPassingValidation(text) &&
 		mentionsOnlyMissingArchiveEvidence(text) &&
 		!mentionsImplementationWorkStillNeeded(text) &&
-		!mentionsTaskAcceptanceStillMissing(text)
+		!mentionsTaskAcceptanceStillMissing(text) &&
+		!mentionsScopeOrBuildRepairStillNeeded(text)
 	);
 }
 
@@ -167,6 +168,21 @@ function mentionsTaskAcceptanceStillMissing(text) {
 		/\bno corresponding\b.{0,120}\b(?:source|behavioral[- ]?test|test|implementation)\b.{0,120}\bimprovement\b/ius.test(
 			text,
 		)
+	);
+}
+
+function mentionsScopeOrBuildRepairStillNeeded(text) {
+	return (
+		/\banother\s+build(?:\/review)?(?:\/archive)?\s+(?:round|route|cycle)\s+(?:is\s+)?(?:still\s+)?needed\b/iu.test(
+			text,
+		) ||
+		/\b(?:scope|evidence)\s+gaps?\b.{0,120}\b(?:resolve|repair|fix|needed|rather than archive)\b/ius.test(
+			text,
+		) ||
+		/\b(?:outside|escapes?)\b.{0,120}\b(?:task\.md'?s?\s+declared\s+)?allowed paths?\b/ius.test(
+			text,
+		) ||
+		/\boutside\b.{0,120}\b(?:scope|task[- ]declared)\b/ius.test(text)
 	);
 }
 

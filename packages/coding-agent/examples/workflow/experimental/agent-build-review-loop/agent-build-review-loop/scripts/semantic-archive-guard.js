@@ -16,6 +16,7 @@ const taskText = await readOptionalText("task.md");
 const progressText = await readOptionalText("progress.md");
 const explicitAllowance = explicitLowSemanticAllowance(taskText);
 const changedFiles = await changedProjectFiles();
+const allowedScopes = taskAllowedScopes(taskText);
 const findings = [];
 
 for (const file of changedFiles) {
@@ -25,6 +26,7 @@ for (const file of changedFiles) {
 	const finding = analyzeTextFile(file, text);
 	if (finding !== null) findings.push(finding);
 }
+findings.push(...scopeFenceFindings(changedFiles, allowedScopes));
 findings.push(...(await dependencyBootstrapFindings()));
 findings.push(...(await downstreamCompletionClaimFindings()));
 findings.push(...(await nondurableArtifactReferenceFindings()));
@@ -57,6 +59,18 @@ return {
 	data: diagnostic,
 	statePatch: [{ op: "set", path: "/semanticGuard", value: diagnostic }],
 };
+
+function scopeFenceFindings(changedFiles, allowedScopes) {
+	if (allowedScopes.length === 0) return [];
+	return changedFiles
+		.filter(file => allowedScopes.every(scope => !scopeMatchesPath(scope, file)))
+		.map(file => ({
+			file,
+			reason: "changed file is outside task allowed paths",
+			policy:
+				"Every semantic project change must stay within the task.md Allowed paths fence; widen the task contract explicitly or revert the out-of-scope change before archive.",
+		}));
+}
 
 async function changedProjectFiles() {
 	const proc = Bun.spawn(["git", "status", "--short", "--untracked-files=all"], {
@@ -203,13 +217,45 @@ function statusLineToPath(line) {
 	const trimmed = line.trim();
 	if (!trimmed) return "";
 	const rename = /^R[ MDA?]?\s+(.+?)\s+->\s+(.+)$/u.exec(trimmed);
-	if (rename) return normalizeGitPath(rename[2]?.trim() ?? "");
-	return normalizeGitPath(trimmed.slice(2).trim());
+	if (rename) return normalizeEvidencePath(normalizeGitPath(rename[2]?.trim() ?? ""));
+	return normalizeEvidencePath(normalizeGitPath(trimmed.slice(2).trim()));
 }
 
 function normalizeGitPath(filePath) {
 	if (filePath.startsWith('"') && filePath.endsWith('"')) return filePath.slice(1, -1);
 	return filePath;
+}
+
+function taskAllowedScopes(taskText) {
+	const scopes = [];
+	for (const match of taskText.matchAll(/Allowed paths:\s*([^\n]+)/giu)) {
+		const allowedLine = match[1] ?? "";
+		const backtickMatches = Array.from(allowedLine.matchAll(/`([^`]+)`/gu));
+		const rawScopes =
+			backtickMatches.length > 0 ? backtickMatches.map(item => item[1] ?? "") : allowedLine.split(",");
+		for (const rawScope of rawScopes) {
+			const scope = normalizeEvidencePath(rawScope.trim().replace(/^[-*]\s*/u, "").replace(/^and\s+/iu, ""));
+			if (!scope || ignoredEvidencePath(scope)) continue;
+			scopes.push(scope);
+		}
+	}
+	return uniqueSorted(scopes);
+}
+
+function scopeMatchesPath(scope, filePath) {
+	const normalizedScope = normalizeEvidencePath(scope);
+	const normalizedPath = normalizeEvidencePath(filePath);
+	if (normalizedScope.endsWith("/**")) {
+		return normalizedPath.startsWith(normalizedScope.slice(0, -2));
+	}
+	if (normalizedScope.endsWith("/*")) {
+		return normalizedPath.startsWith(normalizedScope.slice(0, -1));
+	}
+	return normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
+}
+
+function normalizeEvidencePath(filePath) {
+	return filePath.replace(/^\.\//u, "").replace(/\\/gu, "/").replace(/[),.;:]+$/u, "");
 }
 
 async function readTextFileIfSmall(filePath) {
@@ -313,6 +359,10 @@ function explicitLowSemanticAllowance(text) {
 	return /(^|\n)\s*(?:#+\s*)?(?:generated fixture allowed|low-semantic repetition allowed|bulk fixture allowed)\s*:\s*yes\b/iu.test(
 		text,
 	);
+}
+
+function uniqueSorted(files) {
+	return Array.from(new Set(files)).sort((left, right) => left.localeCompare(right, "en"));
 }
 
 async function readOptionalText(filePath) {

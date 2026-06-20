@@ -11,6 +11,7 @@ const isRejectArchive = reviewRoute.decision === "reject";
 const archivePath = isRejectArchive ? "workflow-output/final-agent-loop-reject.md" : "workflow-output/final-agent-loop-archive.md";
 const verifyCommand = requiredTaskValidationCommand(taskText);
 assertSafeVerificationCommand(verifyCommand);
+assertReviewRouteCanArchive(reviewRoute, isRejectArchive);
 const evidenceFiles = await loopEvidenceFiles();
 const archivedEvidenceFiles = mergedEvidenceFiles(evidenceFiles, [
 	...(isRejectArchive ? reviewRoute.setupBlockerEvidenceFiles ?? [] : []),
@@ -21,6 +22,12 @@ if (roundCount === 0 && !isRejectArchive) {
 	throw new Error("agent-build-review-loop cannot archive without at least one ROUND entry in progress.md");
 }
 const changedFiles = await changedProjectFiles();
+const outsideAllowedChangedFiles = changedFilesOutsideAllowedScopes(changedFiles, taskAllowedScopes(taskText));
+if (outsideAllowedChangedFiles.length > 0 && !isRejectArchive) {
+	throw new Error(
+		`agent-build-review-loop cannot archive because changed files are outside task allowed paths: ${outsideAllowedChangedFiles.join(", ")}`,
+	);
+}
 if (changedFiles.length === 0 && !allowsNoChange(taskText) && !isRejectArchive) {
 	throw new Error("agent-build-review-loop cannot archive without project changes unless task.md explicitly allows No-Code/No-Change");
 }
@@ -161,6 +168,36 @@ function assertSafeVerificationCommand(command) {
 	}
 }
 
+function assertReviewRouteCanArchive(reviewRoute, isRejectArchive) {
+	if (isRejectArchive) return;
+	if (reviewRoute.decision && reviewRoute.decision !== "complete") {
+		throw new Error(`agent-build-review-loop cannot archive because review route decision is ${reviewRoute.decision}`);
+	}
+	const reviewSummary =
+		typeof reviewRoute.reviewSummary === "string"
+			? reviewRoute.reviewSummary
+			: typeof reviewRoute.reason === "string"
+				? reviewRoute.reason
+				: "";
+	if (reviewRoute.reviewVerdict === "continue" && mentionsBuildOrRepairWorkStillNeeded(reviewSummary)) {
+		throw new Error("agent-build-review-loop cannot archive because review route still requests build or repair work");
+	}
+}
+
+function mentionsBuildOrRepairWorkStillNeeded(text) {
+	return (
+		/\banother\s+build(?:\/review)?(?:\/archive)?\s+(?:round|route|cycle)\s+(?:is\s+)?(?:still\s+)?needed\b/iu.test(
+			text,
+		) ||
+		/\b(?:scope|evidence)\s+gaps?\b.{0,120}\b(?:resolve|repair|fix|needed|rather than archive)\b/ius.test(text) ||
+		/\b(?:outside|escapes?)\b.{0,120}\b(?:task\.md'?s?\s+declared\s+)?allowed paths?\b/ius.test(text) ||
+		/\boutside\b.{0,120}\b(?:scope|task[- ]declared)\b/ius.test(text) ||
+		/\b(?:task[- ]specific acceptance|acceptance criteria)\b.{0,120}\b(?:not yet met|not met|unmet)\b/ius.test(
+			text,
+		)
+	);
+}
+
 function firstFollowingCommandLine(lines, startIndex) {
 	for (const line of lines.slice(startIndex)) {
 		const trimmed = line.trim();
@@ -194,8 +231,52 @@ function statusLineToPath(line) {
 	const trimmed = line.trim();
 	if (!trimmed) return "";
 	const rename = /^R[ MDA?]?\s+(.+?)\s+->\s+(.+)$/u.exec(trimmed);
-	if (rename) return rename[2]?.trim() ?? "";
-	return trimmed.slice(2).trim();
+	if (rename) return normalizeEvidencePath(normalizeGitPath(rename[2]?.trim() ?? ""));
+	return normalizeEvidencePath(normalizeGitPath(trimmed.slice(2).trim()));
+}
+
+function normalizeGitPath(filePath) {
+	if (filePath.startsWith('"') && filePath.endsWith('"')) return filePath.slice(1, -1);
+	return filePath;
+}
+
+function taskAllowedScopes(taskText) {
+	const scopes = [];
+	for (const match of taskText.matchAll(/Allowed paths:\s*([^\n]+)/giu)) {
+		const allowedLine = match[1] ?? "";
+		const backtickMatches = Array.from(allowedLine.matchAll(/`([^`]+)`/gu));
+		const rawScopes =
+			backtickMatches.length > 0 ? backtickMatches.map(item => item[1] ?? "") : allowedLine.split(",");
+		for (const rawScope of rawScopes) {
+			const scope = normalizeEvidencePath(rawScope.trim().replace(/^[-*]\s*/u, "").replace(/^and\s+/iu, ""));
+			if (!scope || ignoredEvidencePath(scope)) continue;
+			scopes.push(scope);
+		}
+	}
+	return uniqueSorted(scopes);
+}
+
+function changedFilesOutsideAllowedScopes(changedFiles, allowedScopes) {
+	if (allowedScopes.length === 0) return [];
+	return changedFiles
+		.filter(file => allowedScopes.every(scope => !scopeMatchesPath(scope, file)))
+		.sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function scopeMatchesPath(scope, filePath) {
+	const normalizedScope = normalizeEvidencePath(scope);
+	const normalizedPath = normalizeEvidencePath(filePath);
+	if (normalizedScope.endsWith("/**")) {
+		return normalizedPath.startsWith(normalizedScope.slice(0, -2));
+	}
+	if (normalizedScope.endsWith("/*")) {
+		return normalizedPath.startsWith(normalizedScope.slice(0, -1));
+	}
+	return normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
+}
+
+function normalizeEvidencePath(filePath) {
+	return filePath.replace(/^\.\//u, "").replace(/\\/gu, "/").replace(/[),.;:]+$/u, "");
 }
 
 async function loopEvidenceFiles() {
@@ -364,6 +445,10 @@ function boundedLines(text, limit) {
 	const kept = lines.slice(0, limit);
 	if (lines.length > limit) kept.push(`[truncated ${lines.length - limit} additional lines]`);
 	return kept.join("\n");
+}
+
+function uniqueSorted(files) {
+	return Array.from(new Set(files)).sort((left, right) => left.localeCompare(right, "en"));
 }
 
 async function readRequiredTaskText() {
