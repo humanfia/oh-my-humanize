@@ -22,7 +22,7 @@ if (terminalBlockerEvidenceFiles.length > 0) {
 		setupBlockerEvidenceFiles.length > 0
 			? "setup blocker evidence is terminal; archive/reject instead of looping into another build round"
 			: "terminal validation blocker evidence repeated outside task scope; archive/reject instead of looping into another build round";
-} else if (decision === "continue" && isArchiveReadinessOnlyReview(reviewSummary)) {
+} else if (decision === "continue" && (await isArchiveReadinessOnlyReview(reviewSummary))) {
 	decision = "complete";
 	reason =
 		"review accepted implementation evidence; route to semantic archive guard for downstream archive checks";
@@ -73,13 +73,18 @@ function normalizeVerdict(value) {
 	return /\bcontinue\b/u.test(text) ? "continue" : "complete";
 }
 
-function isArchiveReadinessOnlyReview(text) {
+async function isArchiveReadinessOnlyReview(text) {
+	const progress = await readOptionalText("progress.md");
 	return (
-		mentionsSatisfiedBuildContract(text) &&
+		(mentionsSatisfiedBuildContract(text) || progressRoundCount(progress) >= 2) &&
 		mentionsPassingValidation(text) &&
 		mentionsOnlyMissingArchiveEvidence(text) &&
 		!mentionsImplementationWorkStillNeeded(text)
 	);
+}
+
+function progressRoundCount(text) {
+	return [...text.matchAll(/^\s*ROUND\b/gimu)].length;
 }
 
 function mentionsSatisfiedBuildContract(text) {
@@ -99,12 +104,11 @@ function mentionsOnlyMissingArchiveEvidence(text) {
 	const hasArchiveGap =
 		/\b(?:semantic[- ]?archive[- ]?guard|semanticArchiveGuard|archiveLoop|archive loop|archive output|archive completion evidence)\b/iu.test(
 			text,
-		) && /\b(?:missing|absent|not completed|incomplete|not yet)\b/iu.test(text);
-	const hasLoopBecauseArchiveGap =
-		/\banother (?:build(?:\/review)?|review) (?:round|route)\b.{0,200}\b(?:terminal evidence|archive|semantic[- ]?archive[- ]?guard|semanticArchiveGuard|archiveLoop)\b/ius.test(
+		) &&
+		/\b(?:missing|absent|not completed|incomplete|not yet|not found|no\b.{0,80}\bpresent)\b/ius.test(
 			text,
 		);
-	return hasArchiveGap && hasLoopBecauseArchiveGap;
+	return hasArchiveGap;
 }
 
 function mentionsImplementationWorkStillNeeded(text) {

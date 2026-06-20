@@ -438,6 +438,33 @@ describe("agent-build-review-loop flow contract", () => {
 		expect(result.data.reason).toContain("semantic archive guard");
 	});
 
+	it("routes archive-only evidence gaps using durable progress round evidence", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			[
+				"ROUND 1: support dynamic import.meta.url hash postfixes; validation=./workflow-output/run-validation.sh; result=pass",
+				"ROUND 2: add optimize-deps asset postfix coverage; validation=./workflow-output/run-validation.sh; result=pass",
+			].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"continue: progress.md contains 2 ROUND lines and the latest scoped clean-copy validation passed, but task.md also requires semanticArchiveGuard and archiveLoop evidence with a project-only changed-file inventory; no semantic-archive-guard or archive output files are present, so another build/review/archive round is needed.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "complete",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: [],
+			terminalBlockerEvidenceFiles: [],
+		});
+		expect(result.data.reason).toContain("semantic archive guard");
+	});
+
 	it("does not treat task text copied into the initial snapshot as setup-blocker evidence", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
