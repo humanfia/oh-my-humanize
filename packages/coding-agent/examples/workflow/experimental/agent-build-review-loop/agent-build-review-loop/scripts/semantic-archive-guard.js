@@ -7,6 +7,7 @@ const VALIDATION_HARNESS_BOOTSTRAP_PATTERN =
 	/\b(?:(?:npm|pnpm|yarn|bun)(?:\s+\S+){0,5}\s+(?:install|add|ci|update|upgrade)|(?:pip|pip3)(?:\s+\S+){0,5}\s+install|python(?:3)?\s+-m\s+pip(?:\s+\S+){0,5}\s+install|uv\s+(?:sync|add|pip\s+install)|poetry\s+(?:install|add|update)|cargo\s+(?:install|update)|bundle\s+install|go\s+(?:install|get))\b/iu;
 
 const taskText = await readOptionalText("task.md");
+const progressText = await readOptionalText("progress.md");
 const explicitAllowance = explicitLowSemanticAllowance(taskText);
 const changedFiles = await changedProjectFiles();
 const findings = [];
@@ -21,6 +22,7 @@ for (const file of changedFiles) {
 findings.push(...(await dependencyBootstrapFindings()));
 findings.push(...(await downstreamCompletionClaimFindings()));
 findings.push(...(await nondurableArtifactReferenceFindings()));
+findings.push(...(await missingValidationArtifactFindings(progressText)));
 
 const blockingFindings = explicitAllowance
 	? findings.filter(finding => finding.category !== "low-semantic-content")
@@ -113,6 +115,42 @@ async function nondurableArtifactReferenceFindings() {
 		});
 	}
 	return findings;
+}
+
+async function missingValidationArtifactFindings(progressText) {
+	const findings = [];
+	for (const round of validationRounds(progressText)) {
+		const roundDir = `workflow-output/round-${round}`;
+		const missingFiles = [];
+		for (const file of [`${roundDir}/validation-stdout.txt`, `${roundDir}/validation-stderr.txt`]) {
+			if (!(await Bun.file(file).exists())) missingFiles.push(file);
+		}
+		if (missingFiles.length === 0) continue;
+		findings.push({
+			file: roundDir,
+			reason: "validation round is missing durable stdout/stderr artifacts",
+			missingFiles,
+			policy:
+				"Every round that runs validation must store raw stdout and stderr as workflow-output/round-N/validation-stdout.txt and validation-stderr.txt.",
+		});
+	}
+	return findings;
+}
+
+function validationRounds(progressText) {
+	const rounds = [];
+	for (const line of progressText.split(/\r?\n/u)) {
+		const match =
+			/^ROUND\s+(\d+):.*?;\s*validation\s*=\s*([^;]+?)\s*;\s*result\s*=\s*([a-z-]+)/iu.exec(line.trim());
+		if (!match) continue;
+		const round = Number(match[1]);
+		const validation = match[2]?.trim().toLowerCase() ?? "";
+		const result = match[3]?.trim().toLowerCase() ?? "";
+		if (!Number.isFinite(round) || round <= 0) continue;
+		if (!validation || validation === "not-run" || result === "not-run") continue;
+		rounds.push(round);
+	}
+	return rounds;
 }
 
 async function workflowOutputFiles() {

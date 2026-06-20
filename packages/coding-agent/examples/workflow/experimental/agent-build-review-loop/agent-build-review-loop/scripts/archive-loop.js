@@ -30,6 +30,12 @@ if (nondurableArtifactFiles.length > 0) {
 		`agent-build-review-loop cannot archive because round evidence uses nondurable artifact references: ${nondurableArtifactFiles.join(", ")}`,
 	);
 }
+const missingValidationArtifactRounds = await missingValidationArtifactRoundFiles(progressText);
+if (missingValidationArtifactRounds.length > 0) {
+	throw new Error(
+		`agent-build-review-loop cannot archive because validation rounds are missing durable stdout/stderr artifacts: ${missingValidationArtifactRounds.join(", ")}`,
+	);
+}
 const archive = [
 	"# Agent Build/Review Loop Archive",
 	"",
@@ -218,6 +224,33 @@ async function nondurableArtifactReferenceFiles(files) {
 		if (usesNondurableValidationArtifact(text)) claimFiles.push(file);
 	}
 	return claimFiles;
+}
+
+async function missingValidationArtifactRoundFiles(progressText) {
+	const missingRoundDirs = [];
+	for (const round of validationRounds(progressText)) {
+		const roundDir = `workflow-output/round-${round}`;
+		const hasStdout = await Bun.file(`${roundDir}/validation-stdout.txt`).exists();
+		const hasStderr = await Bun.file(`${roundDir}/validation-stderr.txt`).exists();
+		if (!hasStdout || !hasStderr) missingRoundDirs.push(roundDir);
+	}
+	return missingRoundDirs;
+}
+
+function validationRounds(progressText) {
+	const rounds = [];
+	for (const line of progressText.split(/\r?\n/u)) {
+		const match =
+			/^ROUND\s+(\d+):.*?;\s*validation\s*=\s*([^;]+?)\s*;\s*result\s*=\s*([a-z-]+)/iu.exec(line.trim());
+		if (!match) continue;
+		const round = Number(match[1]);
+		const validation = match[2]?.trim().toLowerCase() ?? "";
+		const result = match[3]?.trim().toLowerCase() ?? "";
+		if (!Number.isFinite(round) || round <= 0) continue;
+		if (!validation || validation === "not-run" || result === "not-run") continue;
+		rounds.push(round);
+	}
+	return rounds;
 }
 
 function claimsDownstreamWorkflowNodeCompletion(text) {

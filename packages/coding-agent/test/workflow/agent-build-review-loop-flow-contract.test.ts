@@ -332,6 +332,29 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("requires repair when a validation round lacks durable stdout and stderr logs", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: changed parser tests; validation=./check.sh; result=fail\n",
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-1", "evidence.txt"),
+			"Validation command ./check.sh failed after real project work.\n",
+		);
+
+		const result = await runSemanticArchiveGuard(cwd);
+
+		expect(result.verdict).toBe("REPAIR");
+		const finding = result.data.findings.find(
+			item => item.reason === "validation round is missing durable stdout/stderr artifacts",
+		);
+		expect(finding).toMatchObject({
+			file: "workflow-output/round-1",
+		});
+	});
+
 	it("rejects archiving round evidence that claims downstream guard or archive completion", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
@@ -356,6 +379,24 @@ describe("agent-build-review-loop flow contract", () => {
 		);
 
 		await expect(runArchiveLoop(cwd)).rejects.toThrow("round evidence uses nondurable artifact references");
+	});
+
+	it("rejects archiving validation rounds without durable stdout and stderr logs", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\n./check.sh\n\nNo-Code Allowed: yes\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: changed parser tests; validation=./check.sh; result=fail\n",
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-1", "evidence.txt"),
+			"Validation command ./check.sh failed after real project work.\n",
+		);
+
+		await expect(runArchiveLoop(cwd, { decision: "complete" })).rejects.toThrow(
+			"validation rounds are missing durable stdout/stderr artifacts",
+		);
 	});
 
 	it("writes a rejected archive and fails the attempt for setup-blocker routes", async () => {

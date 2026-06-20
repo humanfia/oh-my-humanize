@@ -60,6 +60,11 @@ General loop contract:
 - Run only the verification command specified by the task contract. Do not infer
   project-wide commands from file names or package managers unless the contract
   asks for that command.
+- When you run validation in round `<n>`, capture the raw command stdout and
+  stderr as durable artifacts at
+  `workflow-output/round-<n>/validation-stdout.txt` and
+  `workflow-output/round-<n>/validation-stderr.txt`. Summaries are not enough;
+  downstream guards require the raw logs to remain in the workspace.
 - Do not modify task-local validation harnesses to install, update, or bootstrap
   dependencies after preflight. Missing validation dependencies are a setup
   blocker to report, not semantic project progress.
