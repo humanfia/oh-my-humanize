@@ -326,6 +326,7 @@ function firstFailurePath(text) {
 		/\bFAIL\s+([./\w@-][^\s\[]+)/iu,
 		/\bfailed\s+in\s+([./\w@-][^\s\[]+)/iu,
 		/\bfail(?:ed|ure)?\s+(?:during|in)\s+([./\w@-][^\s\[]+)/iu,
+		/\b((?:[./]?[\w@-]+\/)+[\w@.-]+\.(?:c|cc|cpp|go|h|hpp|java|js|jsx|py|pyi|rs|ts|tsx)(?:::[A-Za-z_][\w.-]*)?)\b/u,
 	];
 	for (const pattern of patterns) {
 		const match = pattern.exec(text);

@@ -342,6 +342,41 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("routes repeated external pytest node blockers in summaries to reject", async () => {
+		const cwd = await createTempDir();
+		for (const round of [2, 3]) {
+			await fs.mkdir(path.join(cwd, "workflow-output", `round-${round}`), { recursive: true });
+			await Bun.write(
+				path.join(cwd, "workflow-output", `round-${round}`, "validation-summary.txt"),
+				[
+					`Round ${round} validation summary`,
+					"Declared validation command: python -m pytest tests/test_tutorial",
+					"Result: fail",
+					"Focused result: pass",
+					"Task-scoped observation: tests/test_tutorial/test_arguments/test_envvar/test_tutorial002.py passed in the declared validation log.",
+					"External blocker: the declared validation fails only in out-of-scope Rich formatting assertions in tests/test_tutorial/test_printing/test_tutorial001.py::test_cli and tests/test_tutorial/test_printing/test_tutorial002.py::test_cli. Those failures are unrelated to the envvar documentation hardening in this round.",
+				].join("\n"),
+			);
+		}
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"progress.md has 3 ROUND entries, but latest validation failed with out-of-scope Rich printing assertions, so another route decision is required.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "reject",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: [
+				"workflow-output/round-2/validation-summary.txt",
+				"workflow-output/round-3/validation-summary.txt",
+			],
+		});
+		expect(result.data.reason).toContain("terminal validation blocker");
+	});
+
 	it("routes repeated clean-copy missing dependency blockers to reject", async () => {
 		const cwd = await createTempDir();
 		for (const round of [1, 2]) {
