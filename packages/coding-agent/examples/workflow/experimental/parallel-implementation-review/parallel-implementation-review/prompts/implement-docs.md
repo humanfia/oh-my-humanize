@@ -26,10 +26,15 @@ Before yielding:
   tuple from `monitor-assignment.json`, `manifest-entry.json`, or `task.md`;
 - if this lane observes a task stop condition, write
   `workflow-output/lane-hard-stop-implementDocs-<tuple-id>.json` with
-  `status: "hard_stop"`, `producer_node: "implementDocs"`, the blocker reason,
-  and evidence paths. After writing that lane-scoped blocker artifact, do not
-  make additional project changes; the later guard/finalizer nodes own terminal
-  state and archive handling;
+  `status: "hard_stop"`, `terminal_scope: "workflow"`,
+  `producer_node: "implementDocs"`, the blocker reason, and evidence paths, but
+  only when the blocker is terminal for the whole workflow and cannot be
+  superseded by a later dedicated workflow node or another lane. If the problem
+  is lane-local or evidence-only, record it in `workflow-output/docs-lane-<tuple-id>.json`
+  or tuple-scoped Markdown evidence as unresolved integration risk instead of
+  writing a workflow-terminal hard stop. After writing a workflow-terminal
+  blocker artifact, do not make additional project changes; the later
+  guard/finalizer nodes own terminal state and archive handling;
 - if you also write Markdown evidence, use a tuple-scoped name such as
   `workflow-output/docs-evidence-<tuple-id>.md` instead of a generic name;
 - do not write reserved workflow-node artifacts:

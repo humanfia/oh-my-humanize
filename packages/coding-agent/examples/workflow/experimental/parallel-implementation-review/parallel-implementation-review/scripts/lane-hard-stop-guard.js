@@ -9,6 +9,7 @@ const diagnostic = {
 	status: hardStopArtifacts.length > 0 ? "hard_stop" : "continue",
 	hard_stop_artifacts: hardStopArtifacts,
 	ignored_historical_hard_stop_artifacts: hardStopResult.ignored,
+	ignored_nonterminal_hard_stop_artifacts: hardStopResult.nonterminal,
 	checked_at_ms: Date.now(),
 };
 
@@ -43,16 +44,19 @@ async function laneHardStopArtifacts(tupleId) {
 	const glob = new Bun.Glob("workflow-output/lane-hard-stop-*.json");
 	const active = [];
 	const ignored = [];
+	const nonterminal = [];
 	for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
 		if (isLaneHardStopGuardArtifact(filePath)) continue;
 		if (tupleId && !filePath.includes(tupleId)) continue;
 		const classification = await hardStopClassification(filePath);
 		if (classification === "active") active.push(filePath);
 		if (classification === "superseded") ignored.push(filePath);
+		if (classification === "nonterminal") nonterminal.push(filePath);
 	}
 	return {
 		active: active.sort((left, right) => left.localeCompare(right, "en")),
 		ignored: ignored.sort((left, right) => left.localeCompare(right, "en")),
+		nonterminal: nonterminal.sort((left, right) => left.localeCompare(right, "en")),
 	};
 }
 
@@ -61,6 +65,7 @@ async function hardStopClassification(filePath) {
 		const data = await Bun.file(filePath).json();
 		const isHardStop = stringField(data, "status") === "hard_stop" || stringField(data, "verdict") === "hard_stop";
 		if (!isHardStop) return "none";
+		if (!isWorkflowTerminalHardStop(data)) return "nonterminal";
 		if (await hasSupersedingEvidence(data)) return "superseded";
 		return "active";
 	} catch {
@@ -77,6 +82,12 @@ async function hasSupersedingEvidence(data) {
 	} catch {
 		return false;
 	}
+}
+
+function isWorkflowTerminalHardStop(data) {
+	const terminalScope = stringField(data, "terminal_scope");
+	if (terminalScope) return terminalScope === "workflow";
+	return data?.workflow_terminal === true;
 }
 
 async function tupleIdFromRunArtifacts() {

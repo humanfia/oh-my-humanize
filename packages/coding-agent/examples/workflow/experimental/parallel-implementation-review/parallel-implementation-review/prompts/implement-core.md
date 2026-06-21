@@ -23,11 +23,17 @@ Before yielding:
 - write `workflow-output/core-lane-<tuple-id>.json`, where `<tuple-id>` is the
   tuple from `monitor-assignment.json`, `manifest-entry.json`, or `task.md`;
 - if this lane observes a task stop condition, write
-  `workflow-output/lane-hard-stop-implementCore-<tuple-id>.json` with `status:
-  "hard_stop"`, `producer_node: "implementCore"`, the blocker reason, and
-  evidence paths. After writing that lane-scoped blocker artifact, do not make
-  additional project changes; the later guard/finalizer nodes own terminal
-  state and archive handling;
+  `workflow-output/lane-hard-stop-implementCore-<tuple-id>.json` only when the
+  blocker is terminal for the whole workflow and cannot be superseded by a
+  later dedicated workflow node or another lane. Include `status: "hard_stop"`,
+  `terminal_scope: "workflow"`, `producer_node: "implementCore"`, the blocker
+  reason, and evidence paths. If the problem is lane-local, such as a validation
+  command run under a lane shell `TMPDIR` while the dedicated validation runner
+  owns final validation evidence, record it in `workflow-output/core-lane-<tuple-id>.json`
+  as unresolved integration risk instead of writing a workflow-terminal hard
+  stop. After writing a workflow-terminal blocker artifact, do not make
+  additional project changes; the later guard/finalizer nodes own terminal state
+  and archive handling;
 - do not write reserved workflow-node artifacts:
   `workflow-output/validation-<tuple-id>.json`,
   `workflow-output/lane-hard-stop-guard-<tuple-id>.json`,

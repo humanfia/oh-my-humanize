@@ -24,10 +24,16 @@ Before yielding:
   tuple from `monitor-assignment.json`, `manifest-entry.json`, or `task.md`;
 - if this lane observes a task stop condition, write
   `workflow-output/lane-hard-stop-implementTests-<tuple-id>.json` with
-  `status: "hard_stop"`, `producer_node: "implementTests"`, the blocker
-  reason, and evidence paths. After writing that lane-scoped blocker artifact,
-  do not make additional project changes; the later guard/finalizer nodes own
-  terminal state and archive handling;
+  `status: "hard_stop"`, `terminal_scope: "workflow"`,
+  `producer_node: "implementTests"`, the blocker reason, and evidence paths,
+  but only when the blocker is terminal for the whole workflow and cannot be
+  superseded by a later dedicated workflow node or another lane. If the problem
+  is lane-local, such as a focused-test or lane-shell validation failure while
+  the dedicated validation runner owns final validation evidence, record it in
+  `workflow-output/tests-lane-<tuple-id>.json` as unresolved integration risk
+  instead of writing a workflow-terminal hard stop. After writing a
+  workflow-terminal blocker artifact, do not make additional project changes;
+  the later guard/finalizer nodes own terminal state and archive handling;
 - do not write reserved workflow-node artifacts:
   `workflow-output/validation-<tuple-id>.json`,
   `workflow-output/lane-hard-stop-guard-<tuple-id>.json`,

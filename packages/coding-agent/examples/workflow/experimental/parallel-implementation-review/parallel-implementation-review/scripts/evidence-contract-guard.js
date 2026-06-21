@@ -113,6 +113,7 @@ const diagnostic = {
 		generic_validation_aliases: genericValidationAliases.slice(0, 80),
 		lane_hard_stop_artifacts: activeLaneHardStopArtifacts.slice(0, 80),
 		ignored_historical_lane_hard_stop_artifacts: laneHardStopResult.ignored.slice(0, 80),
+		ignored_nonterminal_lane_hard_stop_artifacts: laneHardStopResult.nonterminal.slice(0, 80),
 		failed_validation_artifacts: failedValidationArtifacts.slice(0, 80),
 		superseded_failed_validation_artifacts: supersededFailedValidationArtifacts.slice(0, 80),
 		premature_decision_artifacts: prematureDecisionArtifacts.slice(0, 80),
@@ -372,16 +373,19 @@ async function laneHardStopArtifacts(tupleId) {
 	const glob = new Bun.Glob("workflow-output/lane-hard-stop-*.json");
 	const active = [];
 	const ignored = [];
+	const nonterminal = [];
 	for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
 		if (isLaneHardStopGuardArtifact(filePath)) continue;
 		if (tupleId && !filePath.includes(tupleId)) continue;
 		const classification = await hardStopClassification(filePath);
 		if (classification === "active") active.push(filePath);
 		if (classification === "superseded") ignored.push(filePath);
+		if (classification === "nonterminal") nonterminal.push(filePath);
 	}
 	return {
 		active: active.sort((left, right) => left.localeCompare(right, "en")),
 		ignored: ignored.sort((left, right) => left.localeCompare(right, "en")),
+		nonterminal: nonterminal.sort((left, right) => left.localeCompare(right, "en")),
 	};
 }
 
@@ -394,11 +398,18 @@ async function hardStopClassification(filePath) {
 		const data = await Bun.file(filePath).json();
 		const isHardStop = stringField(data, "status") === "hard_stop" || stringField(data, "verdict") === "hard_stop";
 		if (!isHardStop) return "none";
+		if (!isWorkflowTerminalHardStop(data)) return "nonterminal";
 		if (await hasSupersedingEvidence(data)) return "superseded";
 		return "active";
 	} catch {
 		return "none";
 	}
+}
+
+function isWorkflowTerminalHardStop(data) {
+	const terminalScope = stringField(data, "terminal_scope");
+	if (terminalScope) return terminalScope === "workflow";
+	return data?.workflow_terminal === true;
 }
 
 async function hasSupersedingEvidence(data) {

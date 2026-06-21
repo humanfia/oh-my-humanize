@@ -23,6 +23,7 @@ interface ScriptResult {
 			premature_decision_artifacts?: string[];
 			failed_validation_artifacts?: string[];
 			lane_hard_stop_artifacts?: string[];
+			ignored_nonterminal_lane_hard_stop_artifacts?: string[];
 		};
 	};
 }
@@ -356,6 +357,7 @@ describe("parallel-implementation-review flow contract", () => {
 				tuple_id: "P06-T06-test",
 				producer_node: "implementCore",
 				status: "hard_stop",
+				terminal_scope: "workflow",
 				reason: "prior feature::f1414_no_require_git semantic failure reproduced",
 			})}\n`,
 		);
@@ -383,6 +385,7 @@ describe("parallel-implementation-review flow contract", () => {
 				tuple_id: "P06-T06-test",
 				producer_node: "implementTests",
 				status: "hard_stop",
+				terminal_scope: "workflow",
 				reason: "declared validation environment mismatch",
 			})}\n`,
 		);
@@ -411,6 +414,30 @@ describe("parallel-implementation-review flow contract", () => {
 		});
 	});
 
+	it("lets evidence contract ignore lane-local validation hard stops", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "lane-hard-stop-P06-T06-test.json"),
+			`${JSON.stringify({
+				tuple_id: "P06-T06-test",
+				producer_node: "implementCore",
+				status: "hard_stop",
+				terminal_scope: "lane",
+				reason:
+					"lane-shell cargo test failed because TMPDIR was task-local; runDeclaredValidation owns final validation evidence",
+			})}\n`,
+		);
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.lane_hard_stop_artifacts).toEqual([]);
+		expect(result.data?.checked_inputs?.ignored_nonterminal_lane_hard_stop_artifacts).toEqual([
+			"workflow-output/lane-hard-stop-P06-T06-test.json",
+		]);
+	});
+
 	it("ignores a lane hard stop only when a superseding evidence artifact exists", async () => {
 		const cwd = await createTempDir();
 		await writeTupleFiles(cwd, "P06-T06-test");
@@ -422,6 +449,7 @@ describe("parallel-implementation-review flow contract", () => {
 				tuple_id: "P06-T06-test",
 				producer_node: "implementCore",
 				status: "hard_stop",
+				terminal_scope: "workflow",
 				reason: "historical validation environment blocker",
 				superseded_by: "workflow-output/core-lane-P06-T06-test-resolution.json",
 			})}\n`,
@@ -439,6 +467,35 @@ describe("parallel-implementation-review flow contract", () => {
 			ignored_historical_hard_stop_artifacts: ["workflow-output/lane-hard-stop-P06-T06-test.json"],
 		});
 		expect(await fileExists(path.join(cwd, "workflow-output", "tuple-state.json"))).toBe(false);
+	});
+
+	it("ignores lane-local validation hard stops that do not claim workflow terminal scope", async () => {
+		const cwd = await createTempDir();
+		await writeTupleFiles(cwd, "P06-T06-test");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "workflow-output", "lane-hard-stop-P06-T06-test.json"),
+			`${JSON.stringify({
+				tuple_id: "P06-T06-test",
+				producer_node: "implementCore",
+				status: "hard_stop",
+				terminal_scope: "lane",
+				reason:
+					"lane-shell cargo test failed because TMPDIR was task-local; the dedicated validation runner evidence owns the workflow-level decision",
+			})}\n`,
+		);
+
+		const result = await runScript(cwd, "lane-hard-stop-guard.js", {});
+
+		expect(result.verdict).toBe("continue");
+		const guardArtifact = await Bun.file(
+			path.join(cwd, "workflow-output", "lane-hard-stop-guard-P06-T06-test.json"),
+		).json();
+		expect(guardArtifact).toMatchObject({
+			status: "continue",
+			hard_stop_artifacts: [],
+			ignored_nonterminal_hard_stop_artifacts: ["workflow-output/lane-hard-stop-P06-T06-test.json"],
+		});
 	});
 });
 
