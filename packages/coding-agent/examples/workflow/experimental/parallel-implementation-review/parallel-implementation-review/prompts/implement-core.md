@@ -23,16 +23,19 @@ Before yielding:
 - write `workflow-output/core-lane-<tuple-id>.json`, where `<tuple-id>` is the
   tuple from `monitor-assignment.json`, `manifest-entry.json`, or `task.md`;
 - if this lane observes a task stop condition, write
-  `workflow-output/lane-hard-stop-<tuple-id>.json` with `status:
+  `workflow-output/lane-hard-stop-implementCore-<tuple-id>.json` with `status:
   "hard_stop"`, `producer_node: "implementCore"`, the blocker reason, and
-  evidence paths. Then stop instead of presenting the work as promotable;
+  evidence paths. After writing that lane-scoped blocker artifact, do not make
+  additional project changes; the later guard/finalizer nodes own terminal
+  state and archive handling;
 - do not write reserved workflow-node artifacts:
   `workflow-output/validation-<tuple-id>.json`,
   `workflow-output/lane-hard-stop-guard-<tuple-id>.json`,
   `workflow-output/evidence-contract-guard-<tuple-id>.json`,
-  `workflow-output/final-review-<tuple-id>.json`, or any workflow-output
-  artifact whose filename contains `final-`. Those filenames are owned only by
-  later workflow nodes;
+  `workflow-output/final-review-<tuple-id>.json`,
+  `workflow-output/tuple-state.json`, or any workflow-output artifact whose
+  filename starts with `evidence-contract-guard`, `final-`, `final_`, or
+  `strong-review`. Those filenames are owned only by later workflow nodes;
 - if you run validation, record the exact task `Validation Command` string in a
   JSON field named `command`, the exact task `Validation Environment` key/value
   pairs in `environment`, and the pass/fail value in `result`; do not write a

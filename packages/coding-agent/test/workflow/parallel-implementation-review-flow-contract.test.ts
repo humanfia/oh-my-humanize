@@ -21,6 +21,7 @@ interface ScriptResult {
 			generic_validation_aliases?: string[];
 			premature_decision_artifacts?: string[];
 			failed_validation_artifacts?: string[];
+			lane_hard_stop_artifacts?: string[];
 		};
 	};
 }
@@ -270,7 +271,7 @@ describe("parallel-implementation-review flow contract", () => {
 		});
 	});
 
-	it("stops before integration review when a lane reports a hard stop", async () => {
+	it("records lane hard stops as repairable contract evidence instead of failing the attempt", async () => {
 		const cwd = await createTempDir();
 		await writeTupleFiles(cwd, "P06-T06-test");
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
@@ -284,7 +285,9 @@ describe("parallel-implementation-review flow contract", () => {
 			})}\n`,
 		);
 
-		await expect(runScript(cwd, "lane-hard-stop-guard.js", {})).rejects.toThrow("parallel lane hard stop reported");
+		const result = await runScript(cwd, "lane-hard-stop-guard.js", {});
+
+		expect(result.verdict).toBe("hard_stop");
 		const guardArtifact = await Bun.file(
 			path.join(cwd, "workflow-output", "lane-hard-stop-guard-P06-T06-test.json"),
 		).json();
@@ -293,12 +296,43 @@ describe("parallel-implementation-review flow contract", () => {
 			producer_node: "laneHardStopGuard",
 			status: "hard_stop",
 		});
+		expect(await fileExists(path.join(cwd, "workflow-output", "tuple-state.json"))).toBe(false);
+	});
+
+	it("lets finalization reject active lane hard stops through the evidence contract path", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "lane-hard-stop-P06-T06-test.json"),
+			`${JSON.stringify({
+				tuple_id: "P06-T06-test",
+				producer_node: "implementTests",
+				status: "hard_stop",
+				reason: "declared validation environment mismatch",
+			})}\n`,
+		);
+		await runScript(cwd, "lane-hard-stop-guard.js", {});
+
+		const guardResult = await runScript(cwd, "evidence-contract-guard.js", {});
+		const finalResult = await runScript(cwd, "finalize-strong-review.js", {
+			state: {
+				verdict: { verdict: "promote" },
+				evidenceContract: guardResult.data,
+			},
+		});
+
+		expect(guardResult.verdict).toBe("REPAIR");
+		expect(guardResult.data?.checked_inputs?.lane_hard_stop_artifacts).toEqual([
+			"workflow-output/lane-hard-stop-P06-T06-test.json",
+		]);
+		expect(finalResult.verdict).toBe("reject");
 		await expect(Bun.file(path.join(cwd, "workflow-output", "tuple-state.json")).json()).resolves.toMatchObject({
 			tuple_id: "P06-T06-test",
 			flow: "parallel-implementation-review",
-			status: "hard_stop",
+			status: "rejected",
 			terminal: true,
-			terminal_artifacts: ["workflow-output/lane-hard-stop-P06-T06-test.json"],
+			verdict: "reject",
+			evidence_contract_verdict: "REPAIR",
 		});
 	});
 

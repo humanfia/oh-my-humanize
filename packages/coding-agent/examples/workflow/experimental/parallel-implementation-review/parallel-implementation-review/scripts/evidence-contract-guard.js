@@ -13,6 +13,8 @@ const trustedFinalValidationArtifacts = validationMatch.trustedFinalFiles.filter
 );
 const untrustedFinalValidationArtifacts = finalValidationArtifacts.filter(file => !trustedFinalValidationArtifacts.includes(file));
 const genericValidationAliases = genericValidationAliasArtifacts(evidenceFiles);
+const laneHardStopResult = await laneHardStopArtifacts(tupleId);
+const activeLaneHardStopArtifacts = laneHardStopResult.active;
 const supersededFailedValidationArtifacts =
 	trustedFinalValidationArtifacts.length > 0
 		? validationMatch.failedFiles.filter(file => !isFinalDeclaredValidationArtifact(file, tupleId))
@@ -81,6 +83,12 @@ if (prematureDecisionArtifacts.length > 0) {
 	);
 }
 
+if (activeLaneHardStopArtifacts.length > 0) {
+	reasons.push(
+		`parallel lane hard stop artifacts found: ${activeLaneHardStopArtifacts.join(", ")}; hard stops must be resolved or superseded before promotion`,
+	);
+}
+
 const verdict = reasons.length === 0 ? "READY" : "REPAIR";
 const diagnostic = {
 	tuple_id: tupleId,
@@ -103,6 +111,8 @@ const diagnostic = {
 		trusted_final_validation_artifacts: trustedFinalValidationArtifacts.slice(0, 80),
 		untrusted_final_validation_artifacts: untrustedFinalValidationArtifacts.slice(0, 80),
 		generic_validation_aliases: genericValidationAliases.slice(0, 80),
+		lane_hard_stop_artifacts: activeLaneHardStopArtifacts.slice(0, 80),
+		ignored_historical_lane_hard_stop_artifacts: laneHardStopResult.ignored.slice(0, 80),
 		failed_validation_artifacts: failedValidationArtifacts.slice(0, 80),
 		superseded_failed_validation_artifacts: supersededFailedValidationArtifacts.slice(0, 80),
 		premature_decision_artifacts: prematureDecisionArtifacts.slice(0, 80),
@@ -138,6 +148,14 @@ await Bun.write(
 		"",
 		"Generic validation aliases:",
 		...(genericValidationAliases.length > 0 ? genericValidationAliases.map(file => `- ${file}`) : ["- (none)"]),
+		"",
+		"Lane hard-stop artifacts:",
+		...(activeLaneHardStopArtifacts.length > 0
+			? activeLaneHardStopArtifacts.map(file => `- ${file}`)
+			: ["- (none)"]),
+		"",
+		"Ignored historical lane hard-stop artifacts:",
+		...(laneHardStopResult.ignored.length > 0 ? laneHardStopResult.ignored.map(file => `- ${file}`) : ["- (none)"]),
 		"",
 		"Failed validation artifacts:",
 		...(failedValidationArtifacts.length > 0 ? failedValidationArtifacts.map(file => `- ${file}`) : ["- (none)"]),
@@ -348,6 +366,50 @@ function isFinalDeclaredValidationArtifact(file, currentTupleId) {
 
 function genericValidationAliasArtifacts(files) {
 	return files.filter(file => /^workflow-output\/(?:validation|verify|test|tests)\.(?:json|md|txt|log)$/iu.test(file));
+}
+
+async function laneHardStopArtifacts(tupleId) {
+	const glob = new Bun.Glob("workflow-output/lane-hard-stop-*.json");
+	const active = [];
+	const ignored = [];
+	for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
+		if (isLaneHardStopGuardArtifact(filePath)) continue;
+		if (tupleId && !filePath.includes(tupleId)) continue;
+		const classification = await hardStopClassification(filePath);
+		if (classification === "active") active.push(filePath);
+		if (classification === "superseded") ignored.push(filePath);
+	}
+	return {
+		active: active.sort((left, right) => left.localeCompare(right, "en")),
+		ignored: ignored.sort((left, right) => left.localeCompare(right, "en")),
+	};
+}
+
+function isLaneHardStopGuardArtifact(filePath) {
+	return /(^|\/)lane-hard-stop-guard[^/]*\.json$/iu.test(filePath);
+}
+
+async function hardStopClassification(filePath) {
+	try {
+		const data = await Bun.file(filePath).json();
+		const isHardStop = stringField(data, "status") === "hard_stop" || stringField(data, "verdict") === "hard_stop";
+		if (!isHardStop) return "none";
+		if (await hasSupersedingEvidence(data)) return "superseded";
+		return "active";
+	} catch {
+		return "none";
+	}
+}
+
+async function hasSupersedingEvidence(data) {
+	const supersededBy = stringField(data, "superseded_by");
+	if (!supersededBy.startsWith("workflow-output/")) return false;
+	if (supersededBy.includes("..")) return false;
+	try {
+		return await Bun.file(supersededBy).exists();
+	} catch {
+		return false;
+	}
 }
 
 function isPrematureDecisionArtifact(file) {

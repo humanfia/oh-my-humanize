@@ -15,24 +15,17 @@ const diagnostic = {
 await Bun.write(artifactPath, `${JSON.stringify(diagnostic, null, 2)}\n`);
 
 if (hardStopArtifacts.length > 0) {
-	await Bun.write(
-		"workflow-output/tuple-state.json",
-		`${JSON.stringify(
-			{
-				tuple_id: tupleId,
-				flow: "parallel-implementation-review",
-				status: "hard_stop",
-				terminal: true,
-				reason: "parallel lane hard stop reported",
-				terminal_artifacts: hardStopArtifacts,
-				guard_artifact: artifactPath,
-				checked_at_ms: Date.now(),
-			},
-			null,
-			2,
-		)}\n`,
-	);
-	throw new Error(`parallel lane hard stop reported; see ${artifactPath}`);
+	return {
+		summary: `parallel lane hard stop reported: ${hardStopArtifacts.join(", ")}`,
+		verdict: "hard_stop",
+		data: {
+			artifact: artifactPath,
+			producer_node: "laneHardStopGuard",
+			status: "hard_stop",
+			hard_stop_artifacts: hardStopArtifacts,
+		},
+		statePatch: [{ op: "set", path: "/laneHardStopGuard", value: diagnostic }],
+	};
 }
 
 return {
@@ -51,6 +44,7 @@ async function laneHardStopArtifacts(tupleId) {
 	const active = [];
 	const ignored = [];
 	for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
+		if (isLaneHardStopGuardArtifact(filePath)) continue;
 		if (tupleId && !filePath.includes(tupleId)) continue;
 		const classification = await hardStopClassification(filePath);
 		if (classification === "active") active.push(filePath);
@@ -98,6 +92,10 @@ async function tupleIdFromRunArtifacts() {
 		// Tuple IDs are optional for ad hoc local use.
 	}
 	return "";
+}
+
+function isLaneHardStopGuardArtifact(filePath) {
+	return /(^|\/)lane-hard-stop-guard[^/]*\.json$/iu.test(filePath);
 }
 
 async function tupleIdFromJsonFile(filePath) {
