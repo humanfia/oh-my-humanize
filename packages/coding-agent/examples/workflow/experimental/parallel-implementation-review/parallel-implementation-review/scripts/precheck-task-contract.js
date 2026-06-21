@@ -10,11 +10,12 @@ if (!taskContract) {
 	throw new Error("parallel-implementation-review requires a task.md contract in the project root");
 }
 assertTaskContract(taskContract);
+const runtimeTaskContract = taskContractWithWorkflowFinalizationRule(taskContract);
 
 return {
 	summary: "parallel implementation task contract recorded from task.md",
 	statePatch: [
-		{ op: "set", path: "/taskContract", value: taskContract.slice(0, 8000) },
+		{ op: "set", path: "/taskContract", value: runtimeTaskContract.slice(0, 8000) },
 		{ op: "set", path: "/runtime", value: runtimeFromTaskContract(taskContract) },
 	],
 };
@@ -35,6 +36,19 @@ function assertTaskContract(text) {
 	if (missing.length > 0) {
 		throw new Error(`parallel-implementation-review task.md missing required contract fields: ${missing.join(", ")}`);
 	}
+}
+
+function taskContractWithWorkflowFinalizationRule(text) {
+	return [workflowFinalizationRule(), text].join("\n\n");
+}
+
+function workflowFinalizationRule() {
+	return [
+		"Workflow-owned finalization rule:",
+		"- Any task requirement for a final archive, final review, final status, promotion decision, or tuple state is satisfied only by the workflow finalizer node after evidenceContractGuard and strongReview.",
+		"- Lane, integration-review, and reviewer agents must not write workflow-output artifacts whose basename starts with `final-`, starts with `final_`, contains `-final-`, starts with `strong-review`, starts with `promotion-decision`, or is `tuple-state.json`.",
+		"- Agents must use lane/reviewer names such as `docs-evidence-<tuple-id>.md`, `integration-review-<tuple-id>.json`, or `reviewer-notes-<tuple-id>.md`; the finalizer node will later produce the final archive and final review artifacts.",
+	].join("\n");
 }
 
 function hasValidationContract(text) {

@@ -9,9 +9,18 @@ interface ScriptResult {
 	summary: string;
 	verdict?: string;
 	artifacts?: string[];
+	statePatch?: Array<{
+		op: "set";
+		path: string;
+		value: unknown;
+	}>;
 	data?: {
 		artifact?: string;
 		producer_node?: string;
+		preexisting_final_artifacts?: Array<{
+			original: string;
+			quarantine: string;
+		}>;
 		validation?: {
 			environment?: Record<string, string>;
 			runtime_environment?: Record<string, string>;
@@ -53,6 +62,34 @@ afterEach(async () => {
 });
 
 describe("parallel-implementation-review flow contract", () => {
+	it("records task contracts with a workflow-owned finalization rule", async () => {
+		const cwd = await createTempDir();
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Objective:",
+				"Improve routing path evidence.",
+				"Acceptance Criteria:",
+				"- If files change, the final archive must map every changed file to validation and rollback.",
+				"Validation Command:",
+				"npm test",
+				"Lane Ownership:",
+				"implementation lane owns source; test lane owns regression; docs lane owns evidence.",
+				"Stop Conditions:",
+				"Stop on unresolved setup blockers.",
+			].join("\n"),
+		);
+
+		const result = await runScript(cwd, "precheck-task-contract.js", {});
+		const taskContract = result.statePatch?.find(patch => patch.path === "/taskContract")?.value;
+
+		expect(typeof taskContract).toBe("string");
+		expect(taskContract).toContain("Workflow-owned finalization rule");
+		expect(taskContract).toContain("final archive");
+		expect(taskContract).toContain("finalizer node");
+		expect(taskContract).toContain("must not write workflow-output artifacts whose basename starts with `final-`");
+	});
+
 	it("writes tuple-scoped validation stdout and stderr artifacts without generic txt aliases", async () => {
 		const cwd = await createTempDir();
 		await writeTupleFiles(cwd, "P06-T06-test");
@@ -395,6 +432,67 @@ describe("parallel-implementation-review flow contract", () => {
 			terminal: true,
 			verdict: "reject",
 			evidence_contract_verdict: "REPAIR",
+		});
+	});
+
+	it("finalizer preserves preexisting final artifacts before writing workflow-owned output", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "final-review-P06-T06-test.json"),
+			`${JSON.stringify({ producer_node: "integrationReview", note: "premature review artifact" })}\n`,
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "P06-T06-test-final-archive.md"),
+			"# premature archive\n\nProducer: docs lane\n",
+		);
+
+		const result = await runScript(cwd, "finalize-strong-review.js", {
+			state: {
+				verdict: { verdict: "promote" },
+				evidenceContract: {
+					verdict: "REPAIR",
+					checked_inputs: {
+						premature_decision_artifacts: [
+							"workflow-output/final-review-P06-T06-test.json",
+							"workflow-output/P06-T06-test-final-archive.md",
+						],
+					},
+				},
+			},
+		});
+
+		expect(result.verdict).toBe("reject");
+		expect(result.data?.preexisting_final_artifacts).toEqual([
+			{
+				original: "workflow-output/final-review-P06-T06-test.json",
+				quarantine: "workflow-output/quarantined-premature-final-artifacts/final-review-P06-T06-test.json",
+			},
+			{
+				original: "workflow-output/P06-T06-test-final-archive.md",
+				quarantine: "workflow-output/quarantined-premature-final-artifacts/P06-T06-test-final-archive.md",
+			},
+		]);
+		await expect(
+			Bun.file(
+				path.join(
+					cwd,
+					"workflow-output",
+					"quarantined-premature-final-artifacts",
+					"final-review-P06-T06-test.json",
+				),
+			).json(),
+		).resolves.toMatchObject({
+			producer_node: "integrationReview",
+			note: "premature review artifact",
+		});
+		await expect(
+			Bun.file(path.join(cwd, "workflow-output", "final-review-P06-T06-test.json")).json(),
+		).resolves.toMatchObject({
+			producer_node: "finalizeStrongReview",
+			strong_review: {
+				verdict: "reject",
+			},
 		});
 	});
 

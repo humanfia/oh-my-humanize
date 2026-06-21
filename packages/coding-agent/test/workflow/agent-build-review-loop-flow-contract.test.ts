@@ -413,6 +413,50 @@ describe("agent-build-review-loop flow contract", () => {
 		expect(result.data.reason).toContain("terminal validation blocker");
 	});
 
+	it("routes reviewer-declared external_blocker validation summaries to reject", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Acceptance Criteria:",
+				"- Complete at least three concrete semantic work packages before completion.",
+				"Validation Command:",
+				"./workflow-output/run-validation.sh",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: hardened asset URL handling; validation=./workflow-output/run-validation.sh; result=fail\n",
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-1", "validation-summary.txt"),
+			[
+				"attempts:",
+				"- attempt: 1",
+				"  command: ./workflow-output/run-validation.sh",
+				"  exit_code: 127",
+				"result: fail",
+				"external_blocker: create-vite build could not start because tsdown is unavailable and node_modules is missing after preflight; task rules forbid dependency bootstrapping during validation.",
+			].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"progress.md has 1 line beginning with ROUND, and the task contract requires at least three concrete semantic work packages before completion. The declared validation command's latest recorded run failed with exit code 127 because create-vite build could not start: tsdown is unavailable and node_modules is missing, which is a terminal external validation blocker rather than an in-scope source bug.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "reject",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: ["workflow-output/round-1/validation-summary.txt"],
+			terminalBlockerEvidenceFiles: ["workflow-output/round-1/validation-summary.txt"],
+		});
+		expect(result.data.reason).toContain("terminal validation blocker");
+	});
+
 	it("does not route negated terminal blocker wording to reject", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });

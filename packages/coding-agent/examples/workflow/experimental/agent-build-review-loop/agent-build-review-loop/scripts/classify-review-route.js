@@ -316,7 +316,10 @@ function isReviewerDeclaredTerminalValidationBlocker(text) {
 
 function negatesTerminalValidationBlocker(text) {
 	return (
-		/\b(?:no|not|without)\b.{0,80}\bterminal\b.{0,120}\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?)\b.{0,120}\b(?:validation\s+)?blocker\b/ius.test(
+		/\b(?:no|without)\b.{0,80}\bterminal\b.{0,120}\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?)\b.{0,120}\b(?:validation\s+)?blocker\b/ius.test(
+			text,
+		) ||
+		/\bnot\s+(?:an?\s+)?terminal\b.{0,120}\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?)\b.{0,120}\b(?:validation\s+)?blocker\b/ius.test(
 			text,
 		) ||
 		/\bterminal\b.{0,120}\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?)\b.{0,120}\b(?:validation\s+)?blocker\b.{0,80}\b(?:is|are)?\s*(?:not|absent|missing|not present|no longer present)\b/ius.test(
@@ -327,6 +330,7 @@ function negatesTerminalValidationBlocker(text) {
 
 function isExternalValidationBlockerText(text) {
 	return (
+		/\bexternal[_ -]?blocker\s*:/iu.test(text) ||
 		/\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?|flaky)\b.{0,160}\b(?:validation\s+)?blocker\b/ius.test(
 			text,
 		) ||
@@ -413,10 +417,12 @@ function validationDependencyBlockerSignature(text) {
 
 function isValidationDependencyBlockerText(text) {
 	return (
-		/\b(?:validation copy|clean[- ]copy|clean copy|prepared validation copy|validation sandbox)\b/iu.test(text) &&
-		/\b(?:missing dependenc|missing package|missing module|excludes node_modules|exclude node_modules|Cannot find (?:package|module)|Could not resolve)\b/iu.test(
-			text,
-		)
+		(/\b(?:validation copy|clean[- ]copy|clean copy|prepared validation copy|validation sandbox)\b/iu.test(text) &&
+			/\b(?:missing dependenc|missing package|missing module|excludes node_modules|exclude node_modules|Cannot find (?:package|module)|Could not resolve)\b/iu.test(
+				text,
+			)) ||
+		/\bnode_modules\b.{0,80}\bmissing\b.{0,120}\bafter preflight\b/ius.test(text) ||
+		/\b(?:unavailable|missing)\b.{0,80}\b(?:dependency|dependencies|package|module|binary)\b/ius.test(text)
 	);
 }
 

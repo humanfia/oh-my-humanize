@@ -8,6 +8,9 @@ const changedFiles = await changedProjectFiles();
 const evidenceFiles = await workflowEvidenceFiles();
 const finalReviewArtifact = `workflow-output/final-review${tupleId ? `-${tupleId}` : ""}.json`;
 const finalArchiveArtifact = `workflow-output/final-parallel-implementation-review-archive${tupleId ? `-${tupleId}` : ""}.md`;
+const preexistingFinalArtifacts = await quarantinePreexistingFinalArtifacts(
+	preexistingFinalArtifactCandidates(evidenceContract, [finalReviewArtifact, finalArchiveArtifact]),
+);
 const payload = {
 	tuple_id: tupleId,
 	artifact: finalReviewArtifact,
@@ -22,6 +25,7 @@ const payload = {
 	evidence_contract_verdict: evidenceContractVerdict,
 	changed_files: changedFiles,
 	evidence_files: evidenceFiles,
+	preexisting_final_artifacts: preexistingFinalArtifacts,
 	checked_at_ms: Date.now(),
 };
 
@@ -41,6 +45,7 @@ await Bun.write(
 			evidence_contract_verdict: evidenceContractVerdict,
 			changed_files: changedFiles,
 			evidence_files: evidenceFiles,
+			preexisting_final_artifacts: preexistingFinalArtifacts,
 			checked_at_ms: Date.now(),
 		},
 		null,
@@ -70,6 +75,44 @@ function verdictFromWorkflowState() {
 function objectState(path) {
 	const value = stateValueAtPath(workflowContext.state, path);
 	return value && typeof value === "object" ? value : value ?? null;
+}
+
+function preexistingFinalArtifactCandidates(evidenceContract, finalizerArtifacts) {
+	const prematureArtifacts = evidenceContract?.checked_inputs?.premature_decision_artifacts;
+	const candidates = Array.isArray(prematureArtifacts) ? prematureArtifacts : [];
+	return uniqueSorted(
+		[...candidates, ...finalizerArtifacts]
+			.filter(file => typeof file === "string")
+			.filter(file => file.startsWith("workflow-output/"))
+			.filter(file => !file.includes("..")),
+	);
+}
+
+async function quarantinePreexistingFinalArtifacts(files) {
+	const preserved = [];
+	for (const file of files) {
+		if (!(await fileExists(file))) continue;
+		const quarantine = `workflow-output/quarantined-premature-final-artifacts/${artifactBasename(file)}`;
+		await Bun.write(quarantine, await Bun.file(file).text());
+		preserved.push({ original: file, quarantine });
+	}
+	return preserved;
+}
+
+async function fileExists(filePath) {
+	try {
+		return await Bun.file(filePath).exists();
+	} catch {
+		return false;
+	}
+}
+
+function artifactBasename(filePath) {
+	return filePath.split("/").pop()?.replace(/[^\w.-]/gu, "_") || "artifact";
+}
+
+function uniqueSorted(values) {
+	return Array.from(new Set(values)).sort((left, right) => left.localeCompare(right, "en"));
 }
 
 function stateValueAtPath(state, pointer) {
