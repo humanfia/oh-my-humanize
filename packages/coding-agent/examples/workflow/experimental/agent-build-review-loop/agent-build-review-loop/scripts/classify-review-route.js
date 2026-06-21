@@ -23,10 +23,6 @@ if (terminalBlockerEvidenceFiles.length > 0) {
 		setupBlockerEvidenceFiles.length > 0
 			? "setup blocker evidence is terminal; archive/reject instead of looping into another build round"
 			: "terminal validation blocker evidence repeated outside task scope; archive/reject instead of looping into another build round";
-} else if (decision === "continue" && (await isArchiveReadinessOnlyReview(reviewSummary))) {
-	decision = "complete";
-	reason =
-		"review accepted implementation evidence; route to semantic archive guard for downstream archive checks";
 }
 
 const reviewDecisionTrailFile = `workflow-output/review-route-${Math.max(reviewRound, 1)}.json`;
@@ -75,31 +71,6 @@ function normalizeVerdict(value) {
 	return /\bcontinue\b/u.test(text) ? "continue" : "complete";
 }
 
-async function isArchiveReadinessOnlyReview(text) {
-	const progress = await readOptionalText("progress.md");
-	return (
-		progressRoundCount(progress) >= requiredRoundCount &&
-		mentionsPassingValidation(text) &&
-		mentionsOnlyMissingArchiveEvidence(text) &&
-		!mentionsImplementationWorkStillNeeded(text) &&
-		!mentionsTaskAcceptanceStillMissing(text) &&
-		!mentionsScopeOrBuildRepairStillNeeded(text)
-	);
-}
-
-function progressRoundCount(text) {
-	return [...text.matchAll(/^\s*ROUND\b/gimu)].length;
-}
-
-function mentionsSatisfiedBuildContract(text) {
-	return (
-		/\b(?:minimum|declared minimum|required).{0,80}\b(?:satisf(?:ied|ying)|met)\b/ius.test(text) ||
-		/\bsatisf(?:ied|ying).{0,80}\b(?:minimum|declared minimum|required)\b/ius.test(text) ||
-		/\b(?:2|two)\s+(?:ROUND entries|lines? beginning with ROUND)\b/iu.test(text) ||
-		/\bat least (?:2|two).{0,80}\b(?:round|implementation|build)\b/ius.test(text)
-	);
-}
-
 function taskRequiredRoundCount(text) {
 	const countWordPattern =
 		"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty";
@@ -146,73 +117,6 @@ function parseRoundCount(text) {
 		["twenty", 20],
 	]);
 	return words.get(text.toLowerCase()) ?? null;
-}
-
-function mentionsPassingValidation(text) {
-	return (
-		/\b(?:validation|checks?|test(?:s| suite)?|declared command)\b.{0,160}\bpass(?:ed|es|ing)?\b/ius.test(
-			text,
-		) || /\bvalidation\b.{0,160}\b(?:exit[_ -]?code|exit status)\s*=?\s*0\b/ius.test(text)
-	);
-}
-
-function mentionsOnlyMissingArchiveEvidence(text) {
-	const hasArchiveGap =
-		/\b(?:semantic[- ]?archive[- ]?guard|semanticArchiveGuard|archiveLoop|archive loop|archive output|archive completion evidence)\b/iu.test(
-			text,
-		) &&
-		/\b(?:missing|absent|not completed|incomplete|not yet|not found|no\b.{0,80}\bpresent)\b/ius.test(
-			text,
-		);
-	return hasArchiveGap;
-}
-
-function mentionsImplementationWorkStillNeeded(text) {
-	return (
-		/\b(?:implementation|code|build|feature|fix).{0,80}\b(?:needs?|requires?|still needs?|must)\b.{0,80}\b(?:fix|change|repair|work|update|implementation)\b/ius.test(
-			text,
-		) ||
-		/\bvalidation\b.{0,80}\b(?:fail(?:ed|s|ing)|blocked|error|broken)\b/ius.test(text)
-	);
-}
-
-function mentionsTaskAcceptanceStillMissing(text) {
-	return (
-		/\btask[- ](?:specific|declared)\b.{0,160}\b(?:acceptance|surface)\b.{0,160}\b(?:not yet met|not met|unmet|no corresponding|missing)\b/ius.test(
-			text,
-		) ||
-		/\b(?:task[- ]specific acceptance|acceptance criteria)\b.{0,120}\b(?:not yet met|not met|unmet)\b/ius.test(
-			text,
-		) ||
-		/\bno corresponding\b.{0,120}\b(?:source|behavioral[- ]?test|test|implementation)\b.{0,120}\bimprovement\b/ius.test(
-			text,
-		)
-	);
-}
-
-function mentionsScopeOrBuildRepairStillNeeded(text) {
-	return (
-		(/\banother\s+build(?:\/review)?(?:\/archive)?\s+(?:round|route|cycle)\s+(?:is\s+)?(?:still\s+)?needed\b/iu.test(
-			text,
-		) &&
-			!mentionsArchiveOnlyNextRoute(text)) ||
-		/\b(?:scope|evidence)\s+gaps?\b.{0,120}\b(?:resolve|repair|fix|needed|rather than archive)\b/ius.test(
-			text,
-		) ||
-		/\b(?:outside|escapes?)\b.{0,120}\b(?:task\.md'?s?\s+declared\s+)?allowed paths?\b/ius.test(
-			text,
-		) ||
-		/\boutside\b.{0,120}\b(?:scope|task[- ]declared)\b/ius.test(text)
-	);
-}
-
-function mentionsArchiveOnlyNextRoute(text) {
-	return (
-		mentionsOnlyMissingArchiveEvidence(text) &&
-		/\banother\s+build(?:\/review)?(?:\/archive)?\s+(?:round|route|cycle)\s+(?:is\s+)?(?:still\s+)?needed\b.{0,180}\b(?:semantic[- ]?archive[- ]?guard|semanticArchiveGuard|archiveLoop|archive loop|archive output)\b/ius.test(
-			text,
-		)
-	);
 }
 
 async function findSetupBlockerEvidenceFiles(reviewSummary) {

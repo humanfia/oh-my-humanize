@@ -242,6 +242,39 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("does not promote continue reviews into archive completion", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Validation Command:",
+				"./workflow-output/run-validation.sh",
+				"Requires at least two meaningful build/review cycles.",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			["ROUND 1: source/test update; result=pass", "ROUND 2: docs/evidence update; result=pass"].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"Another build round is needed because the latest evidence says the semantic archive guard/final archive and post-round route selection have not been produced yet. There are 2 ROUND entries in progress.md and the latest declared validation command passed, but task-required final archive/guard evidence remains absent, so acceptance is not yet satisfied.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "continue",
+			reviewVerdict: "continue",
+			reason: "review requested another build round",
+		});
+		await expect(Bun.file(path.join(cwd, "workflow-output", "review-route-1.json")).json()).resolves.toMatchObject({
+			decision: "continue",
+			reviewVerdict: "continue",
+		});
+	});
+
 	it("routes nondurable validation artifact references to reject", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
@@ -400,7 +433,7 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
-	it("routes archive-readiness-only reviews to semantic archive guard instead of another build round", async () => {
+	it("keeps archive-readiness-only continue reviews in the build loop", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(
@@ -418,16 +451,16 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 
 		expect(result.data).toMatchObject({
-			decision: "complete",
+			decision: "continue",
 			reviewVerdict: "continue",
 			setupBlockerEvidenceFiles: [],
 			externalValidationBlockerEvidenceFiles: [],
 			terminalBlockerEvidenceFiles: [],
 		});
-		expect(result.data.reason).toContain("semantic archive guard");
+		expect(result.data.reason).toContain("another build round");
 	});
 
-	it("routes terminal-evidence-only review wording to semantic archive guard", async () => {
+	it("keeps terminal-evidence-only continue reviews in the build loop", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(
@@ -445,16 +478,16 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 
 		expect(result.data).toMatchObject({
-			decision: "complete",
+			decision: "continue",
 			reviewVerdict: "continue",
 			setupBlockerEvidenceFiles: [],
 			externalValidationBlockerEvidenceFiles: [],
 			terminalBlockerEvidenceFiles: [],
 		});
-		expect(result.data.reason).toContain("semantic archive guard");
+		expect(result.data.reason).toContain("another build round");
 	});
 
-	it("routes satisfied-round-minimum wording to semantic archive guard", async () => {
+	it("keeps satisfied-round-minimum continue reviews in the build loop", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(
@@ -472,16 +505,16 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 
 		expect(result.data).toMatchObject({
-			decision: "complete",
+			decision: "continue",
 			reviewVerdict: "continue",
 			setupBlockerEvidenceFiles: [],
 			externalValidationBlockerEvidenceFiles: [],
 			terminalBlockerEvidenceFiles: [],
 		});
-		expect(result.data.reason).toContain("semantic archive guard");
+		expect(result.data.reason).toContain("another build round");
 	});
 
-	it("routes archive-only evidence gaps using durable progress round evidence", async () => {
+	it("keeps archive-only continue evidence gaps in the build loop", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(
@@ -499,13 +532,13 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 
 		expect(result.data).toMatchObject({
-			decision: "complete",
+			decision: "continue",
 			reviewVerdict: "continue",
 			setupBlockerEvidenceFiles: [],
 			externalValidationBlockerEvidenceFiles: [],
 			terminalBlockerEvidenceFiles: [],
 		});
-		expect(result.data.reason).toContain("semantic archive guard");
+		expect(result.data.reason).toContain("another build round");
 	});
 
 	it("keeps building when task-required round minimum is not satisfied", async () => {
@@ -564,7 +597,7 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
-	it("routes archive-only evidence gaps after task-required round minimum", async () => {
+	it("keeps archive-only continue gaps after task-required round minimum", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(path.join(cwd, "task.md"), "Produce at least four meaningful build/review cycles.\n");
@@ -585,16 +618,16 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 
 		expect(result.data).toMatchObject({
-			decision: "complete",
+			decision: "continue",
 			reviewVerdict: "continue",
 			setupBlockerEvidenceFiles: [],
 			externalValidationBlockerEvidenceFiles: [],
 			terminalBlockerEvidenceFiles: [],
 		});
-		expect(result.data.reason).toContain("semantic archive guard");
+		expect(result.data.reason).toContain("another build round");
 	});
 
-	it("routes archive-only next-route wording after task-required round minimum", async () => {
+	it("keeps archive-only next-route continue wording after task-required round minimum", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(path.join(cwd, "task.md"), "Produce at least twelve meaningful build/review cycles.\n");
@@ -614,14 +647,14 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 
 		expect(result.data).toMatchObject({
-			decision: "complete",
+			decision: "continue",
 			reviewVerdict: "continue",
 			requiredRoundCount: 12,
 			setupBlockerEvidenceFiles: [],
 			externalValidationBlockerEvidenceFiles: [],
 			terminalBlockerEvidenceFiles: [],
 		});
-		expect(result.data.reason).toContain("semantic archive guard");
+		expect(result.data.reason).toContain("another build round");
 	});
 
 	it("keeps building when reviewer says task-specific acceptance is not met after required rounds", async () => {
