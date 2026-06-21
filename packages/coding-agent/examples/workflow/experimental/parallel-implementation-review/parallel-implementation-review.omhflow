@@ -26,6 +26,8 @@ resources:
     kind: script
   - path: scripts/lane-hard-stop-guard.js
     kind: script
+  - path: scripts/materialize-integration-review.js
+    kind: script
   - path: scripts/evidence-contract-guard.js
     kind: script
   - path: scripts/finalize-strong-review.js
@@ -168,6 +170,19 @@ sequence:
                 node: implementDocs
                 path: /summary
                 activation: latest-completed
+  - node:
+      id: materializeIntegrationReview
+      type: script
+      script:
+        language: js
+        file: scripts/materialize-integration-review.js
+      reads:
+        - /plan
+        - /taskContract
+        - /summary
+        - /laneHardStopGuard
+      writes:
+        - /integrationReviewArtifact
   - node:
       id: runDeclaredValidation
       type: script

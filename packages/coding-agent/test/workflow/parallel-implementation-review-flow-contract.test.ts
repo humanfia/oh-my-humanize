@@ -19,6 +19,7 @@ interface ScriptResult {
 		};
 		checked_inputs?: {
 			generic_validation_aliases?: string[];
+			integration_artifacts?: string[];
 			premature_decision_artifacts?: string[];
 			failed_validation_artifacts?: string[];
 			lane_hard_stop_artifacts?: string[];
@@ -167,6 +168,80 @@ describe("parallel-implementation-review flow contract", () => {
 				premature_decision_artifacts: ["workflow-output/P06-T06-test-final-validation.json"],
 			},
 		});
+	});
+
+	it("materializes tuple-scoped integration review evidence from the completed review activation", async () => {
+		const cwd = await createTempDir();
+		await writeTupleFiles(cwd, "P06-T06-test");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "workflow-output", "core-lane-P06-T06-test.json"), "{}\n");
+		await Bun.write(path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"), "{}\n");
+		await Bun.write(path.join(cwd, "workflow-output", "docs-lane-P06-T06-test.json"), "{}\n");
+
+		const result = await runScript(cwd, "materialize-integration-review.js", {
+			completedActivations: [
+				{
+					id: "activation-integration",
+					nodeId: "integrationReview",
+					graphRevisionId: "graph",
+					status: "completed",
+					parentActivationIds: [],
+					output: {
+						summary: "integration reviewed tracked and untracked files",
+						data: { reviewer: "integration" },
+						artifacts: ["workflow-output/reviewer-note.txt"],
+					},
+				},
+			],
+		});
+
+		expect(result.verdict).toBe("materialized");
+		expect(result.data).toMatchObject({
+			artifact: "workflow-output/integration-review-materialized-P06-T06-test.json",
+			producer_node: "materializeIntegrationReview",
+			status: "materialized",
+			review_activation: {
+				node_id: "integrationReview",
+				summary: "integration reviewed tracked and untracked files",
+			},
+			lane_artifacts: [
+				"workflow-output/core-lane-P06-T06-test.json",
+				"workflow-output/docs-lane-P06-T06-test.json",
+				"workflow-output/tests-lane-P06-T06-test.json",
+			],
+		});
+		await expect(
+			Bun.file(path.join(cwd, "workflow-output", "integration-review-materialized-P06-T06-test.json")).json(),
+		).resolves.toMatchObject({
+			status: "materialized",
+			producer_node: "materializeIntegrationReview",
+		});
+	});
+
+	it("accepts materialized integration review evidence for the evidence contract", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test", { integrationReviewArtifact: false });
+		await runScript(cwd, "materialize-integration-review.js", {
+			completedActivations: [
+				{
+					id: "activation-integration",
+					nodeId: "integrationReview",
+					graphRevisionId: "graph",
+					status: "completed",
+					parentActivationIds: [],
+					output: {
+						summary: "integration reviewed all lanes",
+					},
+				},
+			],
+		});
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.integration_artifacts).toEqual([
+			"workflow-output/integration-review-materialized-P06-T06-test.json",
+		]);
 	});
 
 	it("lets finalization reject failed declared validation through the evidence contract path", async () => {
@@ -388,14 +463,20 @@ async function runScript(cwd: string, scriptName: string, context: Partial<Workf
 	}
 }
 
-async function writeReadyEvidence(cwd: string, tupleId: string): Promise<void> {
+async function writeReadyEvidence(
+	cwd: string,
+	tupleId: string,
+	options: { integrationReviewArtifact?: boolean } = {},
+): Promise<void> {
 	await writeTupleFiles(cwd, tupleId);
 	await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n");
 	await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 	await Bun.write(path.join(cwd, "workflow-output", `core-lane-${tupleId}.json`), "{}\n");
 	await Bun.write(path.join(cwd, "workflow-output", `tests-lane-${tupleId}.json`), "{}\n");
 	await Bun.write(path.join(cwd, "workflow-output", `docs-lane-${tupleId}.json`), "{}\n");
-	await Bun.write(path.join(cwd, "workflow-output", `integration-review-${tupleId}.json`), "{}\n");
+	if (options.integrationReviewArtifact !== false) {
+		await Bun.write(path.join(cwd, "workflow-output", `integration-review-${tupleId}.json`), "{}\n");
+	}
 	await Bun.write(
 		path.join(cwd, "workflow-output", `validation-${tupleId}.json`),
 		`${JSON.stringify(
