@@ -1,5 +1,6 @@
 const tupleId = await tupleIdFromRunArtifacts();
-const hardStopArtifacts = await laneHardStopArtifacts(tupleId);
+const hardStopResult = await laneHardStopArtifacts(tupleId);
+const hardStopArtifacts = hardStopResult.active;
 const artifactPath = `workflow-output/lane-hard-stop-guard${tupleId ? `-${tupleId}` : ""}.json`;
 const diagnostic = {
 	tuple_id: tupleId,
@@ -7,6 +8,7 @@ const diagnostic = {
 	producer_kind: "workflow-script",
 	status: hardStopArtifacts.length > 0 ? "hard_stop" : "continue",
 	hard_stop_artifacts: hardStopArtifacts,
+	ignored_historical_hard_stop_artifacts: hardStopResult.ignored,
 	checked_at_ms: Date.now(),
 };
 
@@ -46,18 +48,38 @@ return {
 
 async function laneHardStopArtifacts(tupleId) {
 	const glob = new Bun.Glob("workflow-output/lane-hard-stop-*.json");
-	const artifacts = [];
+	const active = [];
+	const ignored = [];
 	for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
 		if (tupleId && !filePath.includes(tupleId)) continue;
-		if (await isHardStopArtifact(filePath)) artifacts.push(filePath);
+		const classification = await hardStopClassification(filePath);
+		if (classification === "active") active.push(filePath);
+		if (classification === "superseded") ignored.push(filePath);
 	}
-	return artifacts.sort((left, right) => left.localeCompare(right, "en"));
+	return {
+		active: active.sort((left, right) => left.localeCompare(right, "en")),
+		ignored: ignored.sort((left, right) => left.localeCompare(right, "en")),
+	};
 }
 
-async function isHardStopArtifact(filePath) {
+async function hardStopClassification(filePath) {
 	try {
 		const data = await Bun.file(filePath).json();
-		return stringField(data, "status") === "hard_stop" || stringField(data, "verdict") === "hard_stop";
+		const isHardStop = stringField(data, "status") === "hard_stop" || stringField(data, "verdict") === "hard_stop";
+		if (!isHardStop) return "none";
+		if (await hasSupersedingEvidence(data)) return "superseded";
+		return "active";
+	} catch {
+		return "none";
+	}
+}
+
+async function hasSupersedingEvidence(data) {
+	const supersededBy = stringField(data, "superseded_by");
+	if (!supersededBy.startsWith("workflow-output/")) return false;
+	if (supersededBy.includes("..")) return false;
+	try {
+		return await Bun.file(supersededBy).exists();
 	} catch {
 		return false;
 	}

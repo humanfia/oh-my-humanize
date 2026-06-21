@@ -173,6 +173,36 @@ describe("parallel-implementation-review flow contract", () => {
 			terminal_artifacts: ["workflow-output/lane-hard-stop-P06-T06-test.json"],
 		});
 	});
+
+	it("ignores a lane hard stop only when a superseding evidence artifact exists", async () => {
+		const cwd = await createTempDir();
+		await writeTupleFiles(cwd, "P06-T06-test");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "workflow-output", "core-lane-P06-T06-test-resolution.json"), "{}\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "lane-hard-stop-P06-T06-test.json"),
+			`${JSON.stringify({
+				tuple_id: "P06-T06-test",
+				producer_node: "implementCore",
+				status: "hard_stop",
+				reason: "historical validation environment blocker",
+				superseded_by: "workflow-output/core-lane-P06-T06-test-resolution.json",
+			})}\n`,
+		);
+
+		const result = await runScript(cwd, "lane-hard-stop-guard.js", {});
+
+		expect(result.verdict).toBe("continue");
+		const guardArtifact = await Bun.file(
+			path.join(cwd, "workflow-output", "lane-hard-stop-guard-P06-T06-test.json"),
+		).json();
+		expect(guardArtifact).toMatchObject({
+			status: "continue",
+			hard_stop_artifacts: [],
+			ignored_historical_hard_stop_artifacts: ["workflow-output/lane-hard-stop-P06-T06-test.json"],
+		});
+		expect(await fileExists(path.join(cwd, "workflow-output", "tuple-state.json"))).toBe(false);
+	});
 });
 
 async function runScript(cwd: string, scriptName: string, context: Partial<WorkflowContext>): Promise<ScriptResult> {
