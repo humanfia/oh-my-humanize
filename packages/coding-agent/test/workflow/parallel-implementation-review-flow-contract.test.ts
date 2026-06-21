@@ -328,10 +328,12 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(new TextEncoder().encode(handoff as string).byteLength).toBeLessThanOrEqual(12 * 1024);
 		expect(handoff as string).toContain("workflow-output/scope-plan-raw-P06-T06-test.json");
 		expect(handoff as string).toContain("__omitted_items");
-		expect(result.artifacts).toEqual([
-			"workflow-output/scope-plan-raw-P06-T06-test.json",
-			"workflow-output/scope-plan-handoff-P06-T06-test.json",
-		]);
+		expect(result.artifacts).toBeUndefined();
+		expect(result.data).toMatchObject({
+			artifact: "workflow-output/scope-plan-handoff-P06-T06-test.json",
+			raw_plan_artifact: "workflow-output/scope-plan-raw-P06-T06-test.json",
+		});
+		expect(() => validateWorkflowActivationOutput(result)).not.toThrow();
 		expect(await fileExists(path.join(cwd, "workflow-output", "scope-plan-raw-P06-T06-test.json"))).toBe(true);
 		expect(await fileExists(path.join(cwd, "workflow-output", "scope-plan-handoff-P06-T06-test.json"))).toBe(true);
 	});

@@ -26,7 +26,6 @@ await Bun.write(handoffArtifact, `${handoffText}\n`);
 
 return {
 	summary: `compact scope handoff materialized at ${handoffArtifact}`,
-	artifacts: [rawArtifact, handoffArtifact],
 	statePatch: [{ op: "set", path: "/planHandoff", value: handoffText }],
 	data: {
 		artifact: handoffArtifact,
