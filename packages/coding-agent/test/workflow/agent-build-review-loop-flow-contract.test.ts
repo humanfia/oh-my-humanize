@@ -377,6 +377,41 @@ describe("agent-build-review-loop flow contract", () => {
 		expect(result.data.reason).toContain("terminal validation blocker");
 	});
 
+	it("routes reviewer-declared terminal external blockers to reject without another build round", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-2", "validation-summary.txt"),
+			[
+				"Command: python -m pytest tests/test_tutorial",
+				"Result: fail (exit code 1)",
+				"External blocker: out-of-scope failures in tests/test_tutorial/test_printing/test_tutorial001.py::test_cli and tests/test_tutorial/test_printing/test_tutorial002.py::test_cli; both failures are Rich formatting expectation mismatches in printing tutorial tests, outside the envvar argument scope.",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			[
+				"ROUND 1: documented empty envvar fallback; validation=python -m pytest tests/test_tutorial; result=fail",
+				"ROUND 2: documented CLI argument precedence across multiple env vars; validation=python -m pytest tests/test_tutorial; result=fail",
+			].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"progress.md has 2 lines beginning with ROUND, satisfying the contract's minimum. However the declared validation command's latest run still failed; the current failure is a terminal external validation blocker in out-of-scope printing tutorial tests (tests/test_tutorial/test_printing/test_tutorial001.py::test_cli and tests/test_tutorial/test_printing/test_tutorial002.py::test_cli), so continue for route-classifier rejection/archive rather than asking for unrelated fixes.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "reject",
+			reviewVerdict: "continue",
+			setupBlockerEvidenceFiles: [],
+			externalValidationBlockerEvidenceFiles: ["workflow-output/round-2/validation-summary.txt"],
+			terminalBlockerEvidenceFiles: ["workflow-output/round-2/validation-summary.txt"],
+		});
+		expect(result.data.reason).toContain("terminal validation blocker");
+	});
+
 	it("routes repeated clean-copy missing dependency blockers to reject", async () => {
 		const cwd = await createTempDir();
 		for (const round of [1, 2]) {

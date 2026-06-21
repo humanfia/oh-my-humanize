@@ -7,7 +7,10 @@ const progressText = await readOptionalText("progress.md");
 const requiredRoundCount = taskRequiredRoundCount(taskText);
 const completedRoundCount = progressRoundCount(progressText);
 const setupBlockerEvidenceFiles = await findSetupBlockerEvidenceFiles(reviewSummary);
-const externalValidationBlockerEvidenceFiles = await findRepeatedExternalValidationBlockerEvidenceFiles(taskText);
+const externalValidationBlockerEvidenceFiles = uniqueSorted([
+	...(await findRepeatedExternalValidationBlockerEvidenceFiles(taskText)),
+	...(await findReviewerDeclaredTerminalBlockerEvidenceFiles(reviewSummary)),
+]);
 const terminalBlockerEvidenceFiles = uniqueSorted([
 	...setupBlockerEvidenceFiles,
 	...externalValidationBlockerEvidenceFiles,
@@ -237,6 +240,64 @@ async function findRepeatedExternalValidationBlockerEvidenceFiles(taskText) {
 		if (group.rounds.size >= 2) evidenceFiles.push(...group.files);
 	}
 	return uniqueSorted(evidenceFiles);
+}
+
+async function findReviewerDeclaredTerminalBlockerEvidenceFiles(reviewSummary) {
+	if (!isReviewerDeclaredTerminalValidationBlocker(reviewSummary)) return [];
+	const summaryFiles = await latestRoundEvidenceFiles("validation-summary.txt");
+	const matchingSummaryFiles = [];
+	for (const file of summaryFiles) {
+		const text = await readOptionalText(file);
+		if (isExternalValidationBlockerText(text) || reviewSummaryReferencesEvidenceText(reviewSummary, text)) {
+			matchingSummaryFiles.push(file);
+		}
+	}
+	if (matchingSummaryFiles.length > 0) return uniqueSorted(matchingSummaryFiles);
+	return ["reviewRound:summary"];
+}
+
+async function latestRoundEvidenceFiles(fileName) {
+	const files = [];
+	let latestRound = 0;
+	for (const file of await workflowOutputFiles()) {
+		if (!file.endsWith(`/${fileName}`)) continue;
+		const round = workflowOutputRound(file);
+		if (round === null) continue;
+		if (round > latestRound) {
+			latestRound = round;
+			files.length = 0;
+		}
+		if (round === latestRound) files.push(file);
+	}
+	return files.sort();
+}
+
+function isReviewerDeclaredTerminalValidationBlocker(text) {
+	return (
+		/\bterminal\b.{0,120}\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?)\b.{0,120}\b(?:validation\s+)?blocker\b/ius.test(
+			text,
+		) ||
+		/\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?)\b.{0,120}\bterminal\b.{0,120}\b(?:validation\s+)?blocker\b/ius.test(
+			text,
+		)
+	);
+}
+
+function isExternalValidationBlockerText(text) {
+	return (
+		/\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?|flaky)\b.{0,160}\b(?:validation\s+)?blocker\b/ius.test(
+			text,
+		) ||
+		/\b(?:validation\s+)?blocker\b.{0,160}\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?|flaky)\b/ius.test(
+			text,
+		) ||
+		/\boutside (?:this |the )?task scope\b/iu.test(text)
+	);
+}
+
+function reviewSummaryReferencesEvidenceText(reviewSummary, evidenceText) {
+	const reviewPath = firstFailurePath(reviewSummary);
+	return Boolean(reviewPath && evidenceText.includes(reviewPath));
 }
 
 function workflowOutputRound(file) {
