@@ -45,47 +45,9 @@ if (reusableValidation) {
 		statePatch: [{ op: "set", path: "/declaredValidation", value: artifact }],
 	};
 }
-const runtimeEnvironment = validationRuntimeEnvironment(validationEnvironment, tupleId);
-await ensureDeclaredTempDirectories(runtimeEnvironment);
-
-const child = Bun.spawn(["bash", "-lc", validationCommand], {
-	cwd: process.cwd(),
-	env: { ...process.env, ...runtimeEnvironment },
-	stdout: "pipe",
-	stderr: "pipe",
-});
-const [stdout, stderr, exitCode] = await Promise.all([
-	new Response(child.stdout).text(),
-	new Response(child.stderr).text(),
-	child.exited,
-]);
-const result = exitCode === 0 ? "passed" : "failed";
-const artifact = await writeValidationArtifact({
-	tupleId,
-	validationCommand,
-	validationEnvironment,
-	runtimeEnvironment,
-	result,
-	exitCode,
-	stdout,
-	stderr,
-});
-
-if (exitCode !== 0) {
-	return {
-		summary: `declared validation failed with exit code ${exitCode}: ${validationCommand}`,
-		verdict: "FAIL",
-		data: artifact,
-		statePatch: [{ op: "set", path: "/declaredValidation", value: artifact }],
-	};
-}
-
-return {
-	summary: `declared validation passed: ${validationCommand}`,
-	verdict: "PASS",
-	data: artifact,
-	statePatch: [{ op: "set", path: "/declaredValidation", value: artifact }],
-};
+throw new Error(
+	"parallel-implementation-review requires reusable test-lane declared validation evidence; final validation nodes must not rerun long commands directly",
+);
 
 async function writeValidationArtifact({
 	tupleId,
@@ -179,6 +141,17 @@ async function reusableExactTestLaneValidation({ tupleId, validationCommand, val
 			coverageProfiles: recordedCoverageProfiles(data),
 		};
 	}
+	for (const artifact of candidates) {
+		const data = await readJson(artifact);
+		const fallback = await reusableTupleScopedValidationFiles({
+			artifact,
+			data,
+			tupleId,
+			validationCommand,
+			validationEnvironment,
+		});
+		if (fallback) return fallback;
+	}
 	return null;
 }
 
@@ -214,6 +187,62 @@ function validationOutcome(validation) {
 		return { result: "failed", exitCode };
 	}
 	return null;
+}
+
+async function reusableTupleScopedValidationFiles({
+	artifact,
+	data,
+	tupleId,
+	validationCommand,
+	validationEnvironment,
+}) {
+	if (!tupleId || !data || data.producer_node !== "implementTests") return null;
+	const validation = data.validation;
+	if (!validation || typeof validation !== "object") return null;
+	const stdoutArtifact =
+		stringField(validation, "stdout_path") ||
+		stringField(validation, "stdoutArtifact") ||
+		`workflow-output/validation-${tupleId}.stdout`;
+	const stderrArtifact =
+		stringField(validation, "stderr_path") ||
+		stringField(validation, "stderrArtifact") ||
+		`workflow-output/validation-${tupleId}.stderr`;
+	const exitCodeArtifact =
+		stringField(validation, "exit_code_path") ||
+		stringField(validation, "exitCodeArtifact") ||
+		`workflow-output/validation-${tupleId}.exitcode`;
+	const artifacts = [stdoutArtifact, stderrArtifact, exitCodeArtifact];
+	if (!artifacts.every(filePath => isSafeTupleWorkflowOutputPath(filePath, tupleId))) return null;
+	if (!(await Promise.all(artifacts.map(fileExists))).every(Boolean)) return null;
+	const exitCode = await readExitCodeArtifact(exitCodeArtifact);
+	if (exitCode === null) return null;
+	const result = exitCode === 0 ? "passed" : "failed";
+	const recordedHashes = {
+		...recordedValidationHashes(data),
+		...(await hashExistingArtifacts(artifacts)),
+	};
+	const coverageProfiles = recordedCoverageProfiles(data);
+	for (const profile of await discoverCoverageProfiles(tupleId)) {
+		if (!coverageProfiles.some(existing => existing.path === profile.path && existing.sha256 === profile.sha256)) {
+			coverageProfiles.push(profile);
+		}
+		recordedHashes[profile.path] = profile.sha256;
+	}
+	if (Object.keys(recordedHashes).length === 0) return null;
+	if (!(await recordedHashesStillMatch(recordedHashes))) return null;
+	return {
+		artifact,
+		result,
+		exitCode,
+		stdoutArtifact,
+		stderrArtifact,
+		exitCodeArtifact,
+		runtimeEnvironment: objectField(validation, "runtime_environment"),
+		recordedHashes,
+		coverageProfiles,
+		validationCommand,
+		validationEnvironment,
+	};
 }
 
 function environmentMatches(actual, expected) {
@@ -276,6 +305,48 @@ async function recordedHashesStillMatch(hashes) {
 	return true;
 }
 
+async function fileExists(filePath) {
+	try {
+		return await Bun.file(filePath).exists();
+	} catch {
+		return false;
+	}
+}
+
+async function readExitCodeArtifact(filePath) {
+	try {
+		const text = await Bun.file(filePath).text();
+		if (!/^-?\d+\s*$/u.test(text)) return null;
+		return Number(text.trim());
+	} catch {
+		return null;
+	}
+}
+
+async function hashExistingArtifacts(filePaths) {
+	const hashes = {};
+	for (const filePath of filePaths) {
+		const hash = await sha256File(filePath);
+		if (hash) hashes[filePath] = hash;
+	}
+	return hashes;
+}
+
+async function discoverCoverageProfiles(tupleId) {
+	const profiles = [];
+	try {
+		const glob = new Bun.Glob(`workflow-output/*${tupleId}*.out`);
+		for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
+			if (!isSafeTupleWorkflowOutputPath(filePath, tupleId)) continue;
+			const hash = await sha256File(filePath);
+			if (hash) profiles.push({ path: filePath, sha256: hash });
+		}
+	} catch {
+		return [];
+	}
+	return profiles.sort((left, right) => left.path.localeCompare(right.path, "en"));
+}
+
 async function sha256File(filePath) {
 	try {
 		const bytes = new Uint8Array(await Bun.file(filePath).arrayBuffer());
@@ -287,6 +358,10 @@ async function sha256File(filePath) {
 
 function isSafeWorkflowOutputPath(filePath) {
 	return typeof filePath === "string" && filePath.startsWith("workflow-output/") && !filePath.includes("..");
+}
+
+function isSafeTupleWorkflowOutputPath(filePath, tupleId) {
+	return isSafeWorkflowOutputPath(filePath) && filePath.includes(tupleId);
 }
 
 function objectField(value, key) {
@@ -440,40 +515,5 @@ function assertSafeValidationCommand(command) {
 	const seconds = unit === "d" ? value * 86400 : unit === "h" ? value * 3600 : unit === "m" ? value * 60 : value;
 	if (seconds > 3600) {
 		throw new Error("parallel-implementation-review validation command timeout must be 1 hour or less");
-	}
-}
-
-function validationRuntimeEnvironment(declaredEnvironment, tupleId) {
-	const defaultTempRoot = defaultValidationTempRoot(tupleId);
-	return {
-		TMPDIR: defaultTempRoot,
-		TMP: defaultTempRoot,
-		TEMP: defaultTempRoot,
-		...declaredEnvironment,
-	};
-}
-
-function defaultValidationTempRoot(tupleId) {
-	const tempRoot = systemTempRoot();
-	const suffixSource = tupleId || workflowContext.activation?.id || `${process.pid}-${Date.now()}`;
-	const suffix = suffixSource.replace(/[^A-Za-z0-9._-]+/gu, "-").slice(0, 96) || "run";
-	return joinTempPath(tempRoot, `omh-validation-${suffix}`);
-}
-
-function systemTempRoot() {
-	if (process.platform === "win32") return process.env.TEMP || process.env.TMP || "C:\\Windows\\Temp";
-	return "/tmp";
-}
-
-function joinTempPath(root, child) {
-	const separator = process.platform === "win32" ? "\\" : "/";
-	return root.endsWith("/") || root.endsWith("\\") ? `${root}${child}` : `${root}${separator}${child}`;
-}
-
-async function ensureDeclaredTempDirectories(environment) {
-	for (const [key, value] of Object.entries(environment)) {
-		if (!/^(TMPDIR|TMP|TEMP)$/u.test(key)) continue;
-		if (typeof value !== "string" || !value.trim()) continue;
-		await Bun.write(`${value}/.omh-validation-tmp`, "");
 	}
 }

@@ -108,87 +108,19 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(taskContract).toContain("workflow-output/lane-archive-<lane>-<tuple-id>.md");
 	});
 
-	it("writes tuple-scoped validation stdout and stderr artifacts without generic txt aliases", async () => {
-		const cwd = await createTempDir();
-		await writeTupleFiles(cwd, "P06-T06-test");
-		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n");
-		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
-
-		const result = await runScript(cwd, "run-declared-validation.js", {});
-
-		expect(result.data?.validation).toMatchObject({
-			stdoutArtifact: "workflow-output/validation-P06-T06-test.stdout",
-			stderrArtifact: "workflow-output/validation-P06-T06-test.stderr",
-		});
-		expect(await fileExists(path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout"))).toBe(true);
-		expect(await fileExists(path.join(cwd, "workflow-output", "validation-P06-T06-test.stderr"))).toBe(true);
-		expect(await fileExists(path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout.txt"))).toBe(false);
-		expect(await fileExists(path.join(cwd, "workflow-output", "validation-P06-T06-test.stderr.txt"))).toBe(false);
-	});
-
-	it("uses an OS temp directory for validation when the task does not declare temp vars", async () => {
-		const cwd = await createTempDir();
-		await writeTupleFiles(cwd, "P06-T06-test");
-		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\nprintf '%s' \"$TMPDIR\"\n");
-		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
-
-		const result = await runScript(cwd, "run-declared-validation.js", {});
-
-		expect(result.verdict).toBe("PASS");
-		expect(result.data?.validation?.environment).toEqual({});
-		expect(result.data?.validation?.runtime_environment?.TMPDIR).toStartWith(
-			path.join(os.tmpdir(), "omh-validation-"),
-		);
-		expect(result.data?.validation?.runtime_environment?.TMPDIR).not.toStartWith(cwd);
-		const stdout = await Bun.file(path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout")).text();
-		expect(stdout).toStartWith(path.join(os.tmpdir(), "omh-validation-"));
-		expect(stdout).not.toStartWith(cwd);
-	});
-
-	it("preserves declared validation temp vars while controlling undeclared temp vars", async () => {
+	it("fails closed instead of rerunning declared validation when test-lane evidence is missing", async () => {
 		const cwd = await createTempDir();
 		await writeTupleFiles(cwd, "P06-T06-test");
 		await Bun.write(
 			path.join(cwd, "task.md"),
-			"Validation Command:\nprintf '%s' \"$TMPDIR\"\nValidation Environment:\nTMPDIR=workflow-output/declared-tmp\n",
+			"Validation Command:\nbash -lc 'echo rerun > workflow-output/rerun-marker'\n",
 		);
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 
-		const result = await runScript(cwd, "run-declared-validation.js", {});
-
-		expect(result.verdict).toBe("PASS");
-		expect(result.data?.validation?.environment).toEqual({ TMPDIR: "workflow-output/declared-tmp" });
-		expect(result.data?.validation?.runtime_environment?.TMPDIR).toBe("workflow-output/declared-tmp");
-		expect(await fileExists(path.join(cwd, "workflow-output", "declared-tmp", ".omh-validation-tmp"))).toBe(true);
-		const stdout = await Bun.file(path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout")).text();
-		expect(stdout).toBe("workflow-output/declared-tmp");
-	});
-
-	it("records failed declared validation as structured evidence instead of throwing", async () => {
-		const cwd = await createTempDir();
-		await writeTupleFiles(cwd, "P06-T06-test");
-		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\nfalse\n");
-		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
-
-		const result = await runScript(cwd, "run-declared-validation.js", {});
-
-		expect(result.verdict).toBe("FAIL");
-		expect(result.data).toMatchObject({
-			artifact: "workflow-output/validation-P06-T06-test.json",
-			producer_node: "runDeclaredValidation",
-			validation: {
-				result: "failed",
-				exitCode: 1,
-			},
-		});
-		await expect(
-			Bun.file(path.join(cwd, "workflow-output", "validation-P06-T06-test.json")).json(),
-		).resolves.toMatchObject({
-			validation: {
-				result: "failed",
-				exitCode: 1,
-			},
-		});
+		await expect(runScript(cwd, "run-declared-validation.js", {})).rejects.toThrow(
+			/reusable test-lane declared validation evidence/u,
+		);
+		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
 	});
 
 	it("reuses exact passed test-lane validation when no product diff would invalidate it", async () => {
@@ -378,6 +310,55 @@ describe("parallel-implementation-review flow contract", () => {
 		});
 		expect(await fileExists(path.join(cwd, "workflow-output", "should-not-rerun"))).toBe(false);
 		expect(await fileExists(path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout"))).toBe(false);
+	});
+
+	it("reuses tuple-scoped test-lane validation files when the lane omits optional command metadata", async () => {
+		const cwd = await createTempDir();
+		await initGitRepo(cwd);
+		await writeTupleFiles(cwd, "P06-T06-test");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		const command = "bash -lc 'printf rerun > workflow-output/should-not-rerun; exit 42'";
+		await Bun.write(path.join(cwd, "task.md"), `Validation Command:\n${command}\n`);
+		await Bun.write(path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout"), "phase=unit\nok package\n");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-P06-T06-test.stderr"), "");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-P06-T06-test.exitcode"), "0\n");
+		await Bun.write(path.join(cwd, "workflow-output", "unit-cover-P06-T06-test.out"), "mode: atomic\n");
+		const coveragePath = "workflow-output/unit-cover-P06-T06-test.out";
+		const laneArtifact = {
+			tuple_id: "P06-T06-test",
+			producer_node: "implementTests",
+			status: "completed",
+			validation: {
+				stdout_path: "workflow-output/validation-P06-T06-test.stdout",
+				stderr_path: "workflow-output/validation-P06-T06-test.stderr",
+				exit_code_path: "workflow-output/validation-P06-T06-test.exitcode",
+				failure_classification: "none; declared validation passed",
+				phase_order: ["unit"],
+			},
+		};
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"),
+			`${JSON.stringify(laneArtifact, null, 2)}\n`,
+		);
+
+		const result = await runScript(cwd, "run-declared-validation.js", {});
+
+		expect(result.verdict).toBe("PASS");
+		expect(result.summary).toContain("reused exact passed test-lane evidence");
+		expect(result.data?.validation).toMatchObject({
+			command,
+			result: "passed",
+			exitCode: 0,
+			stdoutArtifact: "workflow-output/validation-P06-T06-test.stdout",
+			stderrArtifact: "workflow-output/validation-P06-T06-test.stderr",
+			exitCodeArtifact: "workflow-output/validation-P06-T06-test.exitcode",
+			reusedFromTestLane: "workflow-output/tests-lane-P06-T06-test.json",
+			reusedCoverageProfiles: [{ path: coveragePath, sha256: await sha256File(path.join(cwd, coveragePath)) }],
+		});
+		expect(result.data?.validation?.reusedArtifactHashes?.["workflow-output/validation-P06-T06-test.stdout"]).toBe(
+			await sha256File(path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout")),
+		);
+		expect(await fileExists(path.join(cwd, "workflow-output", "should-not-rerun"))).toBe(false);
 	});
 
 	it("reports generic validation aliases as repair evidence before strong review", async () => {
@@ -802,12 +783,44 @@ describe("parallel-implementation-review flow contract", () => {
 	it("lets finalization reject failed declared validation through the evidence contract path", async () => {
 		const cwd = await createTempDir();
 		await writeTupleFiles(cwd, "P06-T06-test");
-		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\nfalse\n");
+		const command = "false";
+		await Bun.write(path.join(cwd, "task.md"), `Validation Command:\n${command}\n`);
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(path.join(cwd, "workflow-output", "core-lane-P06-T06-test.json"), "{}\n");
-		await Bun.write(path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"), "{}\n");
 		await Bun.write(path.join(cwd, "workflow-output", "docs-lane-P06-T06-test.json"), "{}\n");
 		await Bun.write(path.join(cwd, "workflow-output", "integration-review-P06-T06-test.json"), "{}\n");
+		await Bun.write(path.join(cwd, "workflow-output", "test-validation-P06-T06-test.stdout"), "failed once\n");
+		await Bun.write(path.join(cwd, "workflow-output", "test-validation-P06-T06-test.stderr"), "failure details\n");
+		await Bun.write(path.join(cwd, "workflow-output", "test-validation-P06-T06-test.exitcode"), "1\n");
+		const stdoutPath = "workflow-output/test-validation-P06-T06-test.stdout";
+		const stderrPath = "workflow-output/test-validation-P06-T06-test.stderr";
+		const exitCodePath = "workflow-output/test-validation-P06-T06-test.exitcode";
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"),
+			`${JSON.stringify(
+				{
+					tuple_id: "P06-T06-test",
+					producer_node: "implementTests",
+					status: "completed",
+					validation: {
+						command,
+						environment: {},
+						result: "failed",
+						exitCode: 1,
+						stdout_path: stdoutPath,
+						stderr_path: stderrPath,
+						exit_code_path: exitCodePath,
+					},
+					artifact_hashes: {
+						[stdoutPath]: await sha256File(path.join(cwd, stdoutPath)),
+						[stderrPath]: await sha256File(path.join(cwd, stderrPath)),
+						[exitCodePath]: await sha256File(path.join(cwd, exitCodePath)),
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
 		await runScript(cwd, "run-declared-validation.js", {});
 
 		const guardResult = await runScript(cwd, "evidence-contract-guard.js", {});
@@ -820,6 +833,7 @@ describe("parallel-implementation-review flow contract", () => {
 
 		expect(guardResult.verdict).toBe("REPAIR");
 		expect(guardResult.data?.checked_inputs?.failed_validation_artifacts).toEqual([
+			"workflow-output/tests-lane-P06-T06-test.json",
 			"workflow-output/validation-P06-T06-test.json",
 		]);
 		expect(finalResult.verdict).toBe("reject");
