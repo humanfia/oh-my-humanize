@@ -34,6 +34,12 @@ test names, benchmark names, fuzz names, or wrapper package expansion to claim
 semantic investigation, surface-count satisfaction, or production readiness.
 Those inventories are index-only unless backed by directly inspected behavior
 and exact learned contracts.
+Also reject when declared validation was rerun but the evidence lacks immutable
+attempt logs for every run, including the final/latest run. Canonical latest
+stdout/stderr aliases are not sufficient; the packet or durable artifacts must
+show `validation-attempt-<n>-stdout-<tuple-id>.txt`,
+`validation-attempt-<n>-stderr-<tuple-id>.txt`, and
+`validation-attempt-<n>-exitcode-<tuple-id>.txt` for each attempt.
 
 If the bounded handoff is insufficient for a promotion decision, inspect the
 durable artifact paths named in the handoff and then either reject with the

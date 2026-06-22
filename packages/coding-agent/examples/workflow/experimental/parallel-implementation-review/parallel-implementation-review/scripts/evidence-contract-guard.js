@@ -34,6 +34,7 @@ const laneArtifacts = [...coreArtifacts, ...testArtifacts, ...docsArtifacts, ...
 	left.localeCompare(right, "en"),
 );
 const missingRollbackFiles = await missingRollbackCoverage(changedFiles, rollbackArtifacts);
+const validationAttemptLogFindings = await validationAttemptLogFindingsFromEvidence(testArtifacts);
 const reasons = [];
 
 if (!validationCommand && !manualEvidenceAllowed) {
@@ -95,6 +96,14 @@ if (!manualEvidenceAllowed && staleValidationHashArtifacts.length > 0) {
 	);
 }
 
+if (!manualEvidenceAllowed && validationAttemptLogFindings.length > 0) {
+	reasons.push(
+		`validation rerun evidence is missing immutable attempt logs: ${validationAttemptLogFindings
+			.map(finding => finding.file)
+			.join(", ")}; every validation rerun must preserve attempt-scoped stdout, stderr, and exitcode artifacts`,
+	);
+}
+
 if (mechanicalSurfaceInventoryArtifacts.length > 0) {
 	reasons.push(
 		`mechanical surface inventory used as semantic evidence: ${mechanicalSurfaceInventoryArtifacts.join(", ")}; parsed file/test/function inventories are index-only and cannot satisfy investigation or promotion evidence`,
@@ -149,6 +158,7 @@ const diagnostic = {
 		failed_validation_artifacts: failedValidationArtifacts.slice(0, 80),
 		superseded_failed_validation_artifacts: supersededFailedValidationArtifacts.slice(0, 80),
 		stale_validation_hash_artifacts: staleValidationHashArtifacts.slice(0, 80),
+		validation_attempt_log_findings: validationAttemptLogFindings.slice(0, 80),
 		mechanical_surface_inventory_artifacts: mechanicalSurfaceInventoryArtifacts.slice(0, 80),
 		premature_decision_artifacts: prematureDecisionArtifacts.slice(0, 80),
 		reserved_final_artifacts: reservedFinalArtifacts.slice(0, 80),
@@ -205,6 +215,14 @@ await Bun.write(
 		"Stale validation hash artifacts:",
 		...(staleValidationHashArtifacts.length > 0
 			? staleValidationHashArtifacts.map(file => `- ${file}`)
+			: ["- (none)"]),
+		"",
+		"Validation attempt log findings:",
+		...(validationAttemptLogFindings.length > 0
+			? validationAttemptLogFindings.map(finding => {
+					const missing = finding.missing_files?.length ? ` missing: ${finding.missing_files.join(", ")}` : "";
+					return `- ${finding.file}: ${finding.reason}${missing}`;
+				})
 			: ["- (none)"]),
 		"",
 		"Mechanical surface inventory artifacts:",
@@ -545,6 +563,105 @@ async function mechanicalSurfaceInventoryArtifactsFromEvidence(files) {
 		if (mechanicalSurfaceInventoryClaim(text)) artifacts.push(file);
 	}
 	return artifacts.sort((left, right) => left.localeCompare(right, "en"));
+}
+
+async function validationAttemptLogFindingsFromEvidence(files) {
+	const findings = [];
+	for (const file of files) {
+		const text = await readText(file);
+		const data = file.endsWith(".json") ? await readJson(file) : null;
+		const rerun = validationRerunSignal(text, data);
+		const attempts = expectedValidationAttempts(text, data, rerun);
+		if (!rerun && attempts.length <= 1) continue;
+		const refs = validationAttemptRefs(text);
+		const missing = missingValidationAttemptLogs(attempts, refs, tupleIdFromEvidence(file, data));
+		if (missing.length === 0) continue;
+		findings.push({
+			file,
+			reason: "validation rerun evidence is missing immutable attempt stdout/stderr/exitcode logs",
+			missing_files: missing,
+		});
+	}
+	return findings.sort((left, right) => left.file.localeCompare(right.file, "en"));
+}
+
+function validationRerunSignal(text, data) {
+	if (validationAttemptsArray(data).length > 1) return true;
+	const lower = text.toLowerCase();
+	const explicitNoRerun = /\bno\s+(?:declared\s+)?validation\s+re[- ]?runs?\b/u.test(lower) || /\bvalidation\s+was\s+not\s+re[- ]?run\b/u.test(lower);
+	const strongSignal =
+		/\b(?:re[- ]?ran|re[- ]?run|reran|rerun|reruns|rerunning)\s+(?:the\s+)?(?:full\s+)?(?:declared\s+)?validation\b/u.test(lower) ||
+		/\b(?:second|third|fourth|fifth)\s+(?:full\s+)?(?:declared\s+)?validation\s+(?:run|wrapper|attempt|pass)\b/u.test(lower) ||
+		/\b(?:prior|previous|earlier|first)\s+(?:full\s+)?(?:declared\s+)?validation\s+(?:failed|failure|exit(?:ed)?\s+non[- ]?zero|exit(?:ed)?\s+1)\b/u.test(lower) ||
+		/\bvalidation[_ -]?attempts?\b/u.test(lower) ||
+		/\battempt\s*[2-9]\b/u.test(lower);
+	return strongSignal && !explicitNoRerun;
+}
+
+function expectedValidationAttempts(text, data, rerun) {
+	const attempts = new Set();
+	const explicitAttempts = validationAttemptsArray(data);
+	for (let index = 0; index < explicitAttempts.length; index += 1) {
+		const attempt = Number(explicitAttempts[index]?.attempt ?? index + 1);
+		if (Number.isInteger(attempt) && attempt > 0) attempts.add(attempt);
+	}
+	for (const match of text.matchAll(/\battempt\s*[:#-]?\s*([1-9]\d*)\b/giu)) {
+		attempts.add(Number(match[1]));
+	}
+	for (const match of text.matchAll(/\bvalidation-attempt-([1-9]\d*)-(?:stdout|stderr|exitcode)-/giu)) {
+		attempts.add(Number(match[1]));
+	}
+	for (const match of text.matchAll(/\bvalidation[_ -]?attempts?\s*[:=]\s*([2-9]\d*)\b/giu)) {
+		const count = Number(match[1]);
+		for (let attempt = 1; attempt <= count; attempt += 1) attempts.add(attempt);
+	}
+	const maxAttempt = Math.max(0, ...attempts);
+	if (maxAttempt > 1) {
+		return Array.from({ length: maxAttempt }, (_value, index) => index + 1);
+	}
+	if (rerun) return [1, 2];
+	return maxAttempt === 1 ? [1] : [];
+}
+
+function validationAttemptsArray(data) {
+	if (!data || typeof data !== "object" || Array.isArray(data)) return [];
+	if (Array.isArray(data.validation_attempts)) return data.validation_attempts;
+	if (data.validation && typeof data.validation === "object" && Array.isArray(data.validation.attempts)) {
+		return data.validation.attempts;
+	}
+	if (data.declared_validation && typeof data.declared_validation === "object" && Array.isArray(data.declared_validation.attempts)) {
+		return data.declared_validation.attempts;
+	}
+	return [];
+}
+
+function validationAttemptRefs(text) {
+	const refs = new Map();
+	for (const match of text.matchAll(/\bvalidation-attempt-([1-9]\d*)-(stdout|stderr|exitcode)-[^"'\s,)}\]]+/giu)) {
+		const attempt = Number(match[1]);
+		const kind = match[2].toLowerCase();
+		const key = `${attempt}:${kind}`;
+		if (!refs.has(key)) refs.set(key, []);
+		refs.get(key).push(match[0]);
+	}
+	return refs;
+}
+
+function tupleIdFromEvidence(file, data) {
+	if (data && typeof data === "object" && !Array.isArray(data) && typeof data.tuple_id === "string") return data.tuple_id;
+	const match = file.match(/(?:^|\/)tests?-lane-(.+?)\.(?:json|md|txt)$/iu);
+	return match?.[1] || "<tuple-id>";
+}
+
+function missingValidationAttemptLogs(attempts, refs, tupleId) {
+	const missing = [];
+	for (const attempt of attempts) {
+		for (const kind of ["stdout", "stderr", "exitcode"]) {
+			if (refs.has(`${attempt}:${kind}`)) continue;
+			missing.push(`workflow-output/validation-attempt-${attempt}-${kind}-${tupleId}.txt`);
+		}
+	}
+	return missing;
 }
 
 async function readJson(file) {

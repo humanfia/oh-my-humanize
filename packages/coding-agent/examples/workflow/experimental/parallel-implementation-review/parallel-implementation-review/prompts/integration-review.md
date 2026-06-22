@@ -36,6 +36,15 @@ as unresolved when a lane uses bulk parsed inventory to claim completion,
 surface-count satisfaction, or production readiness without directly inspected
 behavior and exact learned contracts.
 
+Validation rerun evidence rule: if the test lane reran declared validation,
+the lane must preserve immutable attempt logs for every run, including the
+final/latest run. Look for
+`workflow-output/validation-attempt-<n>-stdout-<tuple-id>.txt`,
+`workflow-output/validation-attempt-<n>-stderr-<tuple-id>.txt`, and
+`workflow-output/validation-attempt-<n>-exitcode-<tuple-id>.txt` paths in the
+test-lane evidence. Canonical latest aliases are not enough and must not
+overwrite prior failed stdout, stderr, or exit-code evidence.
+
 Summarize changed files, verification evidence, unresolved risks, lane/workspace
 conflicts, and the highest-priority follow-up for the final strong reviewer.
 This node records integration evidence in its review output; it does not decide

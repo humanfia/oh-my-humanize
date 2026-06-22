@@ -56,4 +56,12 @@ Before yielding:
   declared validation or clearly labeled focused evidence;
 - if the full declared validation passes, make that fact machine-readable as a
   validation object with `command`, `environment`, and `result`;
+- if you rerun declared validation for any reason, preserve immutable attempt
+  logs for every attempt, including the final/latest attempt. Use
+  `workflow-output/validation-attempt-<n>-stdout-<tuple-id>.txt`,
+  `workflow-output/validation-attempt-<n>-stderr-<tuple-id>.txt`, and
+  `workflow-output/validation-attempt-<n>-exitcode-<tuple-id>.txt`; record the
+  attempts in `workflow-output/tests-lane-<tuple-id>.json`. Canonical latest
+  aliases such as `validation-stdout-...` may exist, but they must not overwrite
+  or replace the immutable attempt logs;
 - call out any missing product behavior that blocks useful test coverage.

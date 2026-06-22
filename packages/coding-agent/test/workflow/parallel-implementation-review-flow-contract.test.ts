@@ -49,6 +49,11 @@ interface ScriptResult {
 				quarantine: string;
 			}>;
 			failed_validation_artifacts?: string[];
+			validation_attempt_log_findings?: Array<{
+				file: string;
+				reason: string;
+				missing_files?: string[];
+			}>;
 			lane_hard_stop_artifacts?: string[];
 			ignored_nonterminal_lane_hard_stop_artifacts?: string[];
 			mechanical_surface_inventory_artifacts?: string[];
@@ -452,6 +457,112 @@ describe("parallel-implementation-review flow contract", () => {
 		]);
 	});
 
+	it("requires immutable attempt logs when test-lane validation is rerun", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-stdout-implementTests-P06-T06-test.txt"), "ok\n");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-stderr-implementTests-P06-T06-test.txt"), "");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-exit-code-implementTests-P06-T06-test.txt"), "0\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"),
+			`${JSON.stringify(
+				{
+					tuple_id: "P06-T06-test",
+					producer_node: "implementTests",
+					status: "completed",
+					validation: {
+						command: "true",
+						environment: {},
+						result: "pass",
+						exit_code: 0,
+						stdout_path: "workflow-output/validation-stdout-implementTests-P06-T06-test.txt",
+						stderr_path: "workflow-output/validation-stderr-implementTests-P06-T06-test.txt",
+						exit_code_path: "workflow-output/validation-exit-code-implementTests-P06-T06-test.txt",
+					},
+					notes: "First full wrapper failed, then the test lane reran validation after a focused fix and only kept the latest canonical logs.",
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {});
+
+		expect(result.verdict).toBe("REPAIR");
+		expect(result.data?.checked_inputs?.validation_attempt_log_findings).toEqual([
+			{
+				file: "workflow-output/tests-lane-P06-T06-test.json",
+				reason: "validation rerun evidence is missing immutable attempt stdout/stderr/exitcode logs",
+				missing_files: [
+					"workflow-output/validation-attempt-1-stdout-P06-T06-test.txt",
+					"workflow-output/validation-attempt-1-stderr-P06-T06-test.txt",
+					"workflow-output/validation-attempt-1-exitcode-P06-T06-test.txt",
+					"workflow-output/validation-attempt-2-stdout-P06-T06-test.txt",
+					"workflow-output/validation-attempt-2-stderr-P06-T06-test.txt",
+					"workflow-output/validation-attempt-2-exitcode-P06-T06-test.txt",
+				],
+			},
+		]);
+	});
+
+	it("accepts validation reruns when every attempt has immutable stdout stderr and exitcode logs", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test");
+		const attemptFiles = [
+			"workflow-output/validation-attempt-1-stdout-P06-T06-test.txt",
+			"workflow-output/validation-attempt-1-stderr-P06-T06-test.txt",
+			"workflow-output/validation-attempt-1-exitcode-P06-T06-test.txt",
+			"workflow-output/validation-attempt-2-stdout-P06-T06-test.txt",
+			"workflow-output/validation-attempt-2-stderr-P06-T06-test.txt",
+			"workflow-output/validation-attempt-2-exitcode-P06-T06-test.txt",
+		];
+		for (const file of attemptFiles) {
+			await Bun.write(path.join(cwd, file), file.includes("exitcode") ? "0\n" : `${file}\n`);
+		}
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"),
+			`${JSON.stringify(
+				{
+					tuple_id: "P06-T06-test",
+					producer_node: "implementTests",
+					status: "completed",
+					validation_attempts: [
+						{
+							attempt: 1,
+							result: "failed",
+							stdout_path: "workflow-output/validation-attempt-1-stdout-P06-T06-test.txt",
+							stderr_path: "workflow-output/validation-attempt-1-stderr-P06-T06-test.txt",
+							exitcode_path: "workflow-output/validation-attempt-1-exitcode-P06-T06-test.txt",
+						},
+						{
+							attempt: 2,
+							result: "pass",
+							stdout_path: "workflow-output/validation-attempt-2-stdout-P06-T06-test.txt",
+							stderr_path: "workflow-output/validation-attempt-2-stderr-P06-T06-test.txt",
+							exitcode_path: "workflow-output/validation-attempt-2-exitcode-P06-T06-test.txt",
+						},
+					],
+					validation: {
+						command: "true",
+						environment: {},
+						result: "pass",
+						exit_code: 0,
+						stdout_path: "workflow-output/validation-attempt-2-stdout-P06-T06-test.txt",
+						stderr_path: "workflow-output/validation-attempt-2-stderr-P06-T06-test.txt",
+						exitcode_path: "workflow-output/validation-attempt-2-exitcode-P06-T06-test.txt",
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.validation_attempt_log_findings).toEqual([]);
+	});
+
 	it("reports any premature final namespace artifact as repair evidence before strong review", async () => {
 		const cwd = await createTempDir();
 		await writeReadyEvidence(cwd, "P06-T06-test");
@@ -799,6 +910,12 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(prompts[4]).not.toContain("{{docsSummary}}");
 		expect(prompts[0]).toContain("Do not edit validation or run-control scripts");
 		expect(prompts[2]).toContain("Do not edit validation or run-control scripts");
+		expect(prompts[1]).toContain("validation-attempt-<n>-stdout-<tuple-id>.txt");
+		expect(prompts[1]).toContain("must not overwrite");
+		expect(prompts[3]).toContain("Validation rerun evidence rule");
+		expect(prompts[3]).toContain("immutable attempt logs");
+		expect(prompts[4]).toContain("immutable");
+		expect(prompts[4]).toContain("validation-attempt-<n>-stdout-<tuple-id>.txt");
 	});
 
 	it("requires rollback evidence to cover every changed project file after parallel lanes join", async () => {
