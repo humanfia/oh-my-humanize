@@ -593,7 +593,6 @@ function validationRerunSignal(text, data) {
 		/\b(?:re[- ]?ran|re[- ]?run|reran|rerun|reruns|rerunning)\s+(?:the\s+)?(?:full\s+)?(?:declared\s+)?validation\b/u.test(lower) ||
 		/\b(?:second|third|fourth|fifth)\s+(?:full\s+)?(?:declared\s+)?validation\s+(?:run|wrapper|attempt|pass)\b/u.test(lower) ||
 		/\b(?:prior|previous|earlier|first)\s+(?:full\s+)?(?:declared\s+)?validation\s+(?:failed|failure|exit(?:ed)?\s+non[- ]?zero|exit(?:ed)?\s+1)\b/u.test(lower) ||
-		/\bvalidation[_ -]?attempts?\b/u.test(lower) ||
 		/\battempt\s*[2-9]\b/u.test(lower);
 	return strongSignal && !explicitNoRerun;
 }
@@ -626,6 +625,7 @@ function expectedValidationAttempts(text, data, rerun) {
 function validationAttemptsArray(data) {
 	if (!data || typeof data !== "object" || Array.isArray(data)) return [];
 	if (Array.isArray(data.validation_attempts)) return data.validation_attempts;
+	if (Array.isArray(data.attempts)) return data.attempts;
 	if (data.validation && typeof data.validation === "object" && Array.isArray(data.validation.attempts)) {
 		return data.validation.attempts;
 	}

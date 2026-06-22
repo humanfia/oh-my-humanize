@@ -586,6 +586,55 @@ describe("parallel-implementation-review flow contract", () => {
 		]);
 	});
 
+	it("accepts single-attempt test-lane validation with immutable attempt logs", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test");
+		const attemptFiles = [
+			"workflow-output/validation-attempt-1-stdout-P06-T06-test.txt",
+			"workflow-output/validation-attempt-1-stderr-P06-T06-test.txt",
+			"workflow-output/validation-attempt-1-exitcode-P06-T06-test.txt",
+		];
+		for (const file of attemptFiles) {
+			await Bun.write(path.join(cwd, file), file.includes("exitcode") ? "0\n" : `${file}\n`);
+		}
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"),
+			`${JSON.stringify(
+				{
+					tuple_id: "P06-T06-test",
+					producer_node: "implementTests",
+					status: "completed",
+					validation: {
+						command: "true",
+						environment: {},
+						result: "pass",
+						exit_code: 0,
+						failure_classification: "not_applicable_passing_validation",
+					},
+					attempts: [
+						{
+							attempt: 1,
+							command: "true",
+							environment: {},
+							result: "pass",
+							exit_code_path: "workflow-output/validation-attempt-1-exitcode-P06-T06-test.txt",
+							stdout_path: "workflow-output/validation-attempt-1-stdout-P06-T06-test.txt",
+							stderr_path: "workflow-output/validation-attempt-1-stderr-P06-T06-test.txt",
+						},
+					],
+					validation_artifacts_changed_by_tests_lane: attemptFiles,
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.validation_attempt_log_findings).toEqual([]);
+	});
+
 	it("accepts validation reruns when every attempt has immutable stdout stderr and exitcode logs", async () => {
 		const cwd = await createTempDir();
 		await writeReadyEvidence(cwd, "P06-T06-test");
