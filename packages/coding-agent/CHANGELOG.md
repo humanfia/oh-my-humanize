@@ -22,6 +22,9 @@
   archives preserve task tuple IDs and do not invent an implicit round minimum
   when the task contract omits one, while rejecting non-positive round numbers
   such as `ROUND 0`.
+- Fixed the experimental agent build/review loop workflow so build rounds cannot
+  pre-create archive-owned terminal artifacts such as
+  `workflow-output/tuple-state.json`.
 - Fixed workflow JavaScript script nodes so workflow stop and node abort signals
   propagate into the eval runtime instead of leaving validation subprocesses
   running after an aborted attempt.

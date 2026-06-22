@@ -91,6 +91,8 @@ General loop contract:
   `workflow-output/semantic-archive-guard.json`, or final archive/reject files.
   The `classifyReviewRoute`, `semanticArchiveGuard`, and `archiveLoop` nodes own
   those artifacts.
+- Build rounds must not create or edit `workflow-output/tuple-state.json`.
+  `archiveLoop` owns the terminal tuple-state artifact.
 - Append exactly one new line to `progress.md` in this format:
   `ROUND <n>: <short concrete action>; validation=<command or not-run>; result=<pass|fail|not-run>`
 - Round numbers are one-based: the first build round is `ROUND 1`, never

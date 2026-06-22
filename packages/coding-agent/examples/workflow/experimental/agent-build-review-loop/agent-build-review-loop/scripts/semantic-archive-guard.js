@@ -28,6 +28,7 @@ for (const file of changedFiles) {
 }
 findings.push(...scopeFenceFindings(changedFiles, allowedScopes));
 findings.push(...nonPositiveProgressRoundFindings(progressText));
+findings.push(...(await earlyFinalizationArtifactFindings()));
 findings.push(...(await dependencyBootstrapFindings()));
 findings.push(...(await downstreamCompletionClaimFindings()));
 findings.push(...(await nondurableArtifactReferenceFindings()));
@@ -87,6 +88,24 @@ function nonPositiveProgressRoundFindings(progressText) {
 			rounds: invalidRounds.map(round => `ROUND ${round}`),
 		},
 	];
+}
+
+async function earlyFinalizationArtifactFindings() {
+	const findings = [];
+	for (const file of [
+		"workflow-output/tuple-state.json",
+		"workflow-output/final-agent-loop-archive.md",
+		"workflow-output/final-agent-loop-reject.md",
+	]) {
+		if (!(await Bun.file(file).exists())) continue;
+		findings.push({
+			file,
+			reason: "workflow finalization artifact was created before archiveLoop",
+			policy:
+				"Build and review nodes must leave terminal tuple-state and final archives to archiveLoop. Remove the premature artifact and rerun the route.",
+		});
+	}
+	return findings;
 }
 
 async function changedProjectFiles() {

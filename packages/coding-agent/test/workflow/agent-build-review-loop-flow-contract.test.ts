@@ -1029,6 +1029,23 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("requires repair when a build round creates archive-owned tuple state early", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tuple-state.json"),
+			JSON.stringify({ tuple_id: "EARLY", verdict: "pass" }),
+		);
+
+		const result = await runSemanticArchiveGuard(cwd);
+
+		expect(result.verdict).toBe("REPAIR");
+		const finding = result.data.findings.find(item => item.file === "workflow-output/tuple-state.json");
+		expect(finding).toMatchObject({
+			reason: "workflow finalization artifact was created before archiveLoop",
+		});
+	});
+
 	it("requires repair when round evidence claims downstream guard or archive nodes completed", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
@@ -1207,6 +1224,23 @@ describe("agent-build-review-loop flow contract", () => {
 
 		await expect(runArchiveLoop(cwd, { decision: "complete" })).rejects.toThrow(
 			"progress.md uses non-positive workflow round numbers",
+		);
+	});
+
+	it("rejects archiving when tuple-state already exists before archiveLoop writes it", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n\nNo-Code Allowed: yes\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: changed allowed behavior; validation=true; result=pass\n",
+		);
+		await Bun.write(path.join(cwd, "workflow-output", "round-1", "validation-stdout.txt"), "ok\n");
+		await Bun.write(path.join(cwd, "workflow-output", "round-1", "validation-stderr.txt"), "\n");
+		await Bun.write(path.join(cwd, "workflow-output", "tuple-state.json"), JSON.stringify({ verdict: "pass" }));
+
+		await expect(runArchiveLoop(cwd, { decision: "complete" })).rejects.toThrow(
+			"archive-owned finalization artifacts already exist",
 		);
 	});
 

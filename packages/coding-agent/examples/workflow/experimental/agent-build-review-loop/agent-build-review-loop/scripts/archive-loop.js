@@ -18,6 +18,12 @@ const archivedEvidenceFiles = mergedEvidenceFiles(evidenceFiles, [
 	...(isRejectArchive ? reviewRoute.setupBlockerEvidenceFiles ?? [] : []),
 	reviewRoute.reviewDecisionTrailFile,
 ]);
+const existingArchiveOwnedArtifacts = await existingArchiveOwnedFinalizationArtifacts();
+if (existingArchiveOwnedArtifacts.length > 0) {
+	throw new Error(
+		`agent-build-review-loop cannot archive because archive-owned finalization artifacts already exist: ${existingArchiveOwnedArtifacts.join(", ")}`,
+	);
+}
 const nonPositiveProgressRounds = nonPositiveProgressRoundLabels(progressText);
 if (nonPositiveProgressRounds.length > 0) {
 	throw new Error(
@@ -171,6 +177,18 @@ async function writeTupleState({ status, finalArtifact, reviewRoute, roundCount,
 function taskTupleId(taskText) {
 	const match = /(?:^|\n)\s*(?:tuple(?:\s+id)?|tuple_id)\s*:\s*(\S[^\r\n]*)/iu.exec(taskText);
 	return match?.[1]?.trim() ?? "";
+}
+
+async function existingArchiveOwnedFinalizationArtifacts() {
+	const files = [];
+	for (const file of [
+		"workflow-output/tuple-state.json",
+		"workflow-output/final-agent-loop-archive.md",
+		"workflow-output/final-agent-loop-reject.md",
+	]) {
+		if (await Bun.file(file).exists()) files.push(file);
+	}
+	return files;
 }
 
 async function readOptionalText(filePath) {
