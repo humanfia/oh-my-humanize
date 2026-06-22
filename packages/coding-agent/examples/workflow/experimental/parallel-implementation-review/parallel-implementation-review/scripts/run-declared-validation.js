@@ -128,13 +128,14 @@ async function reusableExactTestLaneValidation({ tupleId, validationCommand, val
 		const recordedHashes = await recordedValidationHashes(data);
 		if (Object.keys(recordedHashes).length === 0) continue;
 		if (!(await recordedHashesStillMatch(recordedHashes))) continue;
+		const artifacts = validationArtifactPaths(data, validation, tupleId);
 		return {
 			artifact,
 			result: outcome.result,
 			exitCode: outcome.exitCode,
-			stdoutArtifact: stringField(validation, "stdout_path") || stringField(validation, "stdoutArtifact"),
-			stderrArtifact: stringField(validation, "stderr_path") || stringField(validation, "stderrArtifact"),
-			exitCodeArtifact: stringField(validation, "exit_code_path") || stringField(validation, "exitCodeArtifact"),
+			stdoutArtifact: artifacts.stdoutArtifact,
+			stderrArtifact: artifacts.stderrArtifact,
+			exitCodeArtifact: artifacts.exitCodeArtifact,
 			runtimeEnvironment: objectField(validation, "runtime_environment"),
 			recordedHashes,
 			coverageProfiles: await recordedCoverageProfiles(data),
@@ -198,25 +199,7 @@ async function reusableTupleScopedValidationFiles({
 	if (!tupleId || !data || data.producer_node !== "implementTests") return null;
 	const validation = declaredValidationObject(data);
 	if (!validation || typeof validation !== "object") return null;
-	const stdoutArtifact =
-		stringField(validation, "stdout_path") ||
-		stringField(validation, "latest_stdout") ||
-		stringField(validation, "canonical_stdout") ||
-		stringField(validation, "stdoutArtifact") ||
-		`workflow-output/validation-${tupleId}.stdout`;
-	const stderrArtifact =
-		stringField(validation, "stderr_path") ||
-		stringField(validation, "latest_stderr") ||
-		stringField(validation, "canonical_stderr") ||
-		stringField(validation, "stderrArtifact") ||
-		`workflow-output/validation-${tupleId}.stderr`;
-	const exitCodeArtifact =
-		stringField(validation, "exit_code_path") ||
-		stringField(validation, "exitcode_path") ||
-		stringField(validation, "latest_exit_code") ||
-		stringField(validation, "canonical_exit_code") ||
-		stringField(validation, "exitCodeArtifact") ||
-		`workflow-output/validation-${tupleId}.exitcode`;
+	const { stdoutArtifact, stderrArtifact, exitCodeArtifact } = validationArtifactPaths(data, validation, tupleId);
 	const artifacts = [stdoutArtifact, stderrArtifact, exitCodeArtifact];
 	if (!artifacts.every(filePath => isSafeTupleWorkflowOutputPath(filePath, tupleId))) return null;
 	if (!(await Promise.all(artifacts.map(fileExists))).every(Boolean)) return null;
@@ -255,9 +238,80 @@ function declaredValidationObject(data) {
 	return optionalObjectField(data, "declared_validation") ?? optionalObjectField(data, "validation") ?? {};
 }
 
+function validationArtifactPaths(data, validation, tupleId) {
+	const latestAttempt = latestValidationAttempt(data, validation);
+	return {
+		stdoutArtifact:
+			validationPathField(data, validation, latestAttempt, "stdout") || `workflow-output/validation-${tupleId}.stdout`,
+		stderrArtifact:
+			validationPathField(data, validation, latestAttempt, "stderr") || `workflow-output/validation-${tupleId}.stderr`,
+		exitCodeArtifact:
+			validationPathField(data, validation, latestAttempt, "exitcode") || `workflow-output/validation-${tupleId}.exitcode`,
+	};
+}
+
+function validationPathField(data, validation, latestAttempt, kind) {
+	const fieldNames = validationPathFieldNames(kind);
+	for (const source of [validation, latestAttempt]) {
+		for (const field of fieldNames) {
+			const value = stringField(source, field);
+			if (value) return value;
+		}
+	}
+	for (const aliases of validationAliasObjects(data, validation)) {
+		for (const field of fieldNames) {
+			const value = stringField(aliases, field);
+			if (value) return value;
+		}
+	}
+	return "";
+}
+
+function validationPathFieldNames(kind) {
+	if (kind === "stdout") return ["stdout_path", "latest_stdout", "canonical_stdout", "stdoutArtifact", "stdout"];
+	if (kind === "stderr") return ["stderr_path", "latest_stderr", "canonical_stderr", "stderrArtifact", "stderr"];
+	return [
+		"exit_code_path",
+		"exitcode_path",
+		"latest_exit_code",
+		"canonical_exit_code",
+		"exitCodeArtifact",
+		"exitcode",
+		"exit_code",
+	];
+}
+
+function validationAliasObjects(data, validation) {
+	return [
+		optionalObjectField(validation, "latest_aliases"),
+		optionalObjectField(validation, "canonical_latest_aliases"),
+		optionalObjectField(data, "latest_aliases"),
+		optionalObjectField(data, "canonical_latest_aliases"),
+	].filter(Boolean);
+}
+
+function latestValidationAttempt(data, validation) {
+	const attempts = [
+		...arrayField(validation, "attempts"),
+		...arrayField(validation, "validation_attempts"),
+		...arrayField(data, "attempts"),
+		...arrayField(data, "validation_attempts"),
+	].filter(value => value && typeof value === "object" && !Array.isArray(value));
+	if (attempts.length === 0) return {};
+	const requested = Number(validation?.latest_attempt ?? data?.latest_attempt);
+	if (Number.isInteger(requested) && requested > 0) {
+		const exact = attempts.find(attempt => Number(attempt.attempt) === requested);
+		if (exact) return exact;
+	}
+	return attempts
+		.slice()
+		.sort((left, right) => Number(right.attempt ?? 0) - Number(left.attempt ?? 0))[0];
+}
+
 async function recordedValidationHashes(data) {
 	const hashes = {};
 	addHashMap(hashes, data?.artifact_hashes);
+	addHashMap(hashes, data?.artifact_hashes_sha256);
 	addHashMap(hashes, data?.checksums);
 	addHashMap(hashes, data?.validation?.evidence_hashes);
 	addHashMap(hashes, data?.declared_validation?.evidence_hashes);
@@ -320,7 +374,7 @@ function coverageProfilesFromValue(value) {
 	if (Array.isArray(value)) {
 		return value
 			.map(profile => ({
-				path: typeof profile?.path === "string" ? profile.path : "",
+				path: typeof profile === "string" ? profile : typeof profile?.path === "string" ? profile.path : "",
 				sha256: typeof profile?.sha256 === "string" ? profile.sha256 : "",
 			}))
 			.filter(profile => profile.path && isSafeWorkflowOutputPath(profile.path));
@@ -407,6 +461,12 @@ function optionalObjectField(value, key) {
 	if (!value || typeof value !== "object") return null;
 	const field = value[key];
 	return field && typeof field === "object" && !Array.isArray(field) ? field : null;
+}
+
+function arrayField(value, key) {
+	if (!value || typeof value !== "object") return [];
+	const field = value[key];
+	return Array.isArray(field) ? field : [];
 }
 
 async function readRequiredTaskText() {
