@@ -1,4 +1,5 @@
 const taskText = await readRequiredTaskText();
+const tupleId = taskTupleId(taskText);
 const progressText = await readOptionalText("progress.md");
 const VALIDATION_RERUN_PATTERNS = [
 	/\b(?:reran|re-ran|rerun|re-run)\s+(?:the\s+)?validation\b/iu,
@@ -17,6 +18,12 @@ const archivedEvidenceFiles = mergedEvidenceFiles(evidenceFiles, [
 	...(isRejectArchive ? reviewRoute.setupBlockerEvidenceFiles ?? [] : []),
 	reviewRoute.reviewDecisionTrailFile,
 ]);
+const nonPositiveProgressRounds = nonPositiveProgressRoundLabels(progressText);
+if (nonPositiveProgressRounds.length > 0) {
+	throw new Error(
+		`agent-build-review-loop cannot archive because progress.md uses non-positive workflow round numbers: ${nonPositiveProgressRounds.join(", ")}`,
+	);
+}
 const roundCount = Math.max(progressRoundCount(progressText), evidenceRoundCount(evidenceFiles));
 if (roundCount === 0 && !isRejectArchive) {
 	throw new Error("agent-build-review-loop cannot archive without at least one ROUND entry in progress.md");
@@ -112,6 +119,7 @@ await writeTupleState({
 	roundCount,
 	changedFiles,
 	evidenceFiles: archivedEvidenceFiles,
+	tupleId,
 });
 
 if (isRejectArchive) {
@@ -139,10 +147,11 @@ return {
 	],
 };
 
-async function writeTupleState({ status, finalArtifact, reviewRoute, roundCount, changedFiles, evidenceFiles }) {
+async function writeTupleState({ status, finalArtifact, reviewRoute, roundCount, changedFiles, evidenceFiles, tupleId }) {
 	const verdict = status === "rejected" ? "reject" : (reviewRoute.decision ?? "complete");
 	const state = {
 		flow: "agent-build-review-loop",
+		...(tupleId ? { tuple_id: tupleId } : {}),
 		status,
 		terminal: true,
 		verdict,
@@ -157,6 +166,11 @@ async function writeTupleState({ status, finalArtifact, reviewRoute, roundCount,
 		checked_at_ms: Date.now(),
 	};
 	await Bun.write("workflow-output/tuple-state.json", `${JSON.stringify(state, null, 2)}\n`);
+}
+
+function taskTupleId(taskText) {
+	const match = /(?:^|\n)\s*(?:tuple(?:\s+id)?|tuple_id)\s*:\s*(\S[^\r\n]*)/iu.exec(taskText);
+	return match?.[1]?.trim() ?? "";
 }
 
 async function readOptionalText(filePath) {
@@ -479,7 +493,7 @@ function ignoredEvidencePath(file) {
 }
 
 function progressRoundCount(progressText) {
-	return progressText.split(/\r?\n/u).filter(line => line.startsWith("ROUND ")).length;
+	return progressRoundLabels(progressText).filter(round => round > 0).length;
 }
 
 function evidenceRoundCount(files) {
@@ -490,6 +504,16 @@ function evidenceRoundCount(files) {
 		maxRound = Math.max(maxRound, Number(match[1]));
 	}
 	return maxRound;
+}
+
+function nonPositiveProgressRoundLabels(progressText) {
+	return progressRoundLabels(progressText).filter(round => round <= 0).map(round => `ROUND ${round}`);
+}
+
+function progressRoundLabels(progressText) {
+	return [...progressText.matchAll(/^\s*ROUND\s+(\d+)\s*:/gimu)]
+		.map(match => Number(match[1]))
+		.filter(round => Number.isInteger(round));
 }
 
 function allowsNoChange(taskText) {

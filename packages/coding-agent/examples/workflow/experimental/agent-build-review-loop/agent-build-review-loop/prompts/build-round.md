@@ -93,5 +93,8 @@ General loop contract:
   those artifacts.
 - Append exactly one new line to `progress.md` in this format:
   `ROUND <n>: <short concrete action>; validation=<command or not-run>; result=<pass|fail|not-run>`
-- The next round number is one more than the number of existing `ROUND ` lines.
+- Round numbers are one-based: the first build round is `ROUND 1`, never
+  `ROUND 0`.
+- The next round number is one more than the number of existing positive
+  `ROUND ` lines.
 - Return a short summary of changed files and validation result.

@@ -743,6 +743,32 @@ describe("agent-build-review-loop flow contract", () => {
 		expect(result.data.reason).toContain("downstream finalization");
 	});
 
+	it("does not invent a round minimum when the task omits one", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\n./workflow-output/run-validation.sh\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: added focused regression coverage; validation=./workflow-output/run-validation.sh; result=pass\n",
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "complete",
+			summary:
+				"No minimum round count is declared; progress.md has 1 ROUND line, the latest declared validation command passed, and the retained diff is task-scoped.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "complete",
+			reviewVerdict: "complete",
+			completedRoundCount: 1,
+		});
+		expect(result.data.requiredRoundCount).toBeUndefined();
+		await expect(
+			Bun.file(path.join(cwd, "workflow-output", "review-route-1.json")).json(),
+		).resolves.not.toHaveProperty("requiredRoundCount");
+	});
+
 	it("routes archive-only continue evidence gaps to downstream finalization", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
@@ -984,6 +1010,25 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("requires repair when progress uses non-positive round numbers", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-0"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 0: added focused regression coverage; validation=./workflow-output/run-validation.sh; result=pass\n",
+		);
+		await Bun.write(path.join(cwd, "workflow-output", "round-0", "validation-stdout.txt"), "ok\n");
+		await Bun.write(path.join(cwd, "workflow-output", "round-0", "validation-stderr.txt"), "\n");
+
+		const result = await runSemanticArchiveGuard(cwd);
+
+		expect(result.verdict).toBe("REPAIR");
+		const finding = result.data.findings.find(item => item.file === "progress.md");
+		expect(finding).toMatchObject({
+			reason: "progress uses non-positive workflow round numbers",
+		});
+	});
+
 	it("requires repair when round evidence claims downstream guard or archive nodes completed", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
@@ -1149,6 +1194,22 @@ describe("agent-build-review-loop flow contract", () => {
 		);
 	});
 
+	it("rejects archiving when progress uses non-positive round numbers", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-0"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n\nNo-Code Allowed: yes\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 0: changed allowed behavior; validation=true; result=pass\n",
+		);
+		await Bun.write(path.join(cwd, "workflow-output", "round-0", "validation-stdout.txt"), "ok\n");
+		await Bun.write(path.join(cwd, "workflow-output", "round-0", "validation-stderr.txt"), "\n");
+
+		await expect(runArchiveLoop(cwd, { decision: "complete" })).rejects.toThrow(
+			"progress.md uses non-positive workflow round numbers",
+		);
+	});
+
 	it("requires repair when changed project files escape task allowed paths", async () => {
 		const cwd = await createTempDir();
 		await initGitRepo(cwd);
@@ -1287,7 +1348,10 @@ describe("agent-build-review-loop flow contract", () => {
 	it("writes normalized terminal tuple-state fields for completed archives", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output", "round-1"), { recursive: true });
-		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n\nNo-Code Allowed: yes\n");
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			"Tuple: AGENT-LOOP-TUPLE-1\n\nValidation Command:\ntrue\n\nNo-Code Allowed: yes\n",
+		);
 		await Bun.write(
 			path.join(cwd, "progress.md"),
 			"ROUND 1: changed allowed behavior; validation=true; result=pass\n",
@@ -1303,6 +1367,7 @@ describe("agent-build-review-loop flow contract", () => {
 
 		await expect(Bun.file(path.join(cwd, "workflow-output", "tuple-state.json")).json()).resolves.toMatchObject({
 			flow: "agent-build-review-loop",
+			tuple_id: "AGENT-LOOP-TUPLE-1",
 			status: "completed",
 			terminal: true,
 			verdict: "complete",

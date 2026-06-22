@@ -27,6 +27,7 @@ for (const file of changedFiles) {
 	if (finding !== null) findings.push(finding);
 }
 findings.push(...scopeFenceFindings(changedFiles, allowedScopes));
+findings.push(...nonPositiveProgressRoundFindings(progressText));
 findings.push(...(await dependencyBootstrapFindings()));
 findings.push(...(await downstreamCompletionClaimFindings()));
 findings.push(...(await nondurableArtifactReferenceFindings()));
@@ -70,6 +71,22 @@ function scopeFenceFindings(changedFiles, allowedScopes) {
 			policy:
 				"Every semantic project change must stay within the task.md Allowed paths fence; widen the task contract explicitly or revert the out-of-scope change before archive.",
 		}));
+}
+
+function nonPositiveProgressRoundFindings(progressText) {
+	const invalidRounds = [...progressText.matchAll(/^\s*ROUND\s+(\d+)\s*:/gimu)]
+		.map(match => Number(match[1]))
+		.filter(round => Number.isInteger(round) && round <= 0);
+	if (invalidRounds.length === 0) return [];
+	return [
+		{
+			file: "progress.md",
+			reason: "progress uses non-positive workflow round numbers",
+			policy:
+				"Agent build/review loop rounds are one-based. Rename the first round to ROUND 1 and store validation artifacts under workflow-output/round-1/ before archive.",
+			rounds: invalidRounds.map(round => `ROUND ${round}`),
+		},
+	];
 }
 
 async function changedProjectFiles() {

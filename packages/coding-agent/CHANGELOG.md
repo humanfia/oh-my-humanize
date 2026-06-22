@@ -18,6 +18,10 @@
 - Fixed the experimental agent build/review loop workflow so terminal
   `tuple-state.json` files expose normalized `verdict` and
   `evidence_contract_verdict` fields for fanout audit tooling.
+- Fixed the experimental agent build/review loop workflow so tuple-state
+  archives preserve task tuple IDs and do not invent an implicit round minimum
+  when the task contract omits one, while rejecting non-positive round numbers
+  such as `ROUND 0`.
 - Fixed workflow JavaScript script nodes so workflow stop and node abort signals
   propagate into the eval runtime instead of leaving validation subprocesses
   running after an aborted attempt.

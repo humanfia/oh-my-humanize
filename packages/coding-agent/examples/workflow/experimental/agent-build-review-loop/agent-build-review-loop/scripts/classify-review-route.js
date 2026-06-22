@@ -6,6 +6,7 @@ const taskText = await readOptionalText("task.md");
 const progressText = await readOptionalText("progress.md");
 const requiredRoundCount = taskRequiredRoundCount(taskText);
 const completedRoundCount = progressRoundCount(progressText);
+const roundMinimumSatisfied = requiredRoundCount === null || completedRoundCount >= requiredRoundCount;
 const setupBlockerEvidenceFiles = await findSetupBlockerEvidenceFiles(reviewSummary);
 const externalValidationBlockerEvidenceFiles = uniqueSorted([
 	...(await findRepeatedExternalValidationBlockerEvidenceFiles(taskText)),
@@ -17,11 +18,11 @@ const terminalBlockerEvidenceFiles = uniqueSorted([
 ]);
 const downstreamFinalizationOnly =
 	reviewVerdict === "continue" &&
-	completedRoundCount >= requiredRoundCount &&
+	roundMinimumSatisfied &&
 	isDownstreamFinalizationOnlyReview(reviewSummary);
 const completionSatisfiedButContinued =
 	reviewVerdict === "continue" &&
-	completedRoundCount >= requiredRoundCount &&
+	roundMinimumSatisfied &&
 	isCompletionSatisfiedReview(reviewSummary);
 
 let decision = reviewVerdict === "continue" ? "continue" : "complete";
@@ -51,7 +52,7 @@ const route = {
 	reason,
 	reviewVerdict,
 	reviewSummary,
-	requiredRoundCount,
+	...(requiredRoundCount === null ? {} : { requiredRoundCount }),
 	completedRoundCount,
 	downstreamFinalizationOnly,
 	completionSatisfiedButContinued,
@@ -111,7 +112,7 @@ function taskRequiredRoundCount(text) {
 	const counts = matches
 		.map(match => parseRoundCount(match[1] ?? ""))
 		.filter(count => count !== null);
-	return counts.length === 0 ? 2 : Math.max(...counts);
+	return counts.length === 0 ? null : Math.max(...counts);
 }
 
 function parseRoundCount(text) {
@@ -143,7 +144,9 @@ function parseRoundCount(text) {
 }
 
 function progressRoundCount(text) {
-	return [...text.matchAll(/^\s*ROUND\s+\d+\s*:/gimu)].length;
+	return [...text.matchAll(/^\s*ROUND\s+(\d+)\s*:/gimu)]
+		.map(match => Number(match[1]))
+		.filter(round => Number.isInteger(round) && round > 0).length;
 }
 
 function isDownstreamFinalizationOnlyReview(text) {
