@@ -328,12 +328,30 @@ describe("parallel-implementation-review flow contract", () => {
 			tuple_id: "P06-T06-test",
 			producer_node: "implementTests",
 			status: "completed",
-			validation: {
+			declared_validation: {
+				command,
+				environment: {},
+				result: "pass",
+				exit_code: 0,
 				stdout_path: "workflow-output/validation-P06-T06-test.stdout",
 				stderr_path: "workflow-output/validation-P06-T06-test.stderr",
-				exit_code_path: "workflow-output/validation-P06-T06-test.exitcode",
+				exitcode_path: "workflow-output/validation-P06-T06-test.exitcode",
 				failure_classification: "none; declared validation passed",
 				phase_order: ["unit"],
+			},
+			coverage_profiles: {
+				[coveragePath]: { exists: true, bytes: "mode: atomic\n".length },
+			},
+			checksums: {
+				"workflow-output/validation-P06-T06-test.stdout": await sha256File(
+					path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout"),
+				),
+				"workflow-output/validation-P06-T06-test.stderr": await sha256File(
+					path.join(cwd, "workflow-output", "validation-P06-T06-test.stderr"),
+				),
+				"workflow-output/validation-P06-T06-test.exitcode": await sha256File(
+					path.join(cwd, "workflow-output", "validation-P06-T06-test.exitcode"),
+				),
 			},
 		};
 		await Bun.write(
@@ -850,9 +868,15 @@ describe("parallel-implementation-review flow contract", () => {
 		await writeReadyEvidence(cwd, "P06-T06-test");
 		const coveragePath = "workflow-output/unit-cover-P06-T06-test.out";
 		const stdoutPath = "workflow-output/test-validation-P06-T06-test.stdout";
+		const stderrPath = "workflow-output/test-validation-P06-T06-test.stderr";
+		const exitCodePath = "workflow-output/test-validation-P06-T06-test.exitcode";
 		await Bun.write(path.join(cwd, stdoutPath), "original stdout\n");
+		await Bun.write(path.join(cwd, stderrPath), "");
+		await Bun.write(path.join(cwd, exitCodePath), "0\n");
 		await Bun.write(path.join(cwd, coveragePath), "mode: atomic\noriginal\n");
 		const stdoutHash = await sha256File(path.join(cwd, stdoutPath));
+		const stderrHash = await sha256File(path.join(cwd, stderrPath));
+		const exitCodeHash = await sha256File(path.join(cwd, exitCodePath));
 		const coverageHash = await sha256File(path.join(cwd, coveragePath));
 		await Bun.write(
 			path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"),
@@ -861,22 +885,33 @@ describe("parallel-implementation-review flow contract", () => {
 					tuple_id: "P06-T06-test",
 					producer_node: "implementTests",
 					status: "completed",
-					validation: {
+					declared_validation: {
 						command: "true",
 						environment: {},
 						result: "pass",
 						exit_code: 0,
 						stdout_path: stdoutPath,
-						evidence_hashes: {
-							[stdoutPath]: stdoutHash,
-						},
-						coverage_profiles: [{ path: coveragePath, sha256: coverageHash }],
+						stderr_path: stderrPath,
+						exitcode_path: exitCodePath,
+					},
+					checksums: {
+						[stdoutPath]: stdoutHash,
+						[stderrPath]: stderrHash,
+						[exitCodePath]: exitCodeHash,
+					},
+					coverage_profiles: {
+						[coveragePath]: { exists: true, bytes: "mode: atomic\noriginal\n".length },
 					},
 				},
 				null,
 				2,
 			)}\n`,
 		);
+		const validationResult = await runScript(cwd, "run-declared-validation.js", {});
+		expect(validationResult.verdict).toBe("PASS");
+		expect(validationResult.data?.validation?.reusedCoverageProfiles).toEqual([
+			{ path: coveragePath, sha256: coverageHash },
+		]);
 		await Bun.write(path.join(cwd, coveragePath), "mode: atomic\noverwritten by duplicate validation\n");
 
 		const guardResult = await runScript(cwd, "evidence-contract-guard.js", {});
@@ -890,7 +925,7 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(guardResult.verdict).toBe("REPAIR");
 		expect(guardResult.summary).toContain("stale validation evidence hashes");
 		expect(guardResult.data?.checked_inputs?.stale_validation_hash_artifacts).toEqual([
-			"workflow-output/tests-lane-P06-T06-test.json -> workflow-output/unit-cover-P06-T06-test.out",
+			"workflow-output/validation-P06-T06-test.json -> workflow-output/unit-cover-P06-T06-test.out",
 		]);
 		expect(finalResult.verdict).toBe("reject");
 		await expect(Bun.file(path.join(cwd, "workflow-output", "tuple-state.json")).json()).resolves.toMatchObject({

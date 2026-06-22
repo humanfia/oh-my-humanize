@@ -126,7 +126,7 @@ async function reusableExactTestLaneValidation({ tupleId, validationCommand, val
 		if (!environmentMatches(validation.environment, validationEnvironment)) continue;
 		const outcome = validationOutcome(validation);
 		if (!outcome) continue;
-		const recordedHashes = recordedValidationHashes(data);
+		const recordedHashes = await recordedValidationHashes(data);
 		if (Object.keys(recordedHashes).length === 0) continue;
 		if (!(await recordedHashesStillMatch(recordedHashes))) continue;
 		return {
@@ -138,7 +138,7 @@ async function reusableExactTestLaneValidation({ tupleId, validationCommand, val
 			exitCodeArtifact: stringField(validation, "exit_code_path") || stringField(validation, "exitCodeArtifact"),
 			runtimeEnvironment: objectField(validation, "runtime_environment"),
 			recordedHashes,
-			coverageProfiles: recordedCoverageProfiles(data),
+			coverageProfiles: await recordedCoverageProfiles(data),
 		};
 	}
 	for (const artifact of candidates) {
@@ -197,7 +197,7 @@ async function reusableTupleScopedValidationFiles({
 	validationEnvironment,
 }) {
 	if (!tupleId || !data || data.producer_node !== "implementTests") return null;
-	const validation = data.validation;
+	const validation = declaredValidationObject(data);
 	if (!validation || typeof validation !== "object") return null;
 	const stdoutArtifact =
 		stringField(validation, "stdout_path") ||
@@ -209,6 +209,7 @@ async function reusableTupleScopedValidationFiles({
 		`workflow-output/validation-${tupleId}.stderr`;
 	const exitCodeArtifact =
 		stringField(validation, "exit_code_path") ||
+		stringField(validation, "exitcode_path") ||
 		stringField(validation, "exitCodeArtifact") ||
 		`workflow-output/validation-${tupleId}.exitcode`;
 	const artifacts = [stdoutArtifact, stderrArtifact, exitCodeArtifact];
@@ -218,10 +219,10 @@ async function reusableTupleScopedValidationFiles({
 	if (exitCode === null) return null;
 	const result = exitCode === 0 ? "passed" : "failed";
 	const recordedHashes = {
-		...recordedValidationHashes(data),
+		...(await recordedValidationHashes(data)),
 		...(await hashExistingArtifacts(artifacts)),
 	};
-	const coverageProfiles = recordedCoverageProfiles(data);
+	const coverageProfiles = await recordedCoverageProfiles(data);
 	for (const profile of await discoverCoverageProfiles(tupleId)) {
 		if (!coverageProfiles.some(existing => existing.path === profile.path && existing.sha256 === profile.sha256)) {
 			coverageProfiles.push(profile);
@@ -245,41 +246,43 @@ async function reusableTupleScopedValidationFiles({
 	};
 }
 
+function declaredValidationObject(data) {
+	return objectField(data, "declared_validation") || objectField(data, "validation");
+}
+
+async function recordedValidationHashes(data) {
+	const hashes = {};
+	addHashMap(hashes, data?.artifact_hashes);
+	addHashMap(hashes, data?.checksums);
+	addHashMap(hashes, data?.validation?.evidence_hashes);
+	addHashMap(hashes, data?.declared_validation?.evidence_hashes);
+	addHashMap(hashes, data?.validation?.reusedArtifactHashes);
+	addHashMap(hashes, data?.declared_validation?.reusedArtifactHashes);
+	await addCoverageProfileHashes(hashes, data?.coverage_profiles);
+	await addCoverageProfileHashes(hashes, data?.validation?.coverage_profiles);
+	await addCoverageProfileHashes(hashes, data?.declared_validation?.coverage_profiles);
+	await addCoverageProfileHashes(hashes, data?.validation?.reusedCoverageProfiles);
+	await addCoverageProfileHashes(hashes, data?.declared_validation?.reusedCoverageProfiles);
+	return hashes;
+}
+
+async function recordedCoverageProfiles(data) {
+	const profiles = [];
+	const seen = new Set();
+	await collectCoverageProfiles(profiles, seen, data?.coverage_profiles);
+	await collectCoverageProfiles(profiles, seen, data?.validation?.coverage_profiles);
+	await collectCoverageProfiles(profiles, seen, data?.declared_validation?.coverage_profiles);
+	await collectCoverageProfiles(profiles, seen, data?.validation?.reusedCoverageProfiles);
+	await collectCoverageProfiles(profiles, seen, data?.declared_validation?.reusedCoverageProfiles);
+	return profiles;
+}
+
 function environmentMatches(actual, expected) {
 	const actualObject = actual && typeof actual === "object" && !Array.isArray(actual) ? actual : {};
 	const expectedObject = expected && typeof expected === "object" && !Array.isArray(expected) ? expected : {};
 	const actualEntries = Object.entries(actualObject).sort(([left], [right]) => left.localeCompare(right, "en"));
 	const expectedEntries = Object.entries(expectedObject).sort(([left], [right]) => left.localeCompare(right, "en"));
 	return JSON.stringify(actualEntries) === JSON.stringify(expectedEntries);
-}
-
-function recordedValidationHashes(data) {
-	const hashes = {};
-	addHashMap(hashes, data?.artifact_hashes);
-	addHashMap(hashes, data?.validation?.evidence_hashes);
-	addHashMap(hashes, data?.validation?.reusedArtifactHashes);
-	addCoverageProfileHashes(hashes, data?.coverage_profiles);
-	addCoverageProfileHashes(hashes, data?.validation?.coverage_profiles);
-	addCoverageProfileHashes(hashes, data?.validation?.reusedCoverageProfiles);
-	return hashes;
-}
-
-function recordedCoverageProfiles(data) {
-	const profiles = [];
-	const seen = new Set();
-	for (const source of [data?.coverage_profiles, data?.validation?.coverage_profiles, data?.validation?.reusedCoverageProfiles]) {
-		if (!Array.isArray(source)) continue;
-		for (const profile of source) {
-			const filePath = typeof profile?.path === "string" ? profile.path : "";
-			const hash = typeof profile?.sha256 === "string" ? profile.sha256 : "";
-			if (!hash || !isSafeWorkflowOutputPath(filePath)) continue;
-			const key = `${filePath}\0${hash}`;
-			if (seen.has(key)) continue;
-			seen.add(key);
-			profiles.push({ path: filePath, sha256: hash });
-		}
-	}
-	return profiles;
 }
 
 function addHashMap(hashes, value) {
@@ -289,13 +292,40 @@ function addHashMap(hashes, value) {
 	}
 }
 
-function addCoverageProfileHashes(hashes, value) {
-	if (!Array.isArray(value)) return;
-	for (const profile of value) {
-		const filePath = typeof profile?.path === "string" ? profile.path : "";
-		const hash = typeof profile?.sha256 === "string" ? profile.sha256 : "";
-		if (hash && isSafeWorkflowOutputPath(filePath)) hashes[filePath] = hash;
+async function addCoverageProfileHashes(hashes, value) {
+	for (const profile of coverageProfilesFromValue(value)) {
+		const hash = profile.sha256 || (await sha256File(profile.path));
+		if (hash) hashes[profile.path] = hash;
 	}
+}
+
+async function collectCoverageProfiles(profiles, seen, value) {
+	for (const profile of coverageProfilesFromValue(value)) {
+		const hash = profile.sha256 || (await sha256File(profile.path));
+		if (!hash) continue;
+		const key = `${profile.path}\0${hash}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		profiles.push({ path: profile.path, sha256: hash });
+	}
+}
+
+function coverageProfilesFromValue(value) {
+	if (!value || typeof value !== "object") return [];
+	if (Array.isArray(value)) {
+		return value
+			.map(profile => ({
+				path: typeof profile?.path === "string" ? profile.path : "",
+				sha256: typeof profile?.sha256 === "string" ? profile.sha256 : "",
+			}))
+			.filter(profile => profile.path && isSafeWorkflowOutputPath(profile.path));
+	}
+	return Object.entries(value)
+		.map(([filePath, profile]) => ({
+			path: typeof profile?.path === "string" ? profile.path : filePath,
+			sha256: typeof profile?.sha256 === "string" ? profile.sha256 : "",
+		}))
+		.filter(profile => profile.path && isSafeWorkflowOutputPath(profile.path));
 }
 
 async function recordedHashesStillMatch(hashes) {

@@ -517,7 +517,7 @@ async function staleValidationHashArtifactsFromEvidence(files) {
 	for (const file of files.filter(filePath => filePath.endsWith(".json"))) {
 		const data = await readJson(file);
 		if (!data) continue;
-		for (const entry of recordedValidationHashes(data)) {
+		for (const entry of await recordedValidationHashes(data)) {
 			const actual = await sha256File(entry.path);
 			if (!actual || actual !== entry.sha256) stale.push(`${file} -> ${entry.path}`);
 		}
@@ -533,14 +533,19 @@ async function readJson(file) {
 	}
 }
 
-function recordedValidationHashes(data) {
+async function recordedValidationHashes(data) {
 	const hashes = new Map();
 	addHashMap(hashes, data?.artifact_hashes);
+	addHashMap(hashes, data?.checksums);
 	addHashMap(hashes, data?.validation?.evidence_hashes);
+	addHashMap(hashes, data?.declared_validation?.evidence_hashes);
 	addHashMap(hashes, data?.validation?.reusedArtifactHashes);
-	addCoverageProfileHashes(hashes, data?.coverage_profiles);
-	addCoverageProfileHashes(hashes, data?.validation?.coverage_profiles);
-	addCoverageProfileHashes(hashes, data?.validation?.reusedCoverageProfiles);
+	addHashMap(hashes, data?.declared_validation?.reusedArtifactHashes);
+	await addCoverageProfileHashes(hashes, data?.coverage_profiles);
+	await addCoverageProfileHashes(hashes, data?.validation?.coverage_profiles);
+	await addCoverageProfileHashes(hashes, data?.declared_validation?.coverage_profiles);
+	await addCoverageProfileHashes(hashes, data?.validation?.reusedCoverageProfiles);
+	await addCoverageProfileHashes(hashes, data?.declared_validation?.reusedCoverageProfiles);
 	return Array.from(hashes.entries()).map(([artifactPath, sha256]) => ({ path: artifactPath, sha256 }));
 }
 
@@ -551,13 +556,29 @@ function addHashMap(hashes, value) {
 	}
 }
 
-function addCoverageProfileHashes(hashes, value) {
-	if (!Array.isArray(value)) return;
-	for (const profile of value) {
-		const artifactPath = typeof profile?.path === "string" ? profile.path : "";
-		const hash = typeof profile?.sha256 === "string" ? profile.sha256 : "";
-		if (hash && isSafeWorkflowOutputPath(artifactPath)) hashes.set(artifactPath, hash);
+async function addCoverageProfileHashes(hashes, value) {
+	for (const profile of coverageProfilesFromValue(value)) {
+		const hash = profile.sha256 || (await sha256File(profile.path));
+		if (hash && isSafeWorkflowOutputPath(profile.path)) hashes.set(profile.path, hash);
 	}
+}
+
+function coverageProfilesFromValue(value) {
+	if (!value || typeof value !== "object") return [];
+	if (Array.isArray(value)) {
+		return value
+			.map(profile => ({
+				path: typeof profile?.path === "string" ? profile.path : "",
+				sha256: typeof profile?.sha256 === "string" ? profile.sha256 : "",
+			}))
+			.filter(profile => profile.path && isSafeWorkflowOutputPath(profile.path));
+	}
+	return Object.entries(value)
+		.map(([artifactPath, profile]) => ({
+			path: typeof profile?.path === "string" ? profile.path : artifactPath,
+			sha256: typeof profile?.sha256 === "string" ? profile.sha256 : "",
+		}))
+		.filter(profile => profile.path && isSafeWorkflowOutputPath(profile.path));
 }
 
 async function sha256File(file) {
