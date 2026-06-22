@@ -26,7 +26,7 @@ if (!validationCommand) {
 }
 
 assertSafeValidationCommand(validationCommand);
-const reusableValidation = await reusablePassedTestLaneValidation({
+const reusableValidation = await reusableExactTestLaneValidation({
 	tupleId,
 	validationCommand,
 	validationEnvironment,
@@ -39,8 +39,8 @@ if (reusableValidation) {
 		reusableValidation,
 	});
 	return {
-		summary: `declared validation reused exact passed test-lane evidence: ${reusableValidation.artifact}`,
-		verdict: "PASS",
+		summary: `declared validation reused exact ${reusableValidation.result} test-lane evidence: ${reusableValidation.artifact}`,
+		verdict: reusableValidation.result === "passed" ? "PASS" : "FAIL",
 		data: artifact,
 		statePatch: [{ op: "set", path: "/declaredValidation", value: artifact }],
 	};
@@ -136,9 +136,9 @@ async function writeReusedValidationArtifact({ tupleId, validationCommand, valid
 			command: validationCommand,
 			environment: validationEnvironment,
 			runtime_environment: reusableValidation.runtimeEnvironment,
-			result: "passed",
-			status: "passed",
-			exitCode: 0,
+			result: reusableValidation.result,
+			status: reusableValidation.result,
+			exitCode: reusableValidation.exitCode,
 			stdoutArtifact: reusableValidation.stdoutArtifact,
 			stderrArtifact: reusableValidation.stderrArtifact,
 			exitCodeArtifact: reusableValidation.exitCodeArtifact,
@@ -152,7 +152,7 @@ async function writeReusedValidationArtifact({ tupleId, validationCommand, valid
 	return artifact;
 }
 
-async function reusablePassedTestLaneValidation({ tupleId, validationCommand, validationEnvironment }) {
+async function reusableExactTestLaneValidation({ tupleId, validationCommand, validationEnvironment }) {
 	if ((await changedProjectFiles()).length > 0) return null;
 	const candidates = await testLaneValidationArtifacts(tupleId);
 	for (const artifact of candidates) {
@@ -162,12 +162,15 @@ async function reusablePassedTestLaneValidation({ tupleId, validationCommand, va
 		if (!validation || typeof validation !== "object") continue;
 		if (validation.command !== validationCommand) continue;
 		if (!environmentMatches(validation.environment, validationEnvironment)) continue;
-		if (!validationPassed(validation)) continue;
+		const outcome = validationOutcome(validation);
+		if (!outcome) continue;
 		const recordedHashes = recordedValidationHashes(data);
 		if (Object.keys(recordedHashes).length === 0) continue;
 		if (!(await recordedHashesStillMatch(recordedHashes))) continue;
 		return {
 			artifact,
+			result: outcome.result,
+			exitCode: outcome.exitCode,
 			stdoutArtifact: stringField(validation, "stdout_path") || stringField(validation, "stdoutArtifact"),
 			stderrArtifact: stringField(validation, "stderr_path") || stringField(validation, "stderrArtifact"),
 			exitCodeArtifact: stringField(validation, "exit_code_path") || stringField(validation, "exitCodeArtifact"),
@@ -201,10 +204,16 @@ async function readJson(filePath) {
 	}
 }
 
-function validationPassed(validation) {
+function validationOutcome(validation) {
 	const result = String(validation.result ?? validation.status ?? "").toLowerCase();
 	const exitCode = validation.exit_code ?? validation.exitCode;
-	return (result === "pass" || result === "passed") && exitCode === 0;
+	if ((result === "pass" || result === "passed") && exitCode === 0) {
+		return { result: "passed", exitCode: 0 };
+	}
+	if ((result === "fail" || result === "failed") && typeof exitCode === "number" && exitCode !== 0) {
+		return { result: "failed", exitCode };
+	}
+	return null;
 }
 
 function environmentMatches(actual, expected) {

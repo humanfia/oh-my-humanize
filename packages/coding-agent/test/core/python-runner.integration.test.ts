@@ -15,6 +15,35 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 const SHOULD_RUN = Bun.env.PI_PYTHON_INTEGRATION === "1";
 const MATPLOTLIB_TEST_CWD = process.cwd();
 
+async function waitForFile(path: string): Promise<string> {
+	for (let attempt = 0; attempt < 200; attempt++) {
+		try {
+			const text = await Bun.file(path).text();
+			if (text.trim()) return text.trim();
+		} catch {
+			// The Python cell creates the file after the child process starts.
+		}
+		await Bun.sleep(10);
+	}
+	throw new Error(`Timed out waiting for ${path}`);
+}
+
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+	for (let attempt = 0; attempt < 200; attempt++) {
+		if (!isProcessAlive(pid)) return;
+		await Bun.sleep(10);
+	}
+}
+
 async function hasMatplotlib(cwd: string): Promise<boolean> {
 	if (!SHOULD_RUN) return false;
 	try {
@@ -86,6 +115,41 @@ describe.skipIf(!SHOULD_RUN)("python runner subprocess", () => {
 			expect(next.exitCode).toBe(0);
 			expect(next.output).toContain("alive");
 		} finally {
+			await kernel.shutdown();
+		}
+	});
+
+	it.skipIf(process.platform === "win32")("terminates child processes spawned by a cancelled cell", async () => {
+		using tempDir = TempDir.createSync("@python-runner-child-cancel-");
+		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
+		const pidPath = path.join(tempDir.path(), "child.pid");
+		let childPid: number | undefined;
+		try {
+			const ac = new AbortController();
+			const pending = executePythonWithKernel(
+				kernel,
+				[
+					"import pathlib, subprocess, sys",
+					`pid_path = pathlib.Path(${JSON.stringify(pidPath)})`,
+					`proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])`,
+					"pid_path.write_text(str(proc.pid), encoding='utf-8')",
+					"proc.wait()",
+				].join("\n"),
+				{ signal: ac.signal },
+			);
+			childPid = Number(await waitForFile(pidPath));
+			expect(isProcessAlive(childPid)).toBe(true);
+
+			ac.abort(new DOMException("operator stopped workflow", "AbortError"));
+			const result = await pending;
+
+			expect(result.cancelled).toBe(true);
+			await waitForProcessExit(childPid);
+			expect(isProcessAlive(childPid)).toBe(false);
+		} finally {
+			if (childPid !== undefined && isProcessAlive(childPid)) {
+				process.kill(childPid, "SIGKILL");
+			}
 			await kernel.shutdown();
 		}
 	});

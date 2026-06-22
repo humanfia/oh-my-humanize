@@ -257,6 +257,63 @@ describe("parallel-implementation-review flow contract", () => {
 		);
 	});
 
+	it("reuses exact failed test-lane validation without rerunning the same command", async () => {
+		const cwd = await createTempDir();
+		await initGitRepo(cwd);
+		await writeTupleFiles(cwd, "P06-T06-test");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		const command = "bash -lc 'printf rerun > workflow-output/should-not-rerun; exit 1'";
+		await Bun.write(path.join(cwd, "task.md"), `Validation Command:\n${command}\n`);
+		await Bun.write(path.join(cwd, "workflow-output", "test-validation-P06-T06-test.stdout"), "failed once\n");
+		await Bun.write(path.join(cwd, "workflow-output", "test-validation-P06-T06-test.stderr"), "failure details\n");
+		await Bun.write(path.join(cwd, "workflow-output", "test-validation-P06-T06-test.exitcode"), "1\n");
+		const laneArtifact = {
+			tuple_id: "P06-T06-test",
+			producer_node: "implementTests",
+			status: "completed",
+			validation: {
+				command,
+				environment: {},
+				runtime_environment: {},
+				result: "failed",
+				status: "failed",
+				exitCode: 1,
+				stdout_path: "workflow-output/test-validation-P06-T06-test.stdout",
+				stderr_path: "workflow-output/test-validation-P06-T06-test.stderr",
+				exit_code_path: "workflow-output/test-validation-P06-T06-test.exitcode",
+			},
+			artifact_hashes: {
+				"workflow-output/test-validation-P06-T06-test.stdout": await sha256File(
+					path.join(cwd, "workflow-output", "test-validation-P06-T06-test.stdout"),
+				),
+				"workflow-output/test-validation-P06-T06-test.stderr": await sha256File(
+					path.join(cwd, "workflow-output", "test-validation-P06-T06-test.stderr"),
+				),
+				"workflow-output/test-validation-P06-T06-test.exitcode": await sha256File(
+					path.join(cwd, "workflow-output", "test-validation-P06-T06-test.exitcode"),
+				),
+			},
+		};
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"),
+			`${JSON.stringify(laneArtifact, null, 2)}\n`,
+		);
+
+		const result = await runScript(cwd, "run-declared-validation.js", {});
+
+		expect(result.verdict).toBe("FAIL");
+		expect(result.summary).toContain("reused exact failed test-lane evidence");
+		expect(result.data?.validation).toMatchObject({
+			result: "failed",
+			exitCode: 1,
+			stdoutArtifact: "workflow-output/test-validation-P06-T06-test.stdout",
+			stderrArtifact: "workflow-output/test-validation-P06-T06-test.stderr",
+			reusedFromTestLane: "workflow-output/tests-lane-P06-T06-test.json",
+		});
+		expect(await fileExists(path.join(cwd, "workflow-output", "should-not-rerun"))).toBe(false);
+		expect(await fileExists(path.join(cwd, "workflow-output", "validation-P06-T06-test.stdout"))).toBe(false);
+	});
+
 	it("reports generic validation aliases as repair evidence before strong review", async () => {
 		const cwd = await createTempDir();
 		await writeReadyEvidence(cwd, "P06-T06-test");

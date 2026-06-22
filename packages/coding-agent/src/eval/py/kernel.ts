@@ -293,6 +293,11 @@ export class PythonKernel {
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",
+			// Workflow/eval cells may spawn their own long-running validation
+			// commands. On POSIX, isolate the runner into its own process group
+			// so cancellation can stop the whole descendant tree without
+			// signalling the interactive OMP host.
+			detached: process.platform !== "win32",
 			// Detached from any inherited console only when the host itself
 			// has no console — kernel32!GetConsoleWindow() is authoritative
 			// (works even when every stdio stream is redirected), with a
@@ -447,7 +452,7 @@ export class PythonKernel {
 	async interrupt(): Promise<void> {
 		if (!this.#proc || this.#disposed) return;
 		try {
-			this.#proc.kill("SIGINT");
+			signalPythonKernelProcessTree(this.#proc, "SIGINT");
 		} catch (err) {
 			logger.warn("Failed to interrupt python runner", { error: err instanceof Error ? err.message : String(err) });
 		}
@@ -483,7 +488,7 @@ export class PythonKernel {
 		let result = await exited;
 		if (!result) {
 			try {
-				proc.kill("SIGTERM");
+				signalPythonKernelProcessTree(proc, "SIGTERM");
 			} catch {
 				/* ignore */
 			}
@@ -491,7 +496,7 @@ export class PythonKernel {
 		}
 		if (!result) {
 			try {
-				proc.kill("SIGKILL");
+				signalPythonKernelProcessTree(proc, "SIGKILL");
 			} catch {
 				/* ignore */
 			}
@@ -726,6 +731,22 @@ export class PythonKernel {
 		});
 		return Promise.race([exitedPromise.then(code => code as number | null), timeout]);
 	}
+}
+
+function signalPythonKernelProcessTree(proc: Subprocess, signal: NodeJS.Signals): void {
+	if (process.platform !== "win32" && Number.isInteger(proc.pid) && proc.pid > 0) {
+		try {
+			process.kill(-proc.pid, signal);
+			return;
+		} catch (err) {
+			logger.warn("Failed to signal python runner process group; falling back to runner process", {
+				pid: proc.pid,
+				signal,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	proc.kill(signal);
 }
 
 function isTimeoutReason(reason: unknown): boolean {
