@@ -3,6 +3,7 @@ import type { WorkflowDefinition } from "./definition";
 import type { FlowFreeze } from "./freeze";
 import type { WorkflowModelResolutionAudit } from "./model-resolution";
 import type { WorkflowGraphPatchOperation } from "./patches";
+import type { WorkflowMappedActivationContext } from "./scheduler";
 import type { WorkflowActivationOutput } from "./state";
 
 export const WORKFLOW_LIFECYCLE_EVENT_TYPE = "workflow-lifecycle-event";
@@ -66,7 +67,6 @@ export interface WorkflowStopRecord {
 	deadlineMs: number;
 	reason?: string;
 }
-
 export interface WorkflowAttemptActivationRecord {
 	id: string;
 	nodeId: string;
@@ -75,6 +75,7 @@ export interface WorkflowAttemptActivationRecord {
 	output?: WorkflowActivationOutput;
 	error?: string;
 	reason?: string;
+	mapped?: WorkflowMappedActivationContext;
 }
 
 export interface WorkflowCheckpointSnapshot {
@@ -145,12 +146,12 @@ export interface StartWorkflowAttemptOptions {
 export interface RestartWorkflowAttemptOptions extends StartWorkflowAttemptOptions {
 	checkpointId: string;
 }
-
 export interface AppendWorkflowAttemptActivationStartedOptions {
 	attemptId: string;
 	activationId: string;
 	nodeId: string;
 	parentActivationIds: string[];
+	mapped?: WorkflowMappedActivationContext;
 }
 
 export interface AppendWorkflowAttemptActivationCompletedOptions {
@@ -287,13 +288,13 @@ interface WorkflowRuntimeBindingSnapshotCreatedEvent {
 	attemptId: string;
 	snapshot: RuntimeBindingSnapshot;
 }
-
 interface WorkflowActivationStartedEvent {
 	event: "activation_started";
 	attemptId: string;
 	activationId: string;
 	nodeId: string;
 	parentActivationIds: string[];
+	mapped?: WorkflowMappedActivationContext;
 }
 
 interface WorkflowActivationCompletedEvent {
@@ -468,15 +469,16 @@ export function appendWorkflowAttemptActivationStarted(
 	host: WorkflowLifecycleStoreHost,
 	options: AppendWorkflowAttemptActivationStartedOptions,
 ): void {
-	appendLifecycleEvent(host, {
+	const event: WorkflowActivationStartedEvent = {
 		event: "activation_started",
 		attemptId: options.attemptId,
 		activationId: options.activationId,
 		nodeId: options.nodeId,
 		parentActivationIds: [...options.parentActivationIds],
-	});
+	};
+	if (options.mapped !== undefined) event.mapped = options.mapped;
+	appendLifecycleEvent(host, event);
 }
-
 export function appendWorkflowAttemptActivationCompleted(
 	host: WorkflowLifecycleStoreHost,
 	options: AppendWorkflowAttemptActivationCompletedOptions,
@@ -1221,12 +1223,14 @@ export function reconstructWorkflowFamilies(entries: WorkflowLifecycleBranchEntr
 		if (event.event === "activation_started") {
 			const attempt = attempts.get(event.attemptId);
 			if (!attempt) continue;
-			attempt.activations.push({
+			const activation: WorkflowAttemptActivationRecord = {
 				id: event.activationId,
 				nodeId: event.nodeId,
 				parentActivationIds: [...event.parentActivationIds],
 				status: "running",
-			});
+			};
+			if (event.mapped !== undefined) activation.mapped = event.mapped;
+			attempt.activations.push(activation);
 			continue;
 		}
 		if (event.event === "activation_completed") {

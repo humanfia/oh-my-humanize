@@ -501,4 +501,227 @@ edges: []
 			"model.yml: nodes.build.model must define exactly one of role, selector, or candidates",
 		);
 	});
+
+	it("parses mapped_pool nodes with worker, verifier, and reducer targets", () => {
+		const source = `
+name: mapped-pool-demo
+version: 1
+nodes:
+  pool:
+    type: mapped_pool
+    mappedPool:
+      itemSource: /queue
+      itemKey: /id
+      maxConcurrency: 3
+      maxItems: 10
+      worker: pool.worker
+      verifier: pool.verifier
+      reducer: pool.reducer
+      stopWhen: state.done == true
+  pool.worker:
+    type: agent
+    agent: task
+  pool.verifier:
+    type: review
+  pool.reducer:
+    type: script
+edges: []
+`;
+		const definition = parseWorkflowDefinition(source, { sourcePath: "mapped.yml" });
+		const pool = definition.nodes.find(node => node.id === "pool");
+		expect(pool?.type).toBe("mapped_pool");
+		expect(pool?.mappedPool).toEqual({
+			itemSource: "/queue",
+			itemKey: "/id",
+			maxConcurrency: 3,
+			maxItems: 10,
+			workerNodeId: "pool.worker",
+			verifierNodeId: "pool.verifier",
+			reducerNodeId: "pool.reducer",
+			stopWhen: { source: "state.done == true" },
+		});
+	});
+
+	it("rejects mapped_pool nodes with missing required fields", () => {
+		const source = `
+name: mapped-pool-bad
+version: 1
+nodes:
+  pool:
+    type: mapped_pool
+    mappedPool:
+      itemSource: /queue
+      itemKey: /id
+      maxConcurrency: 3
+      maxItems: 10
+      worker: pool.worker
+      verifier: pool.verifier
+      reducer: pool.reducer
+`;
+		expect(() => parseWorkflowDefinition(source.replace("maxItems: 10", ""), { sourcePath: "mapped.yml" })).toThrow(
+			/mapped_pool node "pool" maxItems must be a positive integer/,
+		);
+	});
+
+	it("rejects mapped_pool with wrong referenced node type", () => {
+		const source = `
+name: mapped-pool-type-mismatch
+version: 1
+nodes:
+  pool:
+    type: mapped_pool
+    mappedPool:
+      itemSource: /queue
+      itemKey: /id
+      maxConcurrency: 3
+      maxItems: 10
+      worker: pool.worker
+      verifier: pool.verifier
+      reducer: pool.reducer
+  pool.worker:
+    type: script
+  pool.verifier:
+    type: review
+  pool.reducer:
+    type: script
+edges: []
+`;
+		expect(() => parseWorkflowDefinition(source, { sourcePath: "mapped.yml" })).toThrow(
+			/mapped_pool node "pool" worker node "pool.worker" must be type agent/,
+		);
+	});
+
+	it("rejects mapped_pool with invalid maxConcurrency", () => {
+		const source = `
+name: mapped-pool-bad-concurrency
+version: 1
+nodes:
+  pool:
+    type: mapped_pool
+    mappedPool:
+      itemSource: /queue
+      itemKey: /id
+      maxConcurrency: 0
+      maxItems: 10
+      worker: pool.worker
+      verifier: pool.verifier
+      reducer: pool.reducer
+  pool.worker:
+    type: agent
+    agent: task
+  pool.verifier:
+    type: review
+  pool.reducer:
+    type: script
+edges: []
+`;
+		expect(() => parseWorkflowDefinition(source, { sourcePath: "mapped.yml" })).toThrow(
+			/mapped_pool node "pool" maxConcurrency must be a positive integer/,
+		);
+	});
+
+	it("rejects mapped_pool with invalid itemSource pointer", () => {
+		const source = `
+name: mapped-pool-bad-item-source
+version: 1
+nodes:
+  pool:
+    type: mapped_pool
+    mappedPool:
+      itemSource: queue
+      itemKey: /id
+      maxConcurrency: 3
+      maxItems: 10
+      worker: pool.worker
+      verifier: pool.verifier
+      reducer: pool.reducer
+  pool.worker:
+    type: agent
+    agent: task
+  pool.verifier:
+    type: review
+  pool.reducer:
+    type: script
+edges: []
+`;
+		expect(() => parseWorkflowDefinition(source, { sourcePath: "mapped.yml" })).toThrow(
+			/mappedPool\.itemSource must be a JSON pointer/,
+		);
+	});
+
+	it("rejects mapped_pool with invalid itemKey pointer", () => {
+		const source = `
+name: mapped-pool-bad-item-key
+version: 1
+nodes:
+  pool:
+    type: mapped_pool
+    mappedPool:
+      itemSource: /queue
+      itemKey: id
+      maxConcurrency: 3
+      maxItems: 10
+      worker: pool.worker
+      verifier: pool.verifier
+      reducer: pool.reducer
+  pool.worker:
+    type: agent
+    agent: task
+  pool.verifier:
+    type: review
+  pool.reducer:
+    type: script
+edges: []
+`;
+		expect(() => parseWorkflowDefinition(source, { sourcePath: "mapped.yml" })).toThrow(
+			/mappedPool\.itemKey must be a JSON pointer/,
+		);
+	});
+
+	it("rejects mapped_pool with missing mappedPool spec", () => {
+		const source = `
+name: mapped-pool-no-spec
+version: 1
+nodes:
+  pool:
+    type: mapped_pool
+edges: []
+`;
+		expect(() => parseWorkflowDefinition(source, { sourcePath: "mapped.yml" })).toThrow(
+			/mapped_pool node "pool" must define mappedPool/,
+		);
+	});
+
+	it("rejects mapped_pool stopWhen with invalid state reference", () => {
+		const source = `
+name: mapped-pool-bad-stopwhen
+version: 1
+stateSchema:
+  version: 1
+  shape:
+    done: boolean
+    queue: array
+nodes:
+  pool:
+    type: mapped_pool
+    mappedPool:
+      itemSource: /queue
+      itemKey: /id
+      maxConcurrency: 3
+      maxItems: 10
+      worker: pool.worker
+      verifier: pool.verifier
+      reducer: pool.reducer
+      stopWhen: state.nonexistent == true
+  pool.worker:
+    type: agent
+    agent: task
+  pool.verifier:
+    type: review
+  pool.reducer:
+    type: script
+edges: []
+`;
+		expect(() => parseWorkflowDefinition(source, { sourcePath: "mapped.yml" })).toThrow(/stopWhen.*nonexistent/);
+	});
 });

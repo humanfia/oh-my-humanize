@@ -234,7 +234,10 @@ class WorkflowDslCompiler {
 		if (kind === "review_gate") return this.compileReviewGateTemplate(template, path);
 		if (kind === "parallel_search") return this.compileParallelSearchTemplate(template, path);
 		if (kind === "retry_until") return this.compileRetryUntilTemplate(template, path);
-		throw new WorkflowDslError(`${path}.kind must be review_gate, parallel_search, or retry_until`);
+		if (kind === "mapped_worker_verifier_pool") return this.compileMappedWorkerVerifierPoolTemplate(template, path);
+		throw new WorkflowDslError(
+			`${path}.kind must be review_gate, parallel_search, retry_until, or mapped_worker_verifier_pool`,
+		);
 	}
 
 	compileReviewGateTemplate(template: Record<string, unknown>, path: string): CompileResult {
@@ -269,6 +272,52 @@ class WorkflowDslCompiler {
 		const retryWhen = expectString(template.retryWhen, `${path}.retryWhen`);
 		for (const entry of body.entries) this.edges.push({ from: reviewNode.id, to: entry, when: retryWhen });
 		return { entries: body.entries, exits: [{ nodeId: reviewNode.id, condition: negateCondition(retryWhen) }] };
+	}
+
+	compileMappedWorkerVerifierPoolTemplate(template: Record<string, unknown>, path: string): CompileResult {
+		const poolId = expectString(template.id, `${path}.id`);
+		const itemSource = expectJsonPointer(template.itemSource, `${path}.itemSource`);
+		const itemKey = expectJsonPointer(template.itemKey, `${path}.itemKey`);
+		const maxConcurrency = expectPositiveInteger(template.maxConcurrency, `${path}.maxConcurrency`);
+		const maxItems = expectPositiveInteger(template.maxItems, `${path}.maxItems`);
+		const workerNode = expectRecord(template.worker, `${path}.worker`);
+		const verifierNode = expectRecord(template.verifier, `${path}.verifier`);
+		const reducerNode = expectRecord(template.reducer, `${path}.reducer`);
+		const workerNodeId = `${poolId}.${expectString(workerNode.id, `${path}.worker.id`)}`;
+		const verifierNodeId = `${poolId}.${expectString(verifierNode.id, `${path}.verifier.id`)}`;
+		const reducerNodeId = `${poolId}.${expectString(reducerNode.id, `${path}.reducer.id`)}`;
+		const normalizeInternalNode = (
+			raw: Record<string, unknown>,
+			nodePath: string,
+			id: string,
+		): Record<string, unknown> & { id: string } => {
+			const normalized = this.normalizeNode({ ...raw, id }, nodePath);
+			return normalized;
+		};
+		this.addNode(normalizeInternalNode(workerNode, `${path}.worker`, workerNodeId), `${path}.worker`);
+		this.addNode(normalizeInternalNode(verifierNode, `${path}.verifier`, verifierNodeId), `${path}.verifier`);
+		this.addNode(normalizeInternalNode(reducerNode, `${path}.reducer`, reducerNodeId), `${path}.reducer`);
+		const poolNode: Record<string, unknown> = {
+			id: poolId,
+			type: "mapped_pool",
+			mappedPool: {
+				itemSource,
+				itemKey,
+				maxConcurrency,
+				maxItems,
+				worker: workerNodeId,
+				verifier: verifierNodeId,
+				reducer: reducerNodeId,
+			},
+		};
+		if (template.stopWhen !== undefined) {
+			poolNode.mappedPool = {
+				...(poolNode.mappedPool as Record<string, unknown>),
+				stopWhen: expectString(template.stopWhen, `${path}.stopWhen`),
+			};
+		}
+		this.addNode(poolNode as Record<string, unknown> & { id: string }, path);
+		return { entries: [poolId], exits: [nodeExit(poolId)] };
 	}
 
 	compileTemplateBranch(rawBranch: unknown, path: string): CompileResult {
@@ -565,23 +614,23 @@ function optionalRecordArray(value: unknown, label: string): Record<string, unkn
 function mergeCapabilities(base: unknown, additions: Record<string, unknown>[]): Record<string, unknown> {
 	const result = base === undefined ? {} : { ...expectRecord(base, "workflow capabilities") };
 	for (const addition of additions) {
-		mergeCapabilityList(result, "tools", addition.tools);
-		mergeCapabilityList(result, "agents", addition.agents);
-		mergeCapabilityList(result, "plugins", addition.plugins);
-		mergeCapabilityList(result, "extensions", addition.extensions);
-		mergeCapabilityList(result, "skills", addition.skills);
+		for (const [key, value] of Object.entries(addition)) {
+			mergeCapabilityList(result, key, value);
+		}
 	}
 	return result;
 }
 
 function mergeCapabilityList(result: Record<string, unknown>, key: string, value: unknown): void {
-	if (value === undefined) return;
-	const current = Array.isArray(result[key]) ? [...result[key]] : [];
-	for (const entry of expectArray(value, `workflow capabilities.${key}`)) {
-		const item = expectString(entry, `workflow capabilities.${key}`);
-		if (!current.includes(item)) current.push(item);
+	if (result[key] === undefined) {
+		result[key] = value;
+		return;
 	}
-	result[key] = current;
+	if (Array.isArray(result[key]) && Array.isArray(value)) {
+		result[key] = [...new Set([...(result[key] as unknown[]), ...value])];
+		return;
+	}
+	result[key] = value;
 }
 
 function joinResourcePath(prefix: string, resourcePath: string): string {
@@ -597,18 +646,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function expectRecord(value: unknown, label: string): Record<string, unknown> {
-	if (typeof value === "object" && value !== null && !Array.isArray(value)) return value as Record<string, unknown>;
-	throw new WorkflowDslError(`${label} must be an object`);
+	if (!isRecord(value)) throw new WorkflowDslError(`${label} must be an object`);
+	return value;
 }
 
 function expectArray(value: unknown, label: string): unknown[] {
-	if (Array.isArray(value)) return value;
-	throw new WorkflowDslError(`${label} must be an array`);
+	if (!Array.isArray(value)) throw new WorkflowDslError(`${label} must be an array`);
+	return value;
 }
 
 function expectString(value: unknown, label: string): string {
 	if (typeof value === "string" && value.trim()) return value;
 	throw new WorkflowDslError(`${label} must be a non-empty string`);
+}
+
+function expectJsonPointer(value: unknown, label: string): string {
+	const pointer = expectString(value, label);
+	if (!pointer.startsWith("/")) throw new WorkflowDslError(`${label} must be a JSON pointer`);
+	return pointer;
+}
+
+function expectPositiveInteger(value: unknown, label: string): number {
+	if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+	throw new WorkflowDslError(`${label} must be a positive integer`);
 }
 
 function compareEdges(

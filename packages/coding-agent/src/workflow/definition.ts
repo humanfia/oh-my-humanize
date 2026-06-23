@@ -2,7 +2,7 @@ import { YAML } from "bun";
 import { diagnoseWorkflowConditionReferences, parseWorkflowCondition, WorkflowConditionError } from "./condition";
 import { parseWorkflowStateSchema, type WorkflowStateSchema, WorkflowStateSchemaError } from "./state-schema";
 
-export type WorkflowNodeType = "agent" | "script" | "human" | "review";
+export type WorkflowNodeType = "agent" | "script" | "human" | "review" | "mapped_pool";
 export type WorkflowModelUnavailablePolicy = "fallback-to-parent" | "fail";
 export type WorkflowScriptLanguage = "js" | "py" | "sh";
 export const WORKFLOW_SCRIPT_TIMEOUT_MAX_MS = 60 * 60 * 1000;
@@ -72,13 +72,15 @@ export type WorkflowPromptSource =
 	| WorkflowStatePromptSource
 	| WorkflowOutputPromptSource
 	| WorkflowHumanPromptSource
-	| WorkflowTemplatePromptSource;
+	| WorkflowTemplatePromptSource
+	| WorkflowActivationPromptSource;
 
 export type WorkflowTemplatePromptBindingSource =
 	| WorkflowInlinePromptSource
 	| WorkflowStatePromptSource
 	| WorkflowOutputPromptSource
-	| WorkflowHumanPromptSource;
+	| WorkflowHumanPromptSource
+	| WorkflowActivationPromptSource;
 
 export interface WorkflowInlinePromptSource {
 	kind: "inline";
@@ -113,6 +115,22 @@ export interface WorkflowTemplatePromptSource {
 	bindings: Record<string, WorkflowTemplatePromptBindingSource>;
 }
 
+export interface WorkflowActivationPromptSource {
+	kind: "activation";
+	path: string;
+}
+
+export interface WorkflowMappedPoolSpec {
+	itemSource: string;
+	itemKey: string;
+	maxConcurrency: number;
+	maxItems: number;
+	workerNodeId: string;
+	verifierNodeId: string;
+	reducerNodeId: string;
+	stopWhen?: WorkflowCondition;
+}
+
 export interface WorkflowScriptSource {
 	language?: WorkflowScriptLanguage;
 	code?: string;
@@ -133,6 +151,7 @@ export interface WorkflowNode {
 	reads?: string[];
 	writes?: string[];
 	waitFor?: string[];
+	mappedPool?: WorkflowMappedPoolSpec;
 }
 
 export interface WorkflowDefinition {
@@ -217,7 +236,7 @@ function parseModels(value: unknown, sourcePath?: string): WorkflowModels {
 function parseNodes(value: unknown, sourcePath?: string): WorkflowNode[] {
 	const entries = parseNodeEntries(value, sourcePath);
 	const seen = new Set<string>();
-	return entries.map(({ id, rawNode, path }) => {
+	const nodes = entries.map(({ id, rawNode, path }) => {
 		if (seen.has(id)) {
 			throw new WorkflowDefinitionError(`duplicate node id "${id}"`, sourcePath);
 		}
@@ -234,10 +253,25 @@ function parseNodes(value: unknown, sourcePath?: string): WorkflowNode[] {
 		const reads = parseOptionalStringList(node.reads, `${path}.reads`, sourcePath);
 		const writes = parseOptionalStringList(node.writes, `${path}.writes`, sourcePath);
 		const waitFor = parseOptionalStringList(node.waitFor, `${path}.waitFor`, sourcePath);
-		return compactNode({ id, type, agent, model, ...prompt, script, gates, fallbackVerdict, reads, writes, waitFor });
+		const mappedPool = parseMappedPoolSpec(node.mappedPool, id, type, `${path}.mappedPool`, sourcePath);
+		return compactNode({
+			id,
+			type,
+			agent,
+			model,
+			...prompt,
+			script,
+			gates,
+			fallbackVerdict,
+			reads,
+			writes,
+			waitFor,
+			mappedPool,
+		});
 	});
+	validateMappedPoolTargets(nodes, sourcePath);
+	return nodes;
 }
-
 function parseNodeEntries(value: unknown, sourcePath?: string): Array<{ id: string; rawNode: unknown; path: string }> {
 	if (Array.isArray(value)) {
 		return value.map((rawNode, index) => {
@@ -416,6 +450,16 @@ function validateConditionReferences(
 			throw new WorkflowDefinitionError(`edges.${index}.when ${diagnostic}`, sourcePath);
 		}
 	}
+	for (const node of nodes) {
+		if (node.type !== "mapped_pool" || node.mappedPool?.stopWhen === undefined) continue;
+		for (const diagnostic of diagnoseWorkflowConditionReferences(
+			node.mappedPool.stopWhen.source,
+			nodes,
+			stateSchema,
+		)) {
+			throw new WorkflowDefinitionError(`node "${node.id}" stopWhen ${diagnostic}`, sourcePath);
+		}
+	}
 }
 
 function validateWaitForReferences(nodes: WorkflowNode[], sourcePath?: string): void {
@@ -521,6 +565,112 @@ function validateFallbackVerdict(
 	}
 }
 
+function parseMappedPoolSpec(
+	value: unknown,
+	nodeId: string,
+	type: WorkflowNodeType,
+	path: string,
+	sourcePath?: string,
+): WorkflowMappedPoolSpec | undefined {
+	if (value === undefined) {
+		if (type === "mapped_pool") {
+			throw new WorkflowDefinitionError(`mapped_pool node "${nodeId}" must define mappedPool`, sourcePath);
+		}
+		return undefined;
+	}
+	if (type !== "mapped_pool") {
+		throw new WorkflowDefinitionError(`${path} is only valid for mapped_pool nodes`, sourcePath);
+	}
+	const raw = expectRecord(value, path, sourcePath);
+	const itemSource = expectJsonPointer(raw.itemSource, `${path}.itemSource`, sourcePath);
+	const itemKey = expectJsonPointer(raw.itemKey, `${path}.itemKey`, sourcePath);
+	const maxConcurrency = parseMappedPoolPositiveInteger(
+		raw.maxConcurrency,
+		nodeId,
+		"maxConcurrency",
+		`${path}.maxConcurrency`,
+		sourcePath,
+	);
+	const maxItems = parseMappedPoolPositiveInteger(raw.maxItems, nodeId, "maxItems", `${path}.maxItems`, sourcePath);
+	const workerNodeId = expectString(raw.worker, `${path}.worker`, sourcePath);
+	const verifierNodeId = expectString(raw.verifier, `${path}.verifier`, sourcePath);
+	const reducerNodeId = expectString(raw.reducer, `${path}.reducer`, sourcePath);
+	const stopWhenSource =
+		raw.stopWhen === undefined ? undefined : expectString(raw.stopWhen, `${path}.stopWhen`, sourcePath);
+	const stopWhen =
+		stopWhenSource === undefined ? undefined : parseConditionSource(stopWhenSource, `${path}.stopWhen`, sourcePath);
+	return compactMappedPoolSpec({
+		itemSource,
+		itemKey,
+		maxConcurrency,
+		maxItems,
+		workerNodeId,
+		verifierNodeId,
+		reducerNodeId,
+		stopWhen,
+	});
+}
+
+function compactMappedPoolSpec(spec: WorkflowMappedPoolSpec): WorkflowMappedPoolSpec {
+	const result: WorkflowMappedPoolSpec = {
+		itemSource: spec.itemSource,
+		itemKey: spec.itemKey,
+		maxConcurrency: spec.maxConcurrency,
+		maxItems: spec.maxItems,
+		workerNodeId: spec.workerNodeId,
+		verifierNodeId: spec.verifierNodeId,
+		reducerNodeId: spec.reducerNodeId,
+	};
+	if (spec.stopWhen !== undefined) result.stopWhen = spec.stopWhen;
+	return result;
+}
+
+function parseMappedPoolPositiveInteger(
+	value: unknown,
+	nodeId: string,
+	field: string,
+	_path: string,
+	sourcePath?: string,
+): number {
+	if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+	throw new WorkflowDefinitionError(`mapped_pool node "${nodeId}" ${field} must be a positive integer`, sourcePath);
+}
+
+function validateMappedPoolTargets(nodes: WorkflowNode[], sourcePath?: string): void {
+	const nodeById = new Map(nodes.map(node => [node.id, node]));
+	for (const node of nodes) {
+		if (node.type !== "mapped_pool" || node.mappedPool === undefined) continue;
+		const { workerNodeId, verifierNodeId, reducerNodeId } = node.mappedPool;
+		validateMappedPoolTarget(node, "worker", workerNodeId, "agent", nodeById, sourcePath);
+		validateMappedPoolTarget(node, "verifier", verifierNodeId, "review", nodeById, sourcePath);
+		validateMappedPoolTarget(node, "reducer", reducerNodeId, ["script", "agent"], nodeById, sourcePath);
+	}
+}
+
+function validateMappedPoolTarget(
+	poolNode: WorkflowNode,
+	role: string,
+	nodeId: string,
+	expected: WorkflowNodeType | WorkflowNodeType[],
+	nodeById: Map<string, WorkflowNode>,
+	sourcePath?: string,
+): void {
+	const target = nodeById.get(nodeId);
+	if (target === undefined) {
+		throw new WorkflowDefinitionError(
+			`mapped_pool node "${poolNode.id}" ${role} node "${nodeId}" does not exist`,
+			sourcePath,
+		);
+	}
+	const expectedTypes = Array.isArray(expected) ? expected : [expected];
+	if (!expectedTypes.includes(target.type)) {
+		throw new WorkflowDefinitionError(
+			`mapped_pool node "${poolNode.id}" ${role} node "${nodeId}" must be type ${expectedTypes.join(" or ")}`,
+			sourcePath,
+		);
+	}
+}
+
 function parsePromptSource(
 	value: unknown,
 	path: string,
@@ -535,10 +685,12 @@ function parsePromptSource(
 		};
 	}
 	const raw = expectRecord(value, path, sourcePath);
-	const sourceKeys = ["inline", "file", "state", "output", "human", "template"].filter(key => raw[key] !== undefined);
+	const sourceKeys = ["inline", "file", "state", "output", "human", "template", "activation"].filter(
+		key => raw[key] !== undefined,
+	);
 	if (sourceKeys.length !== 1) {
 		throw new WorkflowDefinitionError(
-			`${path} must define exactly one of inline, file, state, output, human, or template`,
+			`${path} must define exactly one of inline, file, state, output, human, template, or activation`,
 			sourcePath,
 		);
 	}
@@ -561,6 +713,10 @@ function parsePromptSource(
 	}
 	if (sourceKey === "template") {
 		return { promptSource: parseTemplatePromptSource(raw.template, `${path}.template`, sourcePath) };
+	}
+	if (sourceKey === "activation") {
+		const activationPath = expectJsonPointer(raw.activation, `${path}.activation`, sourcePath);
+		return { promptSource: { kind: "activation", path: activationPath } };
 	}
 	const output = expectRecord(raw.output, `${path}.output`, sourcePath);
 	const node = expectString(output.node, `${path}.output.node`, sourcePath);
@@ -595,10 +751,10 @@ function parseTemplatePromptBindingSource(
 	sourcePath?: string,
 ): WorkflowTemplatePromptBindingSource {
 	const raw = expectRecord(value, path, sourcePath);
-	const sourceKeys = ["inline", "state", "output", "human"].filter(key => raw[key] !== undefined);
+	const sourceKeys = ["inline", "state", "output", "human", "activation"].filter(key => raw[key] !== undefined);
 	if (sourceKeys.length !== 1) {
 		throw new WorkflowDefinitionError(
-			`${path} must define exactly one of inline, state, output, or human`,
+			`${path} must define exactly one of inline, state, output, human, or activation`,
 			sourcePath,
 		);
 	}
@@ -611,6 +767,9 @@ function parseTemplatePromptBindingSource(
 	}
 	if (sourceKey === "human") {
 		return { kind: "human", path: expectJsonPointer(raw.human, `${path}.human`, sourcePath) };
+	}
+	if (sourceKey === "activation") {
+		return { kind: "activation", path: expectJsonPointer(raw.activation, `${path}.activation`, sourcePath) };
 	}
 	const output = expectRecord(raw.output, `${path}.output`, sourcePath);
 	return {
@@ -639,6 +798,28 @@ function parseModelContext(value: unknown, path: string, sourcePath?: string): W
 	if (candidates !== undefined) context.candidates = candidates;
 	if (unavailable !== undefined) context.unavailable = unavailable;
 	return Object.keys(context).length > 0 ? context : undefined;
+}
+
+function parseNodeType(value: unknown, path: string, sourcePath?: string): WorkflowNodeType {
+	if (value === "agent" || value === "script" || value === "human" || value === "review" || value === "mapped_pool")
+		return value;
+	throw new WorkflowDefinitionError(`${path} must be agent, script, human, review, or mapped_pool`, sourcePath);
+}
+
+function compactNode(node: WorkflowNode): WorkflowNode {
+	const result: WorkflowNode = { id: node.id, type: node.type };
+	if (node.agent !== undefined) result.agent = node.agent;
+	if (node.model !== undefined) result.model = node.model;
+	if (node.prompt !== undefined) result.prompt = node.prompt;
+	if (node.promptSource !== undefined) result.promptSource = node.promptSource;
+	if (node.script !== undefined) result.script = node.script;
+	if (node.gates !== undefined) result.gates = node.gates;
+	if (node.fallbackVerdict !== undefined) result.fallbackVerdict = node.fallbackVerdict;
+	if (node.reads !== undefined) result.reads = node.reads;
+	if (node.writes !== undefined) result.writes = node.writes;
+	if (node.waitFor !== undefined) result.waitFor = node.waitFor;
+	if (node.mappedPool !== undefined) result.mappedPool = node.mappedPool;
+	return result;
 }
 
 function parseScriptSource(value: unknown, path: string, sourcePath?: string): WorkflowScriptSource | undefined {
@@ -691,34 +872,14 @@ function parseUnavailable(
 	if (value === "fallback-to-parent" || value === "fail") return value;
 	throw new WorkflowDefinitionError(`${path} must be "fallback-to-parent" or "fail"`, sourcePath);
 }
-
-function parseNodeType(value: unknown, path: string, sourcePath?: string): WorkflowNodeType {
-	if (value === "agent" || value === "script" || value === "human" || value === "review") return value;
-	throw new WorkflowDefinitionError(`${path} must be agent, script, human, or review`, sourcePath);
-}
-
 function parsePromptActivationSelector(
 	value: unknown,
 	path: string,
 	sourcePath?: string,
 ): WorkflowPromptActivationSelector {
-	if (value === "parent" || value === "latest-completed") return value;
+	if (value === undefined || value === "parent") return "parent";
+	if (value === "latest-completed") return "latest-completed";
 	throw new WorkflowDefinitionError(`${path} must be parent or latest-completed`, sourcePath);
-}
-
-function compactNode(node: WorkflowNode): WorkflowNode {
-	const result: WorkflowNode = { id: node.id, type: node.type };
-	if (node.agent !== undefined) result.agent = node.agent;
-	if (node.model !== undefined) result.model = node.model;
-	if (node.prompt !== undefined) result.prompt = node.prompt;
-	if (node.promptSource !== undefined) result.promptSource = node.promptSource;
-	if (node.script !== undefined) result.script = node.script;
-	if (node.gates !== undefined) result.gates = node.gates;
-	if (node.fallbackVerdict !== undefined) result.fallbackVerdict = node.fallbackVerdict;
-	if (node.reads !== undefined) result.reads = node.reads;
-	if (node.writes !== undefined) result.writes = node.writes;
-	if (node.waitFor !== undefined) result.waitFor = node.waitFor;
-	return result;
 }
 
 function parseStringRecord(value: unknown, path: string, sourcePath?: string): Record<string, string> {

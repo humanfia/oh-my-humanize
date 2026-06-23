@@ -52,6 +52,11 @@ export interface WorkflowLifecycleInspectionActivation {
 	nodeId: string;
 	parentActivationIds: string[];
 	status: WorkflowAttemptActivationStatus;
+	mapped?: {
+		poolId: string;
+		itemKey: string;
+		phase: "worker" | "verifier" | "reducer";
+	};
 	summary?: string;
 	artifacts?: string[];
 	error?: string;
@@ -140,12 +145,16 @@ export interface WorkflowInspectionActivation {
 	graphRevisionId: string;
 	parentActivationIds: string[];
 	status: WorkflowActivationRecord["status"];
+	mapped?: {
+		poolId: string;
+		itemKey: string;
+		phase: "worker" | "verifier" | "reducer";
+	};
 	prompt?: WorkflowResolvedPrompt;
 	summary?: string;
 	artifacts?: string[];
 	error?: string;
 }
-
 export interface WorkflowInspectionModelAssignment {
 	activationId: string;
 	nodeId: string;
@@ -185,6 +194,13 @@ export function buildWorkflowInspection(run: WorkflowRunSnapshot): WorkflowInspe
 			graphRevisionId: activation.graphRevisionId,
 			parentActivationIds: activation.parentActivationIds,
 			status: activation.status,
+			mapped: activation.mapped
+				? {
+						poolId: activation.mapped.poolId,
+						itemKey: activation.mapped.itemKey,
+						phase: activation.mapped.phase,
+					}
+				: undefined,
 			prompt: activation.input?.prompt,
 			summary: activation.output?.summary,
 			artifacts: activation.output?.artifacts,
@@ -251,6 +267,13 @@ function compactLifecycleActivation(
 		nodeId: activation.nodeId,
 		parentActivationIds: activation.parentActivationIds,
 		status: activation.status,
+		mapped: activation.mapped
+			? {
+					poolId: activation.mapped.poolId,
+					itemKey: activation.mapped.itemKey,
+					phase: activation.mapped.phase,
+				}
+			: undefined,
 		summary: activation.output?.summary,
 		artifacts: activation.output?.artifacts,
 		error: activation.error,

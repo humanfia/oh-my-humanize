@@ -631,7 +631,7 @@ function validatePromptSourceShape(source: WorkflowPromptSource, nodeId: string)
 		validateNonEmptyString(source.path, `workflow graph patch node "${nodeId}" prompt file path`);
 		return;
 	}
-	if (source.kind === "state" || source.kind === "human") {
+	if (source.kind === "state" || source.kind === "human" || source.kind === "activation") {
 		validateJsonPointer(source.path, `workflow graph patch node "${nodeId}" prompt path`);
 		return;
 	}
@@ -653,7 +653,7 @@ function validatePromptSourceShape(source: WorkflowPromptSource, nodeId: string)
 				validateNonEmptyString(binding.text, `workflow graph patch node "${nodeId}" prompt template binding`);
 				continue;
 			}
-			if (binding.kind === "state" || binding.kind === "human") {
+			if (binding.kind === "state" || binding.kind === "human" || binding.kind === "activation") {
 				validateJsonPointer(binding.path, `workflow graph patch node "${nodeId}" prompt template binding path`);
 				continue;
 			}

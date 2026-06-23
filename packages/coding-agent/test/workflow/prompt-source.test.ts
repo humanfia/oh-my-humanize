@@ -113,6 +113,56 @@ edges:
 		]);
 	});
 
+	it("resolves activation prompt bindings from the mapped activation context", async () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: activation-binding-demo
+version: 1
+nodes:
+  worker:
+    type: agent
+    agent: task
+    reads:
+      - /plan
+    prompt:
+      template:
+        file: prompts/item.md
+        bindings:
+          item:
+            activation: /mapped/item
+          itemKey:
+            activation: /mapped/itemKey
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const node = definition.nodes[0]!;
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "prompts"), { recursive: true });
+		await Bun.write(path.join(dir, "prompts", "item.md"), "Item {{item}} key {{itemKey}}");
+		const resolved = await resolveWorkflowPrompt(node, {
+			state: { plan: "plan" },
+			completedActivations: [],
+			parentActivationIds: [],
+			activation: {
+				id: "activation-1",
+				nodeId: "worker",
+				graphRevisionId: "graph-1",
+				status: "running",
+				parentActivationIds: [],
+				mapped: {
+					poolId: "pool",
+					poolActivationId: "activation-0",
+					itemKey: "item-2",
+					item: { id: "item-2", value: "second" },
+					phase: "worker",
+				},
+			},
+			packageRoot: dir,
+		});
+		expect(resolved?.value).toBe(`Item {\n  "id": "item-2",\n  "value": "second"\n} key item-2`);
+	});
+
 	it("uses a prior agent activation output as the downstream agent prompt", async () => {
 		const definition = parseWorkflowDefinition(
 			`

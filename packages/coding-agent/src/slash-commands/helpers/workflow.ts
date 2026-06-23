@@ -2267,6 +2267,7 @@ function workflowPromptSourceToBlock(source: WorkflowPromptSource): unknown {
 	if (source.kind === "file") return { file: source.path };
 	if (source.kind === "state") return { state: source.path };
 	if (source.kind === "human") return { human: source.path };
+	if (source.kind === "activation") return { activation: source.path };
 	if (source.kind === "output") return { output: workflowOutputPromptSourceToBlock(source) };
 	return {
 		template: {
@@ -2282,6 +2283,7 @@ function workflowPromptBindingToBlock(source: WorkflowTemplatePromptBindingSourc
 	if (source.kind === "inline") return { inline: source.text };
 	if (source.kind === "state") return { state: source.path };
 	if (source.kind === "human") return { human: source.path };
+	if (source.kind === "activation") return { activation: source.path };
 	return { output: workflowOutputPromptSourceToBlock(source) };
 }
 

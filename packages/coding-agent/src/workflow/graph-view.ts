@@ -143,9 +143,9 @@ export interface WorkflowGraphNodeView {
 	summary?: string;
 	error?: string;
 	reason?: string;
+	mappedLanes?: string[];
 	focused: boolean;
 }
-
 export interface WorkflowGraphEdgeView {
 	from: string;
 	to: string;
@@ -242,6 +242,7 @@ export function buildWorkflowGraphView(
 		currentAttempt === undefined
 			? undefined
 			: buildWorkflowGraphNodeActivations(currentAttempt, currentFreeze?.definition.nodes ?? [], options);
+	const mappedLanesByNode = buildMappedLanesByNode(currentAttempt);
 	const nodes =
 		currentFreeze?.definition.nodes.map(node => {
 			const status = nodeStatuses.get(node.id) ?? { status: "pending" as const };
@@ -258,6 +259,8 @@ export function buildWorkflowGraphView(
 			if (status.summary !== undefined) view.summary = status.summary;
 			if (status.error !== undefined) view.error = status.error;
 			if (status.reason !== undefined) view.reason = status.reason;
+			const lanes = mappedLanesByNode.get(node.id);
+			if (lanes !== undefined && lanes.length > 0) view.mappedLanes = lanes;
 			return view;
 		}) ?? [];
 	const edges =
@@ -1253,6 +1256,9 @@ function formatWorkflowNodeDetail(node: WorkflowGraphNodeView): string {
 	if (node.summary && node.summary.trim() !== node.verdict) {
 		parts.push(formatSingleLineWorkflowDetail(formatWorkflowDisplayDetail(node.summary)));
 	}
+	if (node.mappedLanes && node.mappedLanes.length > 0) {
+		parts.push(`lanes ${node.mappedLanes.join(", ")}`);
+	}
 	if (node.error) parts.push(`error: ${formatSingleLineWorkflowDetail(node.error)}`);
 	if (node.reason) parts.push(`reason: ${formatSingleLineWorkflowDetail(node.reason)}`);
 	return parts.join("; ");
@@ -1584,6 +1590,19 @@ function buildWorkflowGraphNodeActivationCounts(currentAttempt: WorkflowRunAttem
 		counts.set(activation.nodeId, (counts.get(activation.nodeId) ?? 0) + 1);
 	}
 	return counts;
+}
+
+function buildMappedLanesByNode(currentAttempt: WorkflowRunAttemptSnapshot | undefined): Map<string, string[]> {
+	const lanes = new Map<string, string[]>();
+	if (!currentAttempt) return lanes;
+	for (const activation of currentAttempt.activations) {
+		if (!activation.mapped) continue;
+		const { poolId, phase, itemKey } = activation.mapped;
+		const list = lanes.get(poolId) ?? [];
+		list.push(`${phase}:${itemKey}`);
+		lanes.set(poolId, list);
+	}
+	return lanes;
 }
 
 function buildWorkflowGraphNodeStatuses(

@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { prompt as promptTemplate } from "@oh-my-pi/pi-utils";
 import type {
+	WorkflowActivationPromptSource,
 	WorkflowHumanPromptSource,
 	WorkflowInlinePromptSource,
 	WorkflowNode,
@@ -19,6 +20,7 @@ export interface WorkflowPromptResolutionContext {
 	state: Record<string, unknown>;
 	completedActivations: WorkflowActivation[];
 	parentActivationIds: string[];
+	activation?: WorkflowActivation;
 	packageRoot?: string;
 	maxPromptBytes?: number;
 	frozenResources?: FlowFreezeResourceSnapshot[];
@@ -48,6 +50,7 @@ export type WorkflowResolvedTemplatePromptBindingSource =
 	| WorkflowInlinePromptSource
 	| WorkflowHumanPromptSource
 	| WorkflowStatePromptSource
+	| WorkflowActivationPromptSource
 	| WorkflowResolvedOutputPromptSource;
 
 export interface WorkflowResolvedTemplatePromptSource {
@@ -81,6 +84,17 @@ export async function resolveWorkflowPrompt(
 			context,
 		);
 	}
+	if (source.kind === "template") {
+		const template = await readPackagePromptFile(node, source.file, context);
+		const bindings = resolveTemplatePromptBindings(node, source, context);
+		return resolvedPrompt(
+			node,
+			{ kind: "template", file: source.file, bindings: bindings.sources },
+			promptTemplate.render(template, bindings.values),
+			source.file,
+			context,
+		);
+	}
 	if (source.kind === "state" || source.kind === "human") {
 		return resolvedPrompt(
 			node,
@@ -90,14 +104,15 @@ export async function resolveWorkflowPrompt(
 			context,
 		);
 	}
-	if (source.kind === "template") {
-		const template = await readPackagePromptFile(node, source.file, context);
-		const bindings = resolveTemplatePromptBindings(node, source, context);
+	if (source.kind === "activation") {
+		if (context.activation?.mapped === undefined) {
+			throw new WorkflowPromptSourceError("workflow prompt activation binding requires a mapped activation");
+		}
 		return resolvedPrompt(
 			node,
-			{ kind: "template", file: source.file, bindings: bindings.sources },
-			promptTemplate.render(template, bindings.values),
-			source.file,
+			source,
+			readWorkflowState({ mapped: context.activation.mapped }, source.path),
+			source.path,
 			context,
 		);
 	}
@@ -132,6 +147,18 @@ function resolveTemplatePromptBindings(
 				node,
 				name,
 				readWorkflowState(context.state, binding.path, { allowedReadPaths: node.reads }),
+			);
+			sources[name] = binding;
+			continue;
+		}
+		if (binding.kind === "activation") {
+			if (context.activation?.mapped === undefined) {
+				throw new WorkflowPromptSourceError("workflow prompt activation binding requires a mapped activation");
+			}
+			values[name] = promptTemplateBindingText(
+				node,
+				name,
+				readWorkflowState({ mapped: context.activation.mapped }, binding.path),
 			);
 			sources[name] = binding;
 			continue;

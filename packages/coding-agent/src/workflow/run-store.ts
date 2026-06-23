@@ -3,6 +3,7 @@ import type { WorkflowDefinition } from "./definition";
 import type { WorkflowModelResolutionAudit } from "./model-resolution";
 import type { WorkflowGraphPatchActor, WorkflowGraphPatchOperation, WorkflowGraphPatchPreview } from "./patches";
 import type { WorkflowActivationInputSnapshot } from "./prompt-source";
+import type { WorkflowMappedActivationContext } from "./scheduler";
 import type { WorkflowActivationOutput } from "./state";
 import { applyWorkflowStatePatch, type WorkflowStatePatchOperation } from "./state";
 
@@ -47,13 +48,13 @@ export interface AppendWorkflowGraphPatchProposedOptions {
 	preview: WorkflowGraphPatchPreview;
 	reason?: string;
 }
-
 export interface AppendWorkflowActivationStartedOptions {
 	activationId: string;
 	nodeId: string;
 	graphRevisionId: string;
 	parentActivationIds: string[];
 	input?: WorkflowActivationInputSnapshot;
+	mapped?: WorkflowMappedActivationContext;
 }
 
 export interface AppendWorkflowActivationCompletedOptions {
@@ -85,6 +86,7 @@ export interface WorkflowActivationRecord {
 	modelAudit?: WorkflowModelResolutionAudit;
 	error?: string;
 	reason?: string;
+	mapped?: WorkflowMappedActivationContext;
 }
 
 export interface WorkflowGraphPatchProposalRecord {
@@ -137,6 +139,7 @@ export interface WorkflowActivationStartedEvent {
 	graphRevisionId: string;
 	parentActivationIds: string[];
 	input?: WorkflowActivationInputSnapshot;
+	mapped?: WorkflowMappedActivationContext;
 }
 
 export interface WorkflowActivationCompletedEvent {
@@ -236,6 +239,7 @@ export function appendWorkflowActivationStarted(
 		parentActivationIds: options.parentActivationIds,
 	};
 	if (options.input !== undefined) event.input = options.input;
+	if (options.mapped !== undefined) event.mapped = options.mapped;
 	host.appendCustomEntry(WORKFLOW_RUN_EVENT_TYPE, event);
 }
 
@@ -321,6 +325,7 @@ export function reconstructWorkflowRuns(
 				status: "running",
 			};
 			if (event.input !== undefined) activation.input = event.input;
+			if (event.mapped !== undefined) activation.mapped = event.mapped;
 			run.activations.push(activation);
 			continue;
 		}

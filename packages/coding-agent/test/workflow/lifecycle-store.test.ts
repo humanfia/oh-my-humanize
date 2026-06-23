@@ -719,6 +719,54 @@ describe("workflow lifecycle event store", () => {
 		).toThrow("Workflow restart is missing checkpoint frontier start node: right");
 		expect(host.entries).toHaveLength(entryCount);
 	});
+	it("reconstructs mapped activation metadata through started events", () => {
+		const host = createHost();
+		const freeze = createFreeze("flowfreeze:meta", ["pool", "pool.worker"]);
+		startWorkflowFamily(host, { familyId: "family-mapped", objective: "mapped pool" });
+		recordWorkflowFreeze(host, freeze);
+		startWorkflowAttempt(host, {
+			familyId: "family-mapped",
+			attemptId: "attempt-mapped",
+			freezeId: freeze.id,
+			startNodeId: "pool",
+			runtimeBindingSnapshot: binding("binding-mapped"),
+		});
+		appendWorkflowAttemptActivationStarted(host, {
+			attemptId: "attempt-mapped",
+			activationId: "activation-pool",
+			nodeId: "pool",
+			parentActivationIds: [],
+		});
+		appendWorkflowAttemptActivationStarted(host, {
+			attemptId: "attempt-mapped",
+			activationId: "activation-worker",
+			nodeId: "pool.worker",
+			parentActivationIds: ["activation-pool"],
+			mapped: {
+				poolId: "pool",
+				poolActivationId: "activation-pool",
+				itemKey: "task-1",
+				item: { id: "task-1" },
+				phase: "worker",
+			},
+		});
+		appendWorkflowAttemptActivationCompleted(host, {
+			attemptId: "attempt-mapped",
+			activationId: "activation-worker",
+			output: { summary: "worker done" },
+		});
+
+		const families = reconstructWorkflowFamilies(host.getBranch());
+		const attempt = families[0]?.attempts.find(a => a.id === "attempt-mapped");
+		const workerActivation = attempt?.activations.find(a => a.id === "activation-worker");
+		expect(workerActivation?.mapped).toEqual({
+			poolId: "pool",
+			poolActivationId: "activation-pool",
+			itemKey: "task-1",
+			item: { id: "task-1" },
+			phase: "worker",
+		});
+	});
 });
 
 function binding(id: string) {

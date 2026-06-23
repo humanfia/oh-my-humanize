@@ -1,0 +1,85 @@
+---
+name: mapped-worker-verifier-pool
+version: 1
+schema: omhflow/v1
+models:
+  roles:
+    task: default
+    reviewer: default
+    planner: default
+  defaults:
+    task: default
+    reviewer: default
+    planner: default
+checkpoint:
+  stopDeadlineMs: 300000
+changePolicy:
+  agentsCanPropose: false
+  humansCanApprove: true
+resources:
+  - path: prompts/plan.md
+    kind: prompt
+  - path: prompts/worker.md
+    kind: prompt
+  - path: prompts/verifier.md
+    kind: prompt
+  - path: scripts/update-plan.js
+    kind: script
+---
+# Mapped worker-verifier pool
+
+```yaml workflow
+sequence:
+  - node:
+      id: plan
+      type: script
+      script:
+        file: scripts/update-plan.js
+      reads: []
+      writes: [/plan, /pool]
+  - template:
+      kind: mapped_worker_verifier_pool
+      id: pool
+      itemSource: /pool/queue
+      itemKey: /id
+      maxConcurrency: 5
+      maxItems: 6
+      stopWhen: state.pool.done == true
+      worker:
+        id: worker
+        type: agent
+        agent: task
+        prompt:
+          template:
+            file: prompts/worker.md
+            bindings:
+              item:
+                activation: /mapped/item
+              itemKey:
+                activation: /mapped/itemKey
+        reads: [/plan]
+        writes: [/pool/results]
+      verifier:
+        id: verifier
+        type: review
+        agent: reviewer
+        prompt:
+          template:
+            file: prompts/verifier.md
+            bindings:
+              item:
+                activation: /mapped/item
+              itemKey:
+                activation: /mapped/itemKey
+        reads: [/plan, /pool/results]
+        writes: [/pool/results]
+        gates: [revise, accept, expand]
+        fallbackVerdict: revise
+      reducer:
+        id: reducer
+        type: script
+        script:
+          file: scripts/update-plan.js
+        reads: [/plan, /pool/results]
+        writes: [/plan, /pool]
+```

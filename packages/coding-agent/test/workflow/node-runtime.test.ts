@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { parseWorkflowDefinition } from "../../src/workflow/definition";
 import { executeWorkflowNode, type WorkflowNodeRuntimeHost } from "../../src/workflow/node-runtime";
-import type { WorkflowActivation } from "../../src/workflow/scheduler";
+import type { WorkflowActivation, WorkflowMappedActivationContext } from "../../src/workflow/scheduler";
+import { escapeJsonPointerSegment, unescapeJsonPointerSegment } from "../../src/workflow/state-schema";
 
 const agentWorkflow = `
 name: node-runtime-demo
@@ -48,13 +49,14 @@ nodes:
 edges: []
 `;
 
-function activation(nodeId: string): WorkflowActivation {
+function activation(nodeId: string, mapped?: WorkflowMappedActivationContext): WorkflowActivation {
 	return {
 		id: `activation-${nodeId}`,
 		nodeId,
 		graphRevisionId: "test-graph",
 		status: "running",
 		parentActivationIds: [],
+		mapped,
 	};
 }
 
@@ -206,5 +208,92 @@ edges: []
 		await expect(executeWorkflowNode(node, activation("review"), host)).rejects.toThrow(
 			'workflow review node "review" returned undeclared verdict "retry"',
 		);
+	});
+	it("escapes JSON Pointer segments in mapped review verdict paths", async () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: review-mapped-pointer-demo
+version: 1
+nodes:
+  qualityGate:
+    type: review
+    agent: reviewer
+    prompt: ./prompts/review.md
+    writes:
+      - /quality/results
+    gates:
+      - clean
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const node = definition.nodes[0]!;
+		const mapped: WorkflowMappedActivationContext = {
+			poolId: "pool",
+			poolActivationId: "activation-pool",
+			itemKey: "a/b~c/d~e",
+			phase: "worker",
+			item: { id: "a/b~c/d~e" },
+		};
+		const host: WorkflowNodeRuntimeHost = {
+			runReviewNode: async () => ({
+				summary: "quality gate passed",
+				verdict: "clean",
+			}),
+		};
+
+		const result = await executeWorkflowNode(node, activation("qualityGate", mapped), host);
+
+		expect(result.statePatch).toEqual([
+			{ op: "set", path: "/quality/results/a~1b~0c~1d~0e/verdict", value: "clean" },
+		]);
+	});
+
+	it("deep-clones activation.mapped so script mutations cannot corrupt scheduler state", async () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: script-mapped-demo
+version: 1
+nodes:
+  reducer:
+    type: script
+    script:
+      file: ./scripts/reducer.js
+      language: js
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const node = definition.nodes[0]!;
+		const originalItem = { nested: { x: 1 } };
+		const mapped: WorkflowMappedActivationContext = {
+			poolId: "pool",
+			poolActivationId: "activation-pool",
+			itemKey: "item-1",
+			phase: "reducer",
+			item: originalItem,
+		};
+		const originalActivation = activation("reducer", mapped);
+		const host: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				if (input.context?.activation.mapped?.item) {
+					(input.context.activation.mapped.item as { nested: { x: number } }).nested.x = 2;
+				}
+				return { summary: "reducer done" };
+			},
+		};
+
+		await executeWorkflowNode(node, originalActivation, host, {
+			context: { state: { value: 1 }, completedActivations: [] },
+		});
+
+		expect(originalItem.nested.x).toBe(1);
+		expect(originalActivation.mapped?.item).toBe(originalItem);
+		expect((originalActivation.mapped?.item as { nested: { x: number } }).nested.x).toBe(1);
+	});
+	it("round-trips JSON Pointer segment escaping for ~ and /", () => {
+		expect(escapeJsonPointerSegment("a/b~c")).toBe("a~1b~0c");
+		expect(unescapeJsonPointerSegment("a~1b~0c")).toBe("a/b~c");
+		expect(unescapeJsonPointerSegment(escapeJsonPointerSegment("~/~"))).toBe("~/~");
 	});
 });

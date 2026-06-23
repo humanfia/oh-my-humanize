@@ -187,26 +187,31 @@ describe("workflow CLI", () => {
 			return true;
 		});
 
-		const timer = setTimeout(() => {
-			signalTarget.emit("SIGINT");
-		}, 30);
-		timer.unref?.();
-		try {
-			await runWorkflowCommand(
-				{
-					action: "start",
-					args: [`${root}/sigint-stop.omhflow`],
-					flags: {
-						cwd: root,
-						json: true,
-						runId: "sigint-stop-run",
-						familyId: "sigint-stop-family",
-					},
+		const runPromise = runWorkflowCommand(
+			{
+				action: "start",
+				args: [`${root}/sigint-stop.omhflow`],
+				flags: {
+					cwd: root,
+					json: true,
+					runId: "sigint-stop-run",
+					familyId: "sigint-stop-family",
 				},
-				{ signalTarget },
-			);
+			},
+			{ signalTarget },
+		);
+		// Emit SIGINT only after the command has attached its listener. On slow
+		// runners the previous fixed 30ms timeout could fire before registration,
+		// letting the 2-second hold script complete and producing `status: "completed"`.
+		const listenerTimeout = performance.now() + 2_000;
+		while (signalTarget.listenerCount("SIGINT") === 0 && performance.now() < listenerTimeout) {
+			await Bun.sleep(5);
+		}
+		signalTarget.emit("SIGINT");
+		try {
+			await runPromise;
 		} finally {
-			clearTimeout(timer);
+			// nothing to clear
 		}
 
 		const result = JSON.parse(output.join("").trim()) as {

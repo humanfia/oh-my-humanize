@@ -135,6 +135,14 @@ export async function runWorkflow(options: WorkflowRunnerOptions): Promise<Workf
 			graphRevisionId: run.currentGraphRevisionId,
 			executeNode: async (activation, node, context) =>
 				executeAndPersistActivation(options, run, activation, node, context, resourceDir),
+			onMappedPoolActivationStarted: (activation, node) =>
+				persistMappedPoolActivationStarted(options, run, activation, node),
+			onMappedPoolActivationCompleted: (activation, output) =>
+				persistMappedPoolActivationCompleted(options, run, activation, output),
+			onMappedPoolActivationAborted: (activation, reason) =>
+				persistMappedPoolActivationAborted(options, run, activation, reason),
+			onMappedPoolActivationFailed: (activation, error) =>
+				persistMappedPoolActivationFailed(options, run, activation, error),
 		});
 		finishLifecycleAttempt(options, scheduler, runtimeSignal.signal);
 		return { run, scheduler };
@@ -297,12 +305,16 @@ function workflowCheckpointReason(
 	signal: AbortSignal | undefined,
 ): string | undefined {
 	if (scheduler.limitReached) return "activation limit reached";
-	if (scheduler.frontierNodeIds.length === 0 || !signal?.aborted) return undefined;
-	const reason: unknown = signal.reason;
-	if (reason instanceof Error) return reason.message;
-	if (typeof reason === "string" && reason.length > 0) return reason;
-	if (reason !== undefined && reason !== null) return String(reason);
-	return "workflow stopped";
+	if (scheduler.frontierNodeIds.length === 0) return undefined;
+	if (signal?.aborted) {
+		const reason: unknown = signal.reason;
+		if (reason instanceof Error) return reason.message;
+		if (typeof reason === "string" && reason.length > 0) return reason;
+		if (reason !== undefined && reason !== null) return String(reason);
+		return "workflow stopped";
+	}
+	if (scheduler.stopped) return "workflow stopped";
+	return undefined;
 }
 
 function failedWorkflowFrontierNodeIds(scheduler: WorkflowSchedulerResult): string[] {
@@ -367,6 +379,7 @@ async function executeAndPersistActivation(
 			graphRevisionId: activation.graphRevisionId,
 			parentActivationIds: activation.parentActivationIds,
 			input,
+			mapped: activation.mapped,
 		});
 		appendLifecycleActivationStarted(options, activation, node);
 		started = true;
@@ -413,6 +426,7 @@ async function executeAndPersistActivation(
 				nodeId: node.id,
 				graphRevisionId: activation.graphRevisionId,
 				parentActivationIds: activation.parentActivationIds,
+				mapped: activation.mapped,
 			});
 			appendLifecycleActivationStarted(options, activation, node);
 		}
@@ -493,6 +507,7 @@ function appendLifecycleActivationStarted(
 		activationId: activation.id,
 		nodeId: node.id,
 		parentActivationIds: activation.parentActivationIds,
+		mapped: activation.mapped,
 	});
 }
 
@@ -539,6 +554,86 @@ function appendLifecycleActivationFailed(
 		error,
 	});
 }
+function persistMappedPoolActivationStarted(
+	options: WorkflowRunnerOptions,
+	run: WorkflowRunSnapshot,
+	activation: WorkflowActivation,
+	node: WorkflowNode,
+): void {
+	appendWorkflowActivationStarted(options.host, run.id, {
+		activationId: activation.id,
+		nodeId: node.id,
+		graphRevisionId: activation.graphRevisionId,
+		parentActivationIds: activation.parentActivationIds,
+		mapped: activation.mapped,
+	});
+	const lifecycle = options.lifecycle;
+	if (!lifecycle) return;
+	appendWorkflowAttemptActivationStarted(options.host, {
+		attemptId: lifecycle.attemptId,
+		activationId: activation.id,
+		nodeId: node.id,
+		parentActivationIds: activation.parentActivationIds,
+		mapped: activation.mapped,
+	});
+}
+
+function persistMappedPoolActivationCompleted(
+	options: WorkflowRunnerOptions,
+	run: WorkflowRunSnapshot,
+	activation: WorkflowActivation,
+	output: WorkflowActivationOutput,
+): void {
+	appendWorkflowActivationCompleted(options.host, run.id, {
+		activationId: activation.id,
+		output,
+	});
+	const lifecycle = options.lifecycle;
+	if (!lifecycle) return;
+	appendWorkflowAttemptActivationCompleted(options.host, {
+		attemptId: lifecycle.attemptId,
+		activationId: activation.id,
+		output,
+	});
+}
+
+function persistMappedPoolActivationFailed(
+	options: WorkflowRunnerOptions,
+	run: WorkflowRunSnapshot,
+	activation: WorkflowActivation,
+	error: string,
+): void {
+	appendWorkflowActivationFailed(options.host, run.id, {
+		activationId: activation.id,
+		error,
+	});
+	const lifecycle = options.lifecycle;
+	if (!lifecycle) return;
+	appendWorkflowAttemptActivationFailed(options.host, {
+		attemptId: lifecycle.attemptId,
+		activationId: activation.id,
+		error,
+	});
+}
+function persistMappedPoolActivationAborted(
+	options: WorkflowRunnerOptions,
+	run: WorkflowRunSnapshot,
+	activation: WorkflowActivation,
+	reason: string,
+): void {
+	appendWorkflowActivationAborted(options.host, run.id, {
+		activationId: activation.id,
+		reason,
+	});
+	const lifecycle = options.lifecycle;
+	if (!lifecycle) return;
+	appendWorkflowAttemptActivationAborted(options.host, {
+		attemptId: lifecycle.attemptId,
+		activationId: activation.id,
+		nodeId: activation.nodeId,
+		reason,
+	});
+}
 
 function modelOverrideFromAudit(modelAudit: WorkflowModelResolutionAudit | undefined): string | undefined {
 	if (!modelAudit?.resolvedModel) return undefined;
@@ -568,6 +663,7 @@ async function resolvePromptForActivation(
 		state: context.state,
 		completedActivations: context.completedActivations,
 		parentActivationIds: activation.parentActivationIds,
+		activation,
 		packageRoot: options.packageRoot,
 		maxPromptBytes: options.maxPromptBytes,
 		frozenResources: workflowFrozenResources(options),

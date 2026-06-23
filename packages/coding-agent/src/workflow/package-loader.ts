@@ -463,6 +463,7 @@ function promptSourceToRawPrompt(promptSource: WorkflowPromptSource): unknown {
 	if (promptSource.kind === "file") return { file: promptSource.path };
 	if (promptSource.kind === "state") return { state: promptSource.path };
 	if (promptSource.kind === "human") return { human: promptSource.path };
+	if (promptSource.kind === "activation") return { activation: promptSource.path };
 	if (promptSource.kind === "template") {
 		return {
 			template: {

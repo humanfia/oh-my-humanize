@@ -1,3 +1,4 @@
+
 const taskText = await readRequiredTaskText();
 const tupleId = await tupleIdFromRunArtifacts();
 const validationCommand = validationCommandFromTask(taskText);

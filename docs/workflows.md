@@ -342,6 +342,107 @@ specific artifact.
 Each flow can be laid out either as `<dir>/<name>.omhflow` plus `<dir>/<name>/`,
 or as `<dir>/<name>/<name>.omhflow` plus `<dir>/<name>/<name>/`.
 
+
+## Mapped Worker-Verifier Pools
+
+Use the `mapped_worker_verifier_pool` DSL template for Airflow/Dagster-style
+mapped execution over a state-backed item queue. The template expands into a
+single `mapped_pool` node plus three target nodes: a worker, a verifier
+(review), and a reducer (script). The pool repeatedly claims items from a state
+array, routes each item through worker → verifier → reducer, and lets the
+reducer patch state to add more items or mark completion.
+
+```yaml
+sequence:
+  - template:
+      kind: mapped_worker_verifier_pool
+      id: pool
+      itemSource: /queue
+      itemKey: /id
+      maxConcurrency: 5
+      maxItems: 6
+      stopWhen: state.done == true
+      worker:
+        id: worker
+        type: agent
+        agent: task
+        prompt:
+          template:
+            file: prompts/worker.md
+            bindings:
+              item:
+                activation: /mapped/item
+              itemKey:
+                activation: /mapped/itemKey
+        reads: [/plan]
+        writes: [/results]
+      verifier:
+        id: verifier
+        type: review
+        agent: reviewer
+        prompt:
+          template:
+            file: prompts/verifier.md
+            bindings:
+              item:
+                activation: /mapped/item
+              itemKey:
+                activation: /mapped/itemKey
+        reads: [/results]
+        writes: [/results]
+        gates: [revise, accept, expand]
+        fallbackVerdict: revise
+      reducer:
+        id: reducer
+        type: script
+        script:
+          file: scripts/reduce.js
+        reads: [/plan, /results]
+        writes: [/plan, /queue, /done]
+```
+
+Fields:
+
+- `itemSource` — JSON pointer to the array of items to process.
+- `itemKey` — JSON pointer to the string key inside each item; must be unique
+  within the array.
+- `maxConcurrency` — maximum mapped activations (worker + verifier + reducer
+  combined) in flight at once.
+- `maxItems` — hard upper bound on total items the pool will ever claim.
+- `stopWhen` — optional condition evaluated after a reducer completes and no
+  activations are in flight.
+- `worker`, `verifier`, `reducer` — inline node definitions compiled into
+  namespaced nodes (`pool.worker`, `pool.verifier`, `pool.reducer`).
++
+Inside the worker, verifier, and reducer, the current item is exposed through
+template activation bindings:
+
+```yaml
+bindings:
+  item:
+    activation: /mapped/item
+  itemKey:
+    activation: /mapped/itemKey
+```
+
+Script nodes can also read `context.activation.mapped` to access the full mapped
+context, including `poolId`, `poolActivationId`, `itemKey`, `item`, and `phase`
+(`worker`, `verifier`, or `reducer`).
+
+The verifier's verdict is written to the first path in its `writes` list. For a
+mapped verifier, the verdict is scoped per item: if the write path is
+`/results`, the verdict is stored at `/results/<itemKey>/verdict`. The reducer
+can read this state to decide whether to append more items, mark the queue as
+done, or route edges.
+
+`maxItems` is fail-closed: exceeding it fails the pool. The pool also fails if
+any worker, verifier, or reducer activation fails. Items are claimed in array
+order after each reducer patch, so reducer-driven queue expansions are
+deterministic.
+
+See `packages/coding-agent/examples/workflow/experimental/mapped-worker-verifier-pool/`
+for a runnable example.
+
 ## Authoring Notes
 
 - Flows use the workflow infrastructure only through stable artifact/runtime

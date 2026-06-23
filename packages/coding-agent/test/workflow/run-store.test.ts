@@ -335,4 +335,47 @@ edges: []
 			},
 		]);
 	});
+	it("reconstructs mapped activation metadata from started events", () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(source, { sourcePath: "workflow.yml" });
+		const run = startWorkflowRun(host, definition, { runId: "run-1" });
+
+		appendWorkflowActivationStarted(host, run.id, {
+			activationId: "activation-1",
+			nodeId: "build",
+			graphRevisionId: run.currentGraphRevisionId,
+			parentActivationIds: ["activation-0"],
+			mapped: {
+				poolId: "pool",
+				poolActivationId: "activation-0",
+				itemKey: "task-1",
+				item: { id: "task-1" },
+				phase: "worker",
+			},
+		});
+		appendWorkflowActivationCompleted(host, run.id, {
+			activationId: "activation-1",
+			output: { summary: "worker done" },
+		});
+
+		const reconstructed = reconstructWorkflowRuns(host.getBranch());
+
+		expect(reconstructed[0]?.activations).toEqual([
+			{
+				id: "activation-1",
+				nodeId: "build",
+				graphRevisionId: "run-1:graph-0",
+				parentActivationIds: ["activation-0"],
+				status: "completed",
+				output: { summary: "worker done" },
+				mapped: {
+					poolId: "pool",
+					poolActivationId: "activation-0",
+					itemKey: "task-1",
+					item: { id: "task-1" },
+					phase: "worker",
+				},
+			},
+		]);
+	});
 });

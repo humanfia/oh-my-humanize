@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { type NativeScrollbackLiveRegion, visibleWidth } from "@oh-my-pi/pi-tui";
 import { WorkflowGraphComponent } from "../../src/modes/components/workflow-graph";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
-import type { WorkflowDefinition } from "../../src/workflow/definition";
+import { parseWorkflowDefinition, type WorkflowDefinition } from "../../src/workflow/definition";
 import type { FlowFreeze } from "../../src/workflow/freeze";
 import {
 	buildWorkflowGraphView,
@@ -2615,6 +2615,104 @@ describe("workflow graph view rendering", () => {
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}
+	});
+	it("exposes mapped lanes for pool nodes", () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: mapped-pool-graph
+version: 1
+nodes:
+  pool:
+    type: mapped_pool
+    mappedPool:
+      itemSource: /queue
+      itemKey: /id
+      maxConcurrency: 5
+      maxItems: 10
+      worker: pool.worker
+      verifier: pool.verifier
+      reducer: pool.reducer
+  pool.worker:
+    type: agent
+    agent: task
+  pool.verifier:
+    type: review
+  pool.reducer:
+    type: script
+edges: []
+`,
+			{ sourcePath: "mapped.yml" },
+		);
+		const family = createFamily(definition);
+		family.attempts[0]!.activations = [
+			{
+				id: "activation-1",
+				nodeId: "pool",
+				parentActivationIds: [],
+				status: "completed",
+			},
+			{
+				id: "activation-2",
+				nodeId: "pool.worker",
+				parentActivationIds: ["activation-1"],
+				status: "completed",
+				mapped: {
+					poolId: "pool",
+					poolActivationId: "activation-1",
+					itemKey: "a",
+					item: { id: "a" },
+					phase: "worker",
+				},
+			},
+			{
+				id: "activation-3",
+				nodeId: "pool.verifier",
+				parentActivationIds: ["activation-1"],
+				status: "completed",
+				mapped: {
+					poolId: "pool",
+					poolActivationId: "activation-1",
+					itemKey: "a",
+					item: { id: "a" },
+					phase: "verifier",
+					workerActivationId: "activation-2",
+				},
+			},
+			{
+				id: "activation-4",
+				nodeId: "pool.reducer",
+				parentActivationIds: ["activation-1"],
+				status: "completed",
+				mapped: {
+					poolId: "pool",
+					poolActivationId: "activation-1",
+					itemKey: "a",
+					item: { id: "a" },
+					phase: "reducer",
+					workerActivationId: "activation-2",
+					verifierActivationId: "activation-3",
+				},
+			},
+			{
+				id: "activation-5",
+				nodeId: "pool.worker",
+				parentActivationIds: ["activation-1"],
+				status: "running",
+				mapped: {
+					poolId: "pool",
+					poolActivationId: "activation-1",
+					itemKey: "b/c",
+					item: { id: "b/c" },
+					phase: "worker",
+				},
+			},
+		];
+		const view = buildWorkflowGraphView(family);
+		const poolNode = view.nodes.find(n => n.id === "pool");
+		expect(poolNode?.mappedLanes).toContain("worker:a");
+		expect(poolNode?.mappedLanes).toContain("verifier:a");
+		expect(poolNode?.mappedLanes).toContain("reducer:a");
+		expect(poolNode?.mappedLanes).toContain("worker:b/c");
 	});
 });
 

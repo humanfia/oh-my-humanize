@@ -459,6 +459,111 @@ sequence:
 			"patchDocs",
 		]);
 	});
+
+	it("compiles mapped_worker_verifier_pool templates into a pool node and three target nodes", () => {
+		const block = {
+			sequence: [
+				{
+					template: {
+						kind: "mapped_worker_verifier_pool",
+						id: "pool",
+						itemSource: "/queue",
+						itemKey: "/id",
+						maxConcurrency: 2,
+						maxItems: 5,
+						stopWhen: "state.done == true",
+						worker: {
+							id: "worker",
+							type: "agent",
+							agent: "task",
+							prompt: {
+								template: {
+									file: "prompts/worker.md",
+									bindings: {
+										item: { activation: "/mapped/item" },
+									},
+								},
+							},
+						},
+						verifier: {
+							id: "verifier",
+							type: "review",
+							prompt: {
+								template: {
+									file: "prompts/verifier.md",
+									bindings: {
+										item: { activation: "/mapped/item" },
+									},
+								},
+							},
+						},
+						reducer: {
+							id: "reducer",
+							type: "script",
+							script: { file: "scripts/reduce.js" },
+						},
+					},
+				},
+			],
+		};
+
+		const compiled = compileWorkflowDslBlock(block);
+		const nodes = compiled.nodes as Record<string, Record<string, unknown>>;
+		expect(Object.keys(nodes)).toEqual(["pool.worker", "pool.verifier", "pool.reducer", "pool"]);
+		const pool = nodes.pool;
+		expect(pool?.type).toBe("mapped_pool");
+		expect(pool?.mappedPool).toEqual({
+			itemSource: "/queue",
+			itemKey: "/id",
+			maxConcurrency: 2,
+			maxItems: 5,
+			worker: "pool.worker",
+			verifier: "pool.verifier",
+			reducer: "pool.reducer",
+			stopWhen: "state.done == true",
+		});
+	});
+	it("wires sequence predecessor to pool and pool to successor, not predecessor to worker", () => {
+		const block = {
+			sequence: [
+				{
+					node: {
+						id: "seed",
+						type: "script",
+					},
+				},
+				{
+					template: {
+						kind: "mapped_worker_verifier_pool",
+						id: "pool",
+						itemSource: "/queue",
+						itemKey: "/id",
+						maxConcurrency: 2,
+						maxItems: 5,
+						worker: { id: "worker", type: "agent", agent: "task" },
+						verifier: { id: "verifier", type: "review" },
+						reducer: { id: "reducer", type: "script", script: { file: "scripts/r.js" } },
+					},
+				},
+				{
+					node: {
+						id: "finish",
+						type: "script",
+					},
+				},
+			],
+		};
+		const compiled = compileWorkflowDslBlock(block);
+		const edges = compiled.edges as Array<Record<string, unknown>>;
+		const fromSeed = edges.filter(e => e.from === "seed");
+		const fromPool = edges.filter(e => e.from === "pool");
+		expect(fromSeed).toHaveLength(1);
+		expect(fromSeed[0]?.to).toBe("pool");
+		expect(fromPool).toHaveLength(1);
+		expect(fromPool[0]?.to).toBe("finish");
+		const toWorker = edges.filter(e => e.to === "pool.worker");
+		expect(toWorker).toHaveLength(0);
+	});
 });
 
 function flowSource(workflowBlock: string): string {

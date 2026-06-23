@@ -147,6 +147,38 @@ describe("workflow inspection model", () => {
 		});
 	});
 
+	it("includes mapped activation context in inspection activations", () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(source, { sourcePath: "workflow.yml" });
+		const run = startWorkflowRun(host, definition, { runId: "run-1" });
+		appendWorkflowActivationStarted(host, run.id, {
+			activationId: "activation-1",
+			nodeId: "build",
+			graphRevisionId: run.currentGraphRevisionId,
+			parentActivationIds: [],
+			mapped: {
+				poolId: "pool",
+				poolActivationId: "activation-0",
+				itemKey: "item-a",
+				item: { id: "item-a" },
+				phase: "worker",
+			},
+		});
+		appendWorkflowActivationCompleted(host, run.id, {
+			activationId: "activation-1",
+			output: { summary: "built" },
+		});
+
+		const reconstructed = reconstructWorkflowRuns(host.getBranch())[0]!;
+		const inspection = buildWorkflowInspection(reconstructed);
+
+		expect(inspection.activations[0]?.mapped).toEqual({
+			poolId: "pool",
+			itemKey: "item-a",
+			phase: "worker",
+		});
+	});
+
 	it("omits legacy active-run graph patch proposals from inspection", () => {
 		const host = createHost();
 		const definition = parseWorkflowDefinition(source, { sourcePath: "workflow.yml" });
