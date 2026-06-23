@@ -439,6 +439,105 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
 	});
 
+	it("reuses tuple-scoped declared validation when task command and environment are markdown-coded", async () => {
+		const cwd = await createTempDir();
+		const tupleId = "C92-K8S-PAR-test";
+		await writeTupleFiles(cwd, tupleId);
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Validation Command:",
+				"`./workflow-output/run-k8s-deep-validation.sh`",
+				"",
+				"Validation Environment",
+				"",
+				"- `GOTMPDIR=/tmp/omh-run-tmp/C92-K8S-PAR-test/go-tmp`",
+				"- `GOCACHE=/tmp/omh-cache/go-build`",
+				"- `GOMODCACHE=/tmp/omh-cache/go-mod`",
+			].join("\n"),
+		);
+		for (const attempt of [1, 2, 3]) {
+			await Bun.write(path.join(cwd, `workflow-output/validation-attempt-${attempt}-stdout-${tupleId}.txt`), "ok\n");
+			await Bun.write(path.join(cwd, `workflow-output/validation-attempt-${attempt}-stderr-${tupleId}.txt`), "");
+			await Bun.write(
+				path.join(cwd, `workflow-output/validation-attempt-${attempt}-exitcode-${tupleId}.txt`),
+				attempt === 3 ? "0\n" : "1\n",
+			);
+		}
+		await Bun.write(path.join(cwd, `workflow-output/scheduler-deep-coverage-${tupleId}.out`), "mode: atomic\n");
+		await Bun.write(
+			path.join(cwd, `workflow-output/tests-lane-${tupleId}.json`),
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementTests",
+					status: "complete",
+					declared_validation: {
+						command: "./workflow-output/run-k8s-deep-validation.sh",
+						environment: {
+							GOTMPDIR: "/tmp/omh-run-tmp/C92-K8S-PAR-test/go-tmp",
+							GOCACHE: "/tmp/omh-cache/go-build",
+							GOMODCACHE: "/tmp/omh-cache/go-mod",
+						},
+						result: "pass",
+						latest_valid_attempt: 3,
+					},
+					validation_attempts: [
+						{
+							attempt: 1,
+							result: "fail",
+							stdout: `workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+							stderr: `workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+							exitcode: `workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+						},
+						{
+							attempt: 2,
+							result: "fail",
+							stdout: `workflow-output/validation-attempt-2-stdout-${tupleId}.txt`,
+							stderr: `workflow-output/validation-attempt-2-stderr-${tupleId}.txt`,
+							exitcode: `workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`,
+						},
+						{
+							attempt: 3,
+							result: "pass",
+							stdout: `workflow-output/validation-attempt-3-stdout-${tupleId}.txt`,
+							stderr: `workflow-output/validation-attempt-3-stderr-${tupleId}.txt`,
+							exitcode: `workflow-output/validation-attempt-3-exitcode-${tupleId}.txt`,
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "run-declared-validation.js", {});
+
+		expect(result.verdict).toBe("PASS");
+		expect(result.summary).toContain("reused exact passed test-lane evidence");
+		expect(result.data?.validation).toMatchObject({
+			command: "./workflow-output/run-k8s-deep-validation.sh",
+			environment: {
+				GOTMPDIR: "/tmp/omh-run-tmp/C92-K8S-PAR-test/go-tmp",
+				GOCACHE: "/tmp/omh-cache/go-build",
+				GOMODCACHE: "/tmp/omh-cache/go-mod",
+			},
+			result: "passed",
+			exitCode: 0,
+			stdoutArtifact: `workflow-output/validation-attempt-3-stdout-${tupleId}.txt`,
+			stderrArtifact: `workflow-output/validation-attempt-3-stderr-${tupleId}.txt`,
+			exitCodeArtifact: `workflow-output/validation-attempt-3-exitcode-${tupleId}.txt`,
+			reusedFromTestLane: `workflow-output/tests-lane-${tupleId}.json`,
+		});
+		expect(result.data?.validation?.reusedCoverageProfiles).toEqual([
+			{
+				path: `workflow-output/scheduler-deep-coverage-${tupleId}.out`,
+				sha256: await sha256File(path.join(cwd, `workflow-output/scheduler-deep-coverage-${tupleId}.out`)),
+			},
+		]);
+	});
+
 	it("reuses exact failed test-lane validation without rerunning the same command", async () => {
 		const cwd = await createTempDir();
 		await initGitRepo(cwd);

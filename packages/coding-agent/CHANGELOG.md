@@ -45,6 +45,9 @@
 - Fixed the experimental parallel implementation workflow so final validation
   accepts test-lane `exit_code_file` and `file_hashes_sha256` evidence aliases
   instead of failing closed on otherwise immutable passed validation artifacts.
+- Fixed the experimental parallel implementation workflow so final validation
+  normalizes Markdown-coded task validation commands and environment entries
+  before reusing immutable test-lane evidence.
 - Fixed the experimental parallel implementation workflow so lane and reviewer
   agents treat archive requests as lane-owned evidence and reserve `final-*`
   artifacts for the workflow finalizer.

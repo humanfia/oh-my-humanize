@@ -513,10 +513,10 @@ function stringField(value, key) {
 function validationCommandFromTask(text) {
 	const lines = text.split(/\r?\n/u);
 	for (let index = 0; index < lines.length; index += 1) {
-		const match = /^\s*(?:verify|verification command|validation command)\s*:\s*(.*)\s*$/iu.exec(lines[index] ?? "");
+		const match = validationCommandLineMatch(lines[index] ?? "");
 		if (!match) continue;
 		const inlineCommand = match[1]?.trim();
-		if (inlineCommand) return inlineCommand;
+		if (inlineCommand) return stripMarkdownInlineCode(inlineCommand);
 		const followingCommand = firstFollowingCommandLine(lines, index + 1);
 		if (followingCommand) return followingCommand;
 	}
@@ -526,19 +526,42 @@ function validationCommandFromTask(text) {
 function validationEnvironmentFromTask(text) {
 	const lines = text.split(/\r?\n/u);
 	for (let index = 0; index < lines.length; index += 1) {
-		const match = /^\s*(?:validation environment|verification environment|verify environment)\s*:\s*(.*)\s*$/iu.exec(lines[index] ?? "");
+		const match = validationEnvironmentLineMatch(lines[index] ?? "");
 		if (!match) continue;
 		const inlineValue = match[1]?.trim();
-		const entries = inlineValue ? [inlineValue] : followingEnvironmentLines(lines, index + 1);
+		const entries = inlineValue ? [stripMarkdownInlineCode(inlineValue)] : followingEnvironmentLines(lines, index + 1);
 		return Object.fromEntries(
 			entries
 				.flatMap(entry => entry.split(/\s+/u))
-				.map(entry => /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(entry))
+				.map(entry => /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripMarkdownInlineCode(entry)))
 				.filter(Boolean)
 				.map(matchResult => [matchResult[1] ?? "", matchResult[2] ?? ""]),
 		);
 	}
 	return {};
+}
+
+function validationCommandLineMatch(line) {
+	return /^(?:verify|verification command|validation command)\s*:\s*(.*)\s*$/iu.exec(normalizeTaskFieldLine(line));
+}
+
+function validationEnvironmentLineMatch(line) {
+	return /^(?:validation environment|verification environment|verify environment)\s*:?\s*(.*)\s*$/iu.exec(
+		normalizeTaskFieldLine(line),
+	);
+}
+
+function normalizeTaskFieldLine(line) {
+	return line.replace(/^\s*#+\s*/u, "").trim();
+}
+
+function stripMarkdownInlineCode(value) {
+	const trimmed = value.trim();
+	const singleLine = /^`([^`]+)`$/u.exec(trimmed);
+	if (singleLine) return singleLine[1]?.trim() ?? "";
+	const fenced = /^```[A-Za-z0-9_-]*\s*([\s\S]*?)\s*```$/u.exec(trimmed);
+	if (fenced) return fenced[1]?.trim() ?? "";
+	return trimmed;
 }
 
 function followingEnvironmentLines(lines, startIndex) {
@@ -547,7 +570,7 @@ function followingEnvironmentLines(lines, startIndex) {
 		const trimmed = line.trim();
 		if (!trimmed || trimmed.startsWith("```")) continue;
 		if (isTaskSectionHeading(trimmed)) break;
-		entries.push(trimmed.replace(/^[-*]\s+/u, ""));
+		entries.push(stripMarkdownInlineCode(trimmed.replace(/^[-*]\s+/u, "")));
 	}
 	return entries;
 }
@@ -557,7 +580,7 @@ function firstFollowingCommandLine(lines, startIndex) {
 		const trimmed = line.trim();
 		if (!trimmed || trimmed.startsWith("```")) continue;
 		if (isTaskSectionHeading(trimmed)) return "";
-		return trimmed;
+		return stripMarkdownInlineCode(trimmed);
 	}
 	return "";
 }
