@@ -543,6 +543,54 @@ edges: []
 		});
 	});
 
+	it("rejects foreach item reads outside the node read scopes", async () => {
+		const host = createHost();
+		const definition = parseWorkflowDefinition(
+			`
+name: foreach-read-scope
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    reads:
+      - /allowed
+    foreach:
+      items: /tasks
+      output:
+        path: /taskResults
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+edges: []
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async () => {
+				throw new Error("unexpected foreach body execution");
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "foreach-read-scope",
+			startNodeId: "fanout",
+			runtimeHost,
+			initialState: { allowed: [], tasks: [{ id: "a" }] },
+		});
+
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["fanout", "failed"],
+		]);
+		expect(result.scheduler.activations[0]?.error).toBe('workflow state read from "/tasks" is not allowed');
+		expect(result.scheduler.state).toEqual({ allowed: [], tasks: [{ id: "a" }] });
+	});
+
 	it("maps child workflow invocation refs into foreach item records", async () => {
 		const host = createHost();
 		const definition = parseWorkflowDefinition(

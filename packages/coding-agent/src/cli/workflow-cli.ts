@@ -439,6 +439,22 @@ function headlessRuntimeBindingAgentsForNode(node: WorkflowStartPackage["definit
 	return [];
 }
 
+export function buildHeadlessChildWorkflowIds(
+	activationId: string,
+	itemOrNodeKey: string,
+): {
+	runId: string;
+	familyId: string;
+	attemptId: string;
+} {
+	const runId = `${safeWorkflowIdPart(activationId)}:child:${safeWorkflowIdPart(itemOrNodeKey)}`;
+	return {
+		runId,
+		familyId: `${runId}:family`,
+		attemptId: `${runId}:attempt-1`,
+	};
+}
+
 async function runHeadlessChildWorkflow(
 	cwd: string,
 	host: WorkflowRunStoreHost,
@@ -452,9 +468,10 @@ async function runHeadlessChildWorkflow(
 	const startNodeIds = defaultWorkflowStartNodeIds(pkg.definition);
 	const startNodeId = startNodeIds[0];
 	if (!startNodeId) throw new Error(`Child workflow "${request.workflowPath}" has no start node`);
-	const runId = `${request.activationId}:child:${safeWorkflowIdPart(request.itemKey ?? request.nodeId)}`;
-	const familyId = `${runId}:family`;
-	const attemptId = `${runId}:attempt-1`;
+	const { runId, familyId, attemptId } = buildHeadlessChildWorkflowIds(
+		request.activationId,
+		request.itemKey ?? request.nodeId,
+	);
 	const runtimeHost = createSessionWorkflowRuntimeHost({
 		cwd,
 		runEvalScript: async childRequest => runHeadlessEvalScript(cwd, childRequest.code, childRequest.language),

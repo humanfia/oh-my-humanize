@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { runWorkflowCommand, type WorkflowStartSignalTarget } from "../workflow-cli";
+import { buildHeadlessChildWorkflowIds, runWorkflowCommand, type WorkflowStartSignalTarget } from "../workflow-cli";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -213,6 +213,14 @@ describe("workflow CLI", () => {
 			["parent-child-run", ["childResult"]],
 			["activation-1:child:invokeChild", ["childMessage"]],
 		]);
+	});
+
+	it("builds headless child workflow ids as single-token CLI-safe values", () => {
+		expect(buildHeadlessChildWorkflowIds("activation 1/2", "item key")).toEqual({
+			runId: "activation-1-2:child:item-key",
+			familyId: "activation-1-2:child:item-key:family",
+			attemptId: "activation-1-2:child:item-key:attempt-1",
+		});
 	});
 
 	it("checkpoints headless workflow starts on SIGINT instead of leaving a run alive", async () => {

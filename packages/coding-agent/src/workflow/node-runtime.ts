@@ -316,7 +316,7 @@ async function executeForeachNode(
 	if (parentState === undefined) {
 		throw new WorkflowNodeRuntimeError(`foreach node "${node.id}" requires workflow state context`);
 	}
-	const items = readWorkflowState(parentState, foreach.items);
+	const items = readWorkflowState(parentState, foreach.items, { allowedReadPaths: node.reads });
 	if (!Array.isArray(items)) {
 		throw new WorkflowNodeRuntimeError(
 			`foreach node "${node.id}" items path "${foreach.items}" must resolve to an array`,
