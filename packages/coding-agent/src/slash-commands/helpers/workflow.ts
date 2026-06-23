@@ -1769,10 +1769,8 @@ async function createRuntimeBindingSnapshot(
 		skills: (definition.capabilities?.skills?.length ?? 0) > 0,
 	});
 	for (const node of definition.nodes) {
-		if (node.type === "script") tools.add(runtimeBindingScriptToolForNode(node));
-		if (node.type === "human") tools.add("ask");
-		if (node.type === "agent" || node.type === "review") tools.add("task");
-		if (node.agent) agents.add(node.agent);
+		for (const tool of runtimeBindingToolsForNode(node)) tools.add(tool);
+		for (const agent of runtimeBindingAgentsForNode(node)) agents.add(agent);
 		recordRuntimeBindingTool(node, runtimeHost, unavailable);
 		recordRuntimeBindingModel(definition, node, modelResolution, modelBindings);
 	}
@@ -1900,6 +1898,26 @@ function collectSkillCapabilities(runtime: SlashCommandRuntime): Set<string> {
 	return new Set((runtime.session.skills ?? []).map(skill => skill.name));
 }
 
+function runtimeBindingToolsForNode(node: WorkflowNode): string[] {
+	if (node.type === "script") return [runtimeBindingScriptToolForNode(node)];
+	if (node.type === "human") return ["ask"];
+	if (node.type === "agent" || node.type === "review") return ["task"];
+	if (node.type === "workflow") return ["workflow"];
+	if (node.type === "foreach") {
+		if (node.foreach?.body.kind === "workflow") return ["workflow"];
+		if (node.foreach?.body.kind === "node") return runtimeBindingToolsForNode(node.foreach.body.node);
+	}
+	return [];
+}
+
+function runtimeBindingAgentsForNode(node: WorkflowNode): string[] {
+	if (node.agent) return [node.agent];
+	if (node.type === "foreach" && node.foreach?.body.kind === "node") {
+		return runtimeBindingAgentsForNode(node.foreach.body.node);
+	}
+	return [];
+}
+
 function recordRuntimeBindingTool(
 	node: WorkflowNode,
 	runtimeHost: WorkflowNodeRuntimeHost,
@@ -1919,6 +1937,16 @@ function recordRuntimeBindingTool(
 	if (node.type === "review" && runtimeHost.runReviewNode === undefined) {
 		pushUnique(unavailable, "tool:task: workflow runtime host does not support review nodes");
 	}
+	if (node.type === "workflow" && runtimeHost.runWorkflowNode === undefined) {
+		pushUnique(unavailable, "tool:workflow: workflow runtime host does not support child workflow nodes");
+	}
+	if (node.type === "foreach") {
+		if (node.foreach?.body.kind === "workflow" && runtimeHost.runWorkflowNode === undefined) {
+			pushUnique(unavailable, "tool:workflow: workflow runtime host does not support child workflow nodes");
+		}
+		if (node.foreach?.body.kind === "node")
+			recordRuntimeBindingTool(node.foreach.body.node, runtimeHost, unavailable);
+	}
 }
 
 function recordRuntimeBindingDeclaredTool(
@@ -1936,6 +1964,12 @@ function recordRuntimeBindingDeclaredTool(
 	if (tool === "ask") {
 		if (runtimeHost.runHumanNode === undefined) {
 			pushUnique(unavailable, "tool:ask: workflow runtime host does not support human nodes");
+		}
+		return;
+	}
+	if (tool === "workflow") {
+		if (runtimeHost.runWorkflowNode === undefined) {
+			pushUnique(unavailable, "tool:workflow: workflow runtime host does not support child workflow nodes");
 		}
 		return;
 	}

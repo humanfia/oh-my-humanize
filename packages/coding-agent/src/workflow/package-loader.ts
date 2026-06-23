@@ -446,6 +446,8 @@ function workflowNodeToRawRecord(node: WorkflowNode): Record<string, unknown> {
 	if (node.reads !== undefined) raw.reads = [...node.reads];
 	if (node.writes !== undefined) raw.writes = [...node.writes];
 	if (node.waitFor !== undefined) raw.waitFor = [...node.waitFor];
+	if (node.foreach !== undefined) raw.foreach = structuredClone(node.foreach);
+	if (node.workflow !== undefined) raw.workflow = structuredClone(node.workflow);
 	return raw;
 }
 

@@ -521,7 +521,16 @@ function validateNodeShape(node: WorkflowNode): void {
 }
 
 function validateNodeType(type: WorkflowNodeType): void {
-	if (type === "agent" || type === "script" || type === "human" || type === "review") return;
+	if (
+		type === "agent" ||
+		type === "script" ||
+		type === "human" ||
+		type === "review" ||
+		type === "foreach" ||
+		type === "workflow"
+	) {
+		return;
+	}
 	throw new WorkflowGraphPatchError(`workflow graph patch node type is invalid: ${String(type)}`);
 }
 

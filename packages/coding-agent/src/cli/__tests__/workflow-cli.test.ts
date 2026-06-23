@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { runWorkflowCommand, type WorkflowStartSignalTarget } from "../workflow-cli";
+import { buildHeadlessChildWorkflowIds, runWorkflowCommand, type WorkflowStartSignalTarget } from "../workflow-cli";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -173,6 +173,54 @@ describe("workflow CLI", () => {
 		};
 		expect(result.run).toMatchObject({ status: "completed", completed: 1, failed: 0 });
 		expect(result.runs[0]?.stateKeys).toEqual(["marker"]);
+	});
+
+	it("runs headless child workflow nodes as linked child families", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-child-workflow-");
+		const root = tempDir.path();
+		await Bun.write(`${root}/parent.omhflow`, workflowParentChildFlow());
+		await Bun.write(`${root}/parent/.keep`, "");
+		await Bun.write(`${root}/child/.keep`, "");
+		await Bun.write(`${root}/child.omhflow`, workflowChildFlow());
+		const output: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+
+		await runWorkflowCommand({
+			action: "start",
+			args: [`${root}/parent.omhflow`],
+			flags: {
+				cwd: root,
+				json: true,
+				runId: "parent-child-run",
+				familyId: "parent-child-family",
+			},
+		});
+
+		const result = JSON.parse(output.join("").trim()) as {
+			run: { status: string; completed: number; failed: number };
+			families: { id: string; attempts: { status: string }[] }[];
+			runs: { id: string; stateKeys: string[] }[];
+		};
+		expect(result.run).toMatchObject({ status: "completed", completed: 1, failed: 0 });
+		expect(result.families.map(family => [family.id, family.attempts[0]?.status])).toEqual([
+			["parent-child-family", "completed"],
+			["activation-1:child:invokeChild:family", "completed"],
+		]);
+		expect(result.runs.map(run => [run.id, run.stateKeys])).toEqual([
+			["parent-child-run", ["childResult"]],
+			["activation-1:child:invokeChild", ["childMessage"]],
+		]);
+	});
+
+	it("builds headless child workflow ids as single-token CLI-safe values", () => {
+		expect(buildHeadlessChildWorkflowIds("activation 1/2", "item key")).toEqual({
+			runId: "activation-1-2:child:item-key",
+			familyId: "activation-1-2:child:item-key:family",
+			attemptId: "activation-1-2:child:item-key:attempt-1",
+		});
 	});
 
 	it("checkpoints headless workflow starts on SIGINT instead of leaving a run alive", async () => {
@@ -383,6 +431,79 @@ function workflowJsCwdSmokeScript(): string {
 		'  summary: "cwd marker observed",',
 		'  statePatch: [{ op: "set", path: "/marker", value: marker }],',
 		"};",
+	].join("\n");
+}
+
+function workflowParentChildFlow(): string {
+	return [
+		"---",
+		"name: parent-child",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: parent-child",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# Parent child workflow",
+		"",
+		"```yaml workflow",
+		"stateSchema:",
+		"  version: 1",
+		"  shape:",
+		"    childResult: object",
+		"nodes:",
+		"  invokeChild:",
+		"    type: workflow",
+		"    workflow:",
+		"      path: ./child.omhflow",
+		"    writes:",
+		"      - /childResult",
+		"edges: []",
+		"```",
+	].join("\n");
+}
+
+function workflowChildFlow(): string {
+	return [
+		"---",
+		"name: child",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: child",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# Child workflow",
+		"",
+		"```yaml workflow",
+		"stateSchema:",
+		"  version: 1",
+		"  shape:",
+		"    childMessage: string",
+		"nodes:",
+		"  writeMessage:",
+		"    type: script",
+		"    script:",
+		"      language: js",
+		"      inline: |",
+		"        return {",
+		'          summary: "child completed",',
+		'          statePatch: [{ op: "set", path: "/childMessage", value: "ok" }],',
+		"        };",
+		"edges: []",
+		"```",
 	].join("\n");
 }
 

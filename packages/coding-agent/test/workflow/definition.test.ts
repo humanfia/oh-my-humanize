@@ -141,6 +141,153 @@ edges: []
 		});
 	});
 
+	it("parses dynamic foreach and child workflow nodes without expanding item branches", () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: dynamic-fanout
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      itemName: task
+      key: /id
+      concurrency: 2
+      failureMode: allSettled
+      output:
+        path: /taskResults
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+  invokeChild:
+    type: workflow
+    workflow:
+      path: ./child.omhflow
+edges:
+  - from: fanout
+    to: invokeChild
+`,
+			{ sourcePath: "dynamic.yml" },
+		);
+
+		expect(definition.nodes).toHaveLength(2);
+		expect(definition.nodes[0]).toMatchObject({
+			id: "fanout",
+			type: "foreach",
+			writes: ["/taskResults"],
+			foreach: {
+				items: "/tasks",
+				itemName: "task",
+				key: "/id",
+				concurrency: 2,
+				failureMode: "allSettled",
+				output: { path: "/taskResults" },
+				body: {
+					kind: "node",
+					node: {
+						id: "processTask",
+						type: "script",
+						script: { code: 'return { summary: "processed" };\n' },
+					},
+				},
+			},
+		});
+		expect(definition.nodes[1]).toMatchObject({
+			id: "invokeChild",
+			type: "workflow",
+			workflow: { path: "./child.omhflow" },
+		});
+		expect(definition.edges.map(edge => [edge.from, edge.to])).toEqual([["fanout", "invokeChild"]]);
+	});
+
+	it("rejects foreach item and output paths that are not JSON pointers", () => {
+		expect(() =>
+			parseWorkflowDefinition(
+				`
+name: invalid-foreach
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: tasks
+      output:
+        path: /results
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+edges: []
+`,
+				{ sourcePath: "dynamic.yml" },
+			),
+		).toThrow("dynamic.yml: nodes.fanout.foreach.items must be a JSON pointer");
+		expect(() =>
+			parseWorkflowDefinition(
+				`
+name: invalid-foreach-output
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      output:
+        path: results
+      body:
+        node:
+          id: processTask
+          type: script
+          script:
+            inline: |
+              return { summary: "processed" };
+edges: []
+`,
+				{ sourcePath: "dynamic.yml" },
+			),
+		).toThrow("dynamic.yml: nodes.fanout.foreach.output.path must be a JSON pointer");
+	});
+
+	it("accepts foreach body as an inline node object", () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: inline-foreach-body
+version: 1
+nodes:
+  fanout:
+    type: foreach
+    foreach:
+      items: /tasks
+      output:
+        path: /results
+      body:
+        id: processTask
+        type: script
+        script:
+          inline: |
+            return { summary: "processed" };
+edges: []
+`,
+			{ sourcePath: "dynamic.yml" },
+		);
+
+		expect(definition.nodes[0]?.foreach?.body).toMatchObject({
+			kind: "node",
+			node: {
+				id: "processTask",
+				type: "script",
+			},
+		});
+	});
+
 	it("rejects script node runtime budgets outside the supported adapter limit", () => {
 		const source = `
 name: invalid-script-timeout

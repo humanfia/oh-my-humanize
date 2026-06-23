@@ -1,10 +1,16 @@
 import { YAML } from "bun";
 import { diagnoseWorkflowConditionReferences, parseWorkflowCondition, WorkflowConditionError } from "./condition";
-import { parseWorkflowStateSchema, type WorkflowStateSchema, WorkflowStateSchemaError } from "./state-schema";
+import {
+	parseWorkflowStateSchema,
+	type WorkflowStateSchema,
+	WorkflowStateSchemaError,
+	workflowStateSchemaDeclaresConditionPath,
+} from "./state-schema";
 
-export type WorkflowNodeType = "agent" | "script" | "human" | "review";
+export type WorkflowNodeType = "agent" | "script" | "human" | "review" | "foreach" | "workflow";
 export type WorkflowModelUnavailablePolicy = "fallback-to-parent" | "fail";
 export type WorkflowScriptLanguage = "js" | "py" | "sh";
+export type WorkflowForeachFailureMode = "failFast" | "allSettled" | "continueOnError";
 export const WORKFLOW_SCRIPT_TIMEOUT_MAX_MS = 60 * 60 * 1000;
 
 export interface WorkflowModelContext {
@@ -120,6 +126,36 @@ export interface WorkflowScriptSource {
 	timeoutMs?: number;
 }
 
+export interface WorkflowChildWorkflowInvocation {
+	path: string;
+}
+
+export interface WorkflowForeachOutput {
+	path: string;
+}
+
+export type WorkflowForeachBody = WorkflowForeachNodeBody | WorkflowForeachWorkflowBody;
+
+export interface WorkflowForeachNodeBody {
+	kind: "node";
+	node: WorkflowNode;
+}
+
+export interface WorkflowForeachWorkflowBody {
+	kind: "workflow";
+	workflow: WorkflowChildWorkflowInvocation;
+}
+
+export interface WorkflowForeachDefinition {
+	items: string;
+	itemName?: string;
+	key?: string;
+	concurrency?: number;
+	failureMode: WorkflowForeachFailureMode;
+	output: WorkflowForeachOutput;
+	body: WorkflowForeachBody;
+}
+
 export interface WorkflowNode {
 	id: string;
 	type: WorkflowNodeType;
@@ -133,6 +169,8 @@ export interface WorkflowNode {
 	reads?: string[];
 	writes?: string[];
 	waitFor?: string[];
+	foreach?: WorkflowForeachDefinition;
+	workflow?: WorkflowChildWorkflowInvocation;
 }
 
 export interface WorkflowDefinition {
@@ -181,6 +219,7 @@ export function parseWorkflowDefinition(
 	const subflows = parseSubflowDeclarations(root.subflows, "subflows", options.sourcePath);
 	validateEdgeReferences(nodes, edges, options.sourcePath);
 	validateConditionReferences(nodes, edges, stateSchema, options.sourcePath);
+	validateForeachStateReferences(nodes, stateSchema, options.sourcePath);
 	validateWaitForReferences(nodes, options.sourcePath);
 	validatePromptSourceReferences(nodes, options.sourcePath);
 	validateMigrationTargets(nodes, migrations, options.sourcePath);
@@ -222,19 +261,7 @@ function parseNodes(value: unknown, sourcePath?: string): WorkflowNode[] {
 			throw new WorkflowDefinitionError(`duplicate node id "${id}"`, sourcePath);
 		}
 		seen.add(id);
-		const node = expectRecord(rawNode, path, sourcePath);
-		const type = parseNodeType(node.type, `${path}.type`, sourcePath);
-		const agent = parseOptionalString(node.agent, `${path}.agent`, sourcePath);
-		const model = parseModelContext(node.model, `${path}.model`, sourcePath);
-		const prompt = parsePromptSource(node.prompt, `${path}.prompt`, sourcePath);
-		const script = parseScriptSource(node.script, `${path}.script`, sourcePath);
-		const gates = parseOptionalStringList(node.gates, `${path}.gates`, sourcePath);
-		const fallbackVerdict = parseOptionalString(node.fallbackVerdict, `${path}.fallbackVerdict`, sourcePath);
-		validateFallbackVerdict(id, type, gates, fallbackVerdict, path, sourcePath);
-		const reads = parseOptionalStringList(node.reads, `${path}.reads`, sourcePath);
-		const writes = parseOptionalStringList(node.writes, `${path}.writes`, sourcePath);
-		const waitFor = parseOptionalStringList(node.waitFor, `${path}.waitFor`, sourcePath);
-		return compactNode({ id, type, agent, model, ...prompt, script, gates, fallbackVerdict, reads, writes, waitFor });
+		return parseWorkflowNode(rawNode, id, path, sourcePath, { bodyNode: false });
 	});
 }
 
@@ -252,6 +279,48 @@ function parseNodeEntries(value: unknown, sourcePath?: string): Array<{ id: stri
 	}
 	const rawNodes = expectRecord(value, "nodes", sourcePath);
 	return Object.entries(rawNodes).map(([id, rawNode]) => ({ id, rawNode, path: `nodes.${id}` }));
+}
+
+function parseWorkflowNode(
+	rawNode: unknown,
+	id: string,
+	path: string,
+	sourcePath: string | undefined,
+	options: { bodyNode: boolean },
+): WorkflowNode {
+	const node = expectRecord(rawNode, path, sourcePath);
+	const type = parseNodeType(node.type, `${path}.type`, sourcePath);
+	if (options.bodyNode && (type === "foreach" || type === "workflow")) {
+		throw new WorkflowDefinitionError(`${path}.type must be agent, script, human, or review`, sourcePath);
+	}
+	const agent = parseOptionalString(node.agent, `${path}.agent`, sourcePath);
+	const model = parseModelContext(node.model, `${path}.model`, sourcePath);
+	const prompt = parsePromptSource(node.prompt, `${path}.prompt`, sourcePath);
+	const script = parseScriptSource(node.script, `${path}.script`, sourcePath);
+	const gates = parseOptionalStringList(node.gates, `${path}.gates`, sourcePath);
+	const fallbackVerdict = parseOptionalString(node.fallbackVerdict, `${path}.fallbackVerdict`, sourcePath);
+	validateFallbackVerdict(id, type, gates, fallbackVerdict, path, sourcePath);
+	const reads = parseOptionalStringList(node.reads, `${path}.reads`, sourcePath);
+	const parsedWrites = parseOptionalStringList(node.writes, `${path}.writes`, sourcePath);
+	const waitFor = parseOptionalStringList(node.waitFor, `${path}.waitFor`, sourcePath);
+	const foreach = parseForeachForNode(type, node.foreach, `${path}.foreach`, sourcePath);
+	const workflow = parseWorkflowInvocationForNode(type, node.workflow, `${path}.workflow`, sourcePath);
+	const writes = mergeNodeWrites(parsedWrites, foreach?.output.path);
+	return compactNode({
+		id,
+		type,
+		agent,
+		model,
+		...prompt,
+		script,
+		gates,
+		fallbackVerdict,
+		reads,
+		writes,
+		waitFor,
+		foreach,
+		workflow,
+	});
 }
 
 function parseEdges(value: unknown, sourcePath?: string): WorkflowEdge[] {
@@ -414,6 +483,23 @@ function validateConditionReferences(
 		if (edge.condition === undefined) continue;
 		for (const diagnostic of diagnoseWorkflowConditionReferences(edge.condition.source, nodes, stateSchema)) {
 			throw new WorkflowDefinitionError(`edges.${index}.when ${diagnostic}`, sourcePath);
+		}
+	}
+}
+
+function validateForeachStateReferences(
+	nodes: WorkflowNode[],
+	stateSchema: WorkflowStateSchema | undefined,
+	sourcePath?: string,
+): void {
+	for (const node of nodes) {
+		const foreach = node.foreach;
+		if (foreach === undefined) continue;
+		if (!workflowStateSchemaDeclaresConditionPath(foreach.items, stateSchema)) {
+			throw new WorkflowDefinitionError(
+				`node "${node.id}" foreach items references undeclared state path "${foreach.items}"`,
+				sourcePath,
+			);
 		}
 	}
 }
@@ -660,6 +746,101 @@ function parseScriptSource(value: unknown, path: string, sourcePath?: string): W
 	return script;
 }
 
+function parseForeachForNode(
+	type: WorkflowNodeType,
+	value: unknown,
+	path: string,
+	sourcePath?: string,
+): WorkflowForeachDefinition | undefined {
+	if (type !== "foreach") {
+		if (value !== undefined) {
+			throw new WorkflowDefinitionError(`${path} is only valid for foreach nodes`, sourcePath);
+		}
+		return undefined;
+	}
+	if (value === undefined) {
+		throw new WorkflowDefinitionError(`${path} must be an object`, sourcePath);
+	}
+	const raw = expectRecord(value, path, sourcePath);
+	const items = expectJsonPointer(raw.items, `${path}.items`, sourcePath);
+	const itemName = parseOptionalString(raw.itemName, `${path}.itemName`, sourcePath);
+	const key = parseOptionalJsonPointer(raw.key, `${path}.key`, sourcePath);
+	const concurrency = parseOptionalPositiveInteger(raw.concurrency, `${path}.concurrency`, sourcePath);
+	const failureMode = parseForeachFailureMode(raw.failureMode, `${path}.failureMode`, sourcePath);
+	const output = parseForeachOutput(raw.output, `${path}.output`, sourcePath);
+	const body = parseForeachBody(raw.body, `${path}.body`, sourcePath);
+	const foreach: WorkflowForeachDefinition = {
+		items,
+		failureMode,
+		output,
+		body,
+	};
+	if (itemName !== undefined) foreach.itemName = itemName;
+	if (key !== undefined) foreach.key = key;
+	if (concurrency !== undefined) foreach.concurrency = concurrency;
+	return foreach;
+}
+
+function parseWorkflowInvocationForNode(
+	type: WorkflowNodeType,
+	value: unknown,
+	path: string,
+	sourcePath?: string,
+): WorkflowChildWorkflowInvocation | undefined {
+	if (type !== "workflow") {
+		if (value !== undefined) {
+			throw new WorkflowDefinitionError(`${path} is only valid for workflow nodes`, sourcePath);
+		}
+		return undefined;
+	}
+	if (value === undefined) {
+		throw new WorkflowDefinitionError(`${path} must be a child workflow invocation`, sourcePath);
+	}
+	return parseWorkflowInvocation(value, path, sourcePath);
+}
+
+function parseForeachFailureMode(value: unknown, path: string, sourcePath?: string): WorkflowForeachFailureMode {
+	if (value === undefined) return "failFast";
+	if (value === "failFast" || value === "allSettled" || value === "continueOnError") return value;
+	throw new WorkflowDefinitionError(`${path} must be failFast, allSettled, or continueOnError`, sourcePath);
+}
+
+function parseForeachOutput(value: unknown, path: string, sourcePath?: string): WorkflowForeachOutput {
+	const raw = expectRecord(value, path, sourcePath);
+	return { path: expectJsonPointer(raw.path, `${path}.path`, sourcePath) };
+}
+
+function parseForeachBody(value: unknown, path: string, sourcePath?: string): WorkflowForeachBody {
+	const raw = expectRecord(value, path, sourcePath);
+	const hasNode = raw.node !== undefined;
+	const hasWorkflow = raw.workflow !== undefined;
+	if (!hasNode && !hasWorkflow && raw.id !== undefined && raw.type !== undefined) {
+		const id = expectString(raw.id, `${path}.id`, sourcePath);
+		return {
+			kind: "node",
+			node: parseWorkflowNode(raw, id, path, sourcePath, { bodyNode: true }),
+		};
+	}
+	if (hasNode === hasWorkflow) {
+		throw new WorkflowDefinitionError(`${path} must define exactly one of node or workflow`, sourcePath);
+	}
+	if (hasWorkflow) {
+		return { kind: "workflow", workflow: parseWorkflowInvocation(raw.workflow, `${path}.workflow`, sourcePath) };
+	}
+	const bodyNodeRaw = expectRecord(raw.node, `${path}.node`, sourcePath);
+	const id = expectString(bodyNodeRaw.id, `${path}.node.id`, sourcePath);
+	return {
+		kind: "node",
+		node: parseWorkflowNode(bodyNodeRaw, id, `${path}.node`, sourcePath, { bodyNode: true }),
+	};
+}
+
+function parseWorkflowInvocation(value: unknown, path: string, sourcePath?: string): WorkflowChildWorkflowInvocation {
+	if (typeof value === "string") return { path: expectString(value, path, sourcePath) };
+	const raw = expectRecord(value, path, sourcePath);
+	return { path: expectString(raw.path, `${path}.path`, sourcePath) };
+}
+
 function parseScriptLanguage(value: unknown, path: string, sourcePath?: string): WorkflowScriptLanguage | undefined {
 	if (value === undefined) return undefined;
 	if (value === "js" || value === "py" || value === "sh") return value;
@@ -693,8 +874,17 @@ function parseUnavailable(
 }
 
 function parseNodeType(value: unknown, path: string, sourcePath?: string): WorkflowNodeType {
-	if (value === "agent" || value === "script" || value === "human" || value === "review") return value;
-	throw new WorkflowDefinitionError(`${path} must be agent, script, human, or review`, sourcePath);
+	if (
+		value === "agent" ||
+		value === "script" ||
+		value === "human" ||
+		value === "review" ||
+		value === "foreach" ||
+		value === "workflow"
+	) {
+		return value;
+	}
+	throw new WorkflowDefinitionError(`${path} must be agent, script, human, review, foreach, or workflow`, sourcePath);
 }
 
 function parsePromptActivationSelector(
@@ -718,6 +908,8 @@ function compactNode(node: WorkflowNode): WorkflowNode {
 	if (node.reads !== undefined) result.reads = node.reads;
 	if (node.writes !== undefined) result.writes = node.writes;
 	if (node.waitFor !== undefined) result.waitFor = node.waitFor;
+	if (node.foreach !== undefined) result.foreach = node.foreach;
+	if (node.workflow !== undefined) result.workflow = node.workflow;
 	return result;
 }
 
@@ -750,6 +942,17 @@ function parseOptionalString(value: unknown, path: string, sourcePath?: string):
 	return expectString(value, path, sourcePath);
 }
 
+function parseOptionalJsonPointer(value: unknown, path: string, sourcePath?: string): string | undefined {
+	if (value === undefined) return undefined;
+	return expectJsonPointer(value, path, sourcePath);
+}
+
+function parseOptionalPositiveInteger(value: unknown, path: string, sourcePath?: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+	throw new WorkflowDefinitionError(`${path} must be a positive integer`, sourcePath);
+}
+
 function expectJsonPointer(value: unknown, path: string, sourcePath?: string): string {
 	const pointer = expectString(value, path, sourcePath);
 	if (pointer.startsWith("/")) return pointer;
@@ -775,4 +978,10 @@ function expectRecord(value: unknown, path: string, sourcePath?: string): Record
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergeNodeWrites(writes: string[] | undefined, foreachOutputPath: string | undefined): string[] | undefined {
+	if (foreachOutputPath === undefined) return writes;
+	if (writes === undefined) return [foreachOutputPath];
+	return writes.includes(foreachOutputPath) ? writes : [...writes, foreachOutputPath];
 }

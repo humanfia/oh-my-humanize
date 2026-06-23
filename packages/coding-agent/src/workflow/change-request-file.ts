@@ -1,5 +1,10 @@
 import type {
+	WorkflowChildWorkflowInvocation,
 	WorkflowEdge,
+	WorkflowForeachBody,
+	WorkflowForeachDefinition,
+	WorkflowForeachFailureMode,
+	WorkflowForeachOutput,
 	WorkflowModelContext,
 	WorkflowModelUnavailablePolicy,
 	WorkflowNode,
@@ -181,6 +186,10 @@ function parseWorkflowPatchNode(value: unknown, pathLabel: string, missingMessag
 	}
 	const script = parseWorkflowPatchScriptSource(raw.script, `${pathLabel}.script`);
 	if (script !== undefined) node.script = script;
+	const foreach = parseWorkflowPatchForeach(raw.foreach, `${pathLabel}.foreach`);
+	if (foreach !== undefined) node.foreach = foreach;
+	const workflow = parseWorkflowPatchWorkflow(raw.workflow, `${pathLabel}.workflow`);
+	if (workflow !== undefined) node.workflow = workflow;
 	if (raw.gates !== undefined) node.gates = parseWorkflowPatchStringArray(raw.gates, `${pathLabel}.gates`);
 	if (raw.reads !== undefined) node.reads = parseWorkflowPatchStringArray(raw.reads, `${pathLabel}.reads`);
 	if (raw.writes !== undefined) node.writes = parseWorkflowPatchStringArray(raw.writes, `${pathLabel}.writes`);
@@ -216,8 +225,17 @@ function parseWorkflowPatchEdgeCondition(value: unknown, pathLabel: string): Wor
 }
 
 function parseWorkflowPatchNodeType(value: unknown, pathLabel: string): WorkflowNodeType {
-	if (value === "agent" || value === "script" || value === "human" || value === "review") return value;
-	throw new Error(`${pathLabel} must be agent, script, human, or review`);
+	if (
+		value === "agent" ||
+		value === "script" ||
+		value === "human" ||
+		value === "review" ||
+		value === "foreach" ||
+		value === "workflow"
+	) {
+		return value;
+	}
+	throw new Error(`${pathLabel} must be agent, script, human, review, foreach, or workflow`);
 }
 
 function parseWorkflowPatchPrompt(
@@ -402,6 +420,73 @@ function parseWorkflowPatchScriptTimeoutMs(value: unknown, pathLabel: string): n
 		return value;
 	}
 	throw new Error(`${pathLabel} must be a positive integer no greater than ${WORKFLOW_SCRIPT_TIMEOUT_MAX_MS}`);
+}
+
+function parseWorkflowPatchForeach(value: unknown, pathLabel: string): WorkflowForeachDefinition | undefined {
+	if (value === undefined) return undefined;
+	const raw = expectWorkflowPatchRecord(value, pathLabel);
+	const itemName = parseOptionalWorkflowPatchString(raw.itemName, `${pathLabel}.itemName`);
+	const key = parseOptionalWorkflowPatchJsonPointer(raw.key, `${pathLabel}.key`);
+	const concurrency = parseOptionalWorkflowPatchPositiveInteger(raw.concurrency, `${pathLabel}.concurrency`);
+	const failureMode = parseWorkflowPatchForeachFailureMode(raw.failureMode, `${pathLabel}.failureMode`);
+	const foreach: WorkflowForeachDefinition = {
+		items: expectWorkflowPatchJsonPointer(raw.items, `${pathLabel}.items`),
+		failureMode,
+		output: parseWorkflowPatchForeachOutput(raw.output, `${pathLabel}.output`),
+		body: parseWorkflowPatchForeachBody(raw.body, `${pathLabel}.body`),
+	};
+	if (itemName !== undefined) foreach.itemName = itemName;
+	if (key !== undefined) foreach.key = key;
+	if (concurrency !== undefined) foreach.concurrency = concurrency;
+	return foreach;
+}
+
+function parseWorkflowPatchForeachFailureMode(value: unknown, pathLabel: string): WorkflowForeachFailureMode {
+	if (value === undefined) return "failFast";
+	if (value === "failFast" || value === "allSettled" || value === "continueOnError") return value;
+	throw new Error(`${pathLabel} must be failFast, allSettled, or continueOnError`);
+}
+
+function parseWorkflowPatchForeachOutput(value: unknown, pathLabel: string): WorkflowForeachOutput {
+	const raw = expectWorkflowPatchRecord(value, pathLabel);
+	return { path: expectWorkflowPatchJsonPointer(raw.path, `${pathLabel}.path`) };
+}
+
+function parseWorkflowPatchForeachBody(value: unknown, pathLabel: string): WorkflowForeachBody {
+	const raw = expectWorkflowPatchRecord(value, pathLabel);
+	const hasNode = raw.node !== undefined;
+	const hasWorkflow = raw.workflow !== undefined;
+	if (hasNode === hasWorkflow) throw new Error(`${pathLabel} must define exactly one of node or workflow`);
+	if (hasWorkflow) {
+		return { kind: "workflow", workflow: parseWorkflowPatchWorkflowRequired(raw.workflow, `${pathLabel}.workflow`) };
+	}
+	const node = parseWorkflowPatchNode(raw.node, `${pathLabel}.node`, `${pathLabel}.node is required`);
+	if (node.type === "foreach" || node.type === "workflow") {
+		throw new Error(`${pathLabel}.node.type must be agent, script, human, or review`);
+	}
+	return { kind: "node", node };
+}
+
+function parseWorkflowPatchWorkflow(value: unknown, pathLabel: string): WorkflowChildWorkflowInvocation | undefined {
+	if (value === undefined) return undefined;
+	return parseWorkflowPatchWorkflowRequired(value, pathLabel);
+}
+
+function parseWorkflowPatchWorkflowRequired(value: unknown, pathLabel: string): WorkflowChildWorkflowInvocation {
+	if (typeof value === "string") return { path: expectWorkflowPatchString(value, pathLabel) };
+	const raw = expectWorkflowPatchRecord(value, pathLabel);
+	return { path: expectWorkflowPatchString(raw.path, `${pathLabel}.path`) };
+}
+
+function parseOptionalWorkflowPatchJsonPointer(value: unknown, pathLabel: string): string | undefined {
+	if (value === undefined) return undefined;
+	return expectWorkflowPatchJsonPointer(value, pathLabel);
+}
+
+function parseOptionalWorkflowPatchPositiveInteger(value: unknown, pathLabel: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+	throw new Error(`${pathLabel} must be a positive integer`);
 }
 
 function parseRequiredWorkflowPatchModelContext(value: unknown, pathLabel: string): WorkflowModelContext {

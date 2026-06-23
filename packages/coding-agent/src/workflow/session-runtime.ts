@@ -1,7 +1,13 @@
 import { workflowAgentTaskIdForNode } from "./agent-task-id";
 import type { WorkflowScriptLanguage } from "./definition";
 import { formatWorkflowAgentWorkItemLabel } from "./display";
-import type { WorkflowNodeRuntimeHost, WorkflowReviewNodeOutput, WorkflowScriptContext } from "./node-runtime";
+import type {
+	WorkflowNodeRuntimeHost,
+	WorkflowReviewNodeOutput,
+	WorkflowScriptContext,
+	WorkflowWorkflowNodeInput,
+	WorkflowWorkflowNodeOutput,
+} from "./node-runtime";
 import { WorkflowNodeRuntimeError } from "./node-runtime";
 import {
 	DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES,
@@ -19,6 +25,7 @@ export interface WorkflowSessionRuntimeOptions {
 	runShellScript?: WorkflowShellScriptRunner;
 	runAgentTask?: WorkflowAgentTaskRunner;
 	runHumanInput?: WorkflowHumanInputRunner;
+	runChildWorkflow?: WorkflowChildWorkflowRunner;
 }
 
 export interface WorkflowAgentTaskRetryPolicy {
@@ -108,6 +115,23 @@ export interface WorkflowHumanInputResult {
 }
 
 export type WorkflowHumanInputRunner = (request: WorkflowHumanInputRequest) => Promise<WorkflowHumanInputResult>;
+
+export interface WorkflowChildWorkflowRequest {
+	activationId: string;
+	nodeId: string;
+	workflowPath: string;
+	state: Record<string, unknown>;
+	workflowBasePath?: string;
+	item?: unknown;
+	itemKey?: string;
+	itemIndex?: number;
+	parentNodeId?: string;
+	signal?: AbortSignal;
+}
+
+export type WorkflowChildWorkflowRunner = (
+	request: WorkflowChildWorkflowRequest,
+) => Promise<WorkflowWorkflowNodeOutput>;
 
 export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntimeOptions): WorkflowNodeRuntimeHost {
 	return {
@@ -203,7 +227,31 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			const result = await runAgentTaskWithTransientRetry(options, request);
 			return reviewOutputFromTaskResult(input.node.id, result, input.gates, input.fallbackVerdict);
 		},
+		runWorkflowNode: async input => {
+			if (!options.runChildWorkflow) {
+				throw new WorkflowNodeRuntimeError(
+					`workflow child node "${input.node.id}" requires a child workflow runtime adapter`,
+				);
+			}
+			return options.runChildWorkflow(childWorkflowRequestFromInput(input));
+		},
 	};
+}
+
+function childWorkflowRequestFromInput(input: WorkflowWorkflowNodeInput): WorkflowChildWorkflowRequest {
+	const request: WorkflowChildWorkflowRequest = {
+		activationId: input.activation.id,
+		nodeId: input.node.id,
+		workflowPath: input.workflowPath,
+		state: input.state,
+	};
+	if (input.workflowBasePath !== undefined) request.workflowBasePath = input.workflowBasePath;
+	if (input.item !== undefined) request.item = input.item;
+	if (input.itemKey !== undefined) request.itemKey = input.itemKey;
+	if (input.itemIndex !== undefined) request.itemIndex = input.itemIndex;
+	if (input.parentNodeId !== undefined) request.parentNodeId = input.parentNodeId;
+	if (input.signal !== undefined) request.signal = input.signal;
+	return request;
 }
 
 interface NormalizedWorkflowAgentTaskRetryPolicy {
