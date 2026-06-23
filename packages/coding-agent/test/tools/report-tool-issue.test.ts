@@ -7,7 +7,6 @@ import {
 	isAutoQaEnabled,
 } from "@oh-my-pi/pi-coding-agent/tools/report-tool-issue";
 import * as piUtils from "@oh-my-pi/pi-utils";
-import { APP_NAME } from "@oh-my-pi/pi-utils/dirs";
 import { mockFetch } from "../helpers/fetch-mock";
 
 function openTempDb(): Database {
@@ -164,7 +163,7 @@ describe("flushGrievances", () => {
 		expect(headers?.authorization).toBe("Bearer secret-token");
 
 		const body = JSON.parse(String(capturedInit?.body));
-		expect(body.agent?.name).toBe(APP_NAME);
+		expect(body.agent?.name).toBe("omp");
 		expect(typeof body.agent?.version).toBe("string");
 		expect(body.host).toBeUndefined();
 		expect(typeof body.platform).toBe("string");
