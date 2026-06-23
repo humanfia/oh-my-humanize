@@ -1,4 +1,8 @@
-import { assertWorkflowStateWriteMatchesSchema, type WorkflowStateSchema } from "./state-schema";
+import {
+	assertWorkflowStateWriteMatchesSchema,
+	unescapeJsonPointerSegment,
+	type WorkflowStateSchema,
+} from "./state-schema";
 
 export const DEFAULT_WORKFLOW_MAX_INLINE_VALUE_BYTES = 32 * 1024;
 export const DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES = 8 * 1024;
@@ -140,10 +144,7 @@ function parseJsonPointer(pointer: string): string[] {
 	if (!pointer.startsWith("/")) {
 		throw new WorkflowStateError(`workflow state path must be a JSON pointer: ${pointer}`);
 	}
-	return pointer
-		.slice(1)
-		.split("/")
-		.map(segment => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+	return pointer.slice(1).split("/").map(unescapeJsonPointerSegment);
 }
 
 function assertPointerAllowed(pointer: string, allowedScopes: string[] | undefined, action: string): void {

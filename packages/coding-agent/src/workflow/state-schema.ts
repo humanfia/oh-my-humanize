@@ -146,13 +146,14 @@ function parseJsonPointer(pointer: string): string[] {
 	if (!pointer.startsWith("/")) {
 		throw new WorkflowStateSchemaError(`workflow state path must be a JSON pointer: ${pointer}`);
 	}
-	return pointer
-		.slice(1)
-		.split("/")
-		.map(segment => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+	return pointer.slice(1).split("/").map(unescapeJsonPointerSegment);
 }
 
-function escapeJsonPointerSegment(segment: string): string {
+export function unescapeJsonPointerSegment(segment: string): string {
+	return segment.replaceAll("~1", "/").replaceAll("~0", "~");
+}
+
+export function escapeJsonPointerSegment(segment: string): string {
 	return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 

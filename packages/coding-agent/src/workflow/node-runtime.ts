@@ -1,6 +1,7 @@
 import type { WorkflowModelContext, WorkflowNode, WorkflowScriptLanguage } from "./definition";
 import type { WorkflowActivation, WorkflowMappedActivationContext } from "./scheduler";
 import type { WorkflowActivationOutput } from "./state";
+import { escapeJsonPointerSegment } from "./state-schema";
 
 export interface WorkflowNodeRuntimeInput {
 	node: WorkflowNode;
@@ -186,7 +187,7 @@ function workflowScriptContextSnapshot(
 		completedActivations: structuredClone(context.completedActivations),
 	};
 	if (activation.mapped !== undefined) {
-		snapshot.activation.mapped = activation.mapped as WorkflowMappedActivationContext;
+		snapshot.activation.mapped = structuredClone(activation.mapped);
 	}
 	if (resourceDir !== undefined) {
 		snapshot.resources = { root: resourceDir };
@@ -258,7 +259,7 @@ function reviewVerdictStatePath(node: WorkflowNode, activation: WorkflowActivati
 	const base = node.writes?.[0] ?? "/verdict";
 	const mapped = activation.mapped;
 	if (mapped !== undefined) {
-		return `${base.replace(/\/+$/, "")}/${mapped.itemKey.replace(/^\/+/, "").replace(/\/$/, "")}/verdict`;
+		return `${base.replace(/\/+$/, "")}/${escapeJsonPointerSegment(mapped.itemKey)}/verdict`;
 	}
 	return base;
 }

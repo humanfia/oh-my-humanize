@@ -1,4 +1,8 @@
-import { type WorkflowStateSchema, workflowStateSchemaDeclaresConditionPath } from "./state-schema";
+import {
+	escapeJsonPointerSegment,
+	type WorkflowStateSchema,
+	workflowStateSchemaDeclaresConditionPath,
+} from "./state-schema";
 
 export type WorkflowConditionOperator = "==" | "!=" | ">=" | "<=" | ">" | "<";
 export type WorkflowConditionLiteral = string | number | boolean | null;
@@ -135,10 +139,6 @@ function conditionStateReferenceToJsonPointer(path: string[]): string {
 	const segments = path.slice(1);
 	if (segments.length === 0) return "/";
 	return `/${segments.map(escapeJsonPointerSegment).join("/")}`;
-}
-
-function escapeJsonPointerSegment(segment: string): string {
-	return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
 function collectAstReferences(ast: WorkflowConditionAst, references: WorkflowConditionReference[]): void {

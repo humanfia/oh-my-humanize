@@ -6,6 +6,7 @@ import { loadWorkflowArtifact } from "../../src/workflow/package-loader";
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../../src/workflow/run-store";
 import { runWorkflow } from "../../src/workflow/runner";
 import type { WorkflowActivation } from "../../src/workflow/scheduler";
+import { createSessionWorkflowRuntimeHost, type WorkflowScriptEvalRequest } from "../../src/workflow/session-runtime";
 import type { WorkflowStatePatchOperation } from "../../src/workflow/state";
 
 interface CapturedEntry {
@@ -34,46 +35,18 @@ describe("mapped worker-verifier pool flow contract", () => {
 		);
 		const host = createHost();
 		const startedActivations: WorkflowActivation[] = [];
-
-		const runtimeHost: WorkflowNodeRuntimeHost = {
-			runScriptNode: async input => {
-				if (input.node.id === "pool.reducer") {
-					const ctx = input.context;
-					if (!ctx) return { summary: "reduced (no context)" };
-					const state = ctx.state as Record<string, unknown>;
-					const mapped = ctx.activation?.mapped;
-					const itemKey = mapped?.itemKey;
-					const pool = state.pool as Record<string, unknown> | undefined;
-					const results = pool?.results as Record<string, { expand?: boolean; verdict?: string }> | undefined;
-					const result = itemKey ? results?.[itemKey] : undefined;
-					const patch: WorkflowStatePatchOperation[] = [];
-					if (result?.expand === true || result?.verdict === "expand") {
-						const queue = Array.isArray(pool?.queue) ? [...(pool.queue as Array<{ id: string }>)] : [];
-						if (!queue.some(item => item.id === "task-3")) {
-							queue.push({ id: "task-3" });
-						}
-						patch.push({ op: "set", path: "/pool/queue", value: queue });
-					}
-					const knownTasks = (state.plan as Record<string, string[]>)?.tasks ?? [];
-					const allCompleted = knownTasks.every(task => results?.[task]?.verdict !== undefined);
-					if (allCompleted && pool?.done === false) {
-						patch.push({ op: "set", path: "/pool/done", value: true });
-					}
-					return { summary: `reduced ${itemKey ?? "seed"}`, statePatch: patch };
-				}
-				if (input.node.id === "plan") {
-					return {
-						summary: "seeded",
-						statePatch: [
-							{ op: "set", path: "/plan", value: { tasks: ["task-1", "task-2"] } },
-							{ op: "set", path: "/pool/queue", value: [{ id: "task-1" }, { id: "task-2" }] },
-							{ op: "set", path: "/pool/done", value: false },
-							{ op: "set", path: "/pool/results", value: {} },
-						],
-					};
-				}
-				return { summary: "script ran" };
+		const scriptOutputs = new Map<string, unknown>();
+		const runtimeHost = createSessionWorkflowRuntimeHost({
+			cwd: exampleDir,
+			runEvalScript: async request => {
+				const output = await runExampleScript(request);
+				scriptOutputs.set(request.activationId, output);
+				return { exitCode: 0, output: JSON.stringify(output), language: request.language };
 			},
+		});
+
+		const runtimeHostWithReview: WorkflowNodeRuntimeHost = {
+			...runtimeHost,
 			runAgentNode: async input => {
 				startedActivations.push(input.activation);
 				const mapped = input.activation.mapped;
@@ -91,7 +64,6 @@ describe("mapped worker-verifier pool flow contract", () => {
 				}
 				return { summary: "agent ran" };
 			},
-			runHumanNode: async () => ({ summary: "human ran" }),
 			runReviewNode: async input => {
 				startedActivations.push(input.activation);
 				const mapped = input.activation.mapped;
@@ -111,6 +83,34 @@ describe("mapped worker-verifier pool flow contract", () => {
 				return { verdict: "accept", summary: "reviewed" };
 			},
 		};
+
+		async function runExampleScript(request: WorkflowScriptEvalRequest): Promise<unknown> {
+			const logs: unknown[] = [];
+			const originalLog = console.log;
+			console.log = (...args: unknown[]) => {
+				logs.push(args[0]);
+			};
+			try {
+				const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
+					arg: string,
+					body: string,
+				) => (context: unknown) => Promise<unknown>;
+				const execute = new AsyncFunction("context", request.code);
+				await execute(request.context);
+			} finally {
+				console.log = originalLog;
+			}
+			for (let i = logs.length - 1; i >= 0; i -= 1) {
+				const line = typeof logs[i] === "string" ? logs[i] : JSON.stringify(logs[i]);
+				try {
+					return JSON.parse(line as string);
+				} catch {
+					// continue scanning for a JSON line
+				}
+			}
+			return undefined;
+		}
+
 		const artifact = await loadWorkflowArtifact(path.join(exampleDir, "mapped-worker-verifier-pool.omhflow"));
 		const freeze = await freezeWorkflowArtifact(artifact);
 
@@ -121,27 +121,62 @@ describe("mapped worker-verifier pool flow contract", () => {
 			frozenResources: freeze.resourceSnapshots,
 			runId: "mapped-pool-run-1",
 			startNodeId: "plan",
-			runtimeHost,
+			runtimeHost: runtimeHostWithReview,
 		});
 
 		const runs = reconstructWorkflowRuns(host.getBranch());
 		const run = runs[0];
 		if (!run) throw new Error("expected a run");
 
+		const seedOutput = scriptOutputs.get("activation-1") as
+			| { statePatch?: WorkflowStatePatchOperation[] }
+			| undefined;
+		expect(seedOutput?.statePatch).toEqual([
+			{ op: "set", path: "/plan", value: { tasks: ["task-1", "task-2", "task-3", "task-4", "task-5"] } },
+			{
+				op: "set",
+				path: "/pool/queue",
+				value: [{ id: "task-1" }, { id: "task-2" }, { id: "task-3" }, { id: "task-4" }, { id: "task-5" }],
+			},
+			{ op: "set", path: "/pool/done", value: false },
+			{ op: "set", path: "/pool/results", value: {} },
+		]);
+
+		const taskOneReducer = run.activations.find(
+			activation => activation.nodeId === "pool.reducer" && activation.mapped?.itemKey === "task-1",
+		);
+		expect(taskOneReducer).toBeDefined();
+		expect(scriptOutputs.get(taskOneReducer!.id)).toEqual({
+			statePatch: [
+				{
+					op: "set",
+					path: "/pool/queue",
+					value: [
+						{ id: "task-1" },
+						{ id: "task-2" },
+						{ id: "task-3" },
+						{ id: "task-4" },
+						{ id: "task-5" },
+						{ id: "task-6" },
+					],
+				},
+				{ op: "set", path: "/pool/done", value: true },
+			],
+		});
 		const reducerActivations = run.activations.filter(a => a.nodeId === "pool.reducer" && a.status === "completed");
-		expect(reducerActivations).toHaveLength(3);
+		expect(reducerActivations).toHaveLength(6);
 
 		const workerItems = run.activations
 			.filter(a => a.nodeId === "pool.worker" && a.status === "completed")
 			.map(a => a.mapped?.itemKey)
 			.sort();
-		expect(workerItems).toEqual(["task-1", "task-2", "task-3"]);
+		expect(workerItems).toEqual(["task-1", "task-2", "task-3", "task-4", "task-5", "task-6"]);
 
 		const verifierItems = run.activations
 			.filter(a => a.nodeId === "pool.verifier" && a.status === "completed")
 			.map(a => a.mapped?.itemKey)
 			.sort();
-		expect(verifierItems).toEqual(["task-1", "task-2", "task-3"]);
+		expect(verifierItems).toEqual(["task-1", "task-2", "task-3", "task-4", "task-5", "task-6"]);
 
 		expect((run.state as Record<string, Record<string, unknown>>).pool?.done).toBe(true);
 	});

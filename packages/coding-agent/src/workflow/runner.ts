@@ -135,6 +135,12 @@ export async function runWorkflow(options: WorkflowRunnerOptions): Promise<Workf
 			graphRevisionId: run.currentGraphRevisionId,
 			executeNode: async (activation, node, context) =>
 				executeAndPersistActivation(options, run, activation, node, context, resourceDir),
+			onMappedPoolActivationStarted: (activation, node) =>
+				persistMappedPoolActivationStarted(options, run, activation, node),
+			onMappedPoolActivationCompleted: (activation, output) =>
+				persistMappedPoolActivationCompleted(options, run, activation, output),
+			onMappedPoolActivationFailed: (activation, error) =>
+				persistMappedPoolActivationFailed(options, run, activation, error),
 		});
 		finishLifecycleAttempt(options, scheduler, runtimeSignal.signal);
 		return { run, scheduler };
@@ -534,6 +540,67 @@ function appendLifecycleActivationFailed(
 	activation: WorkflowActivation,
 	error: string,
 ): void {
+	const lifecycle = options.lifecycle;
+	if (!lifecycle) return;
+	appendWorkflowAttemptActivationFailed(options.host, {
+		attemptId: lifecycle.attemptId,
+		activationId: activation.id,
+		error,
+	});
+}
+function persistMappedPoolActivationStarted(
+	options: WorkflowRunnerOptions,
+	run: WorkflowRunSnapshot,
+	activation: WorkflowActivation,
+	node: WorkflowNode,
+): void {
+	appendWorkflowActivationStarted(options.host, run.id, {
+		activationId: activation.id,
+		nodeId: node.id,
+		graphRevisionId: activation.graphRevisionId,
+		parentActivationIds: activation.parentActivationIds,
+		mapped: activation.mapped,
+	});
+	const lifecycle = options.lifecycle;
+	if (!lifecycle) return;
+	appendWorkflowAttemptActivationStarted(options.host, {
+		attemptId: lifecycle.attemptId,
+		activationId: activation.id,
+		nodeId: node.id,
+		parentActivationIds: activation.parentActivationIds,
+		mapped: activation.mapped,
+	});
+}
+
+function persistMappedPoolActivationCompleted(
+	options: WorkflowRunnerOptions,
+	run: WorkflowRunSnapshot,
+	activation: WorkflowActivation,
+	output: WorkflowActivationOutput,
+): void {
+	appendWorkflowActivationCompleted(options.host, run.id, {
+		activationId: activation.id,
+		output,
+	});
+	const lifecycle = options.lifecycle;
+	if (!lifecycle) return;
+	appendWorkflowAttemptActivationCompleted(options.host, {
+		attemptId: lifecycle.attemptId,
+		activationId: activation.id,
+		output,
+	});
+}
+
+function persistMappedPoolActivationFailed(
+	options: WorkflowRunnerOptions,
+	run: WorkflowRunSnapshot,
+	activation: WorkflowActivation,
+	error: string,
+): void {
+	appendWorkflowActivationFailed(options.host, run.id, {
+		activationId: activation.id,
+		error,
+	});
 	const lifecycle = options.lifecycle;
 	if (!lifecycle) return;
 	appendWorkflowAttemptActivationFailed(options.host, {

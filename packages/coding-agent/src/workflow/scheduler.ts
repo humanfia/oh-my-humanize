@@ -50,6 +50,9 @@ export interface WorkflowSchedulerOptions {
 		node: WorkflowNode,
 		context: WorkflowSchedulerExecutionContext,
 	) => Promise<WorkflowActivationOutput>;
+	onMappedPoolActivationStarted?: (activation: WorkflowActivation, node: WorkflowNode) => void;
+	onMappedPoolActivationCompleted?: (activation: WorkflowActivation, output: WorkflowActivationOutput) => void;
+	onMappedPoolActivationFailed?: (activation: WorkflowActivation, error: string) => void;
 }
 
 export interface WorkflowSchedulerExecutionContext {
@@ -101,6 +104,25 @@ type StartMappedActivationFn = (
 	workerActivationId?: string,
 	verifierActivationId?: string,
 ) => WorkflowActivation | undefined;
+function readMappedPoolItemKey(item: unknown, itemKeyPath: string): string | undefined {
+	const keyValue = readWorkflowState(item as Record<string, unknown>, itemKeyPath);
+	if (typeof keyValue !== "string" || keyValue.length === 0) return undefined;
+	return keyValue;
+}
+
+function allMappedPoolItemsClaimedOrCompleted(
+	spec: RunningMappedPool["spec"],
+	state: Record<string, unknown>,
+	claimedItemKeys: Set<string>,
+	completedItemKeys: Set<string>,
+): boolean {
+	const sourceValue = readWorkflowState(state, spec.itemSource);
+	if (!Array.isArray(sourceValue)) return false;
+	return sourceValue.every(item => {
+		const keyValue = readMappedPoolItemKey(item, spec.itemKey);
+		return keyValue === undefined || claimedItemKeys.has(keyValue) || completedItemKeys.has(keyValue);
+	});
+}
 
 function claimMappedPoolItems(
 	poolActivationId: string,
@@ -122,8 +144,8 @@ function claimMappedPoolItems(
 	for (let index = 0; index < sourceValue.length; index += 1) {
 		if (pool.inFlightActivationIds.size >= spec.maxConcurrency) break;
 		const item = sourceValue[index];
-		const keyValue = readWorkflowState(item as Record<string, unknown>, spec.itemKey);
-		if (typeof keyValue !== "string" || keyValue.length === 0) {
+		const keyValue = readMappedPoolItemKey(item, spec.itemKey);
+		if (keyValue === undefined) {
 			pool.poolActivation.status = "failed";
 			pool.poolActivation.error = `mapped pool "${poolActivation.nodeId}" item at index ${index} has invalid itemKey "${spec.itemKey}"`;
 			return;
@@ -270,21 +292,7 @@ function handleMappedActivationCompletion(
 					return;
 				}
 			}
-			const sourceValue = readWorkflowState(state, pool.spec.itemSource);
-			if (!Array.isArray(sourceValue)) {
-				failPool(
-					mapped.poolActivationId,
-					`mapped pool "${mapped.poolId}" itemSource "${pool.spec.itemSource}" must resolve to an array`,
-				);
-				return;
-			}
-			const allClaimedOrCompleted = sourceValue.every(item => {
-				const keyValue = readWorkflowState(item as Record<string, unknown>, pool.spec.itemKey);
-				return typeof keyValue === "string" && keyValue.length > 0
-					? pool.claimedItemKeys.has(keyValue) || pool.completedItemKeys.has(keyValue)
-					: true;
-			});
-			if (allClaimedOrCompleted) {
+			if (allMappedPoolItemsClaimedOrCompleted(pool.spec, state, pool.claimedItemKeys, pool.completedItemKeys)) {
 				completePool(mapped.poolActivationId);
 			}
 		}
@@ -324,6 +332,7 @@ export async function runWorkflowScheduler(
 	const completedById = seedCompletedById(externalCompletedActivations);
 	const outputsByNode = seedOutputsByNode(externalCompletedActivations);
 	const queuedJoinKeys = new Set<string>();
+	const seededMappedPoolProgress = seedMappedPoolProgress(externalCompletedActivations);
 	const mappedPools = new Map<string, RunningMappedPool>();
 	let nextActivationId = nextActivationOrdinal(externalCompletedActivations);
 	const createNextActivation = (
@@ -409,17 +418,35 @@ export async function runWorkflowScheduler(
 					activation.error = `mapped_pool node "${node.id}" must define mappedPool`;
 					continue;
 				}
-				mappedPools.set(activation.id, {
+				const seededProgress = seededMappedPoolProgress.get(node.id);
+				const pool: RunningMappedPool = {
 					poolActivation: activation,
 					spec,
-					claimedItemKeys: new Set<string>(),
-					completedItemKeys: new Set<string>(),
+					claimedItemKeys: new Set<string>(seededProgress?.claimedItemKeys ?? []),
+					completedItemKeys: new Set<string>(seededProgress?.completedItemKeys ?? []),
 					inFlightActivationIds: new Set<string>(),
 					workerByItemKey: new Map<string, string>(),
 					verifierByItemKey: new Map<string, string>(),
-					claimedCount: 0,
-				});
+					claimedCount: seededProgress?.claimedCount ?? 0,
+				};
+				mappedPools.set(activation.id, pool);
+				options.onMappedPoolActivationStarted?.(activation, node);
 				claimMappedPoolItems(activation.id, state, mappedPools, startMappedActivation, activationLimitReached);
+				if (pool.poolActivation.status === "failed") {
+					options.onMappedPoolActivationFailed?.(
+						pool.poolActivation,
+						pool.poolActivation.error ?? "mapped pool failed during item claim",
+					);
+					stopScheduling = true;
+					continue;
+				}
+				if (
+					pool.poolActivation.status === "running" &&
+					pool.inFlightActivationIds.size === 0 &&
+					allMappedPoolItemsClaimedOrCompleted(spec, state, pool.claimedItemKeys, pool.completedItemKeys)
+				) {
+					completeMappedPool(activation.id);
+				}
 				continue;
 			}
 			startActivation(activation, node);
@@ -471,15 +498,37 @@ export async function runWorkflowScheduler(
 		if (pool?.poolActivation.status !== "running") return;
 		pool.poolActivation.status = "failed";
 		pool.poolActivation.error = reason;
+		options.onMappedPoolActivationFailed?.(pool.poolActivation, reason);
 		stopScheduling = true;
 	};
 	const completeMappedPool = (poolActivationId: string): void => {
 		const pool = mappedPools.get(poolActivationId);
 		if (pool?.poolActivation.status !== "running") return;
-		pool.poolActivation.status = "completed";
-		pool.poolActivation.output = {
+		const output: WorkflowActivationOutput = {
 			summary: `mapped pool "${pool.poolActivation.nodeId}" completed ${pool.completedItemKeys.size} item(s)`,
 		};
+		pool.poolActivation.status = "completed";
+		pool.poolActivation.output = output;
+		delete outputsByNode[pool.poolActivation.nodeId];
+		const completed = completedByNode.get(pool.poolActivation.nodeId) ?? [];
+		completed.push(pool.poolActivation);
+		completedByNode.set(pool.poolActivation.nodeId, completed);
+		completedById.set(pool.poolActivation.id, pool.poolActivation);
+		options.onMappedPoolActivationCompleted?.(pool.poolActivation, output);
+		enqueueReadyChildren(
+			definition,
+			pool.poolActivation,
+			nodesById,
+			completedByNode,
+			completedById,
+			outputsByNode,
+			state,
+			{
+				queue,
+				queuedJoinKeys,
+				createNextActivation,
+			},
+		);
 	};
 	startReadyActivations();
 	while (running.size > 0) {
@@ -705,6 +754,31 @@ function seedOutputsByNode(completedActivations: WorkflowActivation[]): Record<s
 		}
 	}
 	return outputsByNode;
+}
+function seedMappedPoolProgress(
+	completedActivations: WorkflowActivation[],
+): Map<string, Pick<RunningMappedPool, "claimedItemKeys" | "completedItemKeys" | "claimedCount">> {
+	const progressByPoolId = new Map<string, { claimed: Set<string>; completed: Set<string> }>();
+	for (const activation of completedActivations) {
+		if (activation.status !== "completed" || activation.mapped === undefined) continue;
+		const { poolId, itemKey, phase } = activation.mapped;
+		const progress = progressByPoolId.get(poolId) ?? { claimed: new Set<string>(), completed: new Set<string>() };
+		progress.claimed.add(itemKey);
+		if (phase === "reducer") {
+			progress.completed.add(itemKey);
+		}
+		progressByPoolId.set(poolId, progress);
+	}
+	return new Map(
+		[...progressByPoolId.entries()].map(([poolId, progress]) => [
+			poolId,
+			{
+				claimedItemKeys: progress.claimed,
+				completedItemKeys: progress.completed,
+				claimedCount: progress.claimed.size,
+			},
+		]),
+	);
 }
 
 function nextActivationOrdinal(completedActivations: WorkflowActivation[]): number {

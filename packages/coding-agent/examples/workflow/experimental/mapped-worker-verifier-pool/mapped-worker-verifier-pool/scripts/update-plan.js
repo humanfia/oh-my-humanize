@@ -44,4 +44,4 @@ function main() {
 	return { statePatch: patch };
 }
 
-main();
+return main();
