@@ -340,6 +340,9 @@
 - Fixed image paste placeholders falling through to terminal hyperlink settings before `Settings.init()`, so early editor rendering falls back to plain text instead of crashing. ([#3064](https://github.com/can1357/oh-my-pi/issues/3064))
 - Fixed `omp plugin install github:owner/repo` silently keeping the user on a stale commit when re-run on an already-installed GitHub plugin. `bun install <spec>` respects the existing `bun.lock` pin when the spec is unchanged and never re-resolves the remote ref, so the manager now follows a git re-install with `bun update <name>` to refresh the lockfile pin against the upstream. The install transaction also snapshots `bun.lock` up front and routes feature validation, extension validation, and runtime-config save through one rollback path so a failed install can never leave the rejected commit pinned in the active tree or lockfile. First-time installs are unaffected. ([#3063](https://github.com/can1357/oh-my-pi/issues/3063))
 
+- Fixed mapped pool checkpoint/resume so partially completed items resume at the correct phase: worker-completed items schedule verifier, verifier-completed items schedule reducer, and reducer-completed items are not re-run.
+- Fixed mapped pool abort semantics so workflow stop/deadline aborting a mapped child activation marks the pool aborted instead of failed, preserving checkpoint frontier for restart.
+- Fixed mapped pool seed progress so `itemPhaseByKey`, `workerByItemKey`, and `verifierByItemKey` are persisted across restarts, enabling phase-aware resume.
 ## [16.1.3] - 2026-06-19
 
 ### Changed

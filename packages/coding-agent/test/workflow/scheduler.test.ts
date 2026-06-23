@@ -1084,4 +1084,138 @@ edges:
 		const poolActivation = result.activations.find(a => a.nodeId === "pool");
 		expect(poolActivation?.status).toBe("failed");
 	});
+
+	it("resumes worker-only checkpoint by scheduling verifier and reducer without re-running worker", async () => {
+		const definition = parseWorkflowDefinition(mappedPoolWorkflow, { sourcePath: "mapped.yml" });
+		const firstResult = await runWorkflowScheduler(definition, {
+			startNodeId: "pool",
+			initialState: { queue: [{ id: "a" }] },
+			executeNode: async activation => {
+				if (activation.mapped?.phase === "worker") {
+					return { summary: "worker done" };
+				}
+				throw new Error(`should not run ${activation.nodeId} in first run`);
+			},
+		});
+
+		const completedActivations = firstResult.activations.filter(activation => activation.status === "completed");
+		const secondResult = await runWorkflowScheduler(definition, {
+			startNodeId: "pool",
+			startNodeIds: ["pool"],
+			initialState: { queue: [{ id: "a" }] },
+			completedActivations,
+			executeNode: async activation => {
+				if (activation.mapped?.phase === "worker") {
+					throw new Error("should not re-run worker for partially completed item");
+				}
+				if (activation.mapped?.phase === "verifier") {
+					return { summary: "verified", data: { verdict: "continue" } };
+				}
+				return { summary: "reducer done" };
+			},
+		});
+
+		const poolActivation = secondResult.activations.find(a => a.nodeId === "pool");
+		expect(poolActivation?.status).toBe("completed");
+		expect(
+			secondResult.activations.filter(a => a.nodeId === "pool.verifier" && a.status === "completed"),
+		).toHaveLength(1);
+		expect(
+			secondResult.activations.filter(a => a.nodeId === "pool.reducer" && a.status === "completed"),
+		).toHaveLength(1);
+	});
+
+	it("resumes worker-and-verifier checkpoint by scheduling reducer without re-running worker or verifier", async () => {
+		const definition = parseWorkflowDefinition(mappedPoolWorkflow, { sourcePath: "mapped.yml" });
+		const completedActivations: WorkflowActivation[] = [
+			{
+				id: "activation-1",
+				nodeId: "pool",
+				graphRevisionId: "graph-1",
+				status: "completed",
+				parentActivationIds: [],
+			},
+			{
+				id: "activation-2",
+				nodeId: "pool.worker",
+				graphRevisionId: "graph-1",
+				status: "completed",
+				parentActivationIds: ["activation-1"],
+				mapped: {
+					poolId: "pool",
+					poolActivationId: "activation-1",
+					itemKey: "a",
+					item: { id: "a" },
+					phase: "worker",
+				},
+			},
+			{
+				id: "activation-3",
+				nodeId: "pool.verifier",
+				graphRevisionId: "graph-1",
+				status: "completed",
+				parentActivationIds: ["activation-1"],
+				output: { summary: "verified", data: { verdict: "continue" } },
+				mapped: {
+					poolId: "pool",
+					poolActivationId: "activation-1",
+					itemKey: "a",
+					item: { id: "a" },
+					phase: "verifier",
+					workerActivationId: "activation-2",
+				},
+			},
+		];
+
+		const secondResult = await runWorkflowScheduler(definition, {
+			startNodeId: "pool",
+			startNodeIds: ["pool"],
+			initialState: { queue: [{ id: "a" }] },
+			completedActivations,
+			executeNode: async activation => {
+				if (activation.mapped?.phase === "worker" || activation.mapped?.phase === "verifier") {
+					throw new Error("should not re-run worker or verifier for partially completed item");
+				}
+				return { summary: "reducer resumed" };
+			},
+		});
+
+		const poolActivation = secondResult.activations.find(a => a.nodeId === "pool");
+		expect(poolActivation?.status).toBe("completed");
+		const reducers = secondResult.activations.filter(a => a.nodeId === "pool.reducer" && a.status === "completed");
+		expect(reducers).toHaveLength(1);
+		expect(reducers[0]?.mapped?.workerActivationId).toBe("activation-2");
+		expect(reducers[0]?.mapped?.verifierActivationId).toBe("activation-3");
+		expect(secondResult.activations.filter(a => a.mapped !== undefined && a.nodeId !== "pool")).toHaveLength(1);
+	});
+
+	it("aborts mapped pool without failing when a child activation is aborted", async () => {
+		const definition = parseWorkflowDefinition(mappedPoolWorkflow, { sourcePath: "mapped.yml" });
+		const started: Array<{ activation: WorkflowActivation; nodeId: string }> = [];
+		const aborted: Array<{ activation: WorkflowActivation; reason: string }> = [];
+		const failed: Array<{ activation: WorkflowActivation; error: string }> = [];
+
+		const result = await runWorkflowScheduler(definition, {
+			startNodeId: "pool",
+			initialState: { queue: [{ id: "a" }] },
+			executeNode: async activation => {
+				if (activation.mapped?.phase === "worker") {
+					return { summary: "worker done" };
+				}
+				throw new Error("should not reach verifier before abort");
+			},
+			nodeAbortSignalForActivation: activation =>
+				activation.mapped?.phase === "verifier" ? AbortSignal.abort("test abort") : undefined,
+			onMappedPoolActivationStarted: (activation, node) => started.push({ activation, nodeId: node.id }),
+			onMappedPoolActivationAborted: (activation, reason) => aborted.push({ activation, reason }),
+			onMappedPoolActivationFailed: (activation, error) => failed.push({ activation, error }),
+		});
+
+		const poolActivation = result.activations.find(a => a.nodeId === "pool");
+		expect(poolActivation?.status).toBe("aborted");
+		expect(aborted).toHaveLength(1);
+		expect(aborted[0].activation.nodeId).toBe("pool");
+		expect(failed).toHaveLength(0);
+		expect(result.stopped).toBe(true);
+	});
 });

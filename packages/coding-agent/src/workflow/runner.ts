@@ -139,6 +139,8 @@ export async function runWorkflow(options: WorkflowRunnerOptions): Promise<Workf
 				persistMappedPoolActivationStarted(options, run, activation, node),
 			onMappedPoolActivationCompleted: (activation, output) =>
 				persistMappedPoolActivationCompleted(options, run, activation, output),
+			onMappedPoolActivationAborted: (activation, reason) =>
+				persistMappedPoolActivationAborted(options, run, activation, reason),
 			onMappedPoolActivationFailed: (activation, error) =>
 				persistMappedPoolActivationFailed(options, run, activation, error),
 		});
@@ -303,12 +305,16 @@ function workflowCheckpointReason(
 	signal: AbortSignal | undefined,
 ): string | undefined {
 	if (scheduler.limitReached) return "activation limit reached";
-	if (scheduler.frontierNodeIds.length === 0 || !signal?.aborted) return undefined;
-	const reason: unknown = signal.reason;
-	if (reason instanceof Error) return reason.message;
-	if (typeof reason === "string" && reason.length > 0) return reason;
-	if (reason !== undefined && reason !== null) return String(reason);
-	return "workflow stopped";
+	if (scheduler.frontierNodeIds.length === 0) return undefined;
+	if (signal?.aborted) {
+		const reason: unknown = signal.reason;
+		if (reason instanceof Error) return reason.message;
+		if (typeof reason === "string" && reason.length > 0) return reason;
+		if (reason !== undefined && reason !== null) return String(reason);
+		return "workflow stopped";
+	}
+	if (scheduler.stopped) return "workflow stopped";
+	return undefined;
 }
 
 function failedWorkflowFrontierNodeIds(scheduler: WorkflowSchedulerResult): string[] {
@@ -607,6 +613,25 @@ function persistMappedPoolActivationFailed(
 		attemptId: lifecycle.attemptId,
 		activationId: activation.id,
 		error,
+	});
+}
+function persistMappedPoolActivationAborted(
+	options: WorkflowRunnerOptions,
+	run: WorkflowRunSnapshot,
+	activation: WorkflowActivation,
+	reason: string,
+): void {
+	appendWorkflowActivationAborted(options.host, run.id, {
+		activationId: activation.id,
+		reason,
+	});
+	const lifecycle = options.lifecycle;
+	if (!lifecycle) return;
+	appendWorkflowAttemptActivationAborted(options.host, {
+		attemptId: lifecycle.attemptId,
+		activationId: activation.id,
+		nodeId: activation.nodeId,
+		reason,
 	});
 }
 
