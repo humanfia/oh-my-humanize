@@ -13,6 +13,9 @@
 
 ### Fixed
 
+- Fixed workflow-owned subagent abort handling so `/workflow stop` waits for
+  subagent abort teardown before checkpointing, preventing live bash/eval tool
+  work from outliving an aborted workflow agent node.
 - Fixed workflow shell script nodes so workflow stop and node abort signals
   terminate nested shell child processes instead of leaving validation commands
   running after checkpoint.

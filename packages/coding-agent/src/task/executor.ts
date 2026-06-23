@@ -1918,6 +1918,21 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		let sessionOpenedAt: number | undefined;
 		let sessionCreatedAt: number | undefined;
 		let readyAt: number | undefined;
+		let activeSessionAbort: Promise<void> | undefined;
+		const abortActiveSubagentSession = (session: AgentSession): void => {
+			session.abortBash?.();
+			session.abortEval?.();
+			activeSessionAbort ??= session.abort().catch(error => {
+				logger.warn("runSubprocess: subagent abort teardown failed", { id, error: String(error) });
+			});
+		};
+		const waitForActiveSessionAbort = async (): Promise<void> => {
+			if (!activeSessionAbort) return;
+			const settled = await Promise.race([activeSessionAbort.then(() => true), Bun.sleep(3_000).then(() => false)]);
+			if (!settled) {
+				logger.warn("runSubprocess: timed out waiting for subagent abort teardown", { id });
+			}
+		};
 
 		try {
 			checkAbort();
@@ -2175,7 +2190,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			abortSignal.addEventListener(
 				"abort",
 				() => {
-					void session.abort();
+					abortActiveSubagentSession(session);
 				},
 				{ once: true, signal: sessionAbortController.signal },
 			);
@@ -2183,7 +2198,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// the awaited setup above, the listener registration races the dispatch
 			// and may not observe the already-fired abort event. Mirror it manually.
 			if (abortSignal.aborted) {
-				void session.abort();
+				abortActiveSubagentSession(session);
 			}
 
 			const pendingExtensionMessages: Array<Promise<unknown>> = [];
@@ -2283,6 +2298,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					abortReasonText ??= monitor.resolveAbortReasonText();
 				}
 				if (exitCode === 0) exitCode = 1;
+				await waitForActiveSessionAbort();
 			}
 			sessionAbortController.abort();
 			if (unsubscribe) {

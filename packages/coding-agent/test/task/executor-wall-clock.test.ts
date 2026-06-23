@@ -113,6 +113,63 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		expect(elapsedMs).toBeLessThan(10_000);
 	});
 
+	it("aborts active subagent tool executions when the caller aborts the subagent", async () => {
+		const settings = Settings.isolated({ "task.maxRuntimeMs": 0 });
+		const { promise: promptStarted, resolve: resolvePromptStarted } = Promise.withResolvers<void>();
+		const { promise: hang, resolve: releaseHang } = Promise.withResolvers<void>();
+		const controller = new AbortController();
+		let abortCalls = 0;
+		let abortBashCalls = 0;
+		let abortEvalCalls = 0;
+		const session: Partial<AgentSession> = {
+			state: { messages: [] } as never,
+			agent: { state: { systemPrompt: ["test"] } } as never,
+			extensionRunner: undefined as never,
+			sessionManager: { appendSessionInit: () => {} } as never,
+			getActiveToolNames: () => ["bash", "eval", "yield"],
+			setActiveToolsByName: async () => {},
+			subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
+			prompt: async (_text: string, _options?: PromptOptions) => {
+				resolvePromptStarted();
+				await hang;
+				return true;
+			},
+			waitForIdle: async () => {
+				await hang;
+			},
+			getLastAssistantMessage: () => undefined,
+			abort: async () => {
+				abortCalls += 1;
+				releaseHang();
+			},
+			abortBash: () => {
+				abortBashCalls += 1;
+			},
+			abortEval: () => {
+				abortEvalCalls += 1;
+			},
+			dispose: async () => {},
+		};
+		mockCreateAgentSession(session as AgentSession);
+
+		const run = runSubprocess({
+			...baseOptions,
+			id: "subagent-external-abort-tools",
+			settings,
+			signal: controller.signal,
+		});
+		await promptStarted;
+
+		controller.abort(new Error("workflow stop requested"));
+		const result = await run;
+
+		expect(result.aborted).toBe(true);
+		expect(result.exitCode).toBe(1);
+		expect(abortCalls).toBeGreaterThanOrEqual(1);
+		expect(abortBashCalls).toBeGreaterThanOrEqual(1);
+		expect(abortEvalCalls).toBeGreaterThanOrEqual(1);
+	});
+
 	it("does not abort early when the runtime budget is unlimited", async () => {
 		// Stub session resolves immediately to a no-op yield so we don't actually
 		// hang; we only need to assert that NO timeout fires when maxRuntimeMs=0.
