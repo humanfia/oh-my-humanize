@@ -1,3 +1,4 @@
+import { extractRetryHint } from "@oh-my-pi/pi-utils";
 import { workflowAgentTaskIdForNode } from "./agent-task-id";
 import type { WorkflowScriptLanguage } from "./definition";
 import { formatWorkflowAgentWorkItemLabel } from "./display";
@@ -15,6 +16,8 @@ const WORKFLOW_SUMMARY_TRUNCATION_SUFFIX =
 export interface WorkflowSessionRuntimeOptions {
 	cwd: string;
 	agentTaskRetryPolicy?: WorkflowAgentTaskRetryPolicy;
+	retryDelay?: WorkflowRetryDelayRunner;
+	retryRandom?: WorkflowRetryRandomSource;
 	runEvalScript?: WorkflowScriptEvalRunner;
 	runShellScript?: WorkflowShellScriptRunner;
 	runAgentTask?: WorkflowAgentTaskRunner;
@@ -25,7 +28,11 @@ export interface WorkflowAgentTaskRetryPolicy {
 	maxAttempts?: number;
 	baseDelayMs?: number;
 	maxDelayMs?: number;
+	jitterRatio?: number;
 }
+
+export type WorkflowRetryDelayRunner = (delayMs: number, signal: AbortSignal | undefined) => Promise<void>;
+export type WorkflowRetryRandomSource = () => number;
 
 export interface WorkflowAgentTaskRequest {
 	agent: string;
@@ -210,12 +217,14 @@ interface NormalizedWorkflowAgentTaskRetryPolicy {
 	maxAttempts: number;
 	baseDelayMs: number;
 	maxDelayMs: number;
+	jitterRatio: number;
 }
 
 const DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY: NormalizedWorkflowAgentTaskRetryPolicy = {
 	maxAttempts: 6,
 	baseDelayMs: 30_000,
 	maxDelayMs: 300_000,
+	jitterRatio: 0.25,
 };
 
 async function runAgentTaskWithTransientRetry(
@@ -229,15 +238,19 @@ async function runAgentTaskWithTransientRetry(
 	let lastTransientResult: WorkflowAgentTaskResult | undefined;
 	for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
 		throwIfWorkflowSignalAborted(request.signal);
+		let transientReason: string;
 		try {
 			const result = await options.runAgentTask(request);
-			if (!workflowAgentTaskResultIsTransientFailure(result)) return result;
+			transientReason = workflowAgentTaskFailureReason(result);
+			if (result.exitCode === 0 || !workflowAgentTaskReasonIsTransient(transientReason)) return result;
 			lastTransientResult = result;
 			if (attempt >= policy.maxAttempts) return result;
 		} catch (error) {
-			if (!workflowAgentTaskErrorIsTransient(error) || attempt >= policy.maxAttempts) throw error;
+			if (workflowErrorWasAborted(error)) throw error;
+			transientReason = formatWorkflowErrorReason(error);
+			if (!workflowAgentTaskReasonIsTransient(transientReason) || attempt >= policy.maxAttempts) throw error;
 		}
-		await sleepBeforeWorkflowAgentTaskRetry(policy, attempt, request.signal);
+		await sleepBeforeWorkflowAgentTaskRetry(options, policy, attempt, request.signal, transientReason);
 	}
 	if (lastTransientResult !== undefined) return lastTransientResult;
 	return {
@@ -262,10 +275,15 @@ function normalizeWorkflowAgentTaskRetryPolicy(
 		policy?.maxDelayMs,
 		DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY.maxDelayMs,
 	);
+	const jitterRatio = normalizeRetryJitterRatio(
+		policy?.jitterRatio,
+		DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY.jitterRatio,
+	);
 	return {
 		maxAttempts,
 		baseDelayMs,
 		maxDelayMs: Math.max(baseDelayMs, maxDelayMs),
+		jitterRatio,
 	};
 }
 
@@ -279,18 +297,13 @@ function normalizeNonNegativeInteger(value: number | undefined, fallback: number
 	return Math.max(0, Math.floor(value));
 }
 
-function workflowAgentTaskResultIsTransientFailure(result: WorkflowAgentTaskResult): boolean {
-	if (result.exitCode === 0) return false;
-	return workflowAgentTaskReasonIsTransient(workflowAgentTaskFailureReason(result));
+function normalizeRetryJitterRatio(value: number | undefined, fallback: number): number {
+	if (value === undefined || !Number.isFinite(value)) return fallback;
+	return Math.min(1, Math.max(0, value));
 }
 
 function workflowAgentTaskFailureReason(result: WorkflowAgentTaskResult): string {
 	return [result.error, result.stderr, result.output].filter((part): part is string => part !== undefined).join("\n");
-}
-
-function workflowAgentTaskErrorIsTransient(error: unknown): boolean {
-	if (workflowErrorWasAborted(error)) return false;
-	return workflowAgentTaskReasonIsTransient(formatWorkflowErrorReason(error));
 }
 
 function workflowAgentTaskReasonIsTransient(reason: string): boolean {
@@ -306,22 +319,45 @@ function formatWorkflowErrorReason(error: unknown): string {
 }
 
 async function sleepBeforeWorkflowAgentTaskRetry(
+	options: WorkflowSessionRuntimeOptions,
 	policy: NormalizedWorkflowAgentTaskRetryPolicy,
 	completedAttempt: number,
 	signal: AbortSignal | undefined,
+	transientReason: string,
 ): Promise<void> {
-	const delayMs = workflowAgentTaskRetryDelayMs(policy, completedAttempt);
+	const delayMs = workflowAgentTaskRetryDelayMs(
+		policy,
+		completedAttempt,
+		transientReason,
+		options.retryRandom ?? Math.random,
+	);
 	if (delayMs <= 0) return;
-	await sleepWorkflowRetryDelay(delayMs, signal);
+	throwIfWorkflowSignalAborted(signal);
+	await (options.retryDelay ?? sleepWorkflowRetryDelay)(delayMs, signal);
+	throwIfWorkflowSignalAborted(signal);
 }
 
 function workflowAgentTaskRetryDelayMs(
 	policy: NormalizedWorkflowAgentTaskRetryPolicy,
 	completedAttempt: number,
+	transientReason: string,
+	random: WorkflowRetryRandomSource,
 ): number {
 	const exponent = Math.max(0, completedAttempt - 1);
-	const delay = policy.baseDelayMs * 2 ** exponent;
-	return Math.min(policy.maxDelayMs, delay);
+	const exponentialDelay = policy.baseDelayMs * 2 ** exponent;
+	const retryHintMs = extractRetryHint(undefined, transientReason);
+	const floorDelay = Math.max(exponentialDelay, retryHintMs ?? 0);
+	const cappedDelay = Math.min(policy.maxDelayMs, floorDelay);
+	if (policy.jitterRatio <= 0 || cappedDelay <= 0) return cappedDelay;
+	const jitterRange = Math.floor(cappedDelay * policy.jitterRatio);
+	if (jitterRange <= 0) return cappedDelay;
+	const jitter = Math.floor(jitterRange * normalizeRetryRandomValue(random()));
+	return Math.min(policy.maxDelayMs, cappedDelay + jitter);
+}
+
+function normalizeRetryRandomValue(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.min(1, Math.max(0, value));
 }
 
 async function sleepWorkflowRetryDelay(delayMs: number, signal: AbortSignal | undefined): Promise<void> {

@@ -6,6 +6,8 @@ const QUOTA_RESET_PATTERN = /reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/
 const PLEASE_RETRY_PATTERN = /Please retry in ([0-9.]+)(ms|s)/i;
 // JSON field: "retryDelay": "34.074824224s"
 const RETRY_DELAY_FIELD_PATTERN = /"retryDelay":\s*"([0-9.]+)(ms|s)"/i;
+// Normalized error suffix: retry-after-ms=400 / retry-after-ms: 400
+const RETRY_AFTER_MS_PATTERN = /retry-after-ms\s*[:=]\s*(\d+)/i;
 // "try again in 250ms" / "try again in 12s" / "try again in 12sec" /
 // "try again in 5 min" / "try again in ~158 min." / "try again in 2h" /
 // "try again in 90 minutes" / "try again in 1 hour"
@@ -31,6 +33,11 @@ const TRY_AGAIN_PATTERN = /try again in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mi
 export function extractRetryHint(source: Response | Headers | null | undefined, body?: string): number | undefined {
 	const headers = source instanceof Headers ? source : (source?.headers ?? undefined);
 	if (headers) {
+		const retryAfterMs = headers.get("retry-after-ms");
+		if (retryAfterMs) {
+			const milliseconds = Number(retryAfterMs);
+			if (Number.isFinite(milliseconds) && milliseconds > 0) return milliseconds;
+		}
 		const retryAfter = headers.get("retry-after");
 		if (retryAfter) {
 			const seconds = Number(retryAfter);
@@ -54,6 +61,12 @@ export function extractRetryHint(source: Response | Headers | null | undefined, 
 	}
 
 	if (!body) return undefined;
+
+	const retryAfterMsMatch = RETRY_AFTER_MS_PATTERN.exec(body);
+	if (retryAfterMsMatch?.[1]) {
+		const milliseconds = Number.parseInt(retryAfterMsMatch[1], 10);
+		if (Number.isFinite(milliseconds) && milliseconds > 0) return milliseconds;
+	}
 
 	const quotaMatch = QUOTA_RESET_PATTERN.exec(body);
 	if (quotaMatch) {

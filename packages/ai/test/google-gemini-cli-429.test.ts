@@ -35,6 +35,11 @@ describe("google-gemini-cli 429 fail-fast detection", () => {
 });
 
 describe("extractRetryHint – header parsing", () => {
+	it("reads retry-after-ms header as milliseconds", () => {
+		const headers = new Headers({ "retry-after-ms": "400" });
+		expect(extractRetryHint(headers)).toBe(400);
+	});
+
 	it("reads retry-after header as seconds", () => {
 		const headers = new Headers({ "retry-after": "5" });
 		expect(extractRetryHint(headers)).toBe(5_000);
@@ -58,6 +63,10 @@ describe("extractRetryHint – body text parsing", () => {
 
 	it("parses 'retryDelay' JSON field in milliseconds", () => {
 		expect(extractRetryHint(undefined, '"retryDelay": "500ms"')).toBe(500);
+	});
+
+	it("parses normalized retry-after-ms message hints", () => {
+		expect(extractRetryHint(undefined, "429 Too Many Requests retry-after-ms=400")).toBe(400);
 	});
 
 	it("parses 'Please retry in Xs' pattern", () => {

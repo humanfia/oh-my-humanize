@@ -46,6 +46,85 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 		expect(output.summary).toBe("agent completed after transient retry");
 	});
 
+	it("honors retry-after hints and jitter for transient workflow agent retries", async () => {
+		const delays: number[] = [];
+		let calls = 0;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 1_000, jitterRatio: 0.5 },
+			retryDelay: async delayMs => {
+				delays.push(delayMs);
+			},
+			retryRandom: () => 0.5,
+			runAgentTask: async () => {
+				calls += 1;
+				if (calls === 1) {
+					return {
+						exitCode: 1,
+						output: "",
+						error: "429 Too Many Requests retry-after-ms=400",
+					};
+				}
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "agent recovered after provider retry" }),
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "build", type: "agent", prompt: "Build the thing." };
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "builder",
+			prompt: node.prompt,
+		});
+
+		expect(calls).toBe(2);
+		expect(delays).toEqual([500]);
+		expect(output.summary).toBe("agent recovered after provider retry");
+	});
+
+	it("caps retry-after hints at the workflow agent retry max delay", async () => {
+		const delays: number[] = [];
+		let calls = 0;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 1_000, jitterRatio: 0 },
+			retryDelay: async delayMs => {
+				delays.push(delayMs);
+			},
+			runAgentTask: async () => {
+				calls += 1;
+				if (calls === 1) {
+					return {
+						exitCode: 1,
+						output: "",
+						error: "503 Service Unavailable retry-after-ms=5000",
+					};
+				}
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "agent recovered after capped retry" }),
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "build", type: "agent", prompt: "Build the thing." };
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "builder",
+			prompt: node.prompt,
+		});
+
+		expect(calls).toBe(2);
+		expect(delays).toEqual([1_000]);
+		expect(output.summary).toBe("agent recovered after capped retry");
+	});
+
 	it("does not retry non-transient agent failures", async () => {
 		let calls = 0;
 		const host = createSessionWorkflowRuntimeHost({

@@ -5,6 +5,12 @@
 ### Changed
 
 - Changed the public application name constant from `omp` to `omh` while preserving the existing `.omp` compatibility config root.
+
+### Fixed
+
+- Fixed shared retry hint parsing so normalized `retry-after-ms` headers and
+  error message suffixes are recognized as millisecond retry delays.
+
 ## [16.1.8] - 2026-06-20
 
 ### Added
