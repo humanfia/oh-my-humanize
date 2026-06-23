@@ -635,6 +635,87 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
 	});
 
+	it("derives free-form canary tuple ids from task.md before reusing attempt logs", async () => {
+		const cwd = await createTempDir();
+		const tupleId = "C93-K8S-PAR-0a431d480";
+		const command = "go test ./pkg/scheduler/backend/queue ./pkg/scheduler/framework/runtime";
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				`Objective: Canary tuple \`${tupleId}\` should reuse lane-owned declared validation evidence.`,
+				"Acceptance Criteria:",
+				"- Do not rerun final validation directly.",
+				"Validation Command:",
+				command,
+				"Lane Ownership:",
+				"test lane owns regression and validation evidence.",
+				"Stop Conditions:",
+				"stop on fabricated progress.",
+			].join("\n"),
+		);
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-1-stdout-${tupleId}.txt`), "ok\n");
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-1-stderr-${tupleId}.txt`), "");
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`), "0\n");
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-2-stdout-${tupleId}.txt`), "ok cached\n");
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-2-stderr-${tupleId}.txt`), "");
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`), "0\n");
+		await Bun.write(
+			path.join(cwd, `workflow-output/tests-lane-${tupleId}.json`),
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementTests",
+					status: "complete",
+					validation: {
+						command,
+						environment: {},
+						result: "pass",
+						attempts: [
+							{
+								attempt: 1,
+								stdout_path: `workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+								stderr_path: `workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+								exitcode_path: `workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+								result: "pass",
+							},
+							{
+								attempt: 2,
+								stdout_path: `workflow-output/validation-attempt-2-stdout-${tupleId}.txt`,
+								stderr_path: `workflow-output/validation-attempt-2-stderr-${tupleId}.txt`,
+								exitcode_path: `workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`,
+								result: "pass",
+							},
+						],
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "run-declared-validation.js", {});
+
+		expect(result.verdict).toBe("PASS");
+		expect(result.data?.validation).toMatchObject({
+			result: "passed",
+			exitCode: 0,
+			stdoutArtifact: `workflow-output/validation-attempt-2-stdout-${tupleId}.txt`,
+			stderrArtifact: `workflow-output/validation-attempt-2-stderr-${tupleId}.txt`,
+			exitCodeArtifact: `workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`,
+			reusedFromTestLane: `workflow-output/tests-lane-${tupleId}.json`,
+		});
+		expect(result.data?.validation?.reusedArtifactHashes).toMatchObject({
+			[`workflow-output/validation-attempt-2-stdout-${tupleId}.txt`]: await sha256File(
+				path.join(cwd, `workflow-output/validation-attempt-2-stdout-${tupleId}.txt`),
+			),
+			[`workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`]: await sha256File(
+				path.join(cwd, `workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`),
+			),
+		});
+		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
+	});
+
 	it("accepts markdown-coded declared validation after final validation supersedes failed attempts", async () => {
 		const cwd = await createTempDir();
 		const tupleId = "C92-K8S-PAR-test";

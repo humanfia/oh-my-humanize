@@ -39,20 +39,33 @@ async function tupleIdFromRunArtifacts() {
 	for (const file of ["monitor-assignment.json", "manifest-entry.json"]) {
 		try {
 			const parsed = await Bun.file(file).json();
-			if (typeof parsed.tupleId === "string" && parsed.tupleId.trim()) return parsed.tupleId.trim();
-			if (typeof parsed.tuple_id === "string" && parsed.tuple_id.trim()) return parsed.tuple_id.trim();
+			const tupleId = normalizeTupleId(parsed.tupleId) || normalizeTupleId(parsed.tuple_id);
+			if (tupleId) return tupleId;
 		} catch {
 			// Try the next source.
 		}
 	}
 	try {
 		const taskText = await Bun.file("task.md").text();
-		const match = taskText.match(/(?:tuple|tuple id|tuple-id)\s*:\s*([^\n]+)/iu);
-		if (match?.[1]?.trim()) return match[1].trim();
+		const taskTuple = tupleIdFromTaskText(taskText);
+		if (taskTuple) return taskTuple;
 	} catch {
 		// Tuple ids are optional for local demos.
 	}
 	return "";
+}
+
+function tupleIdFromTaskText(text) {
+	const match = /\b(?:tuple|tuple id|tuple-id|monitor|run id|canary tuple)\b[^A-Za-z0-9]+([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+){1,8})/iu.exec(
+		text,
+	);
+	return normalizeTupleId(match?.[1]);
+}
+
+function normalizeTupleId(value) {
+	if (typeof value !== "string") return "";
+	const trimmed = value.trim().replace(/^`+|`+$/gu, "");
+	return /^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+){1,8}$/u.test(trimmed) ? trimmed : "";
 }
 
 function compactValue(value, depth) {

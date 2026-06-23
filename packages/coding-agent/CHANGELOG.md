@@ -13,6 +13,10 @@
 
 ### Fixed
 
+- Fixed the experimental parallel implementation/review workflow so tuple-scoped
+  canary IDs such as `C93-K8S-PAR-...` are recognized from task contracts by
+  every workflow finalization script instead of leaving unscoped artifacts and
+  rejecting reusable test-lane validation evidence.
 - Fixed workflow-owned subagent abort handling so `/workflow stop` waits for
   subagent abort teardown before checkpointing, preventing live bash/eval tool
   work from outliving an aborted workflow agent node.

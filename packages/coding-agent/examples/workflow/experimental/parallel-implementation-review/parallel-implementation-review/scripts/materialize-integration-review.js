@@ -93,8 +93,8 @@ async function tupleIdFromRunArtifacts(taskText) {
 	if (monitorTuple) return monitorTuple;
 	const manifestTuple = await tupleIdFromJsonFile("manifest-entry.json");
 	if (manifestTuple) return manifestTuple;
-	const taskTuple = /(?:tuple|monitor)[^A-Za-z0-9]+([A-Z][0-9]{2}-T[0-9]{2}(?:-[A-Za-z0-9]+)?)/u.exec(taskText);
-	if (taskTuple?.[1]) return taskTuple[1];
+	const taskTuple = tupleIdFromTaskText(taskText);
+	if (taskTuple) return taskTuple;
 	return "";
 }
 
@@ -102,10 +102,23 @@ async function tupleIdFromJsonFile(filePath) {
 	try {
 		const data = await Bun.file(filePath).json();
 		const candidate = stringField(data, "tupleId") || stringField(data, "tuple_id");
-		return candidate.trim();
+		return normalizeTupleId(candidate);
 	} catch {
 		return "";
 	}
+}
+
+function tupleIdFromTaskText(text) {
+	const match = /\b(?:tuple|tuple id|tuple-id|monitor|run id|canary tuple)\b[^A-Za-z0-9]+([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+){1,8})/iu.exec(
+		text,
+	);
+	return normalizeTupleId(match?.[1]);
+}
+
+function normalizeTupleId(value) {
+	if (typeof value !== "string") return "";
+	const trimmed = value.trim().replace(/^`+|`+$/gu, "");
+	return /^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+){1,8}$/u.test(trimmed) ? trimmed : "";
 }
 
 function latestCompletedActivation(nodeId) {
