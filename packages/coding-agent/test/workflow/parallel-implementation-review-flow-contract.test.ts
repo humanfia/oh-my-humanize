@@ -540,6 +540,101 @@ describe("parallel-implementation-review flow contract", () => {
 		]);
 	});
 
+	it("reuses C92-style test-lane latest attempt aliases without rerunning", async () => {
+		const cwd = await createTempDir();
+		const tupleId = "C92R3-K8S-PAR-test";
+		const command = "./workflow-output/run-k8s-deep-validation.sh";
+		const environment = {
+			GOTMPDIR: "/tmp/omh-run-tmp/C92R3-K8S-PAR-test/go-tmp",
+			GOCACHE: "/tmp/omh-cache/go-build",
+			GOMODCACHE: "/tmp/omh-cache/go-mod",
+		};
+		await writeTupleFiles(cwd, tupleId);
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Validation Command:",
+				command,
+				"Validation Environment:",
+				Object.entries(environment)
+					.map(([key, value]) => `${key}=${value}`)
+					.join(" "),
+			].join("\n"),
+		);
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-4-stdout-${tupleId}.txt`), "ok\n");
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-4-stderr-${tupleId}.txt`), "");
+		await Bun.write(path.join(cwd, `workflow-output/validation-attempt-4-exitcode-${tupleId}.txt`), "0\n");
+		await Bun.write(path.join(cwd, `workflow-output/scheduler-deep-coverage-${tupleId}.out`), "mode: atomic\n");
+		await Bun.write(
+			path.join(cwd, `workflow-output/validation-attempt-4-metadata-${tupleId}.json`),
+			`${JSON.stringify(
+				{
+					attempt: 4,
+					command,
+					environment,
+					exit_code: 0,
+					result: "pass",
+					evidence_paths: {
+						stdout: `workflow-output/validation-attempt-4-stdout-${tupleId}.txt`,
+						stderr: `workflow-output/validation-attempt-4-stderr-${tupleId}.txt`,
+						exitcode: `workflow-output/validation-attempt-4-exitcode-${tupleId}.txt`,
+						coverage: `workflow-output/scheduler-deep-coverage-${tupleId}.out`,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(
+			path.join(cwd, `workflow-output/tests-lane-${tupleId}.json`),
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementTests",
+					status: "complete",
+					validation: {
+						command,
+						environment,
+						result: "pass",
+						latest_attempt: 4,
+						latest_attempt_metadata: `workflow-output/validation-attempt-4-metadata-${tupleId}.json`,
+						latest_attempt_stdout: `workflow-output/validation-attempt-4-stdout-${tupleId}.txt`,
+						latest_attempt_stderr: `workflow-output/validation-attempt-4-stderr-${tupleId}.txt`,
+						latest_attempt_exitcode: `workflow-output/validation-attempt-4-exitcode-${tupleId}.txt`,
+						coverage_profile: `workflow-output/scheduler-deep-coverage-${tupleId}.out`,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "run-declared-validation.js", {});
+
+		expect(result.verdict).toBe("PASS");
+		expect(result.data?.validation).toMatchObject({
+			result: "passed",
+			exitCode: 0,
+			stdoutArtifact: `workflow-output/validation-attempt-4-stdout-${tupleId}.txt`,
+			stderrArtifact: `workflow-output/validation-attempt-4-stderr-${tupleId}.txt`,
+			exitCodeArtifact: `workflow-output/validation-attempt-4-exitcode-${tupleId}.txt`,
+			reusedFromTestLane: `workflow-output/tests-lane-${tupleId}.json`,
+		});
+		expect(result.data?.validation?.reusedArtifactHashes).toMatchObject({
+			[`workflow-output/validation-attempt-4-stdout-${tupleId}.txt`]: await sha256File(
+				path.join(cwd, `workflow-output/validation-attempt-4-stdout-${tupleId}.txt`),
+			),
+			[`workflow-output/validation-attempt-4-exitcode-${tupleId}.txt`]: await sha256File(
+				path.join(cwd, `workflow-output/validation-attempt-4-exitcode-${tupleId}.txt`),
+			),
+			[`workflow-output/scheduler-deep-coverage-${tupleId}.out`]: await sha256File(
+				path.join(cwd, `workflow-output/scheduler-deep-coverage-${tupleId}.out`),
+			),
+		});
+		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
+	});
+
 	it("accepts markdown-coded declared validation after final validation supersedes failed attempts", async () => {
 		const cwd = await createTempDir();
 		const tupleId = "C92-K8S-PAR-test";

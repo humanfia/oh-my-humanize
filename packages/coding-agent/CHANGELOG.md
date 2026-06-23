@@ -48,6 +48,9 @@
 - Fixed the experimental parallel implementation workflow so final validation
   normalizes Markdown-coded task validation commands and environment entries
   before reusing immutable test-lane evidence.
+- Fixed the experimental parallel implementation workflow so final validation
+  reuses C92-style test-lane `latest_attempt_*` validation artifacts instead of
+  failing after a long declared validation already passed.
 - Fixed the experimental parallel implementation workflow so the evidence
   guard normalizes Markdown-coded task validation contracts before accepting
   workflow-owned final validation artifacts.

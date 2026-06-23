@@ -268,12 +268,19 @@ function validationPathField(data, validation, latestAttempt, kind) {
 }
 
 function validationPathFieldNames(kind) {
-	if (kind === "stdout") return ["stdout_path", "latest_stdout", "canonical_stdout", "stdoutArtifact", "stdout"];
-	if (kind === "stderr") return ["stderr_path", "latest_stderr", "canonical_stderr", "stderrArtifact", "stderr"];
+	if (kind === "stdout") {
+		return ["stdout_path", "latest_stdout", "latest_attempt_stdout", "canonical_stdout", "stdoutArtifact", "stdout"];
+	}
+	if (kind === "stderr") {
+		return ["stderr_path", "latest_stderr", "latest_attempt_stderr", "canonical_stderr", "stderrArtifact", "stderr"];
+	}
 	return [
 		"exit_code_path",
 		"exitcode_path",
 		"latest_exit_code",
+		"latest_exitcode",
+		"latest_attempt_exit_code",
+		"latest_attempt_exitcode",
 		"canonical_exit_code",
 		"exitCodeArtifact",
 		"exitCodeFile",
