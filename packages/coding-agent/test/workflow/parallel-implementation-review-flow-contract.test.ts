@@ -22,6 +22,7 @@ interface ScriptResult {
 		validation_environment?: Record<string, string>;
 		review_handoff_artifact?: string;
 		review_handoff_bytes?: number;
+		changed_files?: string[];
 		preexisting_final_artifacts?: Array<{
 			original: string;
 			quarantine: string;
@@ -1653,7 +1654,9 @@ describe("parallel-implementation-review flow contract", () => {
 		await Bun.write(path.join(cwd, "src", "walk.rs"), "fn walk() {}\n");
 		await Bun.write(path.join(cwd, "tests", "tests.rs"), "test baseline\n");
 		await $`git add src/walk.rs tests/tests.rs`.cwd(cwd).quiet();
-		await $`git -c user.name=omh-test -c user.email=omh-test@example.invalid commit -m baseline`.cwd(cwd).quiet();
+		await $`git -c user.name=omh-test -c user.email=omh-test@example.invalid -c commit.gpgsign=false commit -m baseline`
+			.cwd(cwd)
+			.quiet();
 		await Bun.write(path.join(cwd, "src", "walk.rs"), "fn walk() { /* changed */ }\n");
 		await Bun.write(path.join(cwd, "tests", "tests.rs"), "test baseline\ntest new behavior\n");
 		await writeReadyEvidence(cwd, "P06-T06-test");
@@ -1677,7 +1680,9 @@ describe("parallel-implementation-review flow contract", () => {
 		await Bun.write(path.join(cwd, "src", "walk.rs"), "fn walk() {}\n");
 		await Bun.write(path.join(cwd, "tests", "tests.rs"), "test baseline\n");
 		await $`git add src/walk.rs tests/tests.rs`.cwd(cwd).quiet();
-		await $`git -c user.name=omh-test -c user.email=omh-test@example.invalid commit -m baseline`.cwd(cwd).quiet();
+		await $`git -c user.name=omh-test -c user.email=omh-test@example.invalid -c commit.gpgsign=false commit -m baseline`
+			.cwd(cwd)
+			.quiet();
 		await Bun.write(path.join(cwd, "src", "walk.rs"), "fn walk() { /* changed */ }\n");
 		await Bun.write(path.join(cwd, "tests", "tests.rs"), "test baseline\ntest new behavior\n");
 		await writeReadyEvidence(cwd, "P06-T06-test");
@@ -1702,6 +1707,50 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(rollbackText).toContain("tests/tests.rs");
 		expect(guardResult.verdict).toBe("READY");
 		expect(guardResult.data?.checked_inputs?.missing_rollback_files).toEqual([]);
+	});
+
+	it("omits dependency environment directories from integration handoff and rollback coverage", async () => {
+		const cwd = await createTempDir();
+		await initGitRepo(cwd);
+		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "tests"), { recursive: true });
+		await fs.mkdir(path.join(cwd, ".venv", "bin"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "node_modules", ".bin"), { recursive: true });
+		await Bun.write(path.join(cwd, "docs", "async.md"), "baseline\n");
+		await Bun.write(path.join(cwd, "tests", "test_async.py"), "baseline\n");
+		await $`git add docs/async.md tests/test_async.py`.cwd(cwd).quiet();
+		await $`git -c user.name=omh-test -c user.email=omh-test@example.invalid -c commit.gpgsign=false commit -m baseline`
+			.cwd(cwd)
+			.quiet();
+		await Bun.write(path.join(cwd, "docs", "async.md"), "baseline\nexplicit transport docs\n");
+		await Bun.write(path.join(cwd, "tests", "test_async.py"), "baseline\nregression test\n");
+		await Bun.write(path.join(cwd, ".venv", "pyvenv.cfg"), "home = /usr/bin\n");
+		await Bun.write(path.join(cwd, "node_modules", ".bin", "tool"), "#!/usr/bin/env sh\n");
+		await writeReadyEvidence(cwd, "P03-T10-test");
+
+		const integrationResult = await runScript(cwd, "materialize-integration-review.js", {
+			completedActivations: [
+				{
+					id: "activation-integration-review",
+					nodeId: "integrationReview",
+					status: "completed",
+					output: { summary: "integration review accepted the lane evidence" },
+				},
+			],
+		});
+		const rollbackResult = await runScript(cwd, "finalize-rollback-coverage.js", {});
+
+		expect(integrationResult.data?.changed_files).toEqual(["docs/async.md", "tests/test_async.py"]);
+		expect(rollbackResult.data).toMatchObject({
+			changed_files: ["docs/async.md", "tests/test_async.py"],
+		});
+		const rollbackText = await Bun.file(
+			path.join(cwd, "workflow-output", "final-rollback-coverage-P03-T10-test.md"),
+		).text();
+		expect(rollbackText).toContain("docs/async.md");
+		expect(rollbackText).toContain("tests/test_async.py");
+		expect(rollbackText).not.toContain(".venv");
+		expect(rollbackText).not.toContain("node_modules");
 	});
 
 	it("lets finalization reject failed declared validation through the evidence contract path", async () => {

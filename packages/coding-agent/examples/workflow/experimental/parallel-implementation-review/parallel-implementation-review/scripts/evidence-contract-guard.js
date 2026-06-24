@@ -953,9 +953,7 @@ function ignoredEvidencePath(file) {
 		file === "task.md" ||
 		file === "progress.md" ||
 		file.includes("workflow-output/") ||
-		file.includes("/.pytest_cache/") ||
-		file.includes("/node_modules/") ||
-		file.includes("/.venv/")
+		ignoredProjectArtifactPath(file)
 	);
 }
 
@@ -966,8 +964,14 @@ function ignoredEvidenceArtifact(file) {
 		/(^|\/)strong-review[^/]*\.(?:json|txt|md)$/iu.test(file) ||
 		/(^|\/)rollback-notes[^/]*\.(?:json|txt|md)$/iu.test(file) ||
 		file.startsWith("workflow-output/tmp/") ||
-		file.includes("/.pytest_cache/") ||
-		file.includes("/node_modules/") ||
-		file.includes("/.venv/")
+		ignoredProjectArtifactPath(file)
 	);
+}
+
+function ignoredProjectArtifactPath(file) {
+	const ignoredSegments = new Set([".venv", "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__"]);
+	return file
+		.replace(/\\/gu, "/")
+		.split("/")
+		.some(segment => ignoredSegments.has(segment));
 }

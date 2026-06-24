@@ -19,6 +19,10 @@
 - Fixed the experimental agent build/review loop workflow so dependency
   environment directories such as `.venv/` and `node_modules/` do not pollute
   semantic changed-file evidence or final archives.
+- Fixed the experimental parallel implementation/review workflow so dependency
+  environment directories such as `.venv/` and `node_modules/` do not pollute
+  integration handoffs, rollback coverage, or evidence-contract changed-file
+  checks.
 - Fixed workflow parallel fail-fast handling so a failed activation aborts
   running sibling activations, stops downstream scheduling, and waits for
   aborted sibling runtimes to settle before the attempt reaches a terminal

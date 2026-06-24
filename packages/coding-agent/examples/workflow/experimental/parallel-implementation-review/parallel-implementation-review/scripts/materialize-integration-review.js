@@ -265,10 +265,16 @@ function ignoredEvidencePath(file) {
 		file === "task.md" ||
 		file === "progress.md" ||
 		file.includes("workflow-output/") ||
-		file.includes("/node_modules/") ||
-		file.includes("/.venv/") ||
-		file.includes("/.pytest_cache/")
+		ignoredProjectArtifactPath(file)
 	);
+}
+
+function ignoredProjectArtifactPath(file) {
+	const ignoredSegments = new Set([".venv", "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__"]);
+	return normalizeGitPath(file)
+		.replace(/\\/gu, "/")
+		.split("/")
+		.some(segment => ignoredSegments.has(segment));
 }
 
 async function gitOutput(command) {
