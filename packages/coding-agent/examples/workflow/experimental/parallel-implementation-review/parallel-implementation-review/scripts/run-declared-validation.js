@@ -236,9 +236,11 @@ async function reusableTupleScopedValidationFiles({
 
 function declaredValidationObject(data) {
 	const validation = optionalObjectField(data, "validation");
+	const validations = optionalObjectField(data, "validations");
 	return (
 		optionalObjectField(data, "declared_validation") ??
 		optionalObjectField(validation, "declared") ??
+		optionalObjectField(validations, "declared") ??
 		declaredValidationArrayEntry(data) ??
 		validation ??
 		{}

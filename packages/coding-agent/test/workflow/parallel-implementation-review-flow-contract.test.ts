@@ -424,6 +424,66 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
 	});
 
+	it("reuses declared validation emitted as a validations object field", async () => {
+		const cwd = await createTempDir();
+		await writeTupleFiles(cwd, "P09-T04-test");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		const command =
+			"pnpm --filter vite build && pnpm test-unit packages/vite/src/node/__tests__/optimizer/pluginConverter.spec.ts";
+		await Bun.write(path.join(cwd, "task.md"), `Validation Command:\n${command}\n`);
+		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-4-stdout-P09-T04-test.txt"), "13 passed\n");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-4-stderr-P09-T04-test.txt"), "");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-4-exitcode-P09-T04-test.txt"), "0\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tests-lane-P09-T04-test.json"),
+			`${JSON.stringify(
+				{
+					tuple_id: "P09-T04-test",
+					producer_node: "implementTests",
+					status: "complete",
+					validations: {
+						declared: {
+							command,
+							environment: {},
+							result: "pass",
+							attempts: [
+								{
+									attempt: 4,
+									result: "pass",
+									exit_code: 0,
+									stdout: "workflow-output/validation-attempt-4-stdout-P09-T04-test.txt",
+									stderr: "workflow-output/validation-attempt-4-stderr-P09-T04-test.txt",
+									exitcode: "workflow-output/validation-attempt-4-exitcode-P09-T04-test.txt",
+								},
+							],
+						},
+						focused: {
+							command: "pnpm test-unit packages/vite/src/node/__tests__/optimizer/rolldownDepPlugin.spec.ts",
+							environment: {},
+							result: "pass",
+						},
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "run-declared-validation.js", {});
+
+		expect(result.verdict).toBe("PASS");
+		expect(result.data?.validation).toMatchObject({
+			command,
+			result: "passed",
+			exitCode: 0,
+			stdoutArtifact: "workflow-output/validation-attempt-4-stdout-P09-T04-test.txt",
+			stderrArtifact: "workflow-output/validation-attempt-4-stderr-P09-T04-test.txt",
+			exitCodeArtifact: "workflow-output/validation-attempt-4-exitcode-P09-T04-test.txt",
+			reusedFromTestLane: "workflow-output/tests-lane-P09-T04-test.json",
+		});
+		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
+	});
+
 	it("reuses validation evidence with test-lane file hash and exit-code file aliases", async () => {
 		const cwd = await createTempDir();
 		await writeTupleFiles(cwd, "P06-T06-test");

@@ -29,6 +29,9 @@
 - Fixed the experimental parallel implementation/review workflow so final
   validation can reuse test-lane declared validation evidence emitted as a
   `validations[]` entry.
+- Fixed the experimental parallel implementation/review workflow so final
+  validation can reuse test-lane declared validation evidence emitted under
+  `validations.declared`.
 - Fixed workflow parallel fail-fast handling so a failed activation aborts
   running sibling activations, stops downstream scheduling, and waits for
   aborted sibling runtimes to settle before the attempt reaches a terminal
