@@ -664,19 +664,24 @@ function validationRerunSignal(text, data) {
 function expectedValidationAttempts(text, data, rerun) {
 	const attempts = new Set();
 	const explicitAttempts = validationAttemptsArray(data);
+	const hasExplicitAttempts = explicitAttempts.length > 0;
 	for (let index = 0; index < explicitAttempts.length; index += 1) {
 		const attempt = Number(explicitAttempts[index]?.attempt ?? index + 1);
 		if (Number.isInteger(attempt) && attempt > 0) attempts.add(attempt);
 	}
-	for (const match of text.matchAll(/\battempt\s*[:#-]?\s*([1-9]\d*)\b/giu)) {
-		attempts.add(Number(match[1]));
+	if (rerun && !hasExplicitAttempts) {
+		for (const match of text.matchAll(/\battempt\s*[:#-]?\s*([1-9]\d*)\b/giu)) {
+			attempts.add(Number(match[1]));
+		}
 	}
 	for (const match of text.matchAll(/\bvalidation-attempt-([1-9]\d*)-(?:stdout|stderr|exitcode)-/giu)) {
 		attempts.add(Number(match[1]));
 	}
-	for (const match of text.matchAll(/\bvalidation[_ -]?attempts?\s*[:=]\s*([2-9]\d*)\b/giu)) {
-		const count = Number(match[1]);
-		for (let attempt = 1; attempt <= count; attempt += 1) attempts.add(attempt);
+	if (!hasExplicitAttempts) {
+		for (const match of text.matchAll(/\bvalidation[_ -]?attempts?\s*[:=]\s*([2-9]\d*)\b/giu)) {
+			const count = Number(match[1]);
+			for (let attempt = 1; attempt <= count; attempt += 1) attempts.add(attempt);
+		}
 	}
 	const maxAttempt = Math.max(0, ...attempts);
 	if (maxAttempt > 1) {

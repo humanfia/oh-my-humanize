@@ -248,7 +248,11 @@ function declaredValidationObject(data) {
 }
 
 function declaredValidationArrayEntry(data) {
-	return arrayField(data, "validations").find(entry => isDeclaredValidationEntry(entry)) ?? null;
+	return (
+		arrayField(data, "validations").find(entry => isDeclaredValidationEntry(entry)) ??
+		arrayField(data, "validation").find(entry => isDeclaredValidationEntry(entry)) ??
+		null
+	);
 }
 
 function isDeclaredValidationEntry(value) {

@@ -424,6 +424,72 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
 	});
 
+	it("reuses declared validation emitted as a validation array entry", async () => {
+		const cwd = await createTempDir();
+		await writeTupleFiles(cwd, "P06-T06");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		const command = "cargo test -p ripgrep";
+		await Bun.write(path.join(cwd, "task.md"), `Validation Command:\n${command}\n`);
+		await Bun.write(path.join(cwd, "workflow-output", "focused-test-stdout-P06-T06.txt"), "focused passed\n");
+		await Bun.write(path.join(cwd, "workflow-output", "focused-test-stderr-P06-T06.txt"), "");
+		await Bun.write(path.join(cwd, "workflow-output", "focused-test-exitcode-P06-T06.txt"), "0\n");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-1-stdout-P06-T06.txt"), "declared passed\n");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-1-stderr-P06-T06.txt"), "");
+		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-1-exitcode-P06-T06.txt"), "0\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "tests-lane-P06-T06.json"),
+			`${JSON.stringify(
+				{
+					tuple_id: "P06-T06",
+					producer_node: "implementTests",
+					status: "complete",
+					validation: [
+						{
+							kind: "focused",
+							command: "cargo test -p ripgrep --test integration config_precedence",
+							environment: {},
+							result: "pass",
+							exit_code: 0,
+							stdout: "workflow-output/focused-test-stdout-P06-T06.txt",
+							stderr: "workflow-output/focused-test-stderr-P06-T06.txt",
+							exitcode_file: "workflow-output/focused-test-exitcode-P06-T06.txt",
+						},
+						{
+							kind: "declared",
+							command,
+							environment: {},
+							result: "pass",
+							attempts: [
+								{
+									attempt: 1,
+									exit_code: 0,
+									stdout: "workflow-output/validation-attempt-1-stdout-P06-T06.txt",
+									stderr: "workflow-output/validation-attempt-1-stderr-P06-T06.txt",
+									exitcode_file: "workflow-output/validation-attempt-1-exitcode-P06-T06.txt",
+								},
+							],
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "run-declared-validation.js", {});
+
+		expect(result.verdict).toBe("PASS");
+		expect(result.data?.validation).toMatchObject({
+			command,
+			result: "passed",
+			exitCode: 0,
+			stdoutArtifact: "workflow-output/validation-attempt-1-stdout-P06-T06.txt",
+			stderrArtifact: "workflow-output/validation-attempt-1-stderr-P06-T06.txt",
+			exitCodeArtifact: "workflow-output/validation-attempt-1-exitcode-P06-T06.txt",
+			reusedFromTestLane: "workflow-output/tests-lane-P06-T06.json",
+		});
+	});
+
 	it("reuses declared validation emitted as a validations object field", async () => {
 		const cwd = await createTempDir();
 		await writeTupleFiles(cwd, "P09-T04-test");
@@ -1472,6 +1538,106 @@ describe("parallel-implementation-review flow contract", () => {
 						stderr_path: "workflow-output/validation-attempt-2-stderr-P06-T06-test.txt",
 						exitcode_path: "workflow-output/validation-attempt-2-exitcode-P06-T06-test.txt",
 					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.validation_attempt_log_findings).toEqual([]);
+	});
+
+	it("does not treat focused test retries as declared validation reruns", async () => {
+		const cwd = await createTempDir();
+		const tupleId = "P06-T06-test";
+		await writeReadyEvidence(cwd, tupleId);
+		const declaredAttemptFiles = [
+			`workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+			`workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+			`workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+			`workflow-output/validation-attempt-2-stdout-${tupleId}.txt`,
+			`workflow-output/validation-attempt-2-stderr-${tupleId}.txt`,
+			`workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`,
+		];
+		const focusedAttemptFiles = [
+			`workflow-output/tests-focused-attempt-3-stdout-${tupleId}.txt`,
+			`workflow-output/tests-focused-attempt-3-stderr-${tupleId}.txt`,
+			`workflow-output/tests-focused-attempt-3-exitcode-${tupleId}.txt`,
+			`workflow-output/tests-focused-attempt-4-stdout-${tupleId}.txt`,
+			`workflow-output/tests-focused-attempt-4-stderr-${tupleId}.txt`,
+			`workflow-output/tests-focused-attempt-4-exitcode-${tupleId}.txt`,
+		];
+		for (const file of [...declaredAttemptFiles, ...focusedAttemptFiles]) {
+			await Bun.write(path.join(cwd, file), file.includes("exitcode") ? "0\n" : `${file}\n`);
+		}
+		await Bun.write(
+			path.join(cwd, "workflow-output", `tests-lane-${tupleId}.json`),
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementTests",
+					status: "complete",
+					changed_validation_artifacts_owned_by_lane: [...declaredAttemptFiles, ...focusedAttemptFiles],
+					focused_validation: {
+						attempt_2_correction: {
+							classification: "focused_command_filter_mismatch",
+							details:
+								"Attempt-2 focused commands used bare test names and ran zero tests. Attempt-3 uses full module paths and ran one test each.",
+						},
+						attempts: [
+							{
+								attempt: 3,
+								command: "cargo test -p ripgrep --test feature config_precedence -- --nocapture",
+								result: "fail",
+								exit_code_path: `workflow-output/tests-focused-attempt-3-exitcode-${tupleId}.txt`,
+								stdout_path: `workflow-output/tests-focused-attempt-3-stdout-${tupleId}.txt`,
+								stderr_path: `workflow-output/tests-focused-attempt-3-stderr-${tupleId}.txt`,
+							},
+							{
+								attempt: 4,
+								command: "cargo test -p ripgrep --test integration config_precedence -- --nocapture",
+								result: "pass",
+								exit_code_path: `workflow-output/tests-focused-attempt-4-exitcode-${tupleId}.txt`,
+								stdout_path: `workflow-output/tests-focused-attempt-4-stdout-${tupleId}.txt`,
+								stderr_path: `workflow-output/tests-focused-attempt-4-stderr-${tupleId}.txt`,
+							},
+						],
+						latest_attempts: [
+							{
+								command: "cargo test -p ripgrep --test integration misc::glob_cli_overrides_config_insensitive -- --exact",
+								result: "pass",
+								exit_code_path: `workflow-output/tests-focused-attempt-4-exitcode-${tupleId}.txt`,
+								stdout_path: `workflow-output/tests-focused-attempt-4-stdout-${tupleId}.txt`,
+								stderr_path: `workflow-output/tests-focused-attempt-4-stderr-${tupleId}.txt`,
+							},
+						],
+					},
+					declared_validation: {
+						command: "true",
+						environment: {},
+						result: "pass",
+						attempts: [
+							{
+								attempt: 1,
+								exit_code: 0,
+								exit_code_path: `workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+								stdout_path: `workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+								stderr_path: `workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+							},
+							{
+								attempt: 2,
+								exit_code: 0,
+								exit_code_path: `workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`,
+								stdout_path: `workflow-output/validation-attempt-2-stdout-${tupleId}.txt`,
+								stderr_path: `workflow-output/validation-attempt-2-stderr-${tupleId}.txt`,
+							},
+						],
+					},
+					notes:
+						"Focused attempt-3 and attempt-4 are retained as focused-test evidence; declared validation attempts 1 and 2 both passed.",
 				},
 				null,
 				2,
