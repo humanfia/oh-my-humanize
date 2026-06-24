@@ -182,7 +182,9 @@ function mentionsCompletionSatisfied(text) {
 			text,
 		) ||
 		/\bsatisfying the contract\b/iu.test(text) ||
-		/\btask contract\b.{0,180}\brequired\s+semantic\s+rounds?\s+are\s+present\b/ius.test(text)
+		/\btask contract\b.{0,180}\brequired\s+semantic\s+rounds?\s+are\s+present\b/ius.test(text) ||
+		/\b(?:satisfying|satisfies)\s+the\s+task\s+contract'?s?\s+minimum\b/iu.test(text) ||
+		/\btask\s+contract'?s?\s+minimum\b.{0,120}\b(?:satisfied|met|complete)\b/ius.test(text)
 	);
 }
 

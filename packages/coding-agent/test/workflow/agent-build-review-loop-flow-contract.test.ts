@@ -752,6 +752,41 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("routes satisfied task-minimum continue reviews to downstream finalization", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Complete at least three meaningful build/review cycles.",
+				"Validation Command:",
+				"./workflow-output/run-validation.sh",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			[
+				"ROUND 1: copied timeout settings safely; validation=./workflow-output/run-validation.sh; result=pass",
+				"ROUND 2: removed validation byproduct leakage; validation=./workflow-output/run-validation.sh; result=pass",
+				"ROUND 3: preserved explicit request timeout extensions; validation=./workflow-output/run-validation.sh; result=pass",
+			].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"progress.md has 3 lines beginning with ROUND, satisfying the task contract's minimum of three concrete semantic work packages. The latest declared validation command passed with exit_code 0 in workflow-output/round-3/validation-summary.txt, the newest round added a focused request-timeout regression test, changed files are within the allowed httpx/tests scope and below the diff gate, and no disallowed root byproduct remains.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "complete",
+			reviewVerdict: "continue",
+			requiredRoundCount: 3,
+			completedRoundCount: 3,
+			completionSatisfiedButContinued: true,
+		});
+	});
+
 	it("keeps building when a complete verdict still asks for another build round", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
