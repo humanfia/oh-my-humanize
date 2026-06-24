@@ -717,6 +717,96 @@ describe("agent-build-review-loop flow contract", () => {
 		expect(result.data.reason).toContain("completion satisfied");
 	});
 
+	it("routes review-route-complete continue reviews to downstream finalization after required rounds", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Complete at least three meaningful build/review cycles.",
+				"Validation Command:",
+				"./workflow-output/run-validation.sh",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			[
+				"ROUND 1: documented timeout send behavior; validation=./workflow-output/run-validation.sh; result=pass",
+				"ROUND 2: removed validation byproduct leakage; validation=./workflow-output/run-validation.sh; result=pass",
+				"ROUND 3: hardened override coverage; validation=./workflow-output/run-validation.sh; result=pass",
+			].join("\n"),
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"The review route is complete: the task contract's three required semantic rounds are present, the declared validation evidence passes, and the latest round made a scoped improvement without violating local instructions or leaving blocking byproducts.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "complete",
+			reviewVerdict: "continue",
+			requiredRoundCount: 3,
+			completedRoundCount: 3,
+			completionSatisfiedButContinued: true,
+		});
+	});
+
+	it("keeps building when a complete verdict still asks for another build round", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\n./workflow-output/run-validation.sh\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			"ROUND 1: added timeout docs; validation=./workflow-output/run-validation.sh; result=pass\n",
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "complete",
+			summary:
+				"progress.md has 4 ROUND entries and the latest declared validation artifacts show the required pytest command passed, but the newest diff still violates the project's local Ruff/formatting requirements. Another build round is needed to fix the missing top-level blank line before this can route complete.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "continue",
+			reviewVerdict: "complete",
+			completionSatisfiedButContinued: false,
+		});
+		expect(result.data.reason).toContain("review summary requested build repair");
+	});
+
+	it("routes reviewer-declared terminal local-instruction blockers to reject", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-4"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\n./workflow-output/run-validation.sh\n");
+		await Bun.write(
+			path.join(cwd, "progress.md"),
+			[
+				"ROUND 1: changed CLI error path; validation=./workflow-output/run-validation.sh; result=pass",
+				"ROUND 2: added CLI regression coverage; validation=./workflow-output/run-validation.sh; result=pass",
+				"ROUND 3: removed unlinked changelog entry; validation=./workflow-output/run-validation.sh; result=pass",
+				"ROUND 4: recorded terminal CHANGES link blocker evidence; validation=./workflow-output/run-validation.sh; result=pass",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-4", "validation-summary.txt"),
+			"Round 4 validation passed, but no real issue or PR identifier is available for a linked changelog entry.\n",
+		);
+
+		const result = await runReviewRouteClassifier(cwd, {
+			verdict: "continue",
+			summary:
+				"continue: progress.md has 4 ROUND entries and the latest declared validation passed, but the current code/docs/test diff still violates the local PR-template requirement to add a CHANGES.rst entry summarizing code changes and linking to the issue. Round 4 records this as a terminal local-instruction blocker because no real issue or PR identifier is available; continue so the route classifier can reject/archive rather than asking the builder to fabricate a link.",
+		});
+
+		expect(result.data).toMatchObject({
+			decision: "reject",
+			reviewVerdict: "continue",
+			terminalBlockerEvidenceFiles: ["reviewRound:summary"],
+		});
+		expect(result.data.reason).toContain("terminal reviewer blocker");
+	});
+
 	it("routes satisfied-round-minimum finalization-only reviews to downstream finalization", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });

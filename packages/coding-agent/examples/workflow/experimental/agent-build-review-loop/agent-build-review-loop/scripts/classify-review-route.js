@@ -8,21 +8,29 @@ const requiredRoundCount = taskRequiredRoundCount(taskText);
 const completedRoundCount = progressRoundCount(progressText);
 const roundMinimumSatisfied = requiredRoundCount === null || completedRoundCount >= requiredRoundCount;
 const setupBlockerEvidenceFiles = await findSetupBlockerEvidenceFiles(reviewSummary);
+const reviewerDeclaredTerminalValidationBlockerEvidenceFiles =
+	await findReviewerDeclaredTerminalValidationBlockerEvidenceFiles(reviewSummary);
+const reviewerDeclaredTerminalBlockerEvidenceFiles =
+	findReviewerDeclaredTerminalReviewBlockerEvidenceFiles(reviewSummary);
 const externalValidationBlockerEvidenceFiles = uniqueSorted([
 	...(await findRepeatedExternalValidationBlockerEvidenceFiles(taskText)),
-	...(await findReviewerDeclaredTerminalBlockerEvidenceFiles(reviewSummary)),
+	...reviewerDeclaredTerminalValidationBlockerEvidenceFiles,
 ]);
 const terminalBlockerEvidenceFiles = uniqueSorted([
 	...setupBlockerEvidenceFiles,
 	...externalValidationBlockerEvidenceFiles,
+	...reviewerDeclaredTerminalBlockerEvidenceFiles,
 ]);
+const buildRepairRequested = mentionsBuildRepairRequest(reviewSummary);
 const downstreamFinalizationOnly =
 	reviewVerdict === "continue" &&
 	roundMinimumSatisfied &&
+	!buildRepairRequested &&
 	isDownstreamFinalizationOnlyReview(reviewSummary);
 const completionSatisfiedButContinued =
 	reviewVerdict === "continue" &&
 	roundMinimumSatisfied &&
+	!buildRepairRequested &&
 	isCompletionSatisfiedReview(reviewSummary);
 
 let decision = reviewVerdict === "continue" ? "continue" : "complete";
@@ -30,6 +38,11 @@ let reason =
 	decision === "continue"
 		? "review requested another build round"
 		: "review accepted the current implementation evidence";
+
+if (reviewVerdict === "complete" && buildRepairRequested) {
+	decision = "continue";
+	reason = "review summary requested build repair despite complete verdict";
+}
 
 if (downstreamFinalizationOnly || completionSatisfiedButContinued) {
 	decision = "complete";
@@ -43,7 +56,9 @@ if (terminalBlockerEvidenceFiles.length > 0) {
 	reason =
 		setupBlockerEvidenceFiles.length > 0
 			? "setup blocker evidence is terminal; archive/reject instead of looping into another build round"
-			: "terminal validation blocker evidence repeated outside task scope; archive/reject instead of looping into another build round";
+			: externalValidationBlockerEvidenceFiles.length > 0
+				? "terminal validation blocker evidence repeated outside task scope; archive/reject instead of looping into another build round"
+				: "terminal reviewer blocker evidence is terminal; archive/reject instead of looping into another build round";
 }
 
 const reviewDecisionTrailFile = `workflow-output/review-route-${Math.max(reviewRound, 1)}.json`;
@@ -58,6 +73,7 @@ const route = {
 	completionSatisfiedButContinued,
 	setupBlockerEvidenceFiles,
 	externalValidationBlockerEvidenceFiles,
+	reviewerDeclaredTerminalBlockerEvidenceFiles,
 	terminalBlockerEvidenceFiles,
 	reviewDecisionTrailFile,
 	checkedAtMs: Date.now(),
@@ -161,10 +177,12 @@ function isCompletionSatisfiedReview(text) {
 function mentionsCompletionSatisfied(text) {
 	return (
 		/\b(?:task|work|implementation|result)\s+is\s+complete\b/iu.test(text) ||
+		/\b(?:review\s+route|route)\s+is\s+complete\b/iu.test(text) ||
 		/\b(?:acceptance criteria|acceptance|task-specific acceptance)\b.{0,120}\b(?:satisfied|met|complete)\b/ius.test(
 			text,
 		) ||
-		/\bsatisfying the contract\b/iu.test(text)
+		/\bsatisfying the contract\b/iu.test(text) ||
+		/\btask contract\b.{0,180}\brequired\s+semantic\s+rounds?\s+are\s+present\b/ius.test(text)
 	);
 }
 
@@ -192,6 +210,7 @@ function mentionsDownstreamFinalization(text) {
 
 function mentionsBuildOwnedGap(text) {
 	return (
+		mentionsBuildRepairRequest(text) ||
 		/\btask-specific acceptance\b.{0,120}\b(?:not yet met|not met|unmet)\b/ius.test(text) ||
 		/\bacceptance criteria\b.{0,120}\b(?:not yet met|not met|unmet)\b/ius.test(text) ||
 		/\b(?:scope\/evidence|scope and evidence|scope)\s+gaps?\b/iu.test(text) ||
@@ -199,6 +218,22 @@ function mentionsBuildOwnedGap(text) {
 		/\bcurrent diff\b.{0,120}\boutside\b/ius.test(text) ||
 		/\bno corresponding source or behavioral-test improvement\b/iu.test(text) ||
 		/\bimplementation needs another focused fix\b/iu.test(text)
+	);
+}
+
+function mentionsBuildRepairRequest(text) {
+	if (mentionsDownstreamFinalization(text) && !mentionsConcreteBuildRepairSurface(text)) return false;
+	return (
+		/\banother\s+build(?:\/review)?(?:\/archive)?\s+(?:round|route|cycle)\s+(?:is\s+)?(?:still\s+)?needed\b/iu.test(
+			text,
+		) ||
+		/\b(?:needs?|requires?)\s+another\s+(?:focused\s+)?(?:build|implementation|repair)\s+round\b/iu.test(text)
+	);
+}
+
+function mentionsConcreteBuildRepairSurface(text) {
+	return /\b(?:formatting|ruff|lint|style|scope|local instructions?|diff|implementation|source|tests?|docs?|validation failed|fix|repair|blank line|byproduct)\b/iu.test(
+		text,
 	);
 }
 
@@ -275,7 +310,7 @@ async function findRepeatedExternalValidationBlockerEvidenceFiles(taskText) {
 	return uniqueSorted(evidenceFiles);
 }
 
-async function findReviewerDeclaredTerminalBlockerEvidenceFiles(reviewSummary) {
+async function findReviewerDeclaredTerminalValidationBlockerEvidenceFiles(reviewSummary) {
 	if (!isReviewerDeclaredTerminalValidationBlocker(reviewSummary)) return [];
 	const summaryFiles = await latestRoundEvidenceFiles("validation-summary.txt");
 	const matchingSummaryFiles = [];
@@ -286,6 +321,11 @@ async function findReviewerDeclaredTerminalBlockerEvidenceFiles(reviewSummary) {
 		}
 	}
 	if (matchingSummaryFiles.length > 0) return uniqueSorted(matchingSummaryFiles);
+	return ["reviewRound:summary"];
+}
+
+function findReviewerDeclaredTerminalReviewBlockerEvidenceFiles(reviewSummary) {
+	if (!isReviewerDeclaredTerminalReviewBlocker(reviewSummary)) return [];
 	return ["reviewRound:summary"];
 }
 
@@ -329,6 +369,16 @@ function negatesTerminalValidationBlocker(text) {
 			text,
 		) ||
 		/\bterminal\b.{0,120}\b(?:external|out[- ]of[- ]scope|unrelated|environment(?:al)?)\b.{0,120}\b(?:validation\s+)?blocker\b.{0,80}\b(?:is|are)?\s*(?:not|absent|missing|not present|no longer present)\b/ius.test(
+			text,
+		)
+	);
+}
+
+function isReviewerDeclaredTerminalReviewBlocker(text) {
+	if (/\bif\s+the\s+next\s+round\b.{0,100}\b(?:cannot|can't)\b/ius.test(text)) return false;
+	return (
+		/\brecords?\s+this\s+as\s+a\s+terminal\b.{0,120}\bblocker\b/ius.test(text) ||
+		/\bterminal\b.{0,80}\b(?:local[- ]instruction|instruction|policy|contract|changelog|issue|PR)\b.{0,80}\bblocker\b.{0,160}\b(?:because|no real|fabricat|cannot|can't)\b/ius.test(
 			text,
 		)
 	);
