@@ -13,6 +13,10 @@
 
 ### Fixed
 
+- Fixed the experimental parallel implementation/review workflow so all lane
+  and finalization artifacts share one canonical tuple id from run artifacts,
+  preventing reusable validation evidence from being missed when task prose
+  contains multiple tuple-like identifiers.
 - Fixed workflow stop checkpointing so graceful `/workflow stop` waits for the
   node abort deadline before checkpointing a still-running activation while
   preserving immediate fail-fast cancellation for sibling activation failures.

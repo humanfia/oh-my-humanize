@@ -433,7 +433,10 @@ describe("parallel-implementation-review flow contract", () => {
 		await Bun.write(path.join(cwd, "workflow-output", "focused-test-stdout-P06-T06.txt"), "focused passed\n");
 		await Bun.write(path.join(cwd, "workflow-output", "focused-test-stderr-P06-T06.txt"), "");
 		await Bun.write(path.join(cwd, "workflow-output", "focused-test-exitcode-P06-T06.txt"), "0\n");
-		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-1-stdout-P06-T06.txt"), "declared passed\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "validation-attempt-1-stdout-P06-T06.txt"),
+			"declared passed\n",
+		);
 		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-1-stderr-P06-T06.txt"), "");
 		await Bun.write(path.join(cwd, "workflow-output", "validation-attempt-1-exitcode-P06-T06.txt"), "0\n");
 		await Bun.write(
@@ -1607,7 +1610,8 @@ describe("parallel-implementation-review flow contract", () => {
 						],
 						latest_attempts: [
 							{
-								command: "cargo test -p ripgrep --test integration misc::glob_cli_overrides_config_insensitive -- --exact",
+								command:
+									"cargo test -p ripgrep --test integration misc::glob_cli_overrides_config_insensitive -- --exact",
 								result: "pass",
 								exit_code_path: `workflow-output/tests-focused-attempt-4-exitcode-${tupleId}.txt`,
 								stdout_path: `workflow-output/tests-focused-attempt-4-stdout-${tupleId}.txt`,
@@ -1636,8 +1640,7 @@ describe("parallel-implementation-review flow contract", () => {
 							},
 						],
 					},
-					notes:
-						"Focused attempt-3 and attempt-4 are retained as focused-test evidence; declared validation attempts 1 and 2 both passed.",
+					notes: "Focused attempt-3 and attempt-4 are retained as focused-test evidence; declared validation attempts 1 and 2 both passed.",
 				},
 				null,
 				2,

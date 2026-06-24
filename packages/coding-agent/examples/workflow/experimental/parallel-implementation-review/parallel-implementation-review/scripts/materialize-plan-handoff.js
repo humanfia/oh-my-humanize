@@ -10,14 +10,15 @@ const rawPlanForDisk = truncateUtf8Bytes(rawPlanText, RAW_PLAN_MAX_BYTES);
 
 await Bun.write(rawArtifact, `${rawPlanForDisk}\n`);
 
-const compactPlan = compactValue(rawPlan, 0);
+const compactPlan = planWithCanonicalTupleId(compactValue(rawPlan, 0), tupleId);
 const handoff = {
 	status: "compact_plan_handoff",
 	producer_node: "materializePlanHandoff",
+	canonical_tuple_id: tupleId,
 	raw_plan_artifact: rawArtifact,
 	raw_plan_truncated: rawPlanText !== rawPlanForDisk,
 	instruction:
-		"Use this compact handoff for coordination. Read the raw plan artifact only when needed; do not paste the raw artifact into downstream prompts.",
+		"Use this compact handoff for coordination. Read the raw plan artifact only when needed; do not paste the raw artifact into downstream prompts. Use canonical_tuple_id for every tuple-scoped workflow-output artifact.",
 	plan: compactPlan,
 };
 let handoffText = safeJsonStringify(handoff);
@@ -39,7 +40,11 @@ async function tupleIdFromRunArtifacts() {
 	for (const file of ["monitor-assignment.json", "manifest-entry.json"]) {
 		try {
 			const parsed = await Bun.file(file).json();
-			const tupleId = normalizeTupleId(parsed.tupleId) || normalizeTupleId(parsed.tuple_id);
+			const tupleId =
+				normalizeTupleId(parsed.tupleId) ||
+				normalizeTupleId(parsed.tuple_id) ||
+				normalizeTupleId(parsed.runId) ||
+				normalizeTupleId(parsed.run_id);
 			if (tupleId) return tupleId;
 		} catch {
 			// Try the next source.
@@ -74,6 +79,24 @@ function compactValue(value, depth) {
 	if (Array.isArray(value)) return compactArray(value, depth);
 	if (typeof value === "object") return compactObject(value, depth);
 	return String(value);
+}
+
+function planWithCanonicalTupleId(plan, canonicalTupleId) {
+	if (!canonicalTupleId) return plan;
+	if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
+		return {
+			canonical_tuple_id: canonicalTupleId,
+			tuple_id: canonicalTupleId,
+			tuple: canonicalTupleId,
+			plan,
+		};
+	}
+	return {
+		...plan,
+		canonical_tuple_id: canonicalTupleId,
+		tuple_id: canonicalTupleId,
+		tuple: canonicalTupleId,
+	};
 }
 
 function compactArray(values, depth) {

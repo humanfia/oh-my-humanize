@@ -33,7 +33,9 @@ Before yielding:
 
 - record the documentation or evidence artifacts changed;
 - write `workflow-output/docs-lane-<tuple-id>.json`, where `<tuple-id>` is the
-  tuple from `monitor-assignment.json`, `manifest-entry.json`, or `task.md`;
+  exact Canonical tuple id from the task contract. If it is missing, use
+  `tupleId`/`runId` from `monitor-assignment.json` or `manifest-entry.json`.
+  Do not invent a tuple id from free-form `Tuple:` prose;
 - if this lane observes a task stop condition, write
   `workflow-output/lane-hard-stop-implementDocs-<tuple-id>.json` with
   `status: "hard_stop"`, `terminal_scope: "workflow"`,

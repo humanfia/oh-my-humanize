@@ -31,7 +31,9 @@ Before yielding:
 
 - record changed files and the rationale for each change;
 - write `workflow-output/core-lane-<tuple-id>.json`, where `<tuple-id>` is the
-  tuple from `monitor-assignment.json`, `manifest-entry.json`, or `task.md`;
+  exact Canonical tuple id from the task contract. If it is missing, use
+  `tupleId`/`runId` from `monitor-assignment.json` or `manifest-entry.json`.
+  Do not invent a tuple id from free-form `Tuple:` prose;
 - if this lane observes a task stop condition, write
   `workflow-output/lane-hard-stop-implementCore-<tuple-id>.json` only when the
   blocker is terminal for the whole workflow and cannot be superseded by a

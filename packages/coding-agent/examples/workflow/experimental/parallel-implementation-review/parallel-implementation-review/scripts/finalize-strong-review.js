@@ -221,7 +221,11 @@ async function tupleIdFromRunArtifacts(taskText) {
 async function tupleIdFromJsonFile(filePath) {
 	try {
 		const data = await Bun.file(filePath).json();
-		const candidate = stringField(data, "tupleId") || stringField(data, "tuple_id");
+		const candidate =
+			stringField(data, "tupleId") ||
+			stringField(data, "tuple_id") ||
+			stringField(data, "runId") ||
+			stringField(data, "run_id");
 		return normalizeTupleId(candidate);
 	} catch {
 		return "";
