@@ -28,8 +28,8 @@ describe("workflow command is registered as a top-level subcommand", () => {
 		const examples = Workflow.examples.join("\n");
 
 		expect(examples).not.toContain("Start a flow by built-in name");
-		expect(examples).not.toContain("\n  omp workflow start humanize-rlcr");
-		expect(examples).toContain("OMHFLOW_DIR=./candidate-flows omp workflow start humanize-rlcr");
+		expect(examples).not.toContain("\n  omh workflow start humanize-rlcr");
+		expect(examples).toContain("OMHFLOW_DIR=./candidate-flows omh workflow start humanize-rlcr --max-activations 1");
 		expect(examples).toContain("OMHFLOW_DIR");
 	});
 });

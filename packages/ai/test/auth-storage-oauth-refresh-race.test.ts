@@ -185,8 +185,27 @@ describe("AuthStorage OAuth refresh race", () => {
 			},
 		]);
 
-		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async () => {
-			throw new Error('invalid_grant {"error":"invalid_grant"}');
+		// Avoid relying on Anthropic's live token endpoint returning a specific
+		// HTTP status for a fake refresh token; register a deterministic provider
+		// that mirrors the invalid_grant failure.
+		oauthUtils.registerOAuthProvider({
+			id: "anthropic",
+			name: "Anthropic (test)",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: Date.now() + 60 * 60_000 };
+			},
+			async refreshToken(credentials) {
+				if (credentials.refresh === "stale-refresh") {
+					throw new Error(
+						'HTTP 400 invalid_grant {"error":"invalid_grant","error_description":"Refresh token not found or invalid"}',
+					);
+				}
+				return credentials;
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
 		});
 
 		await withEnv(SUPPRESS_ANTHROPIC_ENV, async () => {

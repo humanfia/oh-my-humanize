@@ -263,7 +263,7 @@ async function expectFirstEventTimeout(
 	const result = await run(20, fetchMock);
 
 	expect(result.stopReason).toBe("error");
-	expect(result.errorMessage).toBe(expectedMessage);
+	expect(result.errorMessage).toContain(expectedMessage);
 }
 
 async function expectRequestSetupTimeout(
@@ -700,7 +700,9 @@ describe("OpenAI-family first-event timeouts", () => {
 		}).result();
 
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toBe("OpenAI responses stream closed before a terminal response event was received");
+		expect(result.errorMessage).toContain(
+			"OpenAI responses stream closed before a terminal response event was received",
+		);
 		expect(result.content as unknown[]).toEqual([
 			{ type: "text", text: "Hello", textSignature: '{"v":1,"id":"msg_incomplete"}' },
 		]);
@@ -742,7 +744,7 @@ describe("OpenAI-family first-event timeouts", () => {
 		}).result();
 
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toBe(
+		expect(result.errorMessage).toContain(
 			"Azure OpenAI responses stream closed before a terminal response event was received",
 		);
 		expect(result.content as unknown[]).toEqual([

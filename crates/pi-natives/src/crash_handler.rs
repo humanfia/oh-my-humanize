@@ -15,7 +15,7 @@
 //! - Backtraces are captured via [`Backtrace::force_capture`], so they work
 //!   regardless of `RUST_BACKTRACE`.
 //! - The crash log path mirrors the JS side (`packages/utils/src/dirs.ts`):
-//!   `$XDG_STATE_HOME/omp/logs/` on Linux / macOS when the user has migrated to
+//!   `$XDG_STATE_HOME/omh/logs/` on Linux / macOS when the user has migrated to
 //!   XDG (i.e. that directory already exists and `PI_CODING_AGENT_DIR` isn't
 //!   pointed somewhere custom), otherwise `<home>/<PI_CONFIG_DIR>/logs/`
 //!   (defaulting to `~/.omp/logs/`).
@@ -38,14 +38,14 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Default directory name for OMP's per-user state (overridable via
+/// Default directory name for OMH's per-user state (overridable via
 /// `PI_CONFIG_DIR`, matching `packages/utils/src/dirs.ts`).
 const DEFAULT_CONFIG_DIR: &str = ".omp";
 
-/// App name used as the XDG-root subdirectory (`$XDG_STATE_HOME/omp/`),
+/// App name used as the XDG-root subdirectory (`$XDG_STATE_HOME/omh/`),
 /// matching `APP_NAME` in `packages/utils/src/dirs.ts`.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-const APP_NAME: &str = "omp";
+const APP_NAME: &str = "omh";
 
 static INSTALL: Once = Once::new();
 static ALLOC_HOOK_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -197,7 +197,7 @@ fn resolve_logs_dir(
 	config_dir_override: Option<&OsStr>,
 	xdg_state_logs: Option<PathBuf>,
 ) -> PathBuf {
-	// XDG takes precedence so users who migrated to `$XDG_STATE_HOME/omp/logs/`
+	// XDG takes precedence so users who migrated to `$XDG_STATE_HOME/omh/logs/`
 	// see native crash reports in the same directory the JS logger rotates.
 	if let Some(p) = xdg_state_logs {
 		return p;
@@ -211,7 +211,7 @@ fn resolve_logs_dir(
 
 /// Compute the XDG-state logs dir if the runtime environment matches the
 /// JS-side eligibility rules in `packages/utils/src/dirs.ts`: linux/macos,
-/// `$XDG_STATE_HOME` set, `$XDG_STATE_HOME/omp` exists on disk, and
+/// `$XDG_STATE_HOME` set, `$XDG_STATE_HOME/omh` exists on disk, and
 /// `PI_CODING_AGENT_DIR` is unset or pointing at the default agent dir.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn xdg_state_logs_from_env(home: &Path, config_dir_override: Option<&OsStr>) -> Option<PathBuf> {
@@ -397,7 +397,7 @@ mod tests {
 			Path::new("/tmp/pi-natives-test-home/.omp/agent"),
 			|_p| true,
 		);
-		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omp/logs")));
+		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omh/logs")));
 	}
 
 	#[test]
@@ -412,9 +412,9 @@ mod tests {
 		let dir = resolve_logs_dir(
 			Path::new("/tmp/pi-natives-test-home"),
 			None,
-			Some(PathBuf::from("/xdg/state/omp/logs")),
+			Some(PathBuf::from("/xdg/state/omh/logs")),
 		);
-		assert_eq!(dir, PathBuf::from("/xdg/state/omp/logs"));
+		assert_eq!(dir, PathBuf::from("/xdg/state/omh/logs"));
 	}
 
 	#[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -426,7 +426,7 @@ mod tests {
 			Path::new("/tmp/pi-natives-test-home/.omp/agent"),
 			|_p| true,
 		);
-		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omp/logs")));
+		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omh/logs")));
 	}
 
 	#[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -473,7 +473,7 @@ mod tests {
 			&default_agent,
 			|_p| true,
 		);
-		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omp/logs")));
+		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omh/logs")));
 	}
 
 	#[cfg(any(target_os = "linux", target_os = "macos"))]

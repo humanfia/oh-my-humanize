@@ -9,7 +9,7 @@ describe("JS eval worker host re-entry", () => {
 	const cliPath = path.join(packageDir, "src/cli.ts");
 
 	it("boots the eval worker through the source CLI hidden argv path", async () => {
-		const worker = new Worker(cliPath, { type: "module", argv: ["__omp_js_eval_worker"] });
+		const worker = new Worker(cliPath, { type: "module", argv: ["__omp_worker_js_eval"] });
 		const { promise, resolve } = Promise.withResolvers<ProbeResult>();
 		let settled = false;
 		const finish = (result: ProbeResult): void => {
