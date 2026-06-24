@@ -1,4 +1,5 @@
 import { ptree } from "@oh-my-pi/pi-utils";
+import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import type { ToolSession } from "../tools";
 import { workflowScriptEnvironment } from "./script-runtime-env";
 import type {
@@ -30,7 +31,9 @@ export function createShellScriptRunner(toolSession: ToolSession): WorkflowShell
 			language: request.language,
 		};
 		if (result.exitError?.aborted) {
-			scriptResult.error = workflowShellAbortError(output, result.exitError, timeoutMs);
+			const error = workflowShellAbortError(output, result.exitError, timeoutMs);
+			scriptResult.error = error;
+			if (!scriptResult.output) scriptResult.output = error;
 		} else if (result.exitCode === undefined || result.exitCode === null) {
 			scriptResult.error = "shell script missing exit status";
 		} else if (result.exitCode !== 0) {
@@ -48,14 +51,7 @@ function workflowShellAbortError(output: string, error: ptree.Exception, timeout
 }
 
 function workflowShellEnv(request: WorkflowShellScriptRequest): Record<string, string> {
-	const env: Record<string, string> = {};
-	for (const [key, value] of Object.entries(Bun.env)) {
-		if (value !== undefined) env[key] = value;
-	}
-	return {
-		...env,
-		...workflowScriptEnvironment(request),
-	};
+	return buildNonInteractiveEnv(workflowScriptEnvironment(request));
 }
 
 function workflowShellOutput(stdout: string, stderr: string): string {

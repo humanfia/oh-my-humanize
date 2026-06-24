@@ -6,6 +6,8 @@ import { createShellScriptRunner } from "../shell-script-runtime";
 
 const zshPath = findZshPath();
 let previousShell: string | undefined;
+let previousPythonPath: string | undefined;
+let previousPythonNoUserSite: string | undefined;
 
 afterEach(() => {
 	if (previousShell === undefined) {
@@ -14,6 +16,18 @@ afterEach(() => {
 		Bun.env.SHELL = previousShell;
 	}
 	previousShell = undefined;
+	if (previousPythonPath === undefined) {
+		delete Bun.env.PYTHONPATH;
+	} else {
+		Bun.env.PYTHONPATH = previousPythonPath;
+	}
+	previousPythonPath = undefined;
+	if (previousPythonNoUserSite === undefined) {
+		delete Bun.env.PYTHONNOUSERSITE;
+	} else {
+		Bun.env.PYTHONNOUSERSITE = previousPythonNoUserSite;
+	}
+	previousPythonNoUserSite = undefined;
 });
 
 describe.skipIf(!zshPath)("createShellScriptRunner", () => {
@@ -137,6 +151,45 @@ describe.skipIf(!zshPath)("createShellScriptRunner", () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.error).toBeUndefined();
 		expect(result.output).toBe("resource-ok");
+	});
+
+	it("does not inherit ambient Python import paths into workflow shell scripts", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-sh-python-env-");
+		previousShell = Bun.env.SHELL;
+		previousPythonPath = Bun.env.PYTHONPATH;
+		previousPythonNoUserSite = Bun.env.PYTHONNOUSERSITE;
+		Bun.env.SHELL = zshPath ?? "";
+		Bun.env.PYTHONPATH = "/stale/editable/site";
+		delete Bun.env.PYTHONNOUSERSITE;
+
+		const settings = await Settings.init();
+		const session: ToolSession = {
+			cwd: tempDir.path(),
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => null,
+			settings,
+		};
+		const runner = createShellScriptRunner(session);
+		const pythonPathExpansion = "$" + "{PYTHONPATH-unset}";
+		const pythonNoUserSiteExpansion = "$" + "{PYTHONNOUSERSITE-unset}";
+
+		const result = await runner({
+			activationId: "activation-python-env",
+			nodeId: "pythonEnv",
+			code: [
+				`python_path="${pythonPathExpansion}"`,
+				`python_no_user_site="${pythonNoUserSiteExpansion}"`,
+				'printf "PYTHONPATH=%s\\nPYTHONNOUSERSITE=%s\\n" "$python_path" "$python_no_user_site"',
+			].join("\n"),
+			language: "sh",
+			title: "python-env.sh",
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.error).toBeUndefined();
+		expect(result.output).toContain("PYTHONPATH=unset");
+		expect(result.output).toContain("PYTHONNOUSERSITE=1");
 	});
 
 	it("cancels a running sh workflow script through the abort signal", async () => {

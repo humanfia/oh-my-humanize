@@ -44,4 +44,17 @@ describe("buildNonInteractiveEnv", () => {
 		expect(env.LANG).toBeUndefined();
 		expect(env.LC_ALL).toBeUndefined();
 	});
+
+	it("disables Python user-site imports for isolated non-interactive commands", () => {
+		const env = buildNonInteractiveEnv(undefined, { PYTHONPATH: "/stale/editable/site" }, "linux");
+
+		expect(env.PYTHONNOUSERSITE).toBe("1");
+		expect(env.PYTHONPATH).toBeUndefined();
+	});
+
+	it("allows an explicit command environment to opt back into Python user-site behavior", () => {
+		const env = buildNonInteractiveEnv({ PYTHONNOUSERSITE: "" }, {}, "linux");
+
+		expect(env.PYTHONNOUSERSITE).toBe("");
+	});
 });

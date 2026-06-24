@@ -13,6 +13,9 @@
 
 ### Fixed
 
+- Fixed workflow and non-interactive command environments so Python validation
+  does not import packages from stale user-site editable installs left by other
+  workflow workspaces.
 - Fixed workflow graph and focus views so completed workflow agent activations
   expose linked transcript artifacts for node-level inspection.
 - Fixed workflow agent and review node transient provider retries so 429/5xx

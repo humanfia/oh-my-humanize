@@ -18,6 +18,7 @@ export const NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = {
 	GPG_TTY: "not a tty",
 	NO_COLOR: "1",
 	PYTHONUNBUFFERED: "1",
+	PYTHONNOUSERSITE: "1",
 	// Disable editor and terminal credential prompts.
 	GIT_EDITOR: "true",
 	VISUAL: "true",
