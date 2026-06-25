@@ -651,6 +651,73 @@ describe("AgentSession retry fallback", () => {
 		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered on primary retry" });
 	});
 
+	it("uses model-capacity backoff for overloaded transient errors", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!primaryModel) {
+			throw new Error("Expected bundled Anthropic test model to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const overloadMessage =
+			"Error Code server_is_overloaded: Our servers are currently overloaded. Please try again later.";
+		const mock = createMockModel({
+			responses: [{ throw: overloadMessage }, { content: ["Recovered after overload backoff"] }],
+		});
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
+
+		await session.prompt("Retry overload with capacity backoff");
+		await session.waitForIdle();
+
+		expect(randomSpy).toHaveBeenCalled();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0]).toMatchObject({
+			attempt: 1,
+			maxAttempts: 1,
+			delayMs: 45_000,
+			errorMessage: overloadMessage,
+		});
+		expect(waitSpy).toHaveBeenCalledWith(45_000, { signal: expect.any(AbortSignal) });
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
+		const lastAssistant = getLastAssistantMessage(session);
+		expect(lastAssistant.stopReason).toBe("stop");
+		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered after overload backoff" });
+	});
+
 	it("auto-retries preserved OpenAI first-event timeout errors", async () => {
 		const model = getBundledModel("openai", "gpt-4o-mini");
 		if (!model) {

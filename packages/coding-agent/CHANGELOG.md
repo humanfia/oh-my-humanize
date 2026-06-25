@@ -23,6 +23,9 @@
 - Fixed automatic provider retry auditing so recovered 429/5xx retries are
   persisted as transcript metadata without injecting retry bookkeeping into the
   model prompt.
+- Fixed transient provider retry pacing so overload, capacity, rate-limit, and
+  5xx errors without explicit retry hints use the central provider backoff
+  profile instead of the short interactive retry base.
 - Fixed workflow review parsing so explicit `overall_correctness: incorrect`
   evidence is not overridden by a later contradictory finish token.
 - Fixed the experimental parallel implementation/review workflow so evidence

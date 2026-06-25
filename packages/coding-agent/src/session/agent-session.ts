@@ -437,6 +437,18 @@ function calculateRetryBackoffDelayMs(baseDelayMs: number, attempt: number): num
 	return cappedDelayMs * jitter;
 }
 
+function calculateTransientProviderBackoffMs(
+	errorMessage: string,
+	parsedRetryAfterMs: number | undefined,
+): number | undefined {
+	if (parsedRetryAfterMs !== undefined) return undefined;
+	const reason = parseRateLimitReason(errorMessage);
+	if (reason === "RATE_LIMIT_EXCEEDED" || reason === "MODEL_CAPACITY_EXHAUSTED" || reason === "SERVER_ERROR") {
+		return calculateRateLimitBackoffMs(reason);
+	}
+	return undefined;
+}
+
 /**
  * Slack added past a sibling credential's block expiry before retrying, so
  * the next getApiKey lands after the block has actually lapsed.
@@ -10940,6 +10952,12 @@ export class AgentSession {
 		let delayMs = staleOpenAIResponsesReplayError
 			? 0
 			: calculateRetryBackoffDelayMs(retrySettings.baseDelayMs, this.#retryAttempt);
+		const transientProviderBackoffMs = staleOpenAIResponsesReplayError
+			? undefined
+			: calculateTransientProviderBackoffMs(errorMessage, parsedRetryAfterMs);
+		if (transientProviderBackoffMs !== undefined && transientProviderBackoffMs > delayMs) {
+			delayMs = transientProviderBackoffMs;
+		}
 		let switchedCredential = false;
 		let switchedModel = false;
 		// Set when a usage-limit error pinned the wait to credential
