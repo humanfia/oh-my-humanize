@@ -13,6 +13,10 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration-plan workflow so compatibility
+  designs that are explicitly fail-closed or blocked by missing validation
+  tooling stop before caller migration instead of mutating source after a
+  blocked design verdict.
 - Fixed the experimental performance-optimization-search workflow so measured
   no-win runs with no retained project diff can archive a validation-blocked
   terminal state instead of looping back into another broad optimization fanout.

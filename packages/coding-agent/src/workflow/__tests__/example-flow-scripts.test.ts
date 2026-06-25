@@ -11,6 +11,7 @@ import { createSessionWorkflowRuntimeHost } from "../session-runtime";
 const PARALLEL_REVIEW_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/parallel-implementation-review/parallel-implementation-review/scripts`;
 const DOCUMENTATION_AUDIT_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/documentation-audit/documentation-audit/scripts`;
 const PERFORMANCE_OPTIMIZATION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/scripts`;
+const REFACTOR_MIGRATION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/refactor-migration-plan/refactor-migration-plan/scripts`;
 const TEST_GENERATION_HARDENING_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/test-generation-hardening/test-generation-hardening`;
 const KDA_HUMANIZE_SUBFLOW_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/kda-humanize/kda-humanize/humanize-rlcr-subflow`;
 
@@ -503,6 +504,69 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${blockedDir.path()}/workflow-output/test-hardening-gap-report.md`).text()).toContain(
 			"No module named pytest",
 		);
+	});
+
+	it("blocks refactor migration when compatibility design is fail-closed", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-compat-gate-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const blocked = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "enforceCompatibilityGate",
+			scriptFileName: "enforce-compatibility-gate.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/compatibilityGate"],
+			initialState: {
+				task: {
+					validationCommand: "python -m pytest tests/test_config.py",
+				},
+				compatibility: {
+					status: "designed_fail_closed_no_source_change",
+					validation: {
+						validation_exit_code: 1,
+						stop_condition_hit: "missing pytest",
+						validation_stdout_stderr: "/usr/bin/python: No module named pytest\n",
+					},
+					migration_decision: {
+						source_edits_performed: false,
+						reason: "missing pytest prevents a safe baseline",
+					},
+				},
+			},
+		});
+
+		expect(
+			blocked.scheduler.activations.find(activation => activation.nodeId === "enforceCompatibilityGate")?.status,
+		).toBe("failed");
+		const report = await Bun.file(`${cwd}/workflow-output/refactor-migration-compatibility-gate.md`).text();
+		expect(report).toContain("blocked");
+		expect(report).toContain("missing pytest");
+
+		using readyDir = TempDir.createSync("@omh-refactor-compat-gate-ready-");
+		const ready = await runExampleScript({
+			cwd: readyDir.path(),
+			previousCwd,
+			nodeId: "enforceCompatibilityGate",
+			scriptFileName: "enforce-compatibility-gate.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/compatibilityGate"],
+			initialState: {
+				task: {
+					validationCommand: "bun test",
+				},
+				compatibility: {
+					status: "ready",
+					strategy: "preserve the public call boundary before moving callers",
+				},
+			},
+		});
+
+		expect(ready.scheduler.state.compatibilityGate).toMatchObject({
+			status: "pass",
+			reportPath: "workflow-output/refactor-migration-compatibility-gate.md",
+		});
 	});
 
 	it("treats nested Humanize stop paths as structured handoffs instead of script failures", async () => {

@@ -26,6 +26,7 @@ stateSchema:
     task: object
     dependencyMap: object
     compatibility: object
+    compatibilityGate: object
     migration: object
     cleanup: object
     validation: object
@@ -34,6 +35,8 @@ stateSchema:
     archive: object
 resources:
   - path: scripts/precheck-task-contract.js
+    kind: script
+  - path: scripts/enforce-compatibility-gate.js
     kind: script
   - path: scripts/run-migration-validation.js
     kind: script
@@ -103,6 +106,17 @@ sequence:
               state: /dependencyMap
       writes:
         - /compatibility
+  - node:
+      id: enforceCompatibilityGate
+      type: script
+      reads:
+        - /task
+        - /compatibility
+      script:
+        language: js
+        file: scripts/enforce-compatibility-gate.js
+      writes:
+        - /compatibilityGate
   - template:
       kind: retry_until
       body:
