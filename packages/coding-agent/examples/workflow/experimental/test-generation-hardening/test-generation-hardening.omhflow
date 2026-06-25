@@ -33,6 +33,8 @@ stateSchema:
 resources:
   - path: scripts/precheck-task-contract.js
     kind: script
+  - path: scripts/materialize-gap-report.js
+    kind: script
   - path: scripts/run-test-suite.js
     kind: script
   - path: scripts/archive-tests.js
@@ -70,6 +72,15 @@ nodes:
       - /task
     prompt:
       file: prompts/test-gaps.md
+    writes:
+      - /gaps
+  - id: materializeGapReport
+    type: script
+    reads:
+      - /gaps
+    script:
+      language: js
+      file: scripts/materialize-gap-report.js
     writes:
       - /gaps
   - id: generateTests
@@ -154,6 +165,8 @@ edges:
   - from: precheckTaskContract
     to: inspectCoverage
   - from: inspectCoverage
+    to: materializeGapReport
+  - from: materializeGapReport
     to: generateTests
   - from: generateTests
     to: runTestSuite

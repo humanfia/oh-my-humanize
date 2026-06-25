@@ -211,7 +211,10 @@ describe("example workflow scripts", () => {
 		const repairPrompt = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/prompts/repair-tests.md`).text();
 		const reviewPrompt = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/prompts/test-review.md`).text();
 		const archiveScript = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/scripts/archive-tests.js`).text();
+		const gapPrompt = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/prompts/test-gaps.md`).text();
 
+		expect(gapPrompt).toContain("workflow-output/test-hardening-gap-report.md");
+		expect(generatePrompt).toContain("workflow-output/test-hardening-gap-report.md");
 		for (const prompt of [generatePrompt, repairPrompt, reviewPrompt]) {
 			expect(prompt).toContain("workflow-output/test-hardening-repair-evidence.md");
 		}
@@ -219,6 +222,70 @@ describe("example workflow scripts", () => {
 		expect(repairPrompt).toContain("Do not edit `workflow-output/test-suite.md`");
 		expect(reviewPrompt).toContain("test-hardening-repair-evidence");
 		expect(archiveScript).toContain("workflow-output/test-hardening-repair-evidence.md");
+	});
+
+	it("materializes test-hardening gap reports and fails closed on blocked validation", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-gap-report-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const ready = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeGapReport",
+			scriptFileName: "materialize-gap-report.js",
+			scriptDir: `${TEST_GENERATION_HARDENING_DIR}/scripts`,
+			writes: ["/gaps"],
+			initialState: {
+				gaps: {
+					status: "ready",
+					summary: "console width wrapping lacks regression coverage",
+					unitGaps: ["Console width boundaries"],
+					integrationGaps: ["Table layout with wrapped cells"],
+					filesLikelyToNeedTestChanges: ["tests/test_console.py"],
+					validation: {
+						startable: true,
+						command: "python -m pytest tests/test_console.py",
+					},
+				},
+			},
+		});
+
+		expect(ready.scheduler.state.gaps).toMatchObject({
+			gapReportPath: "workflow-output/test-hardening-gap-report.md",
+		});
+		const report = await Bun.file(`${cwd}/workflow-output/test-hardening-gap-report.md`).text();
+		expect(report).toContain("console width wrapping lacks regression coverage");
+		expect(report).toContain("Console width boundaries");
+		expect(report).toContain("tests/test_console.py");
+
+		using blockedDir = TempDir.createSync("@omh-test-hardening-gap-blocked-");
+		const blocked = await runExampleScript({
+			cwd: blockedDir.path(),
+			previousCwd,
+			nodeId: "materializeGapReport",
+			scriptFileName: "materialize-gap-report.js",
+			scriptDir: `${TEST_GENERATION_HARDENING_DIR}/scripts`,
+			writes: ["/gaps"],
+			initialState: {
+				gaps: {
+					status: "blocked",
+					summary: "validation command cannot start",
+					validation: {
+						startable: false,
+						command: "python -m pytest tests/test_console.py",
+						stderr: "/usr/bin/python: No module named pytest",
+					},
+				},
+			},
+		});
+
+		expect(
+			blocked.scheduler.activations.find(activation => activation.nodeId === "materializeGapReport")?.status,
+		).toBe("failed");
+		expect(await Bun.file(`${blockedDir.path()}/workflow-output/test-hardening-gap-report.md`).text()).toContain(
+			"No module named pytest",
+		);
 	});
 
 	it("treats nested Humanize stop paths as structured handoffs instead of script failures", async () => {

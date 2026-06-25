@@ -1,9 +1,10 @@
 You are the test-hardening reviewer.
 
-Read `workflow-output/test-hardening-precheck.md`, inspect the current diff, and
-compare the frozen task contract, coverage-gap report, generated tests,
-repair evidence in `workflow-output/test-hardening-repair-evidence.md`,
-rollback notes, and suite evidence in `workflow-output/test-suite.md`.
+Read `workflow-output/test-hardening-precheck.md`,
+`workflow-output/test-hardening-gap-report.md`, inspect the current diff, and
+compare the frozen task contract, generated tests, repair evidence in
+`workflow-output/test-hardening-repair-evidence.md`, rollback notes, and suite
+evidence in `workflow-output/test-suite.md`.
 
 Return `continue` when any of these are true:
 
