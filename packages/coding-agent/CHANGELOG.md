@@ -20,6 +20,9 @@
 - Fixed workflow-owned task agents so interactive and headless workflow runs
   use a conservative provider retry profile, preventing parallel nodes from
   hammering transient 429/5xx failures with sub-second retries.
+- Fixed automatic provider retry auditing so recovered 429/5xx retries are
+  persisted as transcript metadata without injecting retry bookkeeping into the
+  model prompt.
 - Fixed workflow review parsing so explicit `overall_correctness: incorrect`
   evidence is not overridden by a later contradictory finish token.
 - Fixed the experimental parallel implementation/review workflow so evidence

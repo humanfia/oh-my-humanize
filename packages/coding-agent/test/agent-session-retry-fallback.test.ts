@@ -43,6 +43,15 @@ function getLastAssistantMessage(session: AgentSession): AssistantMessage {
 	return lastMessage;
 }
 
+async function readJsonlEntries(file: string): Promise<Array<Record<string, unknown>>> {
+	const text = await Bun.file(file).text();
+	return text
+		.trimEnd()
+		.split("\n")
+		.filter(Boolean)
+		.map(line => JSON.parse(line) as Record<string, unknown>);
+}
+
 function createFallbackAgent(primaryModel: Model, requestedModels: string[]): Agent {
 	const mock = createMockModel();
 	let primaryAttempts = 0;
@@ -484,6 +493,81 @@ describe("AgentSession retry fallback", () => {
 		const lastAssistant = getLastAssistantMessage(session);
 		expect(lastAssistant.stopReason).toBe("stop");
 		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered after Google quota retry" });
+	});
+
+	it("persists auto-retry lifecycle events for transcript audits without injecting prompt context", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!primaryModel) {
+			throw new Error("Expected bundled Anthropic test model to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const mock = createMockModel({
+			responses: [{ throw: "rate limit exceeded retry-after-ms=200" }, { content: ["Recovered on primary retry"] }],
+		});
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+		const cwd = path.join(tempDir.path(), "retry-audit-cwd");
+		const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		const sessionFile = manager.getSessionFile();
+		if (!sessionFile) {
+			throw new Error("Expected persisted session file");
+		}
+
+		session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settings,
+			modelRegistry,
+		});
+		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
+
+		await session.prompt("Retry rate limit and leave an audit trail");
+		await session.waitForIdle();
+		await manager.flush();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(waitSpy).toHaveBeenCalledWith(200, { signal: expect.any(AbortSignal) });
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryEndEvents).toHaveLength(1);
+
+		const entries = await readJsonlEntries(sessionFile);
+		const retryEntries = entries.filter(entry => entry.type === "custom" && entry.customType === "auto-retry-event");
+		expect(retryEntries.map(entry => (entry.data as { event?: string }).event)).toEqual(["start", "end"]);
+		expect(retryEntries[0]?.data).toMatchObject({
+			event: "start",
+			attempt: 1,
+			maxAttempts: 1,
+			delayMs: 200,
+			errorMessage: "rate limit exceeded retry-after-ms=200",
+		});
+		expect(retryEntries[1]?.data).toMatchObject({ event: "end", success: true, attempt: 1 });
+		expect(entries.some(entry => entry.type === "custom_message" && entry.customType === "auto-retry-event")).toBe(
+			false,
+		);
 	});
 
 	it("keeps retry on the primary model when retry model fallback is disabled", async () => {

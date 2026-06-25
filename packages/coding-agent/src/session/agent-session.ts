@@ -2446,7 +2446,27 @@ export class AgentSession {
 		return queued;
 	}
 
+	#persistRetryAuditEvent(event: AgentSessionEvent): void {
+		if (event.type === "auto_retry_start") {
+			this.sessionManager.appendCustomEntry("auto-retry-event", {
+				event: "start",
+				attempt: event.attempt,
+				maxAttempts: event.maxAttempts,
+				delayMs: event.delayMs,
+				errorMessage: event.errorMessage,
+			});
+		} else if (event.type === "auto_retry_end") {
+			this.sessionManager.appendCustomEntry("auto-retry-event", {
+				event: "end",
+				success: event.success,
+				attempt: event.attempt,
+				...(event.finalError !== undefined ? { finalError: event.finalError } : {}),
+			});
+		}
+	}
+
 	async #emitSessionEvent(event: AgentSessionEvent): Promise<void> {
+		this.#persistRetryAuditEvent(event);
 		if (event.type === "message_update") {
 			this.#emit(event);
 			void this.#queueExtensionEvent(event);
