@@ -19,6 +19,11 @@ assigned strategy. If another active branch has already touched the same file,
 record the conflict in `workflow-output/perf-{{strategy}}.md` instead of
 overwriting unrelated work.
 
+If the previous review or shared hypotheses ask for selection/rollback repair,
+do not start a fresh broad optimization attempt. Limit this branch to the
+requested retain/revert/no-win evidence work, update its branch note, and avoid
+touching files owned by another branch.
+
 Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 
 - files changed or intentionally left unchanged;

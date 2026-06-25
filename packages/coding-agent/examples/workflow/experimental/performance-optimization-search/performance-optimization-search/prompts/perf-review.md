@@ -12,6 +12,9 @@ Hypotheses:
 Benchmark and validation evidence:
 {{jsonStringify benchmark}}
 
+Selection and rollback repair evidence:
+{{jsonStringify selectionRepair}}
+
 Review the current project diff and the branch notes in `workflow-output/`.
 Return `finish` only when:
 

@@ -31,6 +31,9 @@
   binding.
 - Fixed workflow read-only workspace guards so configured task-local runtime
   scratch directories do not count as project mutations.
+- Fixed the experimental performance-optimization-search workflow so reviewer
+  continuation routes through a bounded selection/rollback repair node before
+  starting another broad optimization search.
 - Fixed workflow review parsing so explicit `overall_correctness: incorrect`
   evidence is not overridden by a later contradictory finish token.
 - Fixed the experimental parallel implementation/review workflow so evidence

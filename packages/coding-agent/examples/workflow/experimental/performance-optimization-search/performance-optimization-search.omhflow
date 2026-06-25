@@ -30,6 +30,7 @@ stateSchema:
     caching: object
     io: object
     benchmark: object
+    selectionRepair: object
     selection: object
     review: string
     archive: object
@@ -47,6 +48,8 @@ resources:
   - path: prompts/hypotheses.md
     kind: prompt
   - path: prompts/optimization.md
+    kind: prompt
+  - path: prompts/selection-repair.md
     kind: prompt
   - path: prompts/perf-review.md
     kind: prompt
@@ -202,6 +205,37 @@ sequence:
                 - /io
               writes:
                 - /benchmark
+          - node:
+              id: repairPerformanceSelection
+              type: agent
+              agent: task
+              model:
+                role: optimizer
+              reads:
+                - /task
+                - /baseline
+                - /hypotheses
+                - /algorithmic
+                - /caching
+                - /io
+                - /benchmark
+                - /review
+              prompt:
+                template:
+                  file: prompts/selection-repair.md
+                  bindings:
+                    task:
+                      state: /task
+                    baseline:
+                      state: /baseline
+                    hypotheses:
+                      state: /hypotheses
+                    benchmark:
+                      state: /benchmark
+                    review:
+                      state: /review
+              writes:
+                - /selectionRepair
       review:
         id: perfReview
         type: review
@@ -216,6 +250,7 @@ sequence:
           - /caching
           - /io
           - /benchmark
+          - /selectionRepair
         prompt:
           template:
             file: prompts/perf-review.md
@@ -228,6 +263,8 @@ sequence:
                 state: /hypotheses
               benchmark:
                 state: /benchmark
+              selectionRepair:
+                state: /selectionRepair
         writes:
           - /review
         gates:
@@ -244,6 +281,7 @@ sequence:
       reads:
         - /task
         - /benchmark
+        - /selectionRepair
         - /review
       writes:
         - /selection
@@ -258,6 +296,7 @@ sequence:
         - /baseline
         - /benchmark
         - /selection
+        - /selectionRepair
         - /review
       writes:
         - /archive

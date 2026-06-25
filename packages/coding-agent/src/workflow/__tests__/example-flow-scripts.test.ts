@@ -289,6 +289,31 @@ describe("example workflow scripts", () => {
 		expect(evidence).toContain("missing dependency");
 	});
 
+	it("routes performance optimization through selection repair before reviewer loops", async () => {
+		const flow = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search.omhflow`,
+		).text();
+		const repairPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/selection-repair.md`,
+		).text();
+		const hypothesesPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/hypotheses.md`,
+		).text();
+		const optimizationPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/optimization.md`,
+		).text();
+
+		expect(flow).toMatch(/path:\s*prompts\/selection-repair\.md/u);
+		expect(flow).toMatch(
+			/id:\s*repairPerformanceSelection[\s\S]*?reads:[\s\S]*?- \/benchmark[\s\S]*?writes:[\s\S]*?- \/selectionRepair[\s\S]*?id:\s*perfReview/u,
+		);
+		expect(flow).toMatch(/selectionRepair:[\s\S]*?state:\s*\/selectionRepair/u);
+		expect(repairPrompt).toContain("workflow-output/performance-selection-repair.md");
+		expect(repairPrompt).toContain("Do not start a new broad optimization attempt");
+		expect(hypothesesPrompt).toContain("selection/rollback repair");
+		expect(optimizationPrompt).toContain("selection/rollback repair");
+	});
+
 	it("keeps test-hardening repair evidence separate from suite output", async () => {
 		const generatePrompt = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/prompts/generate-tests.md`).text();
 		const repairPrompt = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/prompts/repair-tests.md`).text();
