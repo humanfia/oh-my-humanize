@@ -23,6 +23,7 @@ import {
 	restartWorkflowAttempt,
 	startWorkflowAttempt,
 	startWorkflowFamily,
+	type WorkflowCheckpointWorkspaceSnapshot,
 } from "./lifecycle";
 import { diagnoseWorkflowLiveness } from "./liveness";
 import { resolveWorkflowNodeModel, type WorkflowModelResolutionAudit } from "./model-resolution";
@@ -50,7 +51,7 @@ import {
 	type WorkflowSchedulerResult,
 } from "./scheduler";
 import { validateWorkflowActivationOutput, type WorkflowActivationOutput } from "./state";
-import { captureWorkflowCheckpointWorkspace } from "./workspace-checkpoint";
+import { assertWorkflowWorkspaceSnapshotUnchanged, captureWorkflowCheckpointWorkspace } from "./workspace-checkpoint";
 
 export interface WorkflowRunnerModelResolutionOptions {
 	availableModels: Model<Api>[];
@@ -382,6 +383,7 @@ async function executeAndPersistActivation(
 		}
 		const runtimeSignal = workflowNodeRuntimeSignal(context);
 		const completionSignal = workflowNodeCompletionSignal(context);
+		const readOnlyWorkspaceBefore = await captureReadOnlyWorkspaceSnapshot(options, node);
 		const rawOutput = await awaitWorkflowNodeExecution(
 			executeWorkflowNode(nodeForExecution, activation, options.runtimeHost, {
 				modelOverride: modelOverrideFromAudit(modelAudit),
@@ -398,6 +400,7 @@ async function executeAndPersistActivation(
 		if (isWorkflowFailFastAbortReason(postExecutionAbortReason)) {
 			throw new WorkflowRunnerError(postExecutionAbortReason);
 		}
+		await assertReadOnlyWorkspaceUnchanged(options, node, readOnlyWorkspaceBefore);
 		const output = validateWorkflowActivationOutput(materializeSingleWriteData(node, rawOutput), {
 			allowedWritePaths: node.writes,
 			stateSchema: options.definition.stateSchema,
@@ -442,6 +445,24 @@ async function executeAndPersistActivation(
 		appendLifecycleActivationFailed(options, activation, message);
 		throw error;
 	}
+}
+
+async function captureReadOnlyWorkspaceSnapshot(
+	options: WorkflowRunnerOptions,
+	node: WorkflowNode,
+): Promise<WorkflowCheckpointWorkspaceSnapshot | undefined> {
+	if (node.workspaceAccess !== "read") return undefined;
+	return captureWorkflowCheckpointWorkspace(options.workspaceRoot);
+}
+
+async function assertReadOnlyWorkspaceUnchanged(
+	options: WorkflowRunnerOptions,
+	node: WorkflowNode,
+	before: WorkflowCheckpointWorkspaceSnapshot | undefined,
+): Promise<void> {
+	if (node.workspaceAccess !== "read") return;
+	const after = await captureWorkflowCheckpointWorkspace(options.workspaceRoot);
+	assertWorkflowWorkspaceSnapshotUnchanged(before, after, node.id);
 }
 
 function workflowNodeRuntimeSignal(context: WorkflowSchedulerExecutionContext): AbortSignal | undefined {

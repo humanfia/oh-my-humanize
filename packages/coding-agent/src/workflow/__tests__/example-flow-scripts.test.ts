@@ -10,6 +10,7 @@ import { createSessionWorkflowRuntimeHost } from "../session-runtime";
 
 const PARALLEL_REVIEW_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/parallel-implementation-review/parallel-implementation-review/scripts`;
 const DOCUMENTATION_AUDIT_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/documentation-audit/documentation-audit/scripts`;
+const PERFORMANCE_OPTIMIZATION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/scripts`;
 const TEST_GENERATION_HARDENING_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/test-generation-hardening/test-generation-hardening`;
 const KDA_HUMANIZE_SUBFLOW_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/kda-humanize/kda-humanize/humanize-rlcr-subflow`;
 
@@ -204,6 +205,34 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/documentation-audit-digest.md`).text()).toContain(
 			"# Documentation Audit Digest",
 		);
+	});
+
+	it("fails performance optimization closed when the baseline command is not reproducible", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-baseline-fail-closed-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "captureBaseline",
+			scriptFileName: "capture-baseline.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/baseline"],
+			initialState: {
+				task: {
+					baselineCommand: "printf 'missing dependency\\n' >&2; exit 17",
+				},
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "captureBaseline")?.status).toBe(
+			"failed",
+		);
+		expect(result.scheduler.state.baseline).toBeUndefined();
+		const evidence = await Bun.file(`${cwd}/workflow-output/performance-baseline.md`).text();
+		expect(evidence).toContain("Exit code: 17");
+		expect(evidence).toContain("missing dependency");
 	});
 
 	it("keeps test-hardening repair evidence separate from suite output", async () => {

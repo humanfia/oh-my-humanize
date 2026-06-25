@@ -10,6 +10,7 @@ import type {
 	WorkflowScriptSource,
 	WorkflowTemplatePromptBindingSource,
 	WorkflowTemplatePromptSource,
+	WorkflowWorkspaceAccess,
 } from "./definition";
 import { WORKFLOW_SCRIPT_TIMEOUT_MAX_MS } from "./definition";
 import type { WorkflowChangeRequestOrigin } from "./lifecycle";
@@ -125,6 +126,12 @@ function parseWorkflowGraphPatchOperation(value: unknown, pathLabel: string): Wo
 		if (raw.writes !== undefined) {
 			operation.writes = parseWorkflowPatchStringArray(raw.writes, `${pathLabel}.writes`);
 		}
+		if (raw.workspaceAccess !== undefined) {
+			operation.workspaceAccess = parseWorkflowPatchWorkspaceAccess(
+				raw.workspaceAccess,
+				`${pathLabel}.workspaceAccess`,
+			);
+		}
 		return operation;
 	}
 	if (op === "set_model_role") {
@@ -184,8 +191,16 @@ function parseWorkflowPatchNode(value: unknown, pathLabel: string, missingMessag
 	if (raw.gates !== undefined) node.gates = parseWorkflowPatchStringArray(raw.gates, `${pathLabel}.gates`);
 	if (raw.reads !== undefined) node.reads = parseWorkflowPatchStringArray(raw.reads, `${pathLabel}.reads`);
 	if (raw.writes !== undefined) node.writes = parseWorkflowPatchStringArray(raw.writes, `${pathLabel}.writes`);
+	if (raw.workspaceAccess !== undefined) {
+		node.workspaceAccess = parseWorkflowPatchWorkspaceAccess(raw.workspaceAccess, `${pathLabel}.workspaceAccess`);
+	}
 	if (raw.waitFor !== undefined) node.waitFor = parseWorkflowPatchStringArray(raw.waitFor, `${pathLabel}.waitFor`);
 	return node;
+}
+
+function parseWorkflowPatchWorkspaceAccess(value: unknown, pathLabel: string): WorkflowWorkspaceAccess {
+	if (value === "read" || value === "write") return value;
+	throw new Error(`${pathLabel} must be "read" or "write"`);
 }
 
 function parseWorkflowPatchEdge(value: unknown, pathLabel: string, missingMessage?: string): WorkflowEdge {

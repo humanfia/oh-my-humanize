@@ -101,6 +101,7 @@ function patchOperations(): WorkflowGraphPatchOperation[] {
 			nodeId: "review",
 			reads: ["/draft"],
 			writes: ["/verdict", "/score"],
+			workspaceAccess: "read",
 		},
 	];
 }
@@ -150,6 +151,7 @@ describe("workflow graph patch API", () => {
 		});
 		expect(result.definition.nodes.find(node => node.id === "review")?.reads).toEqual(["/draft"]);
 		expect(result.definition.nodes.find(node => node.id === "review")?.writes).toEqual(["/verdict", "/score"]);
+		expect(result.definition.nodes.find(node => node.id === "review")?.workspaceAccess).toBe("read");
 		expect(result.preview.modelChanges).toEqual([
 			{
 				nodeId: "review",
@@ -161,7 +163,7 @@ describe("workflow graph patch API", () => {
 			{
 				nodeId: "review",
 				before: { writes: ["/verdict"] },
-				after: { reads: ["/draft"], writes: ["/verdict", "/score"] },
+				after: { reads: ["/draft"], writes: ["/verdict", "/score"], workspaceAccess: "read" },
 			},
 		]);
 	});

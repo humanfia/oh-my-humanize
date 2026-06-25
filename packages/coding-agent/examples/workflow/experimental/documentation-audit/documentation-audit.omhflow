@@ -80,6 +80,7 @@ sequence:
       id: inventoryDocs
       type: agent
       agent: task
+      workspaceAccess: read
       model:
         role: writer
       reads:
@@ -101,6 +102,7 @@ sequence:
                   id: auditApiDocs
                   type: agent
                   agent: task
+                  workspaceAccess: read
                   model:
                     role: writer
                   reads:
@@ -123,6 +125,7 @@ sequence:
                   id: auditTutorials
                   type: agent
                   agent: task
+                  workspaceAccess: read
                   model:
                     role: writer
                   reads:
@@ -145,6 +148,7 @@ sequence:
                   id: auditExamples
                   type: agent
                   agent: task
+                  workspaceAccess: read
                   model:
                     role: writer
                   reads:
@@ -181,6 +185,7 @@ sequence:
               id: consolidateAudit
               type: agent
               agent: task
+              workspaceAccess: read
               model:
                 role: writer
               reads:
@@ -200,6 +205,7 @@ sequence:
               id: patchDocs
               type: agent
               agent: task
+              workspaceAccess: write
               model:
                 role: writer
               reads:
@@ -239,6 +245,7 @@ sequence:
         id: consistencyReview
         type: review
         agent: reviewer
+        workspaceAccess: read
         model:
           role: reviewer
         reads:

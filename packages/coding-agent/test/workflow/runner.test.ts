@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
+import { $ } from "bun";
 import { parseWorkflowDefinition } from "../../src/workflow/definition";
 import type { FlowFreeze } from "../../src/workflow/freeze";
 import {
@@ -144,6 +145,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+async function initializeGitWorkspace(workspace: string): Promise<void> {
+	await $`git init`.cwd(workspace).quiet();
+	await Bun.write(path.join(workspace, "README.md"), "baseline\n");
+	await $`git add README.md`.cwd(workspace).quiet();
+	await $`git -c user.name=omh-test -c user.email=omh-test@example.invalid -c commit.gpgsign=false commit -m baseline`
+		.cwd(workspace)
+		.quiet();
+}
+
 describe("workflow runner", () => {
 	it("persists activation lifecycle, state patches, artifacts, and model audit for a run", async () => {
 		const host = createHost();
@@ -237,6 +247,71 @@ edges: []
 		const reconstructed = reconstructWorkflowRuns(host.getBranch());
 		expect(reconstructed[0]?.state).toEqual({});
 		expect(reconstructed[0]?.activations[0]?.status).toBe("failed");
+	});
+
+	it("fails read-only workspace nodes before persisting their state when they mutate files", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "omp-workflow-readonly-workspace-"));
+		try {
+			await initializeGitWorkspace(workspace);
+			const host = createHost();
+			const definition = parseWorkflowDefinition(
+				`
+name: read-only-workspace-demo
+version: 1
+nodes:
+  inspect:
+    type: agent
+    agent: task
+    workspaceAccess: read
+    writes:
+      - /audit
+  patch:
+    type: script
+    script:
+      language: sh
+      inline: echo patch
+    writes:
+      - /done
+edges:
+  - from: inspect
+    to: patch
+`,
+				{ sourcePath: "workflow.yml" },
+			);
+			const runtimeHost: WorkflowNodeRuntimeHost = {
+				runAgentNode: async () => {
+					await Bun.write(path.join(workspace, "src", "unexpected.ts"), "export const unexpected = true;\n");
+					return {
+						summary: "inspection yielded after mutating files",
+						statePatch: [{ op: "set", path: "/audit", value: { status: "done" } }],
+					};
+				},
+				runScriptNode: async () => ({
+					summary: "patch should not run",
+					statePatch: [{ op: "set", path: "/done", value: true }],
+				}),
+			};
+
+			const result = await runWorkflow({
+				host,
+				definition,
+				runId: "run-read-only-workspace",
+				startNodeId: "inspect",
+				runtimeHost,
+				workspaceRoot: workspace,
+			});
+
+			expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+				["inspect", "failed"],
+			]);
+			expect(result.scheduler.activations[0]?.error).toContain(
+				'workflow node "inspect" declared workspaceAccess=read but changed workspace',
+			);
+			expect(result.scheduler.state).toEqual({});
+			expect(reconstructWorkflowRuns(host.getBranch())[0]?.state).toEqual({});
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true });
+		}
 	});
 
 	it("lets agent node outputs choose downstream paths", async () => {

@@ -8,6 +8,12 @@ const result = await runShell(command);
 const outputPath = "workflow-output/performance-baseline.md";
 await Bun.write(outputPath, evidenceMarkdown("Baseline", command, result));
 
+if (result.exitCode !== 0) {
+	throw new Error(
+		`baseline command failed with exit code ${result.exitCode}; evidence written to ${outputPath}; fix the task environment or command before planning optimizations`,
+	);
+}
+
 return {
 	summary: `captured performance baseline; exit=${result.exitCode}`,
 	data: result,

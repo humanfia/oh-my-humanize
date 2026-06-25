@@ -1324,6 +1324,31 @@ describe("parallel-implementation-review flow contract", () => {
 		]);
 	});
 
+	it("normalizes human artifact references before checking materialized handoffs", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test");
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {
+			state: {
+				planHandoff: [
+					"Core lane: workflow-output/core-lane-P06-T06-test.json\\",
+					"Tests lane: workflow-output/tests-lane-P06-T06-test.json,",
+					"Docs lane shorthand: workflow-output/docs-lane-P06-T06-test.md/json",
+					"Integration: workflow-output/integration-review-P06-T06-test.json).",
+				].join("\n"),
+			},
+		});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.expected_referenced_artifacts).toEqual([
+			"workflow-output/core-lane-P06-T06-test.json",
+			"workflow-output/docs-lane-P06-T06-test.md/json",
+			"workflow-output/integration-review-P06-T06-test.json",
+			"workflow-output/tests-lane-P06-T06-test.json",
+		]);
+		expect(result.data?.checked_inputs?.missing_referenced_artifacts).toEqual([]);
+	});
+
 	it("rejects mechanical surface inventories as semantic lane evidence", async () => {
 		const cwd = await createTempDir();
 		await writeReadyEvidence(cwd, "P06-T06-test");

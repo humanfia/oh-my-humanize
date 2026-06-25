@@ -6,6 +6,7 @@ import type {
 	WorkflowNode,
 	WorkflowNodeType,
 	WorkflowPromptSource,
+	WorkflowWorkspaceAccess,
 } from "./definition";
 import type { WorkflowRunSnapshot, WorkflowRunStoreHost } from "./run-store";
 import { readWorkflowState } from "./state";
@@ -70,6 +71,7 @@ export interface WorkflowReplaceNodePermissionsPatchOperation {
 	nodeId: string;
 	reads?: string[];
 	writes?: string[];
+	workspaceAccess?: WorkflowWorkspaceAccess;
 }
 
 export interface WorkflowSetModelRolePatchOperation {
@@ -141,6 +143,7 @@ export interface WorkflowPromptSourceChange {
 export interface WorkflowNodePermissions {
 	reads?: string[];
 	writes?: string[];
+	workspaceAccess?: WorkflowWorkspaceAccess;
 }
 
 export interface WorkflowNodePermissionChange {
@@ -430,8 +433,13 @@ function replaceNodePermissions(
 	}
 	validateStateScopes(operation.reads);
 	validateStateScopes(operation.writes);
-	const before = compactPermissions({ reads: node.reads, writes: node.writes });
-	const after = compactPermissions({ reads: operation.reads, writes: operation.writes });
+	validateWorkspaceAccess(operation.workspaceAccess);
+	const before = compactPermissions({ reads: node.reads, writes: node.writes, workspaceAccess: node.workspaceAccess });
+	const after = compactPermissions({
+		reads: operation.reads,
+		writes: operation.writes,
+		workspaceAccess: operation.workspaceAccess,
+	});
 	if (operation.reads === undefined) {
 		delete node.reads;
 	} else {
@@ -441,6 +449,11 @@ function replaceNodePermissions(
 		delete node.writes;
 	} else {
 		node.writes = [...operation.writes];
+	}
+	if (operation.workspaceAccess === undefined) {
+		delete node.workspaceAccess;
+	} else {
+		node.workspaceAccess = operation.workspaceAccess;
 	}
 	preview.permissionChanges.push({ nodeId: operation.nodeId, before, after });
 	pushUnique(preview.changedNodes, operation.nodeId);
@@ -743,7 +756,13 @@ function compactPermissions(permissions: WorkflowNodePermissions): WorkflowNodeP
 	const result: WorkflowNodePermissions = {};
 	if (permissions.reads !== undefined) result.reads = [...permissions.reads];
 	if (permissions.writes !== undefined) result.writes = [...permissions.writes];
+	if (permissions.workspaceAccess !== undefined) result.workspaceAccess = permissions.workspaceAccess;
 	return result;
+}
+
+function validateWorkspaceAccess(value: WorkflowWorkspaceAccess | undefined): void {
+	if (value === undefined || value === "read" || value === "write") return;
+	throw new WorkflowGraphPatchError('workflow node workspaceAccess must be "read" or "write"');
 }
 
 function pushUnique(values: string[], value: string): void {

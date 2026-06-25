@@ -70,6 +70,22 @@ export async function assertWorkflowCheckpointWorkspaceMatches(
 	);
 }
 
+export function assertWorkflowWorkspaceSnapshotUnchanged(
+	before: WorkflowCheckpointWorkspaceSnapshot | undefined,
+	after: WorkflowCheckpointWorkspaceSnapshot | undefined,
+	nodeId: string,
+): void {
+	if (before === undefined || after === undefined) return;
+	if (before.kind === after.kind && before.status === after.status && before.digest === after.digest) return;
+	throw new WorkflowLifecycleError(
+		[
+			`workflow node "${nodeId}" declared workspaceAccess=read but changed workspace`,
+			`before=${formatWorkspaceSnapshot(before)}`,
+			`after=${formatWorkspaceSnapshot(after)}`,
+		].join("; "),
+	);
+}
+
 function unavailableWorkspaceSnapshot(error: string): WorkflowCheckpointWorkspaceSnapshot {
 	return {
 		kind: "unknown",

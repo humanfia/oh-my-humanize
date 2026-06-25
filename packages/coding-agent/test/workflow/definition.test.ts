@@ -71,6 +71,51 @@ edges: []
 		expect(definition.nodes[0]?.fallbackVerdict).toBe("CONTINUE");
 	});
 
+	it("parses node workspace access contracts", () => {
+		const definition = parseWorkflowDefinition(
+			`
+name: workspace-access-demo
+version: 1
+nodes:
+  inspect:
+    type: agent
+    agent: task
+    workspaceAccess: read
+  patch:
+    type: agent
+    agent: task
+    workspaceAccess: write
+edges:
+  - from: inspect
+    to: patch
+`,
+			{ sourcePath: "workflow.yml" },
+		);
+
+		expect(definition.nodes.map(node => [node.id, node.workspaceAccess])).toEqual([
+			["inspect", "read"],
+			["patch", "write"],
+		]);
+	});
+
+	it("rejects unsupported node workspace access contracts", () => {
+		expect(() =>
+			parseWorkflowDefinition(
+				`
+name: invalid-workspace-access
+version: 1
+nodes:
+  inspect:
+    type: agent
+    agent: task
+    workspaceAccess: readonly
+edges: []
+`,
+				{ sourcePath: "workflow.yml" },
+			),
+		).toThrow('nodes.inspect.workspaceAccess must be "read" or "write"');
+	});
+
 	it("rejects unsupported state schema field types before execution", () => {
 		expect(() =>
 			parseWorkflowDefinition(

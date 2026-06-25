@@ -445,6 +445,7 @@ function workflowNodeToRawRecord(node: WorkflowNode): Record<string, unknown> {
 	if (node.fallbackVerdict !== undefined) raw.fallbackVerdict = node.fallbackVerdict;
 	if (node.reads !== undefined) raw.reads = [...node.reads];
 	if (node.writes !== undefined) raw.writes = [...node.writes];
+	if (node.workspaceAccess !== undefined) raw.workspaceAccess = node.workspaceAccess;
 	if (node.waitFor !== undefined) raw.waitFor = [...node.waitFor];
 	return raw;
 }

@@ -609,7 +609,7 @@ function referencedWorkflowArtifactsFromText(text) {
 }
 
 function normalizeReferencedWorkflowArtifact(value) {
-	const normalized = value.replace(/[),.;\]}]+$/gu, "");
+	const normalized = value.replace(/[\\),.;:\]}]+$/gu, "");
 	if (normalized.includes("<") || normalized.includes(">")) return "";
 	if (!normalized.startsWith("workflow-output/")) return "";
 	return normalized;
@@ -618,9 +618,30 @@ function normalizeReferencedWorkflowArtifact(value) {
 async function missingExpectedArtifacts(artifacts) {
 	const missing = [];
 	for (const artifact of artifacts) {
-		if (!(await Bun.file(artifact).exists())) missing.push(artifact);
+		if (!(await referencedArtifactExists(artifact))) missing.push(artifact);
 	}
 	return missing;
+}
+
+async function referencedArtifactExists(artifact) {
+	for (const candidate of referencedArtifactCandidates(artifact)) {
+		if (await Bun.file(candidate).exists()) return true;
+	}
+	return false;
+}
+
+function referencedArtifactCandidates(artifact) {
+	const alternative = /^(workflow-output\/.+)\.([A-Za-z0-9]+)\/([A-Za-z0-9]+)$/u.exec(artifact);
+	if (!alternative) return [artifact];
+	const base = alternative[1] ?? "";
+	const firstExtension = alternative[2] ?? "";
+	const secondExtension = alternative[3] ?? "";
+	if (!workflowArtifactExtension(firstExtension) || !workflowArtifactExtension(secondExtension)) return [artifact];
+	return [`${base}.${firstExtension}`, `${base}.${secondExtension}`];
+}
+
+function workflowArtifactExtension(value) {
+	return /^(?:json|jsonl|md|txt|log|out|stderr|stdout|exitcode)$/iu.test(value);
 }
 
 function stringArrayField(value, key) {

@@ -81,6 +81,18 @@ The workflows below use the normal `omh` model, provider, auth, and tool setting
 The flow artifact can name portable defaults, but it does not carry API keys and
 does not introduce a second model/tool configuration layer.
 
+## Node Workspace Contracts
+
+Workflow nodes can declare `workspaceAccess: read` or `workspaceAccess: write`.
+The default is write access for compatibility. Use `read` for inventory,
+planning, audit, and review nodes that should inspect the project and return
+workflow state without editing files. The runtime captures the workspace before
+and after a read-only node; if the node changes tracked, staged, or untracked
+workspace content, the activation fails before its state patch is persisted and
+downstream nodes do not run. This is a flow-language contract, not a
+flow-specific convention, and applies equally to built-in, experimental, demo,
+and external flows.
+
 ## Humanize RLCR Candidate Workflow
 
 Use the `humanize-rlcr` candidate when a task needs iterative implementation

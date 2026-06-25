@@ -3,6 +3,7 @@ import { diagnoseWorkflowConditionReferences, parseWorkflowCondition, WorkflowCo
 import { parseWorkflowStateSchema, type WorkflowStateSchema, WorkflowStateSchemaError } from "./state-schema";
 
 export type WorkflowNodeType = "agent" | "script" | "human" | "review";
+export type WorkflowWorkspaceAccess = "read" | "write";
 export type WorkflowModelUnavailablePolicy = "fallback-to-parent" | "fail";
 export type WorkflowScriptLanguage = "js" | "py" | "sh";
 export const WORKFLOW_SCRIPT_TIMEOUT_MAX_MS = 60 * 60 * 1000;
@@ -132,6 +133,7 @@ export interface WorkflowNode {
 	fallbackVerdict?: string;
 	reads?: string[];
 	writes?: string[];
+	workspaceAccess?: WorkflowWorkspaceAccess;
 	waitFor?: string[];
 }
 
@@ -233,8 +235,22 @@ function parseNodes(value: unknown, sourcePath?: string): WorkflowNode[] {
 		validateFallbackVerdict(id, type, gates, fallbackVerdict, path, sourcePath);
 		const reads = parseOptionalStringList(node.reads, `${path}.reads`, sourcePath);
 		const writes = parseOptionalStringList(node.writes, `${path}.writes`, sourcePath);
+		const workspaceAccess = parseWorkspaceAccess(node.workspaceAccess, `${path}.workspaceAccess`, sourcePath);
 		const waitFor = parseOptionalStringList(node.waitFor, `${path}.waitFor`, sourcePath);
-		return compactNode({ id, type, agent, model, ...prompt, script, gates, fallbackVerdict, reads, writes, waitFor });
+		return compactNode({
+			id,
+			type,
+			agent,
+			model,
+			...prompt,
+			script,
+			gates,
+			fallbackVerdict,
+			reads,
+			writes,
+			workspaceAccess,
+			waitFor,
+		});
 	});
 }
 
@@ -697,6 +713,12 @@ function parseNodeType(value: unknown, path: string, sourcePath?: string): Workf
 	throw new WorkflowDefinitionError(`${path} must be agent, script, human, or review`, sourcePath);
 }
 
+function parseWorkspaceAccess(value: unknown, path: string, sourcePath?: string): WorkflowWorkspaceAccess | undefined {
+	if (value === undefined) return undefined;
+	if (value === "read" || value === "write") return value;
+	throw new WorkflowDefinitionError(`${path} must be "read" or "write"`, sourcePath);
+}
+
 function parsePromptActivationSelector(
 	value: unknown,
 	path: string,
@@ -717,6 +739,7 @@ function compactNode(node: WorkflowNode): WorkflowNode {
 	if (node.fallbackVerdict !== undefined) result.fallbackVerdict = node.fallbackVerdict;
 	if (node.reads !== undefined) result.reads = node.reads;
 	if (node.writes !== undefined) result.writes = node.writes;
+	if (node.workspaceAccess !== undefined) result.workspaceAccess = node.workspaceAccess;
 	if (node.waitFor !== undefined) result.waitFor = node.waitFor;
 	return result;
 }
