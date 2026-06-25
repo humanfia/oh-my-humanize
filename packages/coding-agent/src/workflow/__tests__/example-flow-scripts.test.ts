@@ -315,6 +315,67 @@ describe("example workflow scripts", () => {
 		expect(optimizationPrompt).toContain("selection/rollback repair");
 	});
 
+	it("keeps performance parallel lanes lane-local until selection applies a candidate", async () => {
+		const optimizationPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/optimization.md`,
+		).text();
+		const repairPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/selection-repair.md`,
+		).text();
+		const reviewPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/perf-review.md`,
+		).text();
+
+		expect(optimizationPrompt).toContain("Do not leave project-file edits in the shared workspace");
+		expect(optimizationPrompt).toContain("candidate patch");
+		expect(optimizationPrompt).toContain("git apply --check");
+		expect(repairPrompt).toContain("apply at most one selected candidate patch");
+		expect(repairPrompt).toContain("clean shared workspace");
+		expect(reviewPrompt).toContain("branch left no project-file edits in the shared workspace");
+	});
+
+	it("blocks performance benchmark joins when parallel lanes leave shared project edits", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-shared-diff-guard-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "candidate leaked into shared workspace\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "fail",
+			isolationViolation: true,
+			projectChangedFiles: ["src.txt"],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain(
+			"Parallel Lane Isolation Violation",
+		);
+	});
+
 	it("archives performance no-win evidence when validation is blocked without retained project changes", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-no-win-validation-blocked-");
 		const cwd = tempDir.path();

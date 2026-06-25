@@ -20,11 +20,16 @@ Work in the current project directory. Do not start a new broad optimization att
 Your job is to reconcile the already attempted branches into a terminal state
 that the reviewer can evaluate:
 
+- begin by checking that the shared workspace is clean except for
+  `workflow-output/` artifacts and `task.md`; if parallel lanes left project
+  edits behind, revert those edits and preserve the isolation violation as flow
+  evidence before judging winners;
 - if validation or benchmark failed, preserve the failure evidence and explain
   the minimal next repair needed;
-- if one branch has a measured positive result, keep only that branch's project
-  changes, revert or isolate losing branch changes, and update that branch note
-  with `final-selection: yes`;
+- if one branch has a measured positive result, apply at most one selected candidate patch
+  from that branch into the clean shared workspace, verify it with
+  `git apply --check` before applying, rerun the task-declared validation, and
+  update that branch note with `final-selection: yes`;
 - mark every losing, reverted, conflict-only, or unselected branch with
   `final-selection: no` and rollback evidence;
 - if no safe positive optimization remains and the task explicitly allows it,
@@ -41,7 +46,8 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 
 - current benchmark and validation status;
 - selected branch, no-win branch, or blocker;
-- project files retained, reverted, or intentionally left unchanged;
+- project files retained, reverted, or intentionally left unchanged, including
+  whether the shared workspace was clean before selection;
 - exact rollback/no-change evidence;
 - the branch report files you updated.
 

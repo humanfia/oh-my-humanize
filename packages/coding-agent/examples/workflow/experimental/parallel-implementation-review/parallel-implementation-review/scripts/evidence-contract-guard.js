@@ -611,6 +611,7 @@ function referencedWorkflowArtifactsFromText(text) {
 function normalizeReferencedWorkflowArtifact(value) {
 	const normalized = value.replace(/[\\),.;:\]}]+$/gu, "");
 	if (normalized.includes("...[truncated")) return "";
+	if (normalized.includes("{") || normalized.includes("}")) return "";
 	if (normalized.includes("<") || normalized.includes(">")) return "";
 	if (!normalized.startsWith("workflow-output/")) return "";
 	return normalized;

@@ -1354,6 +1354,64 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(result.data?.checked_inputs?.missing_referenced_artifacts).toEqual([]);
 	});
 
+	it("ignores brace shorthand when concrete validation attempt logs exist", async () => {
+		const cwd = await createTempDir();
+		const tupleId = "P06-T06-test";
+		await writeReadyEvidence(cwd, tupleId);
+		const attemptFiles = [
+			`workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+			`workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+			`workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+		];
+		for (const file of attemptFiles) {
+			await Bun.write(path.join(cwd, file), file.includes("exitcode") ? "0\n" : "ok\n");
+		}
+		await Bun.write(
+			path.join(cwd, "workflow-output", `tests-lane-${tupleId}.json`),
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementTests",
+					status: "complete",
+					validation_attempts: [
+						{
+							attempt: 1,
+							result: "pass",
+							stdout_path: `workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+							stderr_path: `workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+							exitcode_path: `workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+						},
+					],
+					validation: {
+						command: "true",
+						environment: {},
+						result: "pass",
+						exit_code: 0,
+						stdout_path: `workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+						stderr_path: `workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+						exitcode_path: `workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {
+			state: {
+				planHandoff: [
+					"Tests lane shorthand:",
+					`workflow-output/validation-attempt-1-{stdout,stderr,exitcode}-${tupleId}.txt`,
+					"Concrete stdout/stderr/exitcode files are emitted separately.",
+				].join("\n"),
+			},
+		});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.missing_referenced_artifacts).toEqual([]);
+		expect(result.data?.checked_inputs?.validation_attempt_log_findings).toEqual([]);
+	});
+
 	it("rejects mechanical surface inventories as semantic lane evidence", async () => {
 		const cwd = await createTempDir();
 		await writeReadyEvidence(cwd, "P06-T06-test");

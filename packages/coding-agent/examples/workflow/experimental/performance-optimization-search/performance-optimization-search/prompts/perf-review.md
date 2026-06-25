@@ -19,6 +19,10 @@ Review the current project diff and the branch notes in `workflow-output/`.
 Return `finish` only when:
 
 - the task-declared Benchmark Command produced real output;
+- every parallel branch left no project-file edits in the shared workspace
+  before selection; candidate code must be represented as a branch-local patch
+  and lane-local measurement evidence until the selection repair node applies
+  at most one selected candidate;
 - there is a clearly selected positive optimization or a documented no-win
   result with rollback evidence;
 - losing or negative branches are reverted or explicitly isolated;

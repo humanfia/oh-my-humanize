@@ -14,10 +14,25 @@ Shared hypotheses:
 Previous review, if any:
 {{jsonStringify review}}
 
-Work in the current project directory. Make the smallest change that tests the
-assigned strategy. If another active branch has already touched the same file,
-record the conflict in `workflow-output/perf-{{strategy}}.md` instead of
-overwriting unrelated work.
+Work from the current project directory, but keep the shared workspace clean.
+Do not leave project-file edits in the shared workspace. For any code
+candidate, create a lane-local scratch copy or git worktree under
+`workflow-output/tmp/{{strategy}}-*`, apply the candidate only there, and export
+the candidate patch plus measurements into `workflow-output/`. Before yielding,
+verify the shared workspace has no project-file diff with `git diff HEAD
+--name-only` except `workflow-output/` artifacts and `task.md`. If a candidate
+cannot be tested without mutating another branch's shared files, record the
+conflict in `workflow-output/perf-{{strategy}}.md` instead of editing the shared
+workspace.
+
+When you create a candidate patch, preserve enough evidence for selection:
+
+- a strategy-scoped candidate patch path such as
+  `workflow-output/perf-{{strategy}}-candidate.diff`;
+- the exact command used to apply-check the patch in a clean checkout, including
+  `git apply --check <candidate patch>`;
+- benchmark or validation logs from the lane-local scratch workspace;
+- stdout/stderr equivalence evidence when the benchmark observes program output.
 
 If the previous review or shared hypotheses ask for selection/rollback repair,
 do not start a fresh broad optimization attempt. Limit this branch to the
@@ -28,9 +43,13 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 
 - files changed or intentionally left unchanged;
 - the expected performance mechanism;
+- candidate patch path, or an explicit statement that no candidate patch was
+  produced;
+- lane-local scratch path and the `git apply --check` result when a candidate
+  patch exists;
 - rollback instructions for this branch;
 - `final-selection: yes` only if this branch is the single retained candidate
-  after reverting or isolating losing branch changes;
+  after the selection/repair node applies it in the shared workspace;
 - `final-selection: no` for losing, reverted, conflict-only, or no-win
   branches;
 - `no-win-result: yes` only when the task contract explicitly contains
