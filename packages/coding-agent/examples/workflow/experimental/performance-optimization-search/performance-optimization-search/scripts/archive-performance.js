@@ -3,10 +3,10 @@ const task = state.task && typeof state.task === "object" ? state.task : {};
 const benchmark = state.benchmark && typeof state.benchmark === "object" ? state.benchmark : {};
 const selection = state.selection && typeof state.selection === "object" ? state.selection : {};
 
-if (benchmark.status !== "pass") {
-	throw new Error("cannot archive performance search before benchmark and validation pass");
+if (!benchmarkCommandPassed(benchmark)) {
+	throw new Error("cannot archive performance search before the benchmark command passes");
 }
-if (selection.status !== "pass") {
+if (!["pass", "blocked"].includes(String(selection.status))) {
 	throw new Error("cannot archive performance search before finalizePerformanceSelection passes");
 }
 
@@ -23,24 +23,26 @@ const finalSelectionText = [algorithmicText, cachingText, ioText].join("\n");
 const hasRollbackEvidence = /\brollback\b/iu.test(finalSelectionText);
 const hasFinalSelection = /\bfinal-selection\s*:\s*yes\b/iu.test(finalSelectionText);
 const hasNoWinEvidence = /\bno-win-result\s*:\s*yes\b/iu.test(finalSelectionText);
-if (!["positive", "no-win"].includes(String(selection.terminalState))) {
-	throw new Error("cannot archive performance search before selection terminalState is positive or no-win");
+if (!["positive", "no-win", "no-win-validation-blocked"].includes(String(selection.terminalState))) {
+	throw new Error(
+		"cannot archive performance search before selection terminalState is positive, no-win, or no-win-validation-blocked",
+	);
 }
 if (!hasRollbackEvidence) {
 	throw new Error("cannot archive performance search before rollback evidence is recorded");
 }
-if (selection.terminalState === "no-win" && projectChangedFiles.length !== 0) {
+if (isNoWinTerminalState(selection.terminalState) && projectChangedFiles.length !== 0) {
 	throw new Error("cannot archive no-win performance search with project changes still present");
 }
 if (selection.terminalState === "positive" && projectChangedFiles.length === 0) {
 	throw new Error("cannot archive positive performance search without project changes");
 }
-if (selection.terminalState === "no-win" && !allowsNoWinArchive(task)) {
+if (isNoWinTerminalState(selection.terminalState) && !allowsNoWinArchive(task)) {
 	throw new Error(
 		"cannot archive performance search without real project changes; add `No-Win Result: allowed` to task.md only for measured no-win investigations",
 	);
 }
-if (selection.terminalState === "no-win" && !hasNoWinEvidence) {
+if (isNoWinTerminalState(selection.terminalState) && !hasNoWinEvidence) {
 	throw new Error("cannot archive no-win performance search before a branch records `no-win-result: yes` evidence");
 }
 if (selection.terminalState === "positive" && !hasFinalSelection) {
@@ -65,6 +67,7 @@ await Bun.write(
 		"Selection:",
 		"",
 		`- terminalState: ${selection.terminalState}`,
+		`- validation: ${selection.terminalState === "no-win-validation-blocked" ? "blocked" : "pass"}`,
 		`- selectedBranches: ${Array.isArray(selection.selectedBranches) ? selection.selectedBranches.join(", ") || "none" : "unknown"}`,
 		`- noWinBranches: ${Array.isArray(selection.noWinBranches) ? selection.noWinBranches.join(", ") || "none" : "unknown"}`,
 		"",
@@ -96,6 +99,7 @@ return {
 			value: {
 				file: outputPath,
 				benchmark: "pass",
+				validation: selection.terminalState === "no-win-validation-blocked" ? "blocked" : "pass",
 				projectChangedFiles,
 				noWin: projectChangedFiles.length === 0,
 			},
@@ -124,6 +128,15 @@ async function gitDiffHeadChangedFiles() {
 function allowsNoWinArchive(taskValue) {
 	const taskText = typeof taskValue.text === "string" ? taskValue.text : "";
 	return /\bNo-Win Result\s*:\s*allowed\b/iu.test(taskText);
+}
+
+function benchmarkCommandPassed(benchmarkValue) {
+	if (typeof benchmarkValue.benchmarkExitCode === "number") return benchmarkValue.benchmarkExitCode === 0;
+	return benchmarkValue.status === "pass";
+}
+
+function isNoWinTerminalState(terminalState) {
+	return terminalState === "no-win" || terminalState === "no-win-validation-blocked";
 }
 
 async function readOptionalText(filePath) {

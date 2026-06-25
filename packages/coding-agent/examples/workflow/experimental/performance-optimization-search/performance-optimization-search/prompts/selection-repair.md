@@ -30,6 +30,10 @@ that the reviewer can evaluate:
 - if no safe positive optimization remains and the task explicitly allows it,
   revert all project changes and record `no-win-result: yes` plus no-change or
   rollback evidence in one branch note;
+- if no safe positive optimization remains, the benchmark command passed,
+  validation failed, and the project diff is empty after rollback, preserve the
+  validation failure as terminal no-win validation-blocked evidence instead of
+  asking for another broad optimization attempt;
 - if the task does not allow a no-win result, do not fake a win and explain the
   blocker.
 

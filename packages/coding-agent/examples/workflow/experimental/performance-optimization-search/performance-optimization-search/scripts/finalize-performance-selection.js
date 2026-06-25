@@ -2,8 +2,8 @@ const state = workflowContext.state && typeof workflowContext.state === "object"
 const task = state.task && typeof state.task === "object" ? state.task : {};
 const benchmark = state.benchmark && typeof state.benchmark === "object" ? state.benchmark : {};
 
-if (benchmark.status !== "pass") {
-	throw new Error("cannot finalize performance selection before benchmark and validation pass");
+if (!benchmarkCommandPassed(benchmark)) {
+	throw new Error("cannot finalize performance selection before the benchmark command passes");
 }
 
 const changedFiles = await gitDiffHeadChangedFiles();
@@ -14,8 +14,10 @@ const selectedBranches = branchReports.filter((report) => /\bfinal-selection\s*:
 const noWinBranches = branchReports.filter((report) => /\bno-win-result\s*:\s*yes\b/iu.test(report.text));
 const hasRollbackEvidence = /\brollback\b/iu.test(joinedText);
 const noWinAllowed = allowsNoWinArchive(task);
+const validationPassed = validationCommandPassed(benchmark);
 
 let terminalState;
+let selectionStatus = "pass";
 if (projectChangedFiles.length === 0) {
 	if (!noWinAllowed) {
 		throw new Error(
@@ -31,10 +33,14 @@ if (projectChangedFiles.length === 0) {
 	if (selectedBranches.length > 0) {
 		throw new Error("no-win performance selection cannot also contain `final-selection: yes`");
 	}
-	terminalState = "no-win";
+	terminalState = validationPassed ? "no-win" : "no-win-validation-blocked";
+	selectionStatus = validationPassed ? "pass" : "blocked";
 } else {
 	if (noWinBranches.length > 0 && selectedBranches.length === 0) {
 		throw new Error("no-win performance selection requires an empty project diff");
+	}
+	if (!validationPassed) {
+		throw new Error("positive performance selection requires the task-declared validation command to pass");
 	}
 	if (selectedBranches.length !== 1) {
 		throw new Error(
@@ -57,6 +63,7 @@ await Bun.write(
 		`projectChangedFiles: ${projectChangedFiles.length}`,
 		`selectedBranches: ${selectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`noWinBranches: ${noWinBranches.map((report) => report.name).join(", ") || "none"}`,
+		`validationPassed: ${validationPassed ? "yes" : "no"}`,
 		`rollbackEvidence: ${hasRollbackEvidence ? "yes" : "no"}`,
 		"",
 		"## Project Changed Files",
@@ -73,12 +80,13 @@ return {
 			op: "set",
 			path: "/selection",
 			value: {
-				status: "pass",
+				status: selectionStatus,
 				terminalState,
 				file: outputPath,
 				projectChangedFiles,
 				selectedBranches: selectedBranches.map((report) => report.name),
 				noWinBranches: noWinBranches.map((report) => report.name),
+				validationPassed,
 				rollbackEvidence: hasRollbackEvidence,
 			},
 		},
@@ -115,6 +123,16 @@ async function readBranchReports() {
 function allowsNoWinArchive(taskValue) {
 	const taskText = typeof taskValue.text === "string" ? taskValue.text : "";
 	return /\bNo-Win Result\s*:\s*allowed\b/iu.test(taskText);
+}
+
+function benchmarkCommandPassed(benchmarkValue) {
+	if (typeof benchmarkValue.benchmarkExitCode === "number") return benchmarkValue.benchmarkExitCode === 0;
+	return benchmarkValue.status === "pass";
+}
+
+function validationCommandPassed(benchmarkValue) {
+	if (typeof benchmarkValue.validationExitCode === "number") return benchmarkValue.validationExitCode === 0;
+	return benchmarkValue.status === "pass";
 }
 
 async function readOptionalText(filePath) {

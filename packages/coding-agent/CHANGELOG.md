@@ -13,6 +13,9 @@
 
 ### Fixed
 
+- Fixed the experimental performance-optimization-search workflow so measured
+  no-win runs with no retained project diff can archive a validation-blocked
+  terminal state instead of looping back into another broad optimization fanout.
 - Fixed workflow-owned subagents so a successful terminal `yield` is committed
   without waiting for the provider prompt or an extra idle phase, preventing
   stuck workflow-owned agent nodes or stop deadlines from checkpointing

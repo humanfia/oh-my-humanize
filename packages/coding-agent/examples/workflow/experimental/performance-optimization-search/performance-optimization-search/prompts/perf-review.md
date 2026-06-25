@@ -19,21 +19,30 @@ Review the current project diff and the branch notes in `workflow-output/`.
 Return `finish` only when:
 
 - the task-declared Benchmark Command produced real output;
-- the task-declared Validation Command passed;
 - there is a clearly selected positive optimization or a documented no-win
   result with rollback evidence;
 - losing or negative branches are reverted or explicitly isolated;
 - exactly one retained branch records `final-selection: yes` with rollback
   evidence, unless the task explicitly asks for a multi-change optimization set;
+- a positive optimization is accepted only when the task-declared Validation
+  Command passed;
 - a documented no-win result is accepted only when the task contract explicitly
   contains `No-Win Result: allowed`, the current project diff is empty, and at
   least one branch records `no-win-result: yes` plus rollback/no-change
   evidence;
+- when a documented no-win result meets the previous bullet but the
+  task-declared Validation Command failed, return `finish` only if the failure
+  is preserved as validation-blocked evidence and there are no retained project
+  changes. Do not restart broad optimization fanout for a measured no-win
+  validation blocker.
 - the result is generic project work, not a demo-only benchmark.
 
 Return `continue` when measurements are missing, validation failed, branches
 conflict, rollback evidence is incomplete, a no-win result lacks explicit task
-authorization, or the optimization is speculative.
+authorization, or the optimization is speculative. Exception: a no-win result
+with no retained project changes, explicit no-win authorization,
+rollback/no-change evidence, and preserved validation-blocked evidence should
+`finish` instead of looping.
 
 Write a concise review first, then put exactly one token on the final non-empty
 line: `continue` or `finish`.

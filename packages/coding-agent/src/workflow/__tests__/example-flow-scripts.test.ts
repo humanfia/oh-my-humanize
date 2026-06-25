@@ -314,6 +314,115 @@ describe("example workflow scripts", () => {
 		expect(optimizationPrompt).toContain("selection/rollback repair");
 	});
 
+	it("archives performance no-win evidence when validation is blocked without retained project changes", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-no-win-validation-blocked-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance no-win canary",
+			"",
+			"Benchmark Command:",
+			"cargo test --no-run",
+			"",
+			"Validation Command:",
+			"cargo test",
+			"",
+			"No-Win Result: allowed",
+		].join("\n");
+
+		await Bun.write(`${cwd}/README.md`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "README.md", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			["# Algorithmic", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching",
+				"",
+				"final-selection: no",
+				"no-win-result: yes",
+				"rollback evidence: no project changes remain after failed validation",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# IO", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-benchmark.md`,
+			[
+				"# Performance Benchmark Evidence",
+				"",
+				"## Benchmark Command",
+				"",
+				"Exit code: 0",
+				"",
+				"## Validation Command",
+				"",
+				"Exit code: 101",
+				"",
+				"test_respect_ignore_files failed",
+			].join("\n"),
+		);
+
+		const finalize = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 101,
+					status: "fail",
+					outputPath: "workflow-output/performance-benchmark.md",
+				},
+				selectionRepair: {
+					status: "terminal no-win selection repair complete",
+				},
+			},
+		});
+
+		expect(finalize.scheduler.state.selection).toMatchObject({
+			status: "blocked",
+			terminalState: "no-win-validation-blocked",
+			validationPassed: false,
+			noWinBranches: ["caching"],
+		});
+
+		const archive = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archivePerformance",
+			scriptFileName: "archive-performance.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: finalize.scheduler.state,
+		});
+
+		expect(archive.scheduler.state.archive).toMatchObject({
+			benchmark: "pass",
+			validation: "blocked",
+			noWin: true,
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-archive.md`).text()).toContain(
+			"terminalState: no-win-validation-blocked",
+		);
+	});
+
 	it("keeps test-hardening repair evidence separate from suite output", async () => {
 		const generatePrompt = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/prompts/generate-tests.md`).text();
 		const repairPrompt = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/prompts/repair-tests.md`).text();
@@ -580,5 +689,21 @@ async function runExampleDefinition({
 		});
 	} finally {
 		process.chdir(previousCwd);
+	}
+}
+
+async function runGit(cwd: string, args: string[]): Promise<void> {
+	const proc = Bun.spawn(["git", ...args], {
+		cwd,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`git ${args.join(" ")} failed: ${stderr.trim() || stdout.trim()}`);
 	}
 }
