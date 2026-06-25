@@ -69,6 +69,8 @@ interface ScriptResult {
 			rollback_artifacts?: string[];
 			missing_rollback_files?: string[];
 			stale_validation_hash_artifacts?: string[];
+			expected_referenced_artifacts?: string[];
+			missing_referenced_artifacts?: string[];
 		};
 	};
 }
@@ -1297,6 +1299,29 @@ describe("parallel-implementation-review flow contract", () => {
 				generic_validation_aliases: ["workflow-output/validation.txt"],
 			},
 		});
+	});
+
+	it("reports plan-referenced lane artifacts that were never materialized", async () => {
+		const cwd = await createTempDir();
+		await writeReadyEvidence(cwd, "P06-T06-test");
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {
+			state: {
+				planHandoff: [
+					"Expected lane artifact:",
+					"workflow-output/core-lane-P06-T06-test.md",
+					"The actual core lane must materialize the exact path above.",
+				].join("\n"),
+			},
+		});
+
+		expect(result.verdict).toBe("REPAIR");
+		expect(result.data?.checked_inputs?.expected_referenced_artifacts).toContain(
+			"workflow-output/core-lane-P06-T06-test.md",
+		);
+		expect(result.data?.checked_inputs?.missing_referenced_artifacts).toEqual([
+			"workflow-output/core-lane-P06-T06-test.md",
+		]);
 	});
 
 	it("rejects mechanical surface inventories as semantic lane evidence", async () => {

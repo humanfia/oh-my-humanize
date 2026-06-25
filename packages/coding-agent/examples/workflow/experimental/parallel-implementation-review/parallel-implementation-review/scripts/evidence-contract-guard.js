@@ -44,6 +44,8 @@ const testArtifacts = evidenceFiles.filter(isTestLaneEvidenceFile);
 const docsArtifacts = evidenceFiles.filter(isDocsLaneEvidenceFile);
 const integrationArtifacts = evidenceFiles.filter(isIntegrationReviewEvidenceFile);
 const rollbackArtifacts = evidenceFiles.filter(isRollbackEvidenceFile);
+const expectedReferencedArtifacts = expectedReferencedArtifactsFromState(workflowContext.state, tupleId);
+const missingReferencedArtifacts = await missingExpectedArtifacts(expectedReferencedArtifacts);
 const laneArtifacts = [...coreArtifacts, ...testArtifacts, ...docsArtifacts, ...integrationArtifacts].sort((left, right) =>
 	left.localeCompare(right, "en"),
 );
@@ -69,6 +71,12 @@ if (docsArtifacts.length === 0) {
 
 if (integrationArtifacts.length === 0) {
 	reasons.push("no tuple-scoped integration review artifact was found under workflow-output/");
+}
+
+if (missingReferencedArtifacts.length > 0) {
+	reasons.push(
+		`referenced workflow-output artifacts were not materialized: ${missingReferencedArtifacts.join(", ")}; plan and review handoffs must agree with the durable artifacts produced before strong review`,
+	);
 }
 
 if (missingRollbackFiles.length > 0) {
@@ -166,6 +174,8 @@ const diagnostic = {
 		integration_artifacts: integrationArtifacts.slice(0, 40),
 		rollback_artifacts: rollbackArtifacts.slice(0, 40),
 		missing_rollback_files: missingRollbackFiles.slice(0, 80),
+		expected_referenced_artifacts: expectedReferencedArtifacts.slice(0, 80),
+		missing_referenced_artifacts: missingReferencedArtifacts.slice(0, 80),
 		lane_artifacts: laneArtifacts.slice(0, 80),
 		validation_artifacts: validationArtifacts.slice(0, 80),
 		final_validation_artifacts: finalValidationArtifacts.slice(0, 80),
@@ -267,6 +277,16 @@ await Bun.write(
 		"",
 		"Changed files missing rollback coverage:",
 		...(missingRollbackFiles.length > 0 ? missingRollbackFiles.map(file => `- ${file}`) : ["- (none)"]),
+		"",
+		"Expected referenced artifacts:",
+		...(expectedReferencedArtifacts.length > 0
+			? expectedReferencedArtifacts.map(file => `- ${file}`)
+			: ["- (none)"]),
+		"",
+		"Missing referenced artifacts:",
+		...(missingReferencedArtifacts.length > 0
+			? missingReferencedArtifacts.map(file => `- ${file}`)
+			: ["- (none)"]),
 		"",
 		"Reasons:",
 		...(reasons.length > 0 ? reasons.map(reason => `- ${reason}`) : ["- ready for strong review"]),
@@ -562,6 +582,45 @@ function stateValueAtPath(state, pointer) {
 		current = current[segment];
 	}
 	return current;
+}
+
+function expectedReferencedArtifactsFromState(state, tupleId) {
+	const artifacts = new Set();
+	for (const pointer of ["/planHandoff", "/reviewHandoff"]) {
+		for (const artifact of referencedWorkflowArtifacts(stateValueAtPath(state, pointer))) {
+			if (ignoredEvidenceArtifact(artifact)) continue;
+			if (tupleId && !artifact.includes(tupleId)) continue;
+			artifacts.add(artifact);
+		}
+	}
+	return [...artifacts].sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function referencedWorkflowArtifacts(value) {
+	if (typeof value === "string") return referencedWorkflowArtifactsFromText(value);
+	if (Array.isArray(value)) return value.flatMap(referencedWorkflowArtifacts);
+	if (!value || typeof value !== "object") return [];
+	return Object.values(value).flatMap(referencedWorkflowArtifacts);
+}
+
+function referencedWorkflowArtifactsFromText(text) {
+	const matches = text.match(/workflow-output\/[^\s"'`]+/gu) ?? [];
+	return matches.map(normalizeReferencedWorkflowArtifact).filter(Boolean);
+}
+
+function normalizeReferencedWorkflowArtifact(value) {
+	const normalized = value.replace(/[),.;\]}]+$/gu, "");
+	if (normalized.includes("<") || normalized.includes(">")) return "";
+	if (!normalized.startsWith("workflow-output/")) return "";
+	return normalized;
+}
+
+async function missingExpectedArtifacts(artifacts) {
+	const missing = [];
+	for (const artifact of artifacts) {
+		if (!(await Bun.file(artifact).exists())) missing.push(artifact);
+	}
+	return missing;
 }
 
 function stringArrayField(value, key) {
