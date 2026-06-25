@@ -172,7 +172,7 @@ describe("runSubprocess yield reminders", () => {
 		});
 
 		await disposeStarted.promise;
-		vi.advanceTimersByTime(10_000);
+		vi.advanceTimersByTime(1_000);
 		await Promise.resolve();
 		await Promise.resolve();
 
@@ -181,6 +181,49 @@ describe("runSubprocess yield reminders", () => {
 		const result = await run;
 		expect(result.exitCode).toBe(0);
 		expect(runSettled).toBe(true);
+	});
+
+	it("does not let parked workflow subagent disposal block a yielded result forever", async () => {
+		vi.useFakeTimers();
+		const disposeStarted = Promise.withResolvers<void>();
+		const session = createMockSession(({ emit }) => {
+			emit({
+				type: "tool_execution_end",
+				toolCallId: "tool-yield-dispose-timeout",
+				toolName: "yield",
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details: { status: "success", data: { ok: true } },
+				},
+				isError: false,
+			});
+		});
+		session.dispose = async () => {
+			disposeStarted.resolve();
+			await new Promise(() => {});
+		};
+		mockCreateAgentSession(session);
+
+		const run = runSubprocess({
+			...baseOptions,
+			id: "subagent-parked-workflow-dispose-timeout",
+			completionLifecycle: "park",
+		});
+		let runSettled = false;
+		const resultPromise = run.then(result => {
+			runSettled = true;
+			return result;
+		});
+
+		await disposeStarted.promise;
+		vi.advanceTimersByTime(5_000);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(runSettled).toBe(true);
+		const result = await resultPromise;
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toContain('"ok": true');
 	});
 
 	it("waits for session_start extension user messages before prompting the subagent", async () => {

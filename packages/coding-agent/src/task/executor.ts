@@ -8,7 +8,7 @@ import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentTelemetryConfig, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, Usage } from "@oh-my-pi/pi-ai";
-import { logger, popLoopPhase, prompt, pushLoopPhase } from "@oh-my-pi/pi-utils";
+import { logger, popLoopPhase, prompt, pushLoopPhase, withTimeout } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
 import { ModelRegistry } from "../config/model-registry";
 import {
@@ -73,6 +73,7 @@ import {
 } from "./types";
 
 const MCP_CALL_TIMEOUT_MS = 60_000;
+const SUBAGENT_SESSION_DISPOSE_TIMEOUT_MS = 5_000;
 
 /**
  * Soft per-agent request budgets (assistant requests per run). When a subagent
@@ -1712,6 +1713,29 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	};
 }
 
+type SubagentSessionDisposeMode = "aborted" | "parked";
+
+async function disposeSubagentSessionWithDeadline(
+	session: AgentSession,
+	id: string,
+	mode: SubagentSessionDisposeMode,
+): Promise<void> {
+	try {
+		await withTimeout(
+			session.dispose(),
+			SUBAGENT_SESSION_DISPOSE_TIMEOUT_MS,
+			`Timed out disposing ${mode} subagent session`,
+		);
+	} catch (error) {
+		logger.warn("runSubprocess: subagent session dispose did not finish cleanly", {
+			id,
+			mode,
+			timeoutMs: SUBAGENT_SESSION_DISPOSE_TIMEOUT_MS,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
 /**
  * Run a single agent in-process.
  */
@@ -2316,11 +2340,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				if (aborted) {
 					// Hard abort (caller signal / wall-clock / budget): terminal teardown.
 					registry.setStatus(id, "aborted");
-					try {
-						await session.dispose();
-					} catch (error) {
-						logger.warn("runSubprocess: aborted subagent session dispose failed", { id, error: String(error) });
-					}
+					await disposeSubagentSessionWithDeadline(session, id, "aborted");
 				} else if (worktree !== undefined || completionLifecycle === "park") {
 					// Isolated and workflow-owned runs are not live follow-up agents.
 					// Park the ref WITHOUT adopting: the transcript stays reachable
@@ -2328,11 +2348,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					// Status must flip to "parked" before dispose so the sdk dispose
 					// wrapper skips unregister.
 					registry.setStatus(id, "parked");
-					try {
-						await session.dispose();
-					} catch (error) {
-						logger.warn("runSubprocess: parked subagent session dispose failed", { id, error: String(error) });
-					}
+					await disposeSubagentSessionWithDeadline(session, id, "parked");
 					registry.detachSession(id);
 				} else {
 					// Keep-alive: finished and failed subagents both stay interrogable.

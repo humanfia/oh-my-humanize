@@ -1075,6 +1075,7 @@ edges: []
 		expect(output).toEqual({
 			summary: "approved",
 			data: {
+				question: "Approve this workflow result?",
 				response: "approved",
 				selectedOptions: ["Approve"],
 			},
