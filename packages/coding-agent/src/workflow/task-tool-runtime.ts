@@ -2,6 +2,9 @@ import { type TaskParams, TaskTool } from "../task";
 import type { ToolSession } from "../tools";
 import type { WorkflowAgentTaskResult, WorkflowAgentTaskRunner } from "./session-runtime";
 
+const WORKFLOW_TASK_RETRY_BASE_DELAY_MS = 30_000;
+const WORKFLOW_TASK_RETRY_MAX_DELAY_MS = 300_000;
+
 export function createTaskToolAgentRunner(toolSession: ToolSession): WorkflowAgentTaskRunner {
 	return async request => {
 		const taskTool = await TaskTool.create(await synchronousTaskToolSession(toolSession));
@@ -60,11 +63,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function synchronousTaskToolSession(toolSession: ToolSession): Promise<ToolSession> {
-	const workflowToolSession: ToolSession = { ...toolSession, taskAgentCompletionLifecycle: "park" };
-	if (!toolSession.settings.get("async.enabled")) return workflowToolSession;
 	const settings = await toolSession.settings.cloneForCwd(toolSession.cwd);
 	settings.override("async.enabled", false);
-	return { ...workflowToolSession, settings };
+	const retryBaseDelayMs = Math.max(settings.get("retry.baseDelayMs"), WORKFLOW_TASK_RETRY_BASE_DELAY_MS);
+	settings.override("retry.baseDelayMs", retryBaseDelayMs);
+	settings.override(
+		"retry.maxDelayMs",
+		Math.max(settings.get("retry.maxDelayMs"), retryBaseDelayMs, WORKFLOW_TASK_RETRY_MAX_DELAY_MS),
+	);
+	return { ...toolSession, taskAgentCompletionLifecycle: "park", settings };
 }
 
 function textContent(content: Array<{ type: string; text?: string }>): string {

@@ -17,6 +17,9 @@
   without waiting for the provider prompt or an extra idle phase, preventing
   stuck workflow-owned agent nodes or stop deadlines from checkpointing
   already-yielded nodes as aborted.
+- Fixed workflow-owned task agents so interactive and headless workflow runs
+  use a conservative provider retry profile, preventing parallel nodes from
+  hammering transient 429/5xx failures with sub-second retries.
 - Fixed workflow review parsing so explicit `overall_correctness: incorrect`
   evidence is not overridden by a later contradictory finish token.
 - Fixed the experimental parallel implementation/review workflow so evidence

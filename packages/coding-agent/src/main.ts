@@ -86,6 +86,8 @@ import { EventBus } from "./utils/event-bus";
 import {
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV,
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV,
+	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
+	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
 } from "./workflow/model-env";
 
 type RunAcpMode = (createSession: AcpSessionFactory) => Promise<never>;
@@ -810,6 +812,7 @@ async function buildSessionOptions(
 			options.defaultSubagentModelOverrideAuthFallback = true;
 		}
 	}
+	applyWorkflowSubagentRetryProfile(activeSettings);
 	if (parsed.maxTime !== undefined) {
 		options.deadline = Date.now() + parsed.maxTime * 1000;
 	}
@@ -961,6 +964,27 @@ async function buildSessionOptions(
 	}
 
 	return { options, titleSystemPrompt };
+}
+
+function applyWorkflowSubagentRetryProfile(settingsInstance: Settings): void {
+	const retryBaseDelayMs = parseWorkflowSubagentRetryMs(Bun.env[WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV]);
+	const retryMaxDelayMs = parseWorkflowSubagentRetryMs(Bun.env[WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV]);
+	if (retryBaseDelayMs === undefined && retryMaxDelayMs === undefined) return;
+	if (retryBaseDelayMs !== undefined) {
+		settingsInstance.override(
+			"retry.baseDelayMs",
+			Math.max(settingsInstance.get("retry.baseDelayMs"), retryBaseDelayMs),
+		);
+	}
+	const maxDelayFloor = Math.max(settingsInstance.get("retry.baseDelayMs"), retryMaxDelayMs ?? 0);
+	settingsInstance.override("retry.maxDelayMs", Math.max(settingsInstance.get("retry.maxDelayMs"), maxDelayFloor));
+}
+
+function parseWorkflowSubagentRetryMs(value: string | undefined): number | undefined {
+	if (value === undefined || value.trim() === "") return undefined;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return undefined;
+	return Math.max(0, Math.floor(parsed));
 }
 
 interface RunRootCommandDependencies {

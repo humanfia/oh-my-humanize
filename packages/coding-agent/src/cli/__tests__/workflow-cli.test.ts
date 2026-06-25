@@ -1,13 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { runWorkflowCommand, type WorkflowStartSignalTarget } from "../workflow-cli";
+import {
+	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
+	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
+} from "../../workflow/model-env";
+import { buildHeadlessAgentTaskEnv, runWorkflowCommand, type WorkflowStartSignalTarget } from "../workflow-cli";
 
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
 describe("workflow CLI", () => {
+	it("passes a conservative retry profile to headless workflow subagents", () => {
+		const env = buildHeadlessAgentTaskEnv(
+			{
+				PATH: "/bin",
+			},
+			undefined,
+			undefined,
+		);
+
+		expect(env[WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV]).toBe("30000");
+		expect(env[WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV]).toBe("300000");
+		expect(env.PATH).toBe("/bin");
+	});
+
 	it("prints ambiguous flow lookup errors without a source stack trace", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-ambiguous-flow-");
 		const root = tempDir.path();

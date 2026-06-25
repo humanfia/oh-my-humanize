@@ -194,6 +194,54 @@ describe("workflow task tool runtime adapter", () => {
 		expect(parentSettings.get("async.enabled")).toBe(true);
 	});
 
+	it("uses a conservative retry profile for workflow-owned task agents", async () => {
+		const parentSettings = Settings.isolated({
+			"retry.baseDelayMs": 500,
+			"retry.maxDelayMs": 5_000,
+		});
+		let capturedSession: ToolSession | undefined;
+		const taskTool = {
+			execute: async (): Promise<AgentToolResult<TaskToolDetails>> => ({
+				content: [{ type: "text", text: "task tool completed" }],
+				details: {
+					projectAgentsDir: null,
+					totalDurationMs: 12,
+					results: [
+						{
+							index: 0,
+							id: "build",
+							agent: "task",
+							agentSource: "project",
+							task: "Implement the workflow feature.",
+							assignment: "Implement the workflow feature.",
+							description: "Builder · Build",
+							exitCode: 0,
+							output: "agent completed",
+							stderr: "",
+							truncated: false,
+							durationMs: 12,
+							tokens: 0,
+							requests: 1,
+						},
+					],
+				},
+			}),
+		};
+		vi.spyOn(taskModule.TaskTool, "create").mockImplementation(async session => {
+			capturedSession = session;
+			return taskTool as unknown as taskModule.TaskTool;
+		});
+		const runner = createTaskToolAgentRunner(createToolSession(parentSettings));
+
+		const result = await runner(createRequest());
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedSession?.settings.get("retry.baseDelayMs")).toBe(30_000);
+		expect(capturedSession?.settings.get("retry.maxDelayMs")).toBe(300_000);
+		expect(parentSettings.get("retry.baseDelayMs")).toBe(500);
+		expect(parentSettings.get("retry.maxDelayMs")).toBe(5_000);
+	});
+
 	it("parks workflow-owned agents after synchronous task results", async () => {
 		let capturedSession: ToolSession | undefined;
 		const taskTool = {

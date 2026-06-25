@@ -16,6 +16,8 @@ import { reconstructWorkflowFamilies } from "../workflow/lifecycle";
 import {
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV,
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV,
+	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
+	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
 } from "../workflow/model-env";
 import { loadWorkflowArtifact, WorkflowPackageError } from "../workflow/package-loader";
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../workflow/run-store";
@@ -512,9 +514,14 @@ export function buildHeadlessAgentTaskEnv(
 	modelOverride: string | undefined,
 	modelOverrideAuthFallback: boolean | undefined,
 ): NodeJS.ProcessEnv {
-	if (modelOverride === undefined) return env;
-	return {
+	const workflowEnv = {
 		...env,
+		[WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV]: "30000",
+		[WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV]: "300000",
+	};
+	if (modelOverride === undefined) return workflowEnv;
+	return {
+		...workflowEnv,
 		[WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV]: modelOverride,
 		[WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV]: modelOverrideAuthFallback === false ? "false" : "true",
 	};
