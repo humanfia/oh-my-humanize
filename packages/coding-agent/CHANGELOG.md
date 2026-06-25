@@ -29,6 +29,8 @@
 - Fixed the experimental documentation-audit workflow so patch agents
   initialize and return structured `/patch` state before reviewer prompt
   binding.
+- Fixed workflow read-only workspace guards so configured task-local runtime
+  scratch directories do not count as project mutations.
 - Fixed workflow review parsing so explicit `overall_correctness: incorrect`
   evidence is not overridden by a later contradictory finish token.
 - Fixed the experimental parallel implementation/review workflow so evidence

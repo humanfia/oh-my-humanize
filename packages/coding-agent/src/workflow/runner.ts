@@ -51,7 +51,11 @@ import {
 	type WorkflowSchedulerResult,
 } from "./scheduler";
 import { validateWorkflowActivationOutput, type WorkflowActivationOutput } from "./state";
-import { assertWorkflowWorkspaceSnapshotUnchanged, captureWorkflowCheckpointWorkspace } from "./workspace-checkpoint";
+import {
+	assertWorkflowWorkspaceSnapshotUnchanged,
+	captureWorkflowCheckpointWorkspace,
+	workflowRuntimeScratchDirtyPathPrefixes,
+} from "./workspace-checkpoint";
 
 export interface WorkflowRunnerModelResolutionOptions {
 	availableModels: Model<Api>[];
@@ -452,7 +456,9 @@ async function captureReadOnlyWorkspaceSnapshot(
 	node: WorkflowNode,
 ): Promise<WorkflowCheckpointWorkspaceSnapshot | undefined> {
 	if (node.workspaceAccess !== "read") return undefined;
-	return captureWorkflowCheckpointWorkspace(options.workspaceRoot);
+	return captureWorkflowCheckpointWorkspace(options.workspaceRoot, {
+		ignoredDirtyPathPrefixes: workflowRuntimeScratchDirtyPathPrefixes(options.workspaceRoot),
+	});
 }
 
 async function assertReadOnlyWorkspaceUnchanged(
@@ -461,7 +467,9 @@ async function assertReadOnlyWorkspaceUnchanged(
 	before: WorkflowCheckpointWorkspaceSnapshot | undefined,
 ): Promise<void> {
 	if (node.workspaceAccess !== "read") return;
-	const after = await captureWorkflowCheckpointWorkspace(options.workspaceRoot);
+	const after = await captureWorkflowCheckpointWorkspace(options.workspaceRoot, {
+		ignoredDirtyPathPrefixes: workflowRuntimeScratchDirtyPathPrefixes(options.workspaceRoot),
+	});
 	assertWorkflowWorkspaceSnapshotUnchanged(before, after, node.id);
 }
 

@@ -314,6 +314,76 @@ edges:
 		}
 	});
 
+	it("allows read-only workspace nodes to write configured task-local runtime scratch", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "omp-workflow-readonly-scratch-"));
+		const taskLocalTmp = path.join(workspace, "workflow-output", "tmp");
+		const previousTmpDir = process.env.TMPDIR;
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		try {
+			await initializeGitWorkspace(workspace);
+			await fs.mkdir(taskLocalTmp, { recursive: true });
+			process.env.TMPDIR = taskLocalTmp;
+			Bun.env.TMPDIR = taskLocalTmp;
+			process.env.OMH_RUN_TMP = taskLocalTmp;
+			Bun.env.OMH_RUN_TMP = taskLocalTmp;
+			const host = createHost();
+			const definition = parseWorkflowDefinition(
+				`
+name: read-only-runtime-scratch-demo
+version: 1
+nodes:
+  inspect:
+    type: agent
+    agent: task
+    workspaceAccess: read
+    writes:
+      - /audit
+edges: []
+`,
+				{ sourcePath: "workflow.yml" },
+			);
+			const runtimeHost: WorkflowNodeRuntimeHost = {
+				runAgentNode: async () => {
+					await Bun.write(path.join(taskLocalTmp, "omp-python-runner", "runner.py"), "print('runtime cache')\n");
+					return {
+						summary: "inspection used runtime scratch only",
+						statePatch: [{ op: "set", path: "/audit", value: { status: "done" } }],
+					};
+				},
+			};
+
+			const result = await runWorkflow({
+				host,
+				definition,
+				runId: "run-read-only-runtime-scratch",
+				startNodeId: "inspect",
+				runtimeHost,
+				workspaceRoot: workspace,
+			});
+
+			expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+				["inspect", "completed"],
+			]);
+			expect(result.scheduler.state).toEqual({ audit: { status: "done" } });
+		} finally {
+			if (previousTmpDir === undefined) {
+				delete process.env.TMPDIR;
+				delete Bun.env.TMPDIR;
+			} else {
+				process.env.TMPDIR = previousTmpDir;
+				Bun.env.TMPDIR = previousTmpDir;
+			}
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+				delete Bun.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+				Bun.env.OMH_RUN_TMP = previousRunTmp;
+			}
+			await fs.rm(workspace, { recursive: true, force: true });
+		}
+	});
+
 	it("lets agent node outputs choose downstream paths", async () => {
 		const host = createHost();
 		const definition = parseWorkflowDefinition(agentDecisionSource, { sourcePath: "workflow.yml" });

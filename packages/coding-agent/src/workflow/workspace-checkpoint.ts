@@ -7,25 +7,38 @@ import {
 	WorkflowLifecycleError,
 } from "./lifecycle";
 
+export interface WorkflowCheckpointWorkspaceCaptureOptions {
+	ignoredDirtyPathPrefixes?: readonly string[];
+}
+
 export async function captureWorkflowCheckpointWorkspace(
 	workspaceRoot: string | undefined,
+	options: WorkflowCheckpointWorkspaceCaptureOptions = {},
 ): Promise<WorkflowCheckpointWorkspaceSnapshot | undefined> {
 	if (workspaceRoot === undefined) return undefined;
 	try {
 		const repoRoot = await git.repo.root(workspaceRoot);
 		if (repoRoot === null) return unavailableWorkspaceSnapshot("git repository not found");
+		const ignoredDirtyPathPrefixes = normalizeIgnoredDirtyPathPrefixes(
+			repoRoot,
+			options.ignoredDirtyPathPrefixes ?? [],
+		);
 		const [statusText, stagedDiff, unstagedDiff, untrackedFiles] = await Promise.all([
 			git.status(repoRoot, { porcelainV1: true, untrackedFiles: "all" }),
 			git.diff(repoRoot, { cached: true, binary: true, allowFailure: true }),
 			git.diff(repoRoot, { binary: true, allowFailure: true }),
 			git.ls.untracked(repoRoot),
 		]);
-		const dirtyPaths = parseWorkspaceDirtyPaths(statusText);
-		const untrackedDigests = await untrackedWorkspaceFileDigests(repoRoot, untrackedFiles);
+		const normalizedStatusText = filterWorkspaceStatusText(statusText, ignoredDirtyPathPrefixes);
+		const dirtyPaths = parseWorkspaceDirtyPaths(normalizedStatusText);
+		const untrackedDigests = await untrackedWorkspaceFileDigests(
+			repoRoot,
+			untrackedFiles.filter(file => !isIgnoredWorkspacePath(file, ignoredDirtyPathPrefixes)),
+		);
 		const digest = workspaceDigest([
 			"kind=git",
 			`status=${dirtyPaths.length === 0 ? "clean" : "dirty"}`,
-			`statusText\n${statusText}`,
+			`statusText\n${normalizedStatusText}`,
 			`stagedDiff\n${stagedDiff}`,
 			`unstagedDiff\n${unstagedDiff}`,
 			`untracked\n${untrackedDigests.join("\n")}`,
@@ -36,7 +49,7 @@ export async function captureWorkflowCheckpointWorkspace(
 			digest,
 			dirtyPaths,
 		};
-		if (statusText.trim().length > 0) snapshot.statusText = statusText;
+		if (normalizedStatusText.trim().length > 0) snapshot.statusText = normalizedStatusText;
 		return snapshot;
 	} catch (error) {
 		return unavailableWorkspaceSnapshot(error instanceof Error ? error.message : String(error));
@@ -86,6 +99,16 @@ export function assertWorkflowWorkspaceSnapshotUnchanged(
 	);
 }
 
+export function workflowRuntimeScratchDirtyPathPrefixes(workspaceRoot: string | undefined): string[] {
+	if (workspaceRoot === undefined) return [];
+	return normalizeIgnoredDirtyPathPrefixes(workspaceRoot, [
+		process.env.OMH_RUN_TMP,
+		Bun.env.OMH_RUN_TMP,
+		process.env.TMPDIR,
+		Bun.env.TMPDIR,
+	]);
+}
+
 function unavailableWorkspaceSnapshot(error: string): WorkflowCheckpointWorkspaceSnapshot {
 	return {
 		kind: "unknown",
@@ -94,6 +117,20 @@ function unavailableWorkspaceSnapshot(error: string): WorkflowCheckpointWorkspac
 		dirtyPaths: [],
 		error,
 	};
+}
+
+function filterWorkspaceStatusText(statusText: string, ignoredDirtyPathPrefixes: readonly string[]): string {
+	if (ignoredDirtyPathPrefixes.length === 0) return statusText;
+	const lines: string[] = [];
+	for (const rawLine of statusText.split("\n")) {
+		const line = rawLine.trimEnd();
+		if (line.length === 0) continue;
+		const pathText = line.slice(3);
+		const paths = pathText.includes(" -> ") ? pathText.split(" -> ") : [pathText];
+		if (paths.every(entry => isIgnoredWorkspacePath(entry, ignoredDirtyPathPrefixes))) continue;
+		lines.push(rawLine);
+	}
+	return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }
 
 function parseWorkspaceDirtyPaths(statusText: string): string[] {
@@ -115,6 +152,30 @@ function addWorkspacePath(paths: Set<string>, value: string): void {
 	const normalized = value.trim();
 	if (normalized.length === 0) return;
 	paths.add(normalized);
+}
+
+function normalizeIgnoredDirtyPathPrefixes(repoRoot: string, prefixes: readonly (string | undefined)[]): string[] {
+	const normalized = new Set<string>();
+	for (const prefix of prefixes) {
+		if (prefix === undefined) continue;
+		const trimmed = prefix.trim();
+		if (trimmed.length === 0) continue;
+		const absolutePath = path.isAbsolute(trimmed) ? path.resolve(trimmed) : path.resolve(repoRoot, trimmed);
+		const relative = path.relative(repoRoot, absolutePath);
+		if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+		normalized.add(toWorkspacePath(relative));
+	}
+	return [...normalized].sort();
+}
+
+function isIgnoredWorkspacePath(value: string, ignoredDirtyPathPrefixes: readonly string[]): boolean {
+	if (ignoredDirtyPathPrefixes.length === 0) return false;
+	const normalized = toWorkspacePath(value.trim());
+	return ignoredDirtyPathPrefixes.some(prefix => normalized === prefix || normalized.startsWith(`${prefix}/`));
+}
+
+function toWorkspacePath(value: string): string {
+	return value.split(path.sep).join("/");
 }
 
 async function untrackedWorkspaceFileDigests(repoRoot: string, files: string[]): Promise<string[]> {
