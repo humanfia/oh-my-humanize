@@ -503,6 +503,48 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("blocks performance benchmark joins when lanes leave untracked project-local scratch", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-untracked-scratch-guard-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/lane-scratch/algorithmic-worktree/marker.txt`, "project-local scratch\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "fail",
+			isolationViolation: true,
+			projectChangedFiles: ["lane-scratch/algorithmic-worktree/marker.txt"],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain(
+			"Parallel Lane Isolation Violation",
+		);
+	});
+
 	it("archives performance no-win evidence when validation is blocked without retained project changes", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-no-win-validation-blocked-");
 		const cwd = tempDir.path();

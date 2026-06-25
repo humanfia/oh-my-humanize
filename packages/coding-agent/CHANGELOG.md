@@ -15,8 +15,8 @@
 
 - Fixed experimental workflow contract guards so parallel implementation/review
   preserves validation command shell-prefix environment assignments, and
-  performance optimization search fails closed when lane scratch lives inside
-  the project tree.
+  performance optimization search fails closed when tracked or untracked lane
+  scratch lives inside the project tree.
 - Fixed workflow JavaScript script nodes so they use the workflow script
   runtime budget by default instead of inheriting the interactive eval tool's
   30-second timeout.

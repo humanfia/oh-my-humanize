@@ -8,7 +8,7 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 	throw new Error("performance-optimization-search requires /task.validationCommand before benchmarkCandidates");
 }
 
-const projectChangedFiles = await gitDiffHeadChangedFiles();
+const projectChangedFiles = await changedProjectFiles();
 if (projectChangedFiles.length > 0) {
 	const outputPath = "workflow-output/performance-benchmark.md";
 	await Bun.write(outputPath, isolationViolationMarkdown(projectChangedFiles));
@@ -82,8 +82,8 @@ return {
 	],
 };
 
-async function gitDiffHeadChangedFiles() {
-	const proc = Bun.spawn(["git", "diff", "HEAD", "--name-only"], {
+async function changedProjectFiles() {
+	const proc = Bun.spawn(["git", "status", "--porcelain=v1", "--untracked-files=all"], {
 		cwd: process.cwd(),
 		stdout: "pipe",
 		stderr: "pipe",
@@ -94,12 +94,38 @@ async function gitDiffHeadChangedFiles() {
 		proc.exited,
 	]);
 	if (exitCode !== 0) {
-		throw new Error(`git diff HEAD failed before performance benchmark join: ${stderr.trim() || stdout.trim()}`);
+		throw new Error(`git status failed before performance benchmark join: ${stderr.trim() || stdout.trim()}`);
 	}
 	return stdout
 		.split(/\r?\n/u)
-		.map((line) => line.trim())
-		.filter((line) => line && !line.startsWith("workflow-output/") && line !== "task.md");
+		.map((line) => statusPath(line))
+		.filter((filePath) => filePath && !isAllowedWorkflowMetadataPath(filePath));
+}
+
+function statusPath(line) {
+	if (line.length < 4) return "";
+	const rawPath = line.slice(3).trim();
+	const renamePath = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1)?.trim() : rawPath;
+	return unquoteStatusPath(renamePath ?? "");
+}
+
+function unquoteStatusPath(filePath) {
+	if (!filePath.startsWith("\"") || !filePath.endsWith("\"")) return filePath;
+	try {
+		return JSON.parse(filePath);
+	} catch {
+		return filePath.slice(1, -1);
+	}
+}
+
+function isAllowedWorkflowMetadataPath(filePath) {
+	return (
+		filePath.startsWith("workflow-output/") ||
+		filePath === "task.md" ||
+		filePath === "manifest-entry.json" ||
+		filePath === "monitor-assignment.json" ||
+		filePath === "progress.md"
+	);
 }
 
 async function existingProjectLocalScratchPaths() {
