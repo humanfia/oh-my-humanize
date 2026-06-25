@@ -5,6 +5,8 @@ export const CURRENT_SESSION_VERSION = 3;
 
 export const EPHEMERAL_MODEL_CHANGE_ROLE = "fallback";
 
+export type SessionRevivalPolicy = "auto" | "history-only";
+
 export interface SessionHeader {
 	type: "session";
 	version?: number; // v1 sessions don't have this
@@ -134,6 +136,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	spawns?: string;
 	/** The agent's `readSummarize` setting (`false` = read summarization disabled); absent uses the session default. */
 	readSummarize?: boolean;
+	/** Persisted agent revival behavior; absent preserves legacy auto-revival. */
+	revivalPolicy?: SessionRevivalPolicy;
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */

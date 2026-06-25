@@ -17,13 +17,19 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Container, Ellipsis, matchesKey, type OverlayHandle, type TUI } from "@oh-my-pi/pi-tui";
-import { formatAge, getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { formatAge, getProjectDir, logger, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import { ADVISOR_TRANSCRIPT_FILENAME } from "../../advisor";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { IrcBus } from "../../irc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
-import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import {
+	type AgentRef,
+	AgentRegistry,
+	type AgentRevivalPolicy,
+	type AgentStatus,
+	MAIN_AGENT_ID,
+} from "../../registry/agent-registry";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
@@ -82,6 +88,20 @@ function registerPersistedSubagents(registry: AgentRegistry, sessionFile: string
 	registerPersistedSubagentsFromDir(registry, root, undefined);
 }
 
+function readPersistedRevivalPolicy(sessionFile: string): AgentRevivalPolicy {
+	try {
+		const entries = parseJsonlLenient<Record<string, unknown>>(fs.readFileSync(sessionFile, "utf8"));
+		for (let index = entries.length - 1; index >= 0; index -= 1) {
+			const entry = entries[index];
+			if (entry?.type !== "session_init") continue;
+			return entry.revivalPolicy === "history-only" ? "history-only" : "auto";
+		}
+	} catch {
+		// Missing or legacy files keep the previous behavior: try normal revival.
+	}
+	return "auto";
+}
+
 function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string, parentId: string | undefined): void {
 	let entries: fs.Dirent[];
 	try {
@@ -119,6 +139,7 @@ function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string,
 		}
 		const id = entry.name.slice(0, -6);
 		if (!registry.get(id)) {
+			const revivalPolicy = readPersistedRevivalPolicy(sessionFile);
 			registry.register({
 				id,
 				displayName: id,
@@ -127,6 +148,7 @@ function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string,
 				session: null,
 				sessionFile,
 				status: "parked",
+				revivalPolicy,
 			});
 		}
 		registerPersistedSubagentsFromDir(registry, path.join(dir, id), id);

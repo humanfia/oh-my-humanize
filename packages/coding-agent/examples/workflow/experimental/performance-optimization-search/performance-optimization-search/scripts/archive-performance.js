@@ -39,7 +39,7 @@ if (selection.terminalState === "positive" && projectChangedFiles.length === 0) 
 }
 if (isNoWinTerminalState(selection.terminalState) && !allowsNoWinArchive(task)) {
 	throw new Error(
-		"cannot archive performance search without real project changes; add `No-Win Result: allowed` to task.md only for measured no-win investigations",
+		"cannot archive performance search without real project changes; add explicit no-win or no-code/no-change authorization to task.md only for measured no-win investigations",
 	);
 }
 if (isNoWinTerminalState(selection.terminalState) && !hasNoWinEvidence) {
@@ -127,7 +127,11 @@ async function gitDiffHeadChangedFiles() {
 
 function allowsNoWinArchive(taskValue) {
 	const taskText = typeof taskValue.text === "string" ? taskValue.text : "";
-	return /\bNo-Win Result\s*:\s*allowed\b/iu.test(taskText);
+	return (
+		/\bNo-Win Result\s*:\s*allowed\b/iu.test(taskText) ||
+		/\bNo-Code\/No-Change Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText) ||
+		/\bNo-Code Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText)
+	);
 }
 
 function benchmarkCommandPassed(benchmarkValue) {

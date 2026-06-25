@@ -434,6 +434,27 @@ describe("IRC", () => {
 			expect(text).toContain("Parked agents are revived automatically");
 		});
 
+		it("op=list labels history-only parked peers as transcript refs", async () => {
+			registry.register({
+				id: "0-WorkflowNode",
+				displayName: "workflow node",
+				kind: "sub",
+				session: null,
+				status: "parked",
+				revivalPolicy: "history-only",
+			});
+			registry.register({ id: "0-Main", displayName: "main", kind: "main", session: makeFakeSession().session });
+
+			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const result = await tool.execute("call-history-only", { op: "list" });
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(text).toContain("0-WorkflowNode [workflow node · sub · history-only]");
+			expect(text).toContain("History-only agents are finished transcript refs");
+			expect(text).not.toContain("Parked agents are revived automatically");
+			expect(result.details?.peers?.[0]?.revivalPolicy).toBe("history-only");
+		});
+
 		it("op=list hides advisor-kind refs from the peer roster", async () => {
 			const sub = makeFakeSession();
 			registry.register({ id: "0-Worker", displayName: "task", kind: "sub", session: sub.session });

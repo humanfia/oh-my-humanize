@@ -27,7 +27,8 @@ Return `finish` only when:
 - a positive optimization is accepted only when the task-declared Validation
   Command passed;
 - a documented no-win result is accepted only when the task contract explicitly
-  contains `No-Win Result: allowed`, the current project diff is empty, and at
+  contains `No-Win Result: allowed`, `No-Code/No-Change Allowed: Yes`, or
+  `No-Code Allowed: Yes`; the current project diff is empty; and at
   least one branch records `no-win-result: yes` plus rollback/no-change
   evidence;
 - when a documented no-win result meets the previous bullet but the

@@ -23,6 +23,11 @@ export const MAIN_AGENT_ID = "Main";
  */
 export type AgentStatus = "running" | "idle" | "parked" | "aborted";
 /**
+ * - `auto`: parked refs may be revived by an adopted or persisted reviver.
+ * - `history-only`: keep the transcript addressable but never recreate a live peer.
+ */
+export type AgentRevivalPolicy = "auto" | "history-only";
+/**
  * - `main`/`sub`: the user-facing agent tree (driving agent + task subagents).
  * - `advisor`: a passive review transcript persisted like a subagent for usage
  *   attribution and Agent Hub observability, but never a peer — hidden from
@@ -39,6 +44,7 @@ export interface AgentRef {
 	/** Null exactly when parked/aborted. */
 	session: AgentSession | null;
 	sessionFile: string | null;
+	revivalPolicy: AgentRevivalPolicy;
 	createdAt: number;
 	lastActivity: number;
 	/** Short gist of what the agent is currently doing (latest intent or tool), for the work-aware roster. Display-only. */
@@ -60,6 +66,7 @@ export interface RegisterInput {
 	session: AgentSession | null;
 	sessionFile?: string | null;
 	status?: AgentStatus;
+	revivalPolicy?: AgentRevivalPolicy;
 }
 
 export class AgentRegistry {
@@ -90,6 +97,7 @@ export class AgentRegistry {
 			status: input.status ?? "running",
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
+			revivalPolicy: input.revivalPolicy ?? (input.kind === "advisor" ? "history-only" : "auto"),
 			createdAt: now,
 			lastActivity: now,
 		};
@@ -105,6 +113,14 @@ export class AgentRegistry {
 		// Activity describes current work; it is meaningless once the agent
 		// leaves `running`, so drop it to avoid showing stale work in rosters.
 		if (status !== "running") ref.activity = undefined;
+		ref.lastActivity = Date.now();
+		this.#emit({ type: "status_changed", ref });
+	}
+
+	setRevivalPolicy(id: string, revivalPolicy: AgentRevivalPolicy): void {
+		const ref = this.#refs.get(id);
+		if (!ref || ref.revivalPolicy === revivalPolicy) return;
+		ref.revivalPolicy = revivalPolicy;
 		ref.lastActivity = Date.now();
 		this.#emit({ type: "status_changed", ref });
 	}

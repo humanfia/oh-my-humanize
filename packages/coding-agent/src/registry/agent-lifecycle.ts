@@ -116,6 +116,8 @@ export class AgentLifecycleManager {
 
 	/** True when a parked agent has a registered reviver. */
 	canRevive(id: string): boolean {
+		const ref = this.#registry.get(id);
+		if (!ref || ref.revivalPolicy === "history-only") return false;
 		return this.#adopted.get(id)?.revive !== undefined;
 	}
 
@@ -183,6 +185,11 @@ export class AgentLifecycleManager {
 	 * when the agent is not revivable or no reviver can be produced.
 	 */
 	async #resolveAndRevive(id: string, ref: AgentRef): Promise<AgentSession> {
+		if (ref.revivalPolicy === "history-only") {
+			throw new Error(
+				`Agent "${id}" is history-only and cannot be revived. Its transcript remains readable at history://${id}.`,
+			);
+		}
 		let revive = this.#adopted.get(id)?.revive;
 		let coldAdopted = false;
 		if (!revive && ref.status === "parked" && ref.sessionFile && this.#persistedReviverFactory) {

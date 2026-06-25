@@ -54,6 +54,7 @@ export function createPersistedSubagentReviverFactory(
 		// is gone (isolated/merged worktree, moved dir): leave it transcript-only
 		// (history://) rather than resurrect a wrong or broken session.
 		if (!peek?.init) return undefined;
+		if (peek.init.revivalPolicy === "history-only") return undefined;
 		try {
 			await fs.stat(peek.cwd);
 		} catch {

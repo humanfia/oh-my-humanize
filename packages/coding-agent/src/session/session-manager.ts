@@ -39,6 +39,7 @@ import {
 	type SessionHeader,
 	type SessionInitEntry,
 	type SessionMessageEntry,
+	type SessionRevivalPolicy,
 	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
 	type TtsrInjectionEntry,
@@ -1201,6 +1202,7 @@ export class SessionManager {
 		outputSchema?: unknown;
 		spawns?: string;
 		readSummarize?: boolean;
+		revivalPolicy?: SessionRevivalPolicy;
 	}): string {
 		const entry: SessionInitEntry = { type: "session_init", ...this.#freshEntryFields(), ...init };
 		this.#recordEntry(entry);
@@ -1615,6 +1617,7 @@ export class SessionManager {
 			outputSchema?: unknown;
 			spawns?: string;
 			readSummarize?: boolean;
+			revivalPolicy?: SessionRevivalPolicy;
 		} | null;
 	} | null> {
 		let loaded: FileEntry[];
@@ -1633,6 +1636,7 @@ export class SessionManager {
 			outputSchema?: unknown;
 			spawns?: string;
 			readSummarize?: boolean;
+			revivalPolicy?: SessionRevivalPolicy;
 		} | null = null;
 		for (let index = loaded.length - 1; index >= 0; index--) {
 			const entry = loaded[index];
@@ -1644,6 +1648,7 @@ export class SessionManager {
 					outputSchema: entry.outputSchema,
 					readSummarize: entry.readSummarize,
 					spawns: entry.spawns,
+					revivalPolicy: entry.revivalPolicy,
 				};
 				break;
 			}

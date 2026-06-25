@@ -115,6 +115,43 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 
+	it("registers persisted history-only subagent session files as non-revivable", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-history-only-");
+		const sessionFile = path.join(tempDir.path(), "main.jsonl");
+		const workerSessionFile = path.join(tempDir.path(), "main", "WorkflowNode.jsonl");
+		await Bun.write(sessionFile, "");
+		await Bun.write(
+			workerSessionFile,
+			`${JSON.stringify({
+				type: "session_init",
+				id: "init",
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				systemPrompt: "system",
+				task: "workflow node task",
+				tools: ["read", "yield"],
+				revivalPolicy: "history-only",
+			})}\n`,
+		);
+		const agents = new AgentRegistry();
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+			sessionFile,
+		});
+
+		const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+		expect(rendered).toContain("WorkflowNode");
+		expect(rendered).toContain("history-only");
+		expect(agents.get("WorkflowNode")?.revivalPolicy).toBe("history-only");
+		hub.dispose();
+	});
+
 	it("renders workflow agents as operator work items instead of adapter labels", () => {
 		const agents = new AgentRegistry();
 		agents.register({

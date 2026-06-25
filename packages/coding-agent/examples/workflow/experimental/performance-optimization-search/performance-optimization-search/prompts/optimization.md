@@ -34,7 +34,8 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 - `final-selection: no` for losing, reverted, conflict-only, or no-win
   branches;
 - `no-win-result: yes` only when the task contract explicitly contains
-  `No-Win Result: allowed`, the branch made or retained no project changes, and
+  `No-Win Result: allowed`, `No-Code/No-Change Allowed: Yes`, or
+  `No-Code Allowed: Yes`; the branch made or retained no project changes; and
   measured evidence shows no safe positive optimization for this branch;
 - benchmark or validation commands you ran, if any.
 

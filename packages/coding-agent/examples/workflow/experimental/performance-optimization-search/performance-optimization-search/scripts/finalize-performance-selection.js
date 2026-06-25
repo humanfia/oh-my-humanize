@@ -21,7 +21,7 @@ let selectionStatus = "pass";
 if (projectChangedFiles.length === 0) {
 	if (!noWinAllowed) {
 		throw new Error(
-			"no-win performance selection requires `No-Win Result: allowed` in task.md when project diff is empty",
+			"no-win performance selection requires explicit no-win or no-code/no-change authorization in task.md when project diff is empty",
 		);
 	}
 	if (noWinBranches.length === 0) {
@@ -122,7 +122,11 @@ async function readBranchReports() {
 
 function allowsNoWinArchive(taskValue) {
 	const taskText = typeof taskValue.text === "string" ? taskValue.text : "";
-	return /\bNo-Win Result\s*:\s*allowed\b/iu.test(taskText);
+	return (
+		/\bNo-Win Result\s*:\s*allowed\b/iu.test(taskText) ||
+		/\bNo-Code\/No-Change Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText) ||
+		/\bNo-Code Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText)
+	);
 }
 
 function benchmarkCommandPassed(benchmarkValue) {

@@ -2,7 +2,7 @@
  * IRC tool — agent-to-agent messaging over the process-global IrcBus.
  *
  * `send` is fire-and-forget: the bus routes the message to the recipient
- * (waking idle agents with a real turn, reviving parked ones via the
+ * (waking idle agents with a real turn, reviving revivable parked ones via the
  * lifecycle manager, injecting a non-interrupting aside into busy ones) and
  * returns delivery receipts immediately. Replies are real turns by the
  * recipient, observed with `wait` (or the `await: true` send sugar). `inbox`
@@ -67,6 +67,7 @@ interface IrcPeerInfo {
 	displayName: string;
 	kind: string;
 	status: string;
+	revivalPolicy?: string;
 	parentId?: string;
 	unread: number;
 	lastActivity: number;
@@ -188,6 +189,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 				displayName: ref.displayName,
 				kind: ref.kind,
 				status: ref.status,
+				revivalPolicy: ref.revivalPolicy,
 				parentId: ref.parentId,
 				unread: bus.unreadCount(ref.id),
 				lastActivity: ref.lastActivity,
@@ -199,17 +201,23 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		} else {
 			lines.push(`${peers.length} peer(s):`);
 			for (const peer of peers) {
+				const status =
+					peer.status === "parked" && peer.revivalPolicy === "history-only" ? "history-only" : peer.status;
 				const extras = [
 					peer.activity || undefined,
 					peer.unread > 0 ? `unread ${peer.unread}` : undefined,
 					peer.parentId ? `parent ${peer.parentId}` : undefined,
 					`active ${formatDuration(Date.now() - peer.lastActivity)} ago`,
 				].filter(Boolean);
-				lines.push(`- ${peer.id} [${peer.displayName} · ${peer.kind} · ${peer.status}] — ${extras.join(", ")}`);
+				lines.push(`- ${peer.id} [${peer.displayName} · ${peer.kind} · ${status}] — ${extras.join(", ")}`);
 			}
-			if (peers.some(peer => peer.status === "parked")) {
+			if (peers.some(peer => peer.status === "parked" && peer.revivalPolicy !== "history-only")) {
 				lines.push("");
 				lines.push("Parked agents are revived automatically when you message them.");
+			}
+			if (peers.some(peer => peer.status === "parked" && peer.revivalPolicy === "history-only")) {
+				lines.push("");
+				lines.push("History-only agents are finished transcript refs; read history://<id> instead of messaging.");
 			}
 		}
 		return {

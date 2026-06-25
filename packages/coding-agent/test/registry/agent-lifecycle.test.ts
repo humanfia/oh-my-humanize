@@ -188,6 +188,30 @@ describe("AgentLifecycleManager", () => {
 		expect(revived.disposeCalls()).toBe(1);
 	});
 
+	it("does not cold-revive a history-only parked ref even when a persisted factory is installed", async () => {
+		const revived = makeSessionStub();
+		registry.register({
+			id: "6-HistoryOnly",
+			displayName: "workflow node",
+			kind: "sub",
+			session: null,
+			sessionFile: "/tmp/6-HistoryOnly.jsonl",
+			status: "parked",
+			revivalPolicy: "history-only",
+		});
+		let factoryCalls = 0;
+		lifecycle.setPersistedSubagentReviverFactory(async () => {
+			factoryCalls++;
+			return async () => revived.session;
+		}, TTL);
+
+		await expect(lifecycle.ensureLive("6-HistoryOnly")).rejects.toThrow(/history-only/);
+
+		expect(factoryCalls).toBe(0);
+		expect(registry.get("6-HistoryOnly")?.status).toBe("parked");
+		expect(registry.get("6-HistoryOnly")?.session).toBeNull();
+	});
+
 	it("a persisted factory that declines leaves the parked ref transcript-only", async () => {
 		registry.register({
 			id: "7-Sub",

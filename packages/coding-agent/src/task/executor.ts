@@ -213,12 +213,17 @@ function renderIrcPeerRoster(selfId: string): string {
 		.list()
 		.filter(ref => ref.id !== selfId && ref.status !== "aborted" && ref.kind !== "advisor");
 	if (peers.length === 0) return "- (no other agents)";
-	const lines = peers.map(
-		peer =>
-			`- \`${peer.id}\` — ${peer.displayName} (${peer.kind}, ${peer.status})${peer.activity ? `: ${peer.activity}` : ""}`,
-	);
-	if (peers.some(peer => peer.status === "idle" || peer.status === "parked")) {
-		lines.push("Idle/parked peers are not gone: messaging them wakes (or revives) them.");
+	const lines = peers.map(peer => {
+		const status = peer.status === "parked" && peer.revivalPolicy === "history-only" ? "history-only" : peer.status;
+		return `- \`${peer.id}\` — ${peer.displayName} (${peer.kind}, ${status})${peer.activity ? `: ${peer.activity}` : ""}`;
+	});
+	if (
+		peers.some(peer => peer.status === "idle" || (peer.status === "parked" && peer.revivalPolicy !== "history-only"))
+	) {
+		lines.push("Idle/revivable parked peers are not gone: messaging them wakes (or revives) them.");
+	}
+	if (peers.some(peer => peer.status === "parked" && peer.revivalPolicy === "history-only")) {
+		lines.push("History-only peers are finished transcript refs; read history://<id> instead of messaging.");
 	}
 	return lines.join("\n");
 }
@@ -1796,6 +1801,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		onProgress,
 	} = options;
 	const completionLifecycle = options.completionLifecycle ?? "adopt";
+	const taskAgentRevivalPolicy =
+		options.worktree !== undefined || completionLifecycle === "park" ? "history-only" : "auto";
 	const startTime = Date.now();
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
@@ -2249,6 +2256,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				tools: session.getActiveToolNames(),
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
+				revivalPolicy: taskAgentRevivalPolicy,
 				outputSchema,
 			});
 
@@ -2388,6 +2396,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					// (history://), but ensureLive will throw and IRC cannot wake it.
 					// Status must flip to "parked" before dispose so the sdk dispose
 					// wrapper skips unregister.
+					registry.setRevivalPolicy(id, "history-only");
 					registry.setStatus(id, "parked");
 					await disposeSubagentSessionWithDeadline(session, id, "parked");
 					registry.detachSession(id);

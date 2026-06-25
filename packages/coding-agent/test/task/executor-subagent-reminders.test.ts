@@ -5,6 +5,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionActions, LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -117,6 +118,7 @@ describe("runSubprocess yield reminders", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		AgentRegistry.resetGlobalForTests();
 	});
 
 	const baseAgent: AgentDefinition = {
@@ -181,6 +183,61 @@ describe("runSubprocess yield reminders", () => {
 		const result = await run;
 		expect(result.exitCode).toBe(0);
 		expect(runSettled).toBe(true);
+	});
+
+	it("parks completed workflow subagents as history-only transcript refs", async () => {
+		const id = "subagent-history-only-workflow";
+		const sessionFile = "/tmp/subagent-history-only-workflow.jsonl";
+		const initPolicies: string[] = [];
+		const session = createMockSession(({ emit }) => {
+			emit({
+				type: "tool_execution_end",
+				toolCallId: "tool-yield-history-only",
+				toolName: "yield",
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details: { status: "success", data: { ok: true } },
+				},
+				isError: false,
+			});
+		});
+		(
+			session.sessionManager as {
+				appendSessionInit: (init: {
+					systemPrompt: string;
+					task: string;
+					tools: string[];
+					revivalPolicy?: "auto" | "history-only";
+				}) => string;
+			}
+		).appendSessionInit = init => {
+			if (init.revivalPolicy !== undefined) initPolicies.push(init.revivalPolicy);
+			return "session-init";
+		};
+		AgentRegistry.global().register({
+			id,
+			displayName: "workflow node",
+			kind: "sub",
+			session,
+			sessionFile,
+			status: "running",
+		});
+		mockCreateAgentSession(session);
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id,
+			sessionFile,
+			completionLifecycle: "park",
+		});
+
+		const ref = AgentRegistry.global().get(id);
+		expect(result.exitCode).toBe(0);
+		expect(initPolicies).toEqual(["history-only"]);
+		expect(ref?.status).toBe("parked");
+		expect(ref?.revivalPolicy).toBe("history-only");
+		expect(ref?.session).toBeNull();
+		expect(ref?.sessionFile).toBe(sessionFile);
 	});
 
 	it("does not let parked workflow subagent disposal block a yielded result forever", async () => {

@@ -328,7 +328,7 @@ describe("example workflow scripts", () => {
 			"Validation Command:",
 			"cargo test",
 			"",
-			"No-Win Result: allowed",
+			"No-Code/No-Change Allowed: Yes",
 		].join("\n");
 
 		await Bun.write(`${cwd}/README.md`, "baseline\n");
