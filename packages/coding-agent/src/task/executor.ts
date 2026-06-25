@@ -808,6 +808,7 @@ interface SubagentRunMonitor {
 	readonly accumulatedUsage: Usage;
 	hasUsage(): boolean;
 	yieldCalled(): boolean;
+	yieldObserved(): Promise<void>;
 	runtimeLimitExceeded(): boolean;
 	/** True when the abort carries a precise external reason (signal / wall-clock / budget). */
 	hasExplicitAbortReason(): boolean;
@@ -869,6 +870,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const abortSignal = abortController.signal;
 	let activeSession: AgentSession | null = null;
 	let yieldCalled = false;
+	const yieldObserved = Promise.withResolvers<void>();
 
 	// Accumulate usage incrementally from message_end events (no memory for streaming events)
 	const accumulatedUsage: Usage = {
@@ -1146,6 +1148,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 							progress.extractedToolData[event.toolName] = existing;
 							if (event.toolName === "yield") {
 								yieldCalled = true;
+								yieldObserved.resolve();
 							}
 						}
 					}
@@ -1378,6 +1381,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		accumulatedUsage,
 		hasUsage: () => hasUsage,
 		yieldCalled: () => yieldCalled,
+		yieldObserved: () => yieldObserved.promise,
 		runtimeLimitExceeded: () => runtimeLimitExceeded,
 		hasExplicitAbortReason: () => abortReason === "signal" || runtimeLimitExceeded || budgetLimitExceeded,
 		isAbortedRun: () =>
@@ -1464,9 +1468,37 @@ async function driveSessionToYield(
 			abortSignal.removeEventListener("abort", onAbort);
 		}
 	};
+	const awaitPromptOrYield = async <T>(promise: Promise<T>): Promise<T | undefined> => {
+		checkAbort();
+		if (monitor.yieldCalled()) return undefined;
+		const { promise: abortPromise, reject } = Promise.withResolvers<never>();
+		const onAbort = () => {
+			try {
+				checkAbort();
+			} catch (err) {
+				reject(err);
+			}
+		};
+		abortSignal.addEventListener("abort", onAbort, { once: true });
+		const guardedPrompt = promise.catch(error => {
+			if (monitor.yieldCalled() || abortSignal.aborted) {
+				logger.debug("Subagent prompt settled after yield boundary", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return undefined;
+			}
+			throw error;
+		});
+		void guardedPrompt.catch(() => {});
+		try {
+			return await Promise.race([guardedPrompt, monitor.yieldObserved().then(() => undefined), abortPromise]);
+		} finally {
+			abortSignal.removeEventListener("abort", onAbort);
+		}
+	};
 
 	try {
-		await awaitAbortable(session.prompt(task, { attribution: "agent" }));
+		await awaitPromptOrYield(session.prompt(task, { attribution: "agent" }));
 		if (!monitor.yieldCalled()) {
 			await awaitAbortable(session.waitForIdle());
 		}
@@ -1489,7 +1521,7 @@ async function driveSessionToYield(
 				});
 
 				const isFinalRetry = retryCount >= MAX_YIELD_RETRIES;
-				await awaitAbortable(
+				await awaitPromptOrYield(
 					session.prompt(reminder, {
 						attribution: "agent",
 						synthetic: true,

@@ -207,6 +207,19 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("keeps documentation patch evidence separate from terminal workflow artifacts", async () => {
+		const prompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/documentation-audit/documentation-audit/prompts/patch-docs.md`,
+		).text();
+
+		expect(prompt).toContain("Do not write terminal workflow artifacts");
+		expect(prompt).toContain("workflow-output/documentation-validation.md");
+		expect(prompt).toContain("workflow-output/documentation-audit-archive.md");
+		expect(prompt).toContain("workflow-output/review-decision.md");
+		expect(prompt).toContain("workflow-output/final");
+		expect(prompt).toContain("workflow-output/documentation-rollback.md");
+	});
+
 	it("fails performance optimization closed when the baseline command is not reproducible", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-baseline-fail-closed-");
 		const cwd = tempDir.path();

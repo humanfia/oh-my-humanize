@@ -45,7 +45,7 @@ function createMockSession(
 		promptIndex: number;
 		emit: (event: AgentSessionEvent) => void;
 		state: { messages: AssistantMessage[] };
-	}) => void,
+	}) => void | Promise<void>,
 ): AgentSession {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const state = { messages: [] as AssistantMessage[] };
@@ -74,7 +74,7 @@ function createMockSession(
 		},
 		prompt: async (text: string, options?: PromptOptions) => {
 			promptIndex += 1;
-			onPrompt({ text, options, promptIndex, emit, state });
+			await onPrompt({ text, options, promptIndex, emit, state });
 		},
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
@@ -262,6 +262,48 @@ describe("runSubprocess yield reminders", () => {
 
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toContain("apiDocsAudit");
+	});
+
+	it("does not wait for the prompt promise after a workflow subagent has yielded", async () => {
+		const controller = new AbortController();
+		const promptRelease = Promise.withResolvers<void>();
+		let promptSettled = false;
+		const session = createMockSession(async ({ emit }) => {
+			emit({
+				type: "tool_execution_end",
+				toolCallId: "tool-yield-before-prompt-return",
+				toolName: "yield",
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details: { status: "success", data: { lifecycleAudit: { completed: true } } },
+				},
+				isError: false,
+			});
+			await promptRelease.promise;
+			promptSettled = true;
+		});
+		mockCreateAgentSession(session);
+
+		const run = runSubprocess({
+			...baseOptions,
+			id: "subagent-yield-before-prompt-return",
+			completionLifecycle: "park",
+			signal: controller.signal,
+		});
+
+		const result = await Promise.race([
+			run,
+			Bun.sleep(50).then(() => {
+				controller.abort("test timed out waiting for yielded result");
+				throw new Error("runSubprocess waited for prompt completion after yield");
+			}),
+		]);
+		promptRelease.resolve();
+		await Bun.sleep(0);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toContain("lifecycleAudit");
+		expect(promptSettled).toBe(true);
 	});
 
 	it("waits for session_start extension user messages before prompting the subagent", async () => {

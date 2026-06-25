@@ -14,8 +14,9 @@
 ### Fixed
 
 - Fixed workflow-owned subagents so a successful terminal `yield` is committed
-  without waiting for an extra idle phase, preventing stop deadlines from
-  checkpointing already-yielded nodes as aborted.
+  without waiting for the provider prompt or an extra idle phase, preventing
+  stuck workflow-owned agent nodes or stop deadlines from checkpointing
+  already-yielded nodes as aborted.
 - Fixed workflow review parsing so explicit `overall_correctness: incorrect`
   evidence is not overridden by a later contradictory finish token.
 - Fixed the experimental parallel implementation/review workflow so evidence
