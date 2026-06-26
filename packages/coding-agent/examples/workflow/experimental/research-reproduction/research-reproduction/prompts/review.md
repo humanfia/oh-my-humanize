@@ -18,7 +18,13 @@ Variant evidence:
 Comparison:
 {{jsonStringify comparison}}
 
-Return `finish` only when:
+Return `finish` when the available command evidence is sufficient for a
+terminal, auditable outcome. That outcome may be accepted, rejected, or
+inconclusive; do not keep looping after the same real command evidence has
+already established that the claim cannot satisfy the requested acceptance
+criteria in this environment.
+
+Accepted evidence requires:
 
 - the Reproduction Command produced real evidence;
 - the Validation Command passed;
@@ -28,8 +34,14 @@ Return `finish` only when:
 - variance, environment, and rollback/cleanup notes are clear enough for a
   human researcher to audit.
 
-Return `continue` when evidence is missing, validation failed, the claim is
-ambiguous, the comparison overstates the result, or the run is only a demo.
+Rejected or inconclusive terminal evidence is appropriate when the commands
+were real and exercised the claim, but reproduction or validation failed in a
+stable way and the comparison does not identify a concrete next evidence step.
+
+Return `continue` only when evidence is missing, the claim is ambiguous, the
+comparison overstates the result, or there is a specific new evidence step that
+can materially change the outcome. Do not return `continue` merely because
+validation failed.
 
 Write a concise review first, then put exactly one token on the final non-empty
 line: `continue` or `finish`.

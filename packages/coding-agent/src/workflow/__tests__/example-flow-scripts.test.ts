@@ -61,6 +61,89 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("archives terminal research reproduction rejections instead of looping forever", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-terminal-reject-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Record a terminal reproduction rejection when stable command evidence disproves the claim.",
+				"",
+				"Reproduction Command:",
+				"python -m pytest tests/test_json.py tests/test_type_adapter.py -q",
+				"",
+				"Validation Command:",
+				"python -m pytest tests/test_json.py -q",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/reproduction-baseline.json`,
+			`${JSON.stringify(
+				{
+					exerciseSummary: {
+						exercised: true,
+						positiveSignals: ["passed-count"],
+						negativeSignals: false,
+						passedCounts: 266,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/reproduction-variant.json`,
+			`${JSON.stringify(
+				{
+					validationExerciseSummary: {
+						exercised: true,
+						positiveSignals: ["passed-count"],
+						negativeSignals: false,
+						passedCounts: 60,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction-baseline.md`, "Exit code: 1\n3 failed, 266 passed\n");
+		await Bun.write(`${cwd}/workflow-output/reproduction-variant.md`, "Exit code: 0\n60 passed\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveReproduction",
+			scriptFileName: "archive-reproduction.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				reproduction: {
+					status: "fail",
+					exercised: true,
+					exitCode: 1,
+					evidencePath: "workflow-output/reproduction-baseline.json",
+				},
+				variant: {
+					status: "pass",
+					validationExercised: true,
+					validationExitCode: 0,
+					evidencePath: "workflow-output/reproduction-variant.json",
+				},
+				review: "terminal rejection: validation passed but reproduction command disproved the claim\nfinish",
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			outcome: "rejected",
+			reproduction: "fail",
+			validation: "pass",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: rejected");
+	});
+
 	it("accepts markdown validation command sections in agent build review tasks", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-validation-section-");
 		const cwd = tempDir.path();
@@ -1434,6 +1517,69 @@ describe("example workflow scripts", () => {
 			status: "pass",
 			reportPath: "workflow-output/refactor-migration-compatibility-gate.md",
 		});
+	});
+
+	it("archives refactor migrations as rejected when only whitespace churn remains", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-migration-whitespace-reject-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.py`, "def make_response(value):\n    return value\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Migrate response helper callers without leaving padding-only source churn.",
+				"",
+				"Validation Command:",
+				"echo validation passed",
+			].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.py`, "def make_response(value):\n\n    return value\n");
+		await Bun.write(
+			`${cwd}/workflow-output/caller-migration.md`,
+			["# Caller Migration", "", "Rollback notes: remove the temporary adapter if no callers need it."].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/cleanup-dead-path.md`,
+			[
+				"# Cleanup",
+				"",
+				"Rollback notes: cleanup removed the temporary adapter, leaving only whitespace churn.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveMigration",
+			scriptFileName: "archive-migration.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				validation: {
+					status: "pass",
+					validationExitCode: 0,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			status: "rejected",
+			validation: "pass",
+			materialProjectDiff: {
+				status: "empty",
+			},
+		});
+		const archive = await Bun.file(`${cwd}/workflow-output/refactor-migration-archive.md`).text();
+		expect(archive).toContain("Outcome: rejected");
+		expect(archive).toContain("No material project diff");
+		expect(archive).toContain("remove the temporary adapter");
 	});
 
 	it("treats nested Humanize stop paths as structured handoffs instead of script failures", async () => {

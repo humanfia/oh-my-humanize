@@ -19,6 +19,12 @@
 
 ### Fixed
 
+- Fixed the experimental research-reproduction workflow so stable terminal
+  rejection evidence archives as a rejected outcome instead of looping until
+  stopped.
+- Fixed the experimental refactor-migration workflow so padding-only or
+  whitespace-only migrations archive as rejected outcomes and preserve rollback
+  evidence from migration/cleanup artifacts.
 - Fixed the experimental parallel implementation/review workflow so its join
   guard fails closed when required lane evidence is missing or any lane reports
   failed validation before downstream review.

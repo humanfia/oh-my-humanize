@@ -3,21 +3,14 @@ const reproduction = state.reproduction && typeof state.reproduction === "object
 const variant = state.variant && typeof state.variant === "object" ? state.variant : {};
 const structuredEvidence = await readStructuredEvidence(reproduction, variant);
 
-if (reproduction.status !== "pass" || variant.status !== "pass") {
-	throw new Error("cannot archive research reproduction before reproduction and validation pass");
-}
-if (reproduction.exercised !== true) {
+if (reproduction.exercised !== true || structuredEvidence.reproduction.exercised !== true) {
 	throw new Error("cannot archive research reproduction before the Reproduction Command exercises the declared claim");
 }
-if (variant.validationExercised !== true) {
+if (variant.validationExercised !== true || structuredEvidence.validation.exercised !== true) {
 	throw new Error("cannot archive research reproduction before the Validation Command exercises the declared claim");
 }
-if (structuredEvidence.reproduction.exercised !== true) {
-	throw new Error("cannot archive research reproduction before structured reproduction evidence is exercised");
-}
-if (structuredEvidence.validation.exercised !== true) {
-	throw new Error("cannot archive research reproduction before structured validation evidence is exercised");
-}
+
+const outcome = reproduction.status === "pass" && variant.status === "pass" ? "accepted" : "rejected";
 
 const outputPath = "workflow-output/reproduction-archive.md";
 const precheck = await readOptionalText("workflow-output/reproduction-precheck.md");
@@ -29,6 +22,10 @@ await Bun.write(
 	outputPath,
 	[
 		"# Research Reproduction Archive",
+		"",
+		`Outcome: ${outcome}`,
+		`Reproduction status: ${String(reproduction.status ?? "unknown")}`,
+		`Validation status: ${String(variant.status ?? "unknown")}`,
 		"",
 		"## Precheck",
 		"",
@@ -59,8 +56,19 @@ await Bun.write(
 );
 
 return {
-	summary: "archived research reproduction evidence",
-	statePatch: [{ op: "set", path: "/archive", value: { file: outputPath, reproduction: "pass" } }],
+	summary: `archived ${outcome} research reproduction evidence`,
+	statePatch: [
+		{
+			op: "set",
+			path: "/archive",
+			value: {
+				file: outputPath,
+				outcome,
+				reproduction: String(reproduction.status ?? "unknown"),
+				validation: String(variant.status ?? "unknown"),
+			},
+		},
+	],
 };
 
 async function readOptionalText(filePath) {
