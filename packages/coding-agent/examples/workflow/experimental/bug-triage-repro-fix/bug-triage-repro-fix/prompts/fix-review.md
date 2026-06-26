@@ -21,6 +21,10 @@ Return `continue` when any of these are true:
   in the frozen task contract;
 - a no-code investigation lacks concrete negative evidence, exercised commands,
   and rollback/no-change notes;
+- a no-code investigation fails to reconcile cause evidence that proposed a
+  defect, fix boundary, or tests to add; require
+  `workflow-output/no-bug-root-cause.md` to contain a `## Cause Reconciliation`
+  section that explicitly discusses the cause finding or `isolateCause` handoff;
 - another bounded fix round is required.
 
 Return `finish` only when the reproduced bug has a coherent fix, regression
@@ -29,9 +33,10 @@ evidence passes, rollback notes exist, and the result is reviewable.
 If the frozen task contract explicitly contains `No-Code Resolution: allowed`,
 also return `finish` for a confirmed no-bug result when reproduction and
 regression evidence both exercise the declared behavior, the current diff has
-no project changes, and `workflow-output/bugfix-rollback.md` records why no
-rollback is needed. This is an evidence-only investigation path, not permission
-to skip investigation.
+no project changes, any defect-like cause evidence is explicitly reconciled in
+`workflow-output/no-bug-root-cause.md`, and
+`workflow-output/bugfix-rollback.md` records why no rollback is needed. This is
+an evidence-only investigation path, not permission to skip investigation.
 
 Output contract:
 

@@ -18,6 +18,7 @@ const KDA_HUMANIZE_SUBFLOW_DIR = `${import.meta.dir}/../../../examples/workflow/
 const AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/agent-build-review-loop/agent-build-review-loop/scripts`;
 const RESEARCH_REPRODUCTION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction/scripts`;
 const RELEASE_HARDENING_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/release-hardening/release-hardening/scripts`;
+const BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/scripts`;
 
 describe("example workflow scripts", () => {
 	it("loads the documentation-audit workflow artifact", async () => {
@@ -1507,6 +1508,129 @@ describe("example workflow scripts", () => {
 		expect(gate).toContain("audit_blockers: 1");
 	});
 
+	it("blocks no-code bug triage archives when cause evidence proposes a fix without reconciliation", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-unreconciled-cause-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await initializeCleanGitRepo(cwd);
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Objective:", "Investigate a parser boundary.", "", "No-Code Resolution: allowed"].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction.md`, "19 passed\n");
+		await Bun.write(`${cwd}/workflow-output/regression.md`, "821 passed\n");
+		await Bun.write(`${cwd}/workflow-output/bugfix-rollback.md`, "No rollback needed for a no-code result.\n");
+		await Bun.write(
+			`${cwd}/workflow-output/no-bug-root-cause.md`,
+			["# No-Bug Root-Cause Analysis", "", "The focused reproduction passed, so no patch is needed."].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveBugfix",
+			scriptFileName: "archive-bugfix.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				task: {
+					taskText: "No-Code Resolution: allowed",
+				},
+				cause: {
+					why_evidence_points_there: [
+						"Focused reproduction showed invoked callbacks receive values but parameter source is None.",
+					],
+					narrowest_fix_boundary: [
+						"Patch Context.invoke/Context.forward source bookkeeping and add narrow tests.",
+					],
+				},
+				regression: {
+					status: "pass",
+				},
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "archiveBugfix")?.status).toBe(
+			"failed",
+		);
+		expect(result.scheduler.state.archive).toBeUndefined();
+	});
+
+	it("allows no-code bug triage archives when cause evidence is explicitly reconciled", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-reconciled-cause-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await initializeCleanGitRepo(cwd);
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Objective:", "Investigate a parser boundary.", "", "No-Code Resolution: allowed"].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction.md`, "19 passed\n");
+		await Bun.write(`${cwd}/workflow-output/regression.md`, "821 passed\n");
+		await Bun.write(`${cwd}/workflow-output/bugfix-rollback.md`, "No rollback needed for a no-code result.\n");
+		await Bun.write(
+			`${cwd}/workflow-output/no-bug-root-cause.md`,
+			[
+				"# No-Bug Root-Cause Analysis",
+				"",
+				"## Cause Reconciliation",
+				"",
+				"The isolateCause fix boundary is reconciled and rejected as a false positive: the focused",
+				"reproduction and validation commands exercise the same Context.invoke/Context.forward",
+				"parameter-source behavior, and the observed output explains why it is not a defect.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveBugfix",
+			scriptFileName: "archive-bugfix.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				task: {
+					taskText: "No-Code Resolution: allowed",
+				},
+				cause: {
+					why_evidence_points_there: [
+						"Focused reproduction showed invoked callbacks receive values but parameter source is None.",
+					],
+					narrowest_fix_boundary: [
+						"Patch Context.invoke/Context.forward source bookkeeping and add narrow tests.",
+					],
+				},
+				regression: {
+					status: "pass",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			validation: "pass",
+			projectChangedFiles: [],
+		});
+		const archive = await Bun.file(`${cwd}/workflow-output/bugfix-archive.md`).text();
+		expect(archive).toContain("Cause Reconciliation");
+	});
+
+	it("keeps bug triage no-code prompts tied to cause reconciliation", async () => {
+		const patchPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/prompts/patch-fix.md`,
+		).text();
+		const reviewPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/prompts/fix-review.md`,
+		).text();
+
+		for (const prompt of [patchPrompt, reviewPrompt]) {
+			expect(prompt).toContain("Cause Reconciliation");
+			expect(prompt).toContain("no-code");
+			expect(prompt).toContain("isolateCause");
+		}
+	});
+
 	it("fails performance optimization closed when the baseline command is not reproducible", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-baseline-fail-closed-");
 		const cwd = tempDir.path();
@@ -2455,4 +2579,13 @@ async function runGit(cwd: string, args: string[]): Promise<void> {
 	if (exitCode !== 0) {
 		throw new Error(`git ${args.join(" ")} failed: ${stderr.trim() || stdout.trim()}`);
 	}
+}
+
+async function initializeCleanGitRepo(cwd: string): Promise<void> {
+	await runGit(cwd, ["init"]);
+	await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+	await runGit(cwd, ["config", "user.name", "OMH Test"]);
+	await Bun.write(`${cwd}/README.md`, "test repo\n");
+	await runGit(cwd, ["add", "README.md"]);
+	await runGit(cwd, ["commit", "-m", "init"]);
 }

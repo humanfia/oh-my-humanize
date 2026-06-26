@@ -82,6 +82,9 @@
 - Fixed the experimental release-hardening workflow so archive creation requires
   an explicit repair or evidence-backed waiver for material audit blockers
   without splitting structured blocker context into false unresolved fields.
+- Fixed the experimental bug-triage workflow so no-code archives fail closed
+  when cause evidence proposes a defect or fix boundary without explicit cause
+  reconciliation.
 - Fixed experimental workflow contract guards so parallel implementation/review
   preserves validation command shell-prefix environment assignments, and
   performance optimization search fails closed when tracked or untracked lane
