@@ -21,7 +21,7 @@ const archivePath = "workflow-output/documentation-audit-archive.md";
 const taskText = await readOptionalText("task.md");
 const validationText = await readOptionalText("workflow-output/documentation-validation.md");
 const rollbackText = await rollbackEvidenceText();
-const changedFiles = stringArrayField(patch, "changed_files").concat(stringArrayField(patch, "changedFiles"));
+const changedFiles = projectChangedFilesFromPatch(patch);
 
 if (changedFiles.length > 0 && !rollbackText.trim()) {
 	throw new Error(
@@ -141,11 +141,11 @@ async function readOptionalText(filePath) {
 
 async function rollbackEvidenceText() {
 	const explicitRollback = (await readOptionalText("workflow-output/documentation-rollback.md")).trim();
-	const patchRollback = markdownSection(
-		await readOptionalText("workflow-output/documentation-patch.md"),
-		"Rollback Notes",
-	).trim();
-	return [explicitRollback, patchRollback].filter(Boolean).join("\n\n");
+	const patchText = await readOptionalText("workflow-output/documentation-patch.md");
+	const patchRollbackSection = markdownSection(patchText, "Rollback Notes").trim();
+	const patchRollbackLines = rollbackLines(patchText).join("\n").trim();
+	const patchRollbackFields = rollbackNotesFromPatch(patch).join("\n").trim();
+	return [explicitRollback, patchRollbackFields, patchRollbackSection, patchRollbackLines].filter(Boolean).join("\n\n");
 }
 
 function markdownSection(text, heading) {
@@ -180,4 +180,33 @@ function stringArrayField(value, key) {
 	const field = value[key];
 	if (!Array.isArray(field)) return [];
 	return field.filter(item => typeof item === "string");
+}
+
+function rollbackNotesFromPatch(value) {
+	return stringArrayField(value, "rollback_notes").concat(stringArrayField(value, "rollbackNotes"));
+}
+
+function rollbackLines(text) {
+	return text
+		.split(/\r?\n/u)
+		.map(line => line.match(/^\s*[-*]?\s*rollback\s+notes?\s*:\s*(.+)$/iu)?.[1]?.trim() ?? "")
+		.filter(Boolean);
+}
+
+function projectChangedFilesFromPatch(value) {
+	return stringArrayField(value, "changed_files")
+		.concat(stringArrayField(value, "changedFiles"))
+		.filter(isProjectChangedFile);
+}
+
+function isProjectChangedFile(filePath) {
+	if (!filePath.trim()) return false;
+	return !(
+		filePath === "task.md" ||
+		filePath === "progress.md" ||
+		filePath === "manifest-entry.json" ||
+		filePath === "monitor-assignment.json" ||
+		filePath.startsWith("workflow-output/") ||
+		filePath.startsWith("transcripts/")
+	);
 }

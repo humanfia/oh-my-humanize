@@ -1229,6 +1229,70 @@ describe("example workflow scripts", () => {
 		expect(archive).not.toContain("No rollback notes were present.");
 	});
 
+	it("archives documentation rollback note lines from patch evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-audit-patch-rollback-line-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const archiveScript = await Bun.file(`${DOCUMENTATION_AUDIT_SCRIPT_DIR}/archive-docs.js`).text();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Objective:", "Repair docs and carry a patch-scoped rollback line into the archive."].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/documentation-validation.md`, "44 passed\n");
+		await Bun.write(
+			`${cwd}/workflow-output/documentation-patch.md`,
+			[
+				"# Documentation Patch Evidence",
+				"",
+				"Changed files: docs/advanced/clients.md",
+				"Patch evidence: workflow-output/documentation-patch.md",
+				"Rollback note: Restore the previous header merge wording in docs/advanced/clients.md.",
+			].join("\n"),
+		);
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			initialState: {
+				patch: {
+					status: "patched",
+					changed_files: ["docs/advanced/clients.md", "workflow-output/documentation-patch.md"],
+					patch_evidence: "workflow-output/documentation-patch.md",
+				},
+				validation: {
+					status: "pass",
+				},
+			},
+			definition: {
+				name: "documentation-archive-patch-rollback-line",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "archiveDocs",
+						type: "script",
+						script: {
+							language: "js",
+							code: archiveScript,
+						},
+						writes: ["/archive"],
+					},
+				],
+				edges: [],
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "archiveDocs")?.status).toBe(
+			"completed",
+		);
+		const archive = await Bun.file(`${cwd}/workflow-output/documentation-audit-archive.md`).text();
+		expect(archive).toContain("Restore the previous header merge wording");
+		expect(result.scheduler.state.archive).toMatchObject({
+			rollbackEvidence: "present",
+		});
+	});
+
 	it("blocks documentation archive when changed files lack rollback evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-documentation-audit-missing-rollback-");
 		const cwd = tempDir.path();
@@ -1382,6 +1446,65 @@ describe("example workflow scripts", () => {
 			unresolvedBlockers: [],
 		});
 		expect(await Bun.file(`${cwd}/workflow-output/release-gate.md`).text()).toContain("status: pass");
+	});
+
+	it("allows release archive when structured audit blockers resolve through finding context", async () => {
+		using tempDir = TempDir.createSync("@omh-release-gate-structured-context-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/release-audit.md`,
+			[
+				"# Release-Facing Audit Evidence",
+				"",
+				"## Compatibility-sensitive completion behavior audit",
+				"",
+				"Resolved stale completion documentation by updating site/content/completions/zsh.md.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/release-rollback.md`,
+			[
+				"# Release Rollback Notes",
+				"",
+				"- Restore site/content/completions/zsh.md if this attempt is abandoned.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "enforceReleaseGate",
+			scriptFileName: "enforce-release-gate.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/releaseGate"],
+			initialState: {
+				compatibility: {
+					risks: [
+						{
+							risk: "stale completion documentation in site/content/completions/zsh.md",
+							details: "generated shell completion behavior is correct after the documentation repair",
+							severity: "release-hold until docs are corrected or intentionally waived",
+						},
+					],
+				},
+				checks: {
+					status: "pass",
+					validationExitCode: 0,
+					outputPath: "workflow-output/release-checks.md",
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.releaseGate).toMatchObject({
+			status: "pass",
+			unresolvedBlockers: [],
+		});
+		const gate = await Bun.file(`${cwd}/workflow-output/release-gate.md`).text();
+		expect(gate).toContain("status: pass");
+		expect(gate).toContain("audit_blockers: 1");
 	});
 
 	it("fails performance optimization closed when the baseline command is not reproducible", async () => {

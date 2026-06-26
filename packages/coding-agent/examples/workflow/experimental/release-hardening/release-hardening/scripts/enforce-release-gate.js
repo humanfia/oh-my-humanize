@@ -61,7 +61,19 @@ function flattenEvidence(value) {
 	if (typeof value === "number" || typeof value === "boolean") return [String(value)];
 	if (Array.isArray(value)) return value.flatMap(flattenEvidence);
 	if (typeof value !== "object") return [];
+	if (isStructuredFinding(value)) return [structuredFindingText(value)];
 	return Object.entries(value).flatMap(([key, entry]) => flattenEvidence(entry).map(text => `${key}: ${text}`));
+}
+
+function isStructuredFinding(value) {
+	const keys = Object.keys(value).map(key => key.toLowerCase());
+	return keys.some(key => ["blocker", "finding", "gap", "issue", "risk", "summary"].includes(key));
+}
+
+function structuredFindingText(value) {
+	return Object.entries(value)
+		.flatMap(([key, entry]) => flattenEvidence(entry).map(text => `${key}: ${text}`))
+		.join("; ");
 }
 
 function isBlockingEvidence(text) {
