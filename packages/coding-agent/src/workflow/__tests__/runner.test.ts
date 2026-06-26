@@ -363,6 +363,68 @@ describe("runWorkflow lifecycle", () => {
 			await fs.rm(workspace, { recursive: true, force: true });
 		}
 	});
+
+	it("omits runtime scratch from checkpoint workspace snapshots", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "omp-workflow-checkpoint-scratch-"));
+		const scratchRoot = path.join(workspace, "workflow-output", "tmp");
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		try {
+			process.env.OMH_RUN_TMP = scratchRoot;
+			await initializeGitWorkspace(workspace);
+			const host = new MemoryWorkflowHost();
+			const definition = stoppedWorkspaceDefinition();
+			const freeze = freezeForDefinition(definition);
+			const controller = new AbortController();
+			const wrotePartialFile = Promise.withResolvers<void>();
+			const runtimeHost: WorkflowNodeRuntimeHost = {
+				runScriptNode: async input => {
+					await Bun.write(path.join(workspace, "src", "partial.ts"), "export const partial = true;\n");
+					await Bun.write(
+						path.join(scratchRoot, "omp-python-runner", "runner-novmd3thesia.py"),
+						"print('transient runner')\n",
+					);
+					wrotePartialFile.resolve();
+					const parked = Promise.withResolvers<never>();
+					input.signal?.addEventListener("abort", () => parked.reject(new Error("workflow activation stopped")), {
+						once: true,
+					});
+					return parked.promise;
+				},
+			};
+
+			const runPromise = runWorkflow({
+				host,
+				definition,
+				runId: "run-1",
+				graphRevisionId: "graph-1",
+				startNodeId: "writePartial",
+				runtimeHost,
+				workspaceRoot: workspace,
+				signal: controller.signal,
+				nodeAbortSignal: controller.signal,
+				lifecycle: {
+					familyId: "family-1",
+					attemptId: "attempt-1",
+					freeze,
+					runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+				},
+			});
+			await wrotePartialFile.promise;
+			controller.abort("operator stop");
+			await runPromise;
+
+			const checkpoint = reconstructWorkflowFamilies(host.getBranch())[0]?.checkpoints[0];
+			if (checkpoint === undefined) throw new Error("expected workflow checkpoint");
+			expect(checkpoint.workspace?.dirtyPaths).toEqual(["src/partial.ts"]);
+
+			await fs.rm(scratchRoot, { recursive: true, force: true });
+			await expect(assertWorkflowCheckpointWorkspaceMatches(checkpoint, workspace)).resolves.toBeUndefined();
+		} finally {
+			if (previousRunTmp === undefined) delete process.env.OMH_RUN_TMP;
+			else process.env.OMH_RUN_TMP = previousRunTmp;
+			await fs.rm(workspace, { recursive: true, force: true });
+		}
+	});
 });
 
 class MemoryWorkflowHost {

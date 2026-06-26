@@ -409,7 +409,7 @@ describe("example workflow scripts", () => {
 			nodeId: "precheckTaskContract",
 			scriptFileName: "precheck-task-contract.js",
 			scriptDir: DOCUMENTATION_AUDIT_SCRIPT_DIR,
-			writes: ["/task", "/runtime", "/review", "/validation", "/patch"],
+			writes: ["/task", "/runtime", "/review", "/validation", "/validationStartup", "/patch"],
 		});
 
 		expect(result.scheduler.state.patch).toMatchObject({
@@ -455,6 +455,72 @@ describe("example workflow scripts", () => {
 		expect(evidence).toContain("Exit code: 127");
 		expect(evidence).toContain("omh-definitely-missing-doc-validator");
 		expect(evidence).toMatch(/not found|command not found/u);
+	});
+
+	it("fails documentation audit before fanout when validation cannot start", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-audit-validation-startup-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "checkValidationStartup",
+			scriptFileName: "check-validation-startup.js",
+			scriptDir: DOCUMENTATION_AUDIT_SCRIPT_DIR,
+			writes: ["/validationStartup"],
+			initialState: {
+				task: {
+					validationCommand: "omh-definitely-missing-doc-validator",
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "checkValidationStartup")?.status,
+		).toBe("failed");
+		const evidence = await Bun.file(`${cwd}/workflow-output/documentation-validation-startup.md`).text();
+		expect(evidence).toContain("Exit code: 127");
+		expect(evidence).toContain("omh-definitely-missing-doc-validator");
+		expect(evidence).toMatch(/not found|command not found/u);
+
+		const flow = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/documentation-audit/documentation-audit.omhflow`,
+		).text();
+		expect(flow).toMatch(
+			/id:\s*precheckTaskContract[\s\S]*?id:\s*checkValidationStartup[\s\S]*?id:\s*inventoryDocs/u,
+		);
+	});
+
+	it("does not stop documentation audit startup probe on ordinary validation failure", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-audit-validation-startable-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "checkValidationStartup",
+			scriptFileName: "check-validation-startup.js",
+			scriptDir: DOCUMENTATION_AUDIT_SCRIPT_DIR,
+			writes: ["/validationStartup"],
+			initialState: {
+				task: {
+					validationCommand: "printf 'started validation\\n'; exit 1",
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "checkValidationStartup")?.status,
+		).toBe("completed");
+		expect(result.scheduler.state.validationStartup).toMatchObject({
+			status: "startable-command-failed",
+			validationExitCode: 1,
+		});
+		const evidence = await Bun.file(`${cwd}/workflow-output/documentation-validation-startup.md`).text();
+		expect(evidence).toContain("started validation");
+		expect(evidence).toContain("Exit code: 1");
 	});
 
 	it("blocks release archive when audit blockers lack repair or waiver evidence", async () => {

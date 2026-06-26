@@ -56,6 +56,14 @@ return {
 		},
 		{
 			op: "set",
+			path: "/validationStartup",
+			value: {
+				status: "not-run",
+				summary: "No documentation validation startup probe has run yet.",
+			},
+		},
+		{
+			op: "set",
 			path: "/patch",
 			value: {
 				status: "not-run",

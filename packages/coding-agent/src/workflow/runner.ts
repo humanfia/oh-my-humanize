@@ -256,7 +256,7 @@ async function finishLifecycleAttempt(
 			frontierNodeIds: failedFrontierNodeIds,
 			state: scheduler.state,
 			sourceMapping: lifecycleCheckpointSourceMapping(options, failedFrontierNodeIds),
-			workspace: await captureWorkflowCheckpointWorkspace(options.workspaceRoot),
+			workspace: await captureLifecycleCheckpointWorkspace(options),
 		});
 		return;
 	}
@@ -276,13 +276,21 @@ async function finishLifecycleAttempt(
 			frontierNodeIds: scheduler.frontierNodeIds,
 			state: scheduler.state,
 			sourceMapping: lifecycleCheckpointSourceMapping(options, scheduler.frontierNodeIds),
-			workspace: await captureWorkflowCheckpointWorkspace(options.workspaceRoot),
+			workspace: await captureLifecycleCheckpointWorkspace(options),
 		});
 		return;
 	}
 	completeWorkflowAttempt(options.host, {
 		attemptId: lifecycle.attemptId,
 		summary: "workflow completed",
+	});
+}
+
+function captureLifecycleCheckpointWorkspace(
+	options: WorkflowRunnerOptions,
+): Promise<WorkflowCheckpointWorkspaceSnapshot | undefined> {
+	return captureWorkflowCheckpointWorkspace(options.workspaceRoot, {
+		ignoredDirtyPathPrefixes: workflowRuntimeScratchDirtyPathPrefixes(options.workspaceRoot),
 	});
 }
 

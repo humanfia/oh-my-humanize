@@ -19,6 +19,12 @@
 
 ### Fixed
 
+- Fixed workflow checkpoints so runtime scratch files from `OMH_RUN_TMP` or
+  `TMPDIR` are excluded when the checkpoint snapshot is created, preventing
+  restart mismatches after transient runner files disappear.
+- Fixed the experimental documentation-audit workflow so validation startup is
+  probed before parallel audit fanout, stopping early when the declared
+  validation command cannot start.
 - Fixed workflow checkpoint restarts so selected `.omhflow` freeze artifacts and
   same-name resource directories generated after a checkpoint do not invalidate
   the saved workspace snapshot, while ordinary workspace drift still fails

@@ -30,12 +30,15 @@ stateSchema:
     auditDigest: object
     audit: object
     patch: object
+    validationStartup: object
     validation: object
     review: string
     runtime: object
     archive: object
 resources:
   - path: scripts/precheck-task-contract.js
+    kind: script
+  - path: scripts/check-validation-startup.js
     kind: script
   - path: scripts/compact-audit-findings.js
     kind: script
@@ -77,6 +80,16 @@ sequence:
         - /review
         - /validation
         - /patch
+  - node:
+      id: checkValidationStartup
+      type: script
+      reads:
+        - /task
+      script:
+        language: js
+        file: scripts/check-validation-startup.js
+      writes:
+        - /validationStartup
   - node:
       id: inventoryDocs
       type: agent
