@@ -127,6 +127,40 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 		expect(output.summary).toBe("agent recovered after capped retry");
 	});
 
+	it("retries transient HTTP/2 transport errors for workflow agent nodes", async () => {
+		const calls: string[] = [];
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0 },
+			runAgentTask: async request => {
+				calls.push(request.nodeId);
+				if (calls.length === 1) {
+					return {
+						exitCode: 1,
+						output: "",
+						error: "HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR (err 2)",
+					};
+				}
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "agent recovered after HTTP/2 transport retry" }),
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "build", type: "agent", prompt: "Build the thing." };
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "builder",
+			prompt: node.prompt,
+		});
+
+		expect(calls).toEqual(["build", "build"]);
+		expect(output.summary).toBe("agent recovered after HTTP/2 transport retry");
+	});
+
 	it("does not retry non-transient agent failures", async () => {
 		let calls = 0;
 		const host = createSessionWorkflowRuntimeHost({

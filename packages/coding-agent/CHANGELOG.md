@@ -60,6 +60,9 @@
 - Fixed workflow checkpoints so runtime scratch files from `OMH_RUN_TMP` or
   `TMPDIR` are excluded when the checkpoint snapshot is created, preventing
   restart mismatches after transient runner files disappear.
+- Fixed workflow agent retry classification so transient HTTP/2
+  `INTERNAL_ERROR` transport failures are retried like other provider-side
+  interruptions.
 - Fixed the experimental documentation-audit workflow so validation startup is
   probed before parallel audit fanout, stopping early when the declared
   validation command cannot start.
