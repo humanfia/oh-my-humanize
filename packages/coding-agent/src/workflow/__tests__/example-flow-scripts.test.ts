@@ -387,11 +387,14 @@ describe("example workflow scripts", () => {
 
 		expect(flow).toMatch(/path:\s*prompts\/selection-repair\.md/u);
 		expect(flow).toMatch(
-			/id:\s*repairPerformanceSelection[\s\S]*?reads:[\s\S]*?- \/benchmark[\s\S]*?writes:[\s\S]*?- \/selectionRepair[\s\S]*?id:\s*perfReview/u,
+			/id:\s*repairPerformanceSelection[\s\S]*?reads:[\s\S]*?- \/benchmark[\s\S]*?writes:[\s\S]*?- \/selectionRepair[\s\S]*?id:\s*guardSelectionRepair[\s\S]*?writes:[\s\S]*?- \/selectionGuard[\s\S]*?id:\s*perfReview/u,
 		);
 		expect(flow).toMatch(/selectionRepair:[\s\S]*?state:\s*\/selectionRepair/u);
+		expect(flow).toMatch(/selectionGuard:[\s\S]*?state:\s*\/selectionGuard/u);
 		expect(repairPrompt).toContain("workflow-output/performance-selection-repair.md");
 		expect(repairPrompt).toContain("Do not start a new broad optimization attempt");
+		expect(repairPrompt).toContain("Do not write terminal workflow artifacts");
+		expect(repairPrompt).toContain("workflow-output/performance-final-archive.md");
 		expect(hypothesesPrompt).toContain("selection/rollback repair");
 		expect(optimizationPrompt).toContain("selection/rollback repair");
 	});
@@ -652,6 +655,104 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/performance-archive.md`).text()).toContain(
 			"terminalState: no-win-validation-blocked",
 		);
+	});
+
+	it("blocks performance repair nodes from writing terminal archive artifacts", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-repair-terminal-artifact-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/README.md`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "README.md", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/workflow-output/performance-final-archive.md`, "premature final archive\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: await Bun.file(`${cwd}/task.md`).text(),
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: {
+					status: "patched",
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "guardSelectionRepair")?.status,
+		).toBe("failed");
+	});
+
+	it("blocks positive performance repair when validation failed with retained project changes", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-validation-blocked-positive-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = ["Benchmark Command:", "echo benchmark", "", "Validation Command:", "exit 101"].join("\n");
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "selected positive candidate\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			["# Algorithmic", "", "final-selection: yes", "rollback evidence: git apply -R candidate"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			["# Caching", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# IO", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 101,
+					status: "fail",
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "guardSelectionRepair")?.status,
+		).toBe("failed");
 	});
 
 	it("keeps test-hardening repair evidence separate from suite output", async () => {
@@ -987,7 +1088,7 @@ async function runExampleDefinition({
 }
 
 async function runGit(cwd: string, args: string[]): Promise<void> {
-	const proc = Bun.spawn(["git", ...args], {
+	const proc = Bun.spawn(["git", "-c", "commit.gpgsign=false", ...args], {
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",

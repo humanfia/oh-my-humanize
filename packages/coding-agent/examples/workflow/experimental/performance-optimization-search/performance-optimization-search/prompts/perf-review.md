@@ -15,6 +15,9 @@ Benchmark and validation evidence:
 Selection and rollback repair evidence:
 {{jsonStringify selectionRepair}}
 
+Selection guard evidence:
+{{jsonStringify selectionGuard}}
+
 Review the current project diff and the branch notes in `workflow-output/`.
 Return `finish` only when:
 

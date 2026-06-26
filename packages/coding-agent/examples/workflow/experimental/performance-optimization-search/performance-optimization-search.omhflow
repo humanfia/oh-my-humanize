@@ -31,6 +31,7 @@ stateSchema:
     io: object
     benchmark: object
     selectionRepair: object
+    selectionGuard: object
     selection: object
     review: string
     archive: object
@@ -40,6 +41,8 @@ resources:
   - path: scripts/capture-baseline.js
     kind: script
   - path: scripts/run-benchmark-validation.js
+    kind: script
+  - path: scripts/guard-selection-repair.js
     kind: script
   - path: scripts/finalize-performance-selection.js
     kind: script
@@ -236,6 +239,18 @@ sequence:
                       state: /review
               writes:
                 - /selectionRepair
+          - node:
+              id: guardSelectionRepair
+              type: script
+              script:
+                language: js
+                file: scripts/guard-selection-repair.js
+              reads:
+                - /task
+                - /benchmark
+                - /selectionRepair
+              writes:
+                - /selectionGuard
       review:
         id: perfReview
         type: review
@@ -251,6 +266,7 @@ sequence:
           - /io
           - /benchmark
           - /selectionRepair
+          - /selectionGuard
         prompt:
           template:
             file: prompts/perf-review.md
@@ -265,6 +281,8 @@ sequence:
                 state: /benchmark
               selectionRepair:
                 state: /selectionRepair
+              selectionGuard:
+                state: /selectionGuard
         writes:
           - /review
         gates:

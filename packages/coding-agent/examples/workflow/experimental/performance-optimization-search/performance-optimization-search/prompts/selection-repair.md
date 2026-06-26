@@ -58,3 +58,10 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 
 Also ensure the relevant `workflow-output/perf-*.md` files contain the final
 selection markers needed by the downstream finalizer.
+
+Do not write terminal workflow artifacts. The script nodes own final selection
+and archive evidence. In particular, do not write
+`workflow-output/performance-selection.md`,
+`workflow-output/performance-archive.md`,
+`workflow-output/performance-final-archive.md`, or any `workflow-output/final*`
+artifact from this repair node.

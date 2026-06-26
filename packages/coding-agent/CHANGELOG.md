@@ -20,6 +20,9 @@
 - Fixed the experimental parallel implementation/review workflow so final
   validation can reuse test-lane evidence recorded with `validation.artifacts`
   and `exit_code_artifact` aliases.
+- Fixed the experimental performance optimization workflow so selection repair
+  cannot hand validation-failed positive diffs or premature final/archive
+  artifacts to the reviewer.
 - Fixed workflow JavaScript script nodes so they use the workflow script
   runtime budget by default instead of inheriting the interactive eval tool's
   30-second timeout.
