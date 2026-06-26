@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- Fixed the experimental parallel implementation/review workflow so its
+  evidence contract accepts canonical lane artifacts when older planner or
+  review handoffs cite legacy lane artifact names.
 - Fixed the experimental research-reproduction workflow so stable terminal
   rejection evidence archives as a rejected outcome instead of looping until
   stopped.

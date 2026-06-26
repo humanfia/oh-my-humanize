@@ -714,11 +714,26 @@ function referencedArtifactCandidates(artifact) {
 }
 
 function materializedArtifactAliases(artifact) {
+	const aliases = [];
 	const match = /^workflow-output\/(integration-review|review-handoff)-(.+)$/u.exec(artifact);
-	if (!match) return [];
-	const kind = match[1];
-	const suffix = match[2];
-	return [`workflow-output/${kind}-materialized-${suffix}`];
+	if (match) {
+		const kind = match[1];
+		const suffix = match[2];
+		aliases.push(`workflow-output/${kind}-materialized-${suffix}`);
+	}
+	const laneMatch = /^workflow-output\/(implementCore|implementTests|implementDocs)-(.+\.json)$/u.exec(artifact);
+	if (laneMatch) {
+		const lane = laneMatch[1];
+		const suffix = laneMatch[2];
+		const canonicalPrefix =
+			lane === "implementCore" ? "core-lane" : lane === "implementTests" ? "tests-lane" : "docs-lane";
+		aliases.push(`workflow-output/${canonicalPrefix}-${suffix}`);
+	}
+	const hardStopMatch = /^workflow-output\/lane-archive-laneHardStopGuard-(.+)\.(?:json|md|txt)$/u.exec(artifact);
+	if (hardStopMatch) {
+		aliases.push(`workflow-output/lane-hard-stop-guard-${hardStopMatch[1]}.json`);
+	}
+	return aliases;
 }
 
 function workflowArtifactExtension(value) {

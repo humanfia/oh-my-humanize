@@ -553,6 +553,104 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("accepts canonical parallel lane artifacts for legacy handoff aliases", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-legacy-lane-aliases-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "P07-T03D-e108bcf88-fd-follow-validation-repair";
+		const validationCommand = "echo validate";
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Accept canonical lane evidence when older planner handoffs cite previous lane artifact names.",
+				"",
+				"Validation Command:",
+				validationCommand,
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(
+			`${cwd}/workflow-output/core-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementCore", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/tests-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementTests", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/docs-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementDocs", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/lane-hard-stop-guard-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "laneHardStopGuard", status: "continue" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/integration-review-materialized-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "materializeIntegrationReview" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/validation-${tupleId}.json`,
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "runDeclaredValidation",
+					producer_kind: "workflow-script",
+					validation: {
+						command: validationCommand,
+						environment: {},
+						result: "passed",
+						status: "passed",
+						exitCode: 0,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "evidenceContractGuard",
+			scriptFileName: "evidence-contract-guard.js",
+			writes: ["/evidenceContract"],
+			initialState: {
+				laneHardStopGuard: {
+					status: "continue",
+				},
+				planHandoff: [
+					`legacy core evidence workflow-output/implementCore-${tupleId}.json`,
+					`canonical tests evidence workflow-output/tests-lane-${tupleId}.json`,
+					`legacy docs evidence workflow-output/implementDocs-${tupleId}.json`,
+					`legacy join evidence workflow-output/lane-archive-laneHardStopGuard-${tupleId}.md`,
+				].join("\n"),
+				reviewHandoff: {
+					artifacts: [
+						`workflow-output/implementCore-${tupleId}.json`,
+						`workflow-output/implementDocs-${tupleId}.json`,
+						`workflow-output/integration-review-${tupleId}.json`,
+					],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.evidenceContract).toMatchObject({
+			verdict: "READY",
+			checked_inputs: {
+				missing_referenced_artifacts: [],
+			},
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/evidence-contract-guard-${tupleId}.json`).json()).toMatchObject({
+			verdict: "READY",
+			checked_inputs: {
+				missing_referenced_artifacts: [],
+			},
+		});
+	});
+
 	it("blocks parallel joins when required lane evidence is missing", async () => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-missing-lane-evidence-");
 		const cwd = tempDir.path();
