@@ -331,6 +331,8 @@ describe("example workflow scripts", () => {
 		).text();
 
 		expect(prompt).toContain("Do not write terminal workflow artifacts");
+		expect(prompt).toContain("You may update non-terminal workflow evidence artifacts");
+		expect(prompt).toContain("workflow-output/human-scope-guard.md");
 		expect(prompt).toContain("workflow-output/documentation-validation.md");
 		expect(prompt).toContain("workflow-output/documentation-audit-archive.md");
 		expect(prompt).toContain("workflow-output/review-decision.md");

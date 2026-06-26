@@ -29,6 +29,12 @@ Patch-node evidence contract:
 
 - Do not write terminal workflow artifacts. The validation, review, and archive
   nodes own terminal evidence.
+- You may update non-terminal workflow evidence artifacts when prior review
+  feedback explicitly says they are incomplete. For example, if a mutable
+  workflow guard wrote `workflow-output/human-scope-guard.md`, append a bounded
+  evidence addendum there with the observed request, approval, checkpoint,
+  freeze/apply/restart, and resumed execution facts instead of creating a
+  terminal archive.
 - Do not write `workflow-output/documentation-validation.md`,
   `workflow-output/documentation-audit-archive.md`,
   `workflow-output/review-decision.md`, or any `workflow-output/final*`
