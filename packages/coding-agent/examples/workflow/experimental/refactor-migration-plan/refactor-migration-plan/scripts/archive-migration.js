@@ -152,7 +152,48 @@ function dedupeEvidenceEntries(entries) {
 }
 
 function hasRollbackEvidence(text) {
-	return /\brollback(?:[_ -]?notes?)?\b|["']?rollbackPath["']?\s*:/iu.test(text);
+	const parsed = parseJsonEvidence(text);
+	if (parsed !== undefined) return hasStructuredRollbackEvidence(parsed);
+	return hasMarkdownRollbackEvidence(text);
+}
+
+function parseJsonEvidence(text) {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+}
+
+function hasStructuredRollbackEvidence(value) {
+	if (Array.isArray(value)) {
+		return value.some(item => hasStructuredRollbackEvidence(item));
+	}
+	if (value === null || typeof value !== "object") return false;
+	for (const [key, child] of Object.entries(value)) {
+		if (isRollbackEvidenceKey(key) && hasActionableRollbackValue(child)) return true;
+		if (hasStructuredRollbackEvidence(child)) return true;
+	}
+	return false;
+}
+
+function isRollbackEvidenceKey(key) {
+	return /^(?:rollback|rollbackPath|rollback[_-]?path|rollback[_-]?notes?|rollback[_-]?note)$/iu.test(key);
+}
+
+function hasActionableRollbackValue(value) {
+	if (typeof value === "string") return value.trim().length > 0;
+	if (Array.isArray(value)) return value.some(item => hasActionableRollbackValue(item));
+	if (value === null || typeof value !== "object") return false;
+	return Object.values(value).some(child => hasActionableRollbackValue(child));
+}
+
+function hasMarkdownRollbackEvidence(text) {
+	return text.split(/\r?\n/u).some(line =>
+		/^\s*(?:[-*]\s*)?(?:#{1,6}\s*)?(?:rollback(?:[_ -]?notes?)?|rollback[_ -]?path)\s*[:=-]\s*\S/iu.test(
+			line,
+		),
+	);
 }
 
 async function projectMaterialDiff() {

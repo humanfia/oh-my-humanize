@@ -2741,16 +2741,25 @@ describe("example workflow scripts", () => {
 			["# Validation", "", "Exit code: 0"].join("\n"),
 		);
 		await Bun.write(
+			`${cwd}/workflow-output/omh-runtime/artifacts/activation-2/1-mapDependencies.md`,
+			[
+				"# Dependency Map",
+				"",
+				"Archive risk: accepted archives must obtain rollback notes from later migration evidence.",
+				"Current runtime artifacts contain no rollback text yet.",
+			].join("\n"),
+		);
+		await Bun.write(
 			`${cwd}/workflow-output/omh-runtime/artifacts/activation-5/1-migrateCallers.md`,
 			[
 				"# Migration",
 				"",
-				"Rollback notes: revert the extracted helper and restore the previous direct caller branches.",
+				"Rollback: revert the extracted helper and restore the previous direct caller branches.",
 			].join("\n"),
 		);
 		await Bun.write(
 			`${cwd}/workflow-output/omh-runtime/artifacts/activation-7/1-cleanupDeadPath.md`,
-			["# Cleanup", "", "Rollback remains the migration rollback; no cleanup-only code was changed."].join("\n"),
+			["# Cleanup", "", "Rollback notes: no cleanup-only code was changed."].join("\n"),
 		);
 
 		const result = await runExampleScript({
@@ -2776,8 +2785,65 @@ describe("example workflow scripts", () => {
 			],
 		});
 		const archive = await Bun.file(`${cwd}/workflow-output/refactor-migration-archive.md`).text();
+		expect(archive).not.toContain("workflow-output/omh-runtime/artifacts/activation-2/1-mapDependencies.md");
 		expect(archive).toContain("workflow-output/omh-runtime/artifacts/activation-5/1-migrateCallers.md");
 		expect(archive).toContain("revert the extracted helper");
+	});
+
+	it("blocks accepted refactor migrations with only non-actionable rollback mentions", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-migration-rollback-risk-only-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Reject archive evidence that only talks about rollback requirements.",
+				"",
+				"Validation Command:",
+				"echo validate",
+			].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "material migration\n");
+		await Bun.write(
+			`${cwd}/workflow-output/refactor-migration-validation.md`,
+			["# Validation", "", "Exit code: 0"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/omh-runtime/artifacts/activation-2/1-mapDependencies.md`,
+			[
+				"# Dependency Map",
+				"",
+				"Archive materiality check can hide real changes if exclusions are wrong.",
+				"Current runtime artifacts observed contain activation state but no rollback text yet.",
+				"Later accepted archive must obtain rollback notes from migration or cleanup evidence.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveMigration",
+			scriptFileName: "archive-migration.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				validation: {
+					status: "pass",
+				},
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "archiveMigration")?.status).toBe(
+			"failed",
+		);
 	});
 
 	it("blocks accepted refactor migrations without rollback evidence", async () => {

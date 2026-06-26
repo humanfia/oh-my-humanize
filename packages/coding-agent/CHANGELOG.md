@@ -20,6 +20,9 @@
 ### Fixed
 
 - Fixed the experimental refactor-migration workflow so accepted archives
+  require actionable rollback instructions instead of accepting generic
+  rollback-risk or rollback-policy mentions as evidence.
+- Fixed the experimental refactor-migration workflow so accepted archives
   recognize rollback evidence materialized under workflow runtime activation
   artifacts, not only legacy workflow-output filenames.
 - Fixed the experimental performance-optimization-search workflow so terminal
