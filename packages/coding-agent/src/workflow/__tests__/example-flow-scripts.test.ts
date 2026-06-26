@@ -14,8 +14,44 @@ const PERFORMANCE_OPTIMIZATION_SCRIPT_DIR = `${import.meta.dir}/../../../example
 const REFACTOR_MIGRATION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/refactor-migration-plan/refactor-migration-plan/scripts`;
 const TEST_GENERATION_HARDENING_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/test-generation-hardening/test-generation-hardening`;
 const KDA_HUMANIZE_SUBFLOW_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/kda-humanize/kda-humanize/humanize-rlcr-subflow`;
+const AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/agent-build-review-loop/agent-build-review-loop/scripts`;
 
 describe("example workflow scripts", () => {
+	it("accepts markdown validation command sections in agent build review tasks", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-validation-section-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Accept common markdown task contracts.",
+				"",
+				"## Validation Command",
+				"",
+				"```sh",
+				"echo validate",
+				"```",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "initializeLoop",
+			scriptFileName: "initialize-loop.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/progress", "/runtime", "/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.progress).toMatchObject({
+			validationCommand: "echo validate",
+			verification: "declared",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/initial-loop-snapshot.md`).text()).toContain("echo validate");
+	});
+
 	it("records the manifest run id as the canonical tuple id in the task contract", async () => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-precheck-");
 		const cwd = tempDir.path();

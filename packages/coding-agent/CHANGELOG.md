@@ -23,6 +23,9 @@
 - Fixed the experimental performance optimization workflow so selection repair
   cannot hand validation-failed positive diffs or premature final/archive
   artifacts to the reviewer.
+- Fixed the experimental agent build/review loop so task contracts may declare
+  validation commands as Markdown sections with fenced commands, not only as
+  colon-style inline fields.
 - Fixed workflow JavaScript script nodes so they use the workflow script
   runtime budget by default instead of inheriting the interactive eval tool's
   30-second timeout.

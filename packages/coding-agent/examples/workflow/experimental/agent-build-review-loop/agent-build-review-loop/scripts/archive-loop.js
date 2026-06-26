@@ -212,7 +212,9 @@ async function readOptionalText(filePath) {
 function requiredTaskValidationCommand(taskText) {
 	const lines = taskText.split(/\r?\n/u);
 	for (let index = 0; index < lines.length; index += 1) {
-		const match = /^\s*(?:verify|verification command|validation command)\s*:\s*(.*)\s*$/iu.exec(lines[index] ?? "");
+		const match = /^\s*#{0,6}\s*(?:verify|verification command|validation command)\s*:?\s*(.*)\s*$/iu.exec(
+			lines[index] ?? "",
+		);
 		if (!match) continue;
 		const inlineCommand = match[1]?.trim();
 		if (inlineCommand) return inlineCommand;
