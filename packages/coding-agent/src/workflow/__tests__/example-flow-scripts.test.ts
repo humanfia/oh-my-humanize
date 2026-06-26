@@ -18,6 +18,16 @@ const AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR = `${import.meta.dir}/../../../examples
 const RESEARCH_REPRODUCTION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction/scripts`;
 
 describe("example workflow scripts", () => {
+	it("keeps research reproduction agent prompts read-only around command evidence", async () => {
+		const prompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction/prompts/reproduction.md`,
+		).text();
+
+		expect(prompt).toContain("Do not run shell commands, eval snippets, tests, benchmarks, or project tools.");
+		expect(prompt).toContain("Do not create, modify, or delete files, including workflow-output artifacts.");
+		expect(prompt).toContain("Only script nodes may execute task-declared commands and write command evidence.");
+	});
+
 	it("does not count prose markers as research reproduction exercise evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-marker-");
 		const cwd = tempDir.path();
