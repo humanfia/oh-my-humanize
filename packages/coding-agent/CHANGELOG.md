@@ -20,8 +20,8 @@
 ### Fixed
 
 - Fixed workflow agent artifact references so project-local observability points
-  to readable filesystem paths instead of misusing `local://` for absolute
-  session files.
+  to readable workspace-local mirrors instead of long encoded session paths or
+  misused `local://` absolute session files.
 - Fixed the experimental release-hardening workflow so missing optional security
   commands are reported as skipped instead of passed.
 - Fixed the experimental documentation-audit workflow so final archives carry

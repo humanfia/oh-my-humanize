@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { WorkflowNode } from "./definition";
 import type { WorkflowCheckpointWorkspaceSnapshot } from "./lifecycle";
@@ -6,6 +7,7 @@ import type { WorkflowActivationOutput } from "./state";
 
 const WORKFLOW_OBSERVABILITY_INDEX_PATH = "workflow-output/omh-runtime/observability.json";
 const WORKFLOW_OBSERVABILITY_PROGRESS_PATH = "workflow-output/omh-runtime/progress.md";
+const WORKFLOW_OBSERVABILITY_ARTIFACTS_PATH = "workflow-output/omh-runtime/artifacts";
 const PROGRESS_SUMMARY_MAX_CHARS = 140;
 
 export type WorkflowObservabilityRecorder = (event: WorkflowObservabilityActivation) => Promise<void>;
@@ -110,13 +112,73 @@ async function writeWorkflowObservabilityEvent(
 	event: WorkflowObservabilityActivation | WorkflowObservabilityLifecycleEvent,
 ): Promise<void> {
 	const indexPath = `${cwd}/${WORKFLOW_OBSERVABILITY_INDEX_PATH}`;
+	const materializedEvent =
+		"activationId" in event ? await materializeWorkflowObservabilityArtifacts(cwd, event) : event;
 	const previous = await readWorkflowObservabilityIndex(indexPath);
 	const next: WorkflowObservabilityIndex =
-		"activationId" in event
-			? { ...previous, activations: [...previous.activations, event] }
-			: { ...previous, lifecycle: [...previous.lifecycle, event] };
+		"activationId" in materializedEvent
+			? { ...previous, activations: [...previous.activations, materializedEvent] }
+			: { ...previous, lifecycle: [...previous.lifecycle, materializedEvent] };
 	await Bun.write(indexPath, `${JSON.stringify(next, null, 2)}\n`);
 	await Bun.write(`${cwd}/${WORKFLOW_OBSERVABILITY_PROGRESS_PATH}`, renderWorkflowObservabilityProgress(next));
+}
+
+async function materializeWorkflowObservabilityArtifacts(
+	cwd: string,
+	event: WorkflowObservabilityActivation,
+): Promise<WorkflowObservabilityActivation> {
+	if (event.artifacts.length === 0) return event;
+	const artifacts: string[] = [];
+	let fileArtifactIndex = 0;
+	for (const artifact of event.artifacts) {
+		const source = workflowObservabilityFileArtifactPath(artifact);
+		const materialized =
+			source === undefined
+				? artifact
+				: await materializeWorkflowObservabilityArtifact(cwd, event, artifact, source, ++fileArtifactIndex);
+		if (!artifacts.includes(materialized)) artifacts.push(materialized);
+	}
+	return { ...event, artifacts };
+}
+
+async function materializeWorkflowObservabilityArtifact(
+	cwd: string,
+	event: WorkflowObservabilityActivation,
+	artifact: string,
+	source: string,
+	indexValue: number,
+): Promise<string> {
+	const target = workflowObservabilityArtifactMirrorPath(cwd, event, source, indexValue);
+	try {
+		await Bun.write(target, await Bun.file(source).arrayBuffer());
+		return target;
+	} catch (error) {
+		if (isEnoent(error)) return artifact;
+		throw error;
+	}
+}
+
+function workflowObservabilityFileArtifactPath(artifact: string): string | undefined {
+	if (path.isAbsolute(artifact)) return artifact;
+	if (!artifact.startsWith("local:///")) return undefined;
+	const resolved = artifact.slice("local://".length);
+	return path.isAbsolute(resolved) ? resolved : undefined;
+}
+
+function workflowObservabilityArtifactMirrorPath(
+	cwd: string,
+	event: WorkflowObservabilityActivation,
+	source: string,
+	indexValue: number,
+): string {
+	const activationDir = sanitizeWorkflowObservabilityPathSegment(event.activationId);
+	const basename = sanitizeWorkflowObservabilityPathSegment(path.basename(source));
+	return path.join(cwd, WORKFLOW_OBSERVABILITY_ARTIFACTS_PATH, activationDir, `${indexValue}-${basename}`);
+}
+
+function sanitizeWorkflowObservabilityPathSegment(value: string): string {
+	const sanitized = value.replace(/[^A-Za-z0-9._-]+/gu, "_").replace(/^_+|_+$/gu, "");
+	return sanitized || "artifact";
 }
 
 async function readWorkflowObservabilityIndex(indexPath: string): Promise<WorkflowObservabilityIndex> {

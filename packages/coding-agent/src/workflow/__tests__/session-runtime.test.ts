@@ -193,15 +193,21 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 	it("writes a project-local workflow observability index for completed agent nodes", async () => {
 		using tempDir = TempDir.createSync("@omh-workflow-observability-");
 		const cwd = tempDir.path();
+		const outputPath = `${cwd}/.agent-output/build.md`;
+		const sessionFile = `${cwd}/.omh/sessions/build.jsonl`;
 		const host = createSessionWorkflowRuntimeHost({
 			cwd,
-			runAgentTask: async () => ({
-				exitCode: 0,
-				output: JSON.stringify({ summary: "agent produced a bounded patch" }),
-				agentId: "agent-build",
-				outputPath: `${cwd}/.agent-output/build.md`,
-				sessionFile: `${cwd}/.omh/sessions/build.jsonl`,
-			}),
+			runAgentTask: async () => {
+				await Bun.write(outputPath, "build markdown transcript");
+				await Bun.write(sessionFile, '{"type":"session"}\n');
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "agent produced a bounded patch" }),
+					agentId: "agent-build",
+					outputPath,
+					sessionFile,
+				};
+			},
 		});
 		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
 
@@ -213,6 +219,8 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 			prompt: node.prompt,
 		});
 
+		const mirroredOutput = `${cwd}/workflow-output/omh-runtime/artifacts/build_activation-1/1-build.md`;
+		const mirroredSession = `${cwd}/workflow-output/omh-runtime/artifacts/build_activation-1/2-build.jsonl`;
 		const observability = await Bun.file(`${cwd}/workflow-output/omh-runtime/observability.json`).json();
 		expect(observability).toMatchObject({
 			version: 1,
@@ -223,19 +231,18 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 					type: "agent",
 					status: "completed",
 					summary: "agent produced a bounded patch",
-					artifacts: [
-						"agent-output://agent-build",
-						`${cwd}/.agent-output/build.md`,
-						`${cwd}/.omh/sessions/build.jsonl`,
-					],
+					artifacts: ["agent-output://agent-build", mirroredOutput, mirroredSession],
 				},
 			],
 		});
+		expect(await Bun.file(mirroredOutput).text()).toBe("build markdown transcript");
+		expect(await Bun.file(mirroredSession).text()).toBe('{"type":"session"}\n');
 		const progress = await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text();
 		expect(progress).toContain("## Completed Activations");
 		expect(progress).toContain("build");
 		expect(progress).toContain("agent-output://agent-build");
-		expect(progress).toContain(`${cwd}/.agent-output/build.md`);
+		expect(progress).toContain(mirroredOutput);
+		expect(progress).not.toContain(`${cwd}/.agent-output/build.md`);
 		expect(progress).not.toContain(`local://${cwd}/.agent-output/build.md`);
 	});
 
