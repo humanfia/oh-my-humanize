@@ -643,15 +643,24 @@ function stateValueAtPath(state, pointer) {
 
 function expectedReferencedArtifactsFromState(state, tupleId) {
 	const artifacts = new Set();
-	for (const pointer of ["/planHandoff", "/reviewHandoff"]) {
+	for (const source of [
+		{ pointer: "/planHandoff", plannedOnly: true },
+		{ pointer: "/reviewHandoff", plannedOnly: false },
+	]) {
+		const pointer = source.pointer;
 		for (const artifact of referencedWorkflowArtifacts(stateValueAtPath(state, pointer))) {
 			if (ignoredEvidenceArtifact(artifact)) continue;
 			if (isOptionalLaneArchiveArtifact(artifact)) continue;
+			if (source.plannedOnly && isOptionalPlannedArtifact(artifact)) continue;
 			if (tupleId && !artifact.includes(tupleId)) continue;
 			artifacts.add(artifact);
 		}
 	}
 	return [...artifacts].sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function isOptionalPlannedArtifact(file) {
+	return /(^|\/)reviewer-notes-[^/]*\.(?:json|md|txt)$/iu.test(file);
 }
 
 function isOptionalLaneArchiveArtifact(file) {
@@ -721,7 +730,7 @@ function materializedArtifactAliases(artifact) {
 		const suffix = match[2];
 		aliases.push(`workflow-output/${kind}-materialized-${suffix}`);
 	}
-	const laneMatch = /^workflow-output\/(implementCore|implementTests|implementDocs)-(.+\.json)$/u.exec(artifact);
+	const laneMatch = /^workflow-output\/(?:lane-)?(implementCore|implementTests|implementDocs)-(.+\.json)$/u.exec(artifact);
 	if (laneMatch) {
 		const lane = laneMatch[1];
 		const suffix = laneMatch[2];

@@ -632,10 +632,11 @@ describe("example workflow scripts", () => {
 					status: "continue",
 				},
 				planHandoff: [
-					`legacy core evidence workflow-output/implementCore-${tupleId}.json`,
+					`legacy core evidence workflow-output/lane-implementCore-${tupleId}.json`,
 					`canonical tests evidence workflow-output/tests-lane-${tupleId}.json`,
 					`legacy docs evidence workflow-output/implementDocs-${tupleId}.json`,
 					`legacy join evidence workflow-output/lane-archive-laneHardStopGuard-${tupleId}.md`,
+					`optional reviewer notes workflow-output/reviewer-notes-${tupleId}.md`,
 				].join("\n"),
 				reviewHandoff: {
 					artifacts: [
