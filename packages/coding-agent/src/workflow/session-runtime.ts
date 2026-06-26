@@ -650,8 +650,8 @@ function reviewOutputFromTaskResult(
 function taskResultArtifactReferences(result: WorkflowAgentTaskResult): string[] {
 	const artifacts: string[] = [];
 	if (result.agentId !== undefined) artifacts.push(`agent-output://${result.agentId}`);
-	if (result.outputPath !== undefined) artifacts.push(`local://${result.outputPath}`);
-	if (result.sessionFile !== undefined) artifacts.push(`local://${result.sessionFile}`);
+	if (result.outputPath !== undefined) artifacts.push(result.outputPath);
+	if (result.sessionFile !== undefined) artifacts.push(result.sessionFile);
 	return artifacts;
 }
 

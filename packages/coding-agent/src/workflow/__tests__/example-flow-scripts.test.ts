@@ -1396,6 +1396,42 @@ describe("example workflow scripts", () => {
 		expect(gate).toContain("ArgAliases");
 	});
 
+	it("marks undeclared release security checks as skipped instead of passed", async () => {
+		using tempDir = TempDir.createSync("@omh-release-security-skipped-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = ["Objective:", "Harden release checks.", "", "Validation Command:", "printf 'ok\\n'"].join("\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runReleaseChecks",
+			scriptFileName: "run-release-checks.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/checks"],
+			initialState: {
+				task: {
+					taskText,
+					validationCommand: "printf 'ok\\n'",
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "runReleaseChecks")?.output,
+		).toMatchObject({
+			summary: "ran release checks; validation=pass security=skipped",
+		});
+		expect(result.scheduler.state.checks).toMatchObject({
+			status: "pass",
+			securityStatus: "skipped",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/release-checks.md`).text()).toContain(
+			"Security command: not declared",
+		);
+	});
+
 	it("allows release archive when audit blockers have explicit waiver evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-release-gate-waived-");
 		const cwd = tempDir.path();

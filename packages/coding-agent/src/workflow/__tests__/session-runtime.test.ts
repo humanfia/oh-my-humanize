@@ -225,8 +225,8 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 					summary: "agent produced a bounded patch",
 					artifacts: [
 						"agent-output://agent-build",
-						`local://${cwd}/.agent-output/build.md`,
-						`local://${cwd}/.omh/sessions/build.jsonl`,
+						`${cwd}/.agent-output/build.md`,
+						`${cwd}/.omh/sessions/build.jsonl`,
 					],
 				},
 			],
@@ -235,6 +235,8 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 		expect(progress).toContain("## Completed Activations");
 		expect(progress).toContain("build");
 		expect(progress).toContain("agent-output://agent-build");
+		expect(progress).toContain(`${cwd}/.agent-output/build.md`);
+		expect(progress).not.toContain(`local://${cwd}/.agent-output/build.md`);
 	});
 
 	it("keeps workflow progress tables compact while preserving full observability summaries", async () => {

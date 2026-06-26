@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { assertWorkflowStateWriteMatchesSchema, type WorkflowStateSchema } from "./state-schema";
 
 export const DEFAULT_WORKFLOW_MAX_INLINE_VALUE_BYTES = 32 * 1024;
@@ -187,6 +188,7 @@ function maxSummaryBytes(policy: WorkflowStateAccessPolicy): number {
 }
 
 function assertArtifactReference(reference: string): void {
+	if (path.isAbsolute(reference)) return;
 	if (
 		reference.startsWith("artifact://") ||
 		reference.startsWith("agent-output://") ||

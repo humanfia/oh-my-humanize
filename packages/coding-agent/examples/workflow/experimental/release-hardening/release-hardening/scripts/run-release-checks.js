@@ -7,16 +7,17 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 await assertTaskContractUnchanged(task);
 
 const validation = await runShell(validationCommand);
-const security =
-	typeof securityCommand === "string" && securityCommand.trim() !== "" ? await runShell(securityCommand) : undefined;
+const hasSecurityCommand = typeof securityCommand === "string" && securityCommand.trim() !== "";
+const security = hasSecurityCommand ? await runShell(securityCommand) : undefined;
 const outputPath = "workflow-output/release-checks.md";
 await Bun.write(outputPath, evidenceMarkdown(validationCommand, validation, securityCommand, security));
 
 const validationPass = validation.exitCode === 0;
-const securityPass = security === undefined || security.exitCode === 0;
+const securityStatus = security === undefined ? "skipped" : security.exitCode === 0 ? "pass" : "fail";
+const securityPass = securityStatus !== "fail";
 
 return {
-	summary: `ran release checks; validation=${validationPass ? "pass" : "fail"} security=${securityPass ? "pass" : "fail"}`,
+	summary: `ran release checks; validation=${validationPass ? "pass" : "fail"} security=${securityStatus}`,
 	data: { validation, security },
 	statePatch: [
 		{
@@ -27,6 +28,7 @@ return {
 				validationExitCode: validation.exitCode,
 				securityCommand,
 				securityExitCode: security?.exitCode,
+				securityStatus,
 				status: validationPass && securityPass ? "pass" : "fail",
 				outputPath,
 			},
@@ -97,6 +99,8 @@ function evidenceMarkdown(validationCommand, validation, securityCommand, securi
 			"```",
 			"",
 		);
+	} else {
+		lines.push("## Security Command", "", "Security command: not declared", "");
 	}
 	return lines.join("\n");
 }

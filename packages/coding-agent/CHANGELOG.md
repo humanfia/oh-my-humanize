@@ -19,6 +19,11 @@
 
 ### Fixed
 
+- Fixed workflow agent artifact references so project-local observability points
+  to readable filesystem paths instead of misusing `local://` for absolute
+  session files.
+- Fixed the experimental release-hardening workflow so missing optional security
+  commands are reported as skipped instead of passed.
 - Fixed the experimental documentation-audit workflow so final archives carry
   rollback notes from canonical patch evidence and fail closed when changed
   files lack rollback evidence, including patch-scoped rollback note lines while
