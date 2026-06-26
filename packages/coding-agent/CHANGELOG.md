@@ -85,6 +85,10 @@
 - Fixed the experimental bug-triage workflow so no-code archives fail closed
   when cause evidence proposes a defect or fix boundary without explicit cause
   reconciliation.
+- Fixed workflow runtime observability so completed activations write
+  project-local `workflow-output/omh-runtime/observability.json` and
+  `workflow-output/omh-runtime/progress.md` indexes with node summaries and
+  transcript artifact references.
 - Fixed experimental workflow contract guards so parallel implementation/review
   preserves validation command shell-prefix environment assignments, and
   performance optimization search fails closed when tracked or untracked lane

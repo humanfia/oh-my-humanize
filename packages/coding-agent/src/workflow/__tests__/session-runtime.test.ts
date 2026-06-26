@@ -190,6 +190,53 @@ describe("createSessionWorkflowRuntimeHost review nodes", () => {
 		expect(calls).toBe(1);
 	});
 
+	it("writes a project-local workflow observability index for completed agent nodes", async () => {
+		using tempDir = TempDir.createSync("@omh-workflow-observability-");
+		const cwd = tempDir.path();
+		const host = createSessionWorkflowRuntimeHost({
+			cwd,
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: JSON.stringify({ summary: "agent produced a bounded patch" }),
+				agentId: "agent-build",
+				outputPath: `${cwd}/.agent-output/build.md`,
+				sessionFile: `${cwd}/.omh/sessions/build.jsonl`,
+			}),
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "build", type: "agent", prompt: "Build the thing." };
+		await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "builder",
+			prompt: node.prompt,
+		});
+
+		const observability = await Bun.file(`${cwd}/workflow-output/omh-runtime/observability.json`).json();
+		expect(observability).toMatchObject({
+			version: 1,
+			activations: [
+				{
+					activationId: "build:activation-1",
+					nodeId: "build",
+					type: "agent",
+					status: "completed",
+					summary: "agent produced a bounded patch",
+					artifacts: [
+						"agent-output://agent-build",
+						`local://${cwd}/.agent-output/build.md`,
+						`local://${cwd}/.omh/sessions/build.jsonl`,
+					],
+				},
+			],
+		});
+		const progress = await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text();
+		expect(progress).toContain("## Completed Activations");
+		expect(progress).toContain("build");
+		expect(progress).toContain("agent-output://agent-build");
+	});
+
 	it("preserves the human node prompt in activation output for closeout audit", async () => {
 		const requests: WorkflowHumanInputRequest[] = [];
 		const host = createSessionWorkflowRuntimeHost({
