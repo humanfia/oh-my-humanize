@@ -2714,6 +2714,72 @@ describe("example workflow scripts", () => {
 		expect(archive).not.toContain("No rollback notes were present");
 	});
 
+	it("archives accepted refactor migrations with runtime activation rollback evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-migration-runtime-artifact-rollback-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Archive a migration whose agent evidence was materialized by workflow observability.",
+				"",
+				"Validation Command:",
+				"echo validate",
+			].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "material migration\n");
+		await Bun.write(
+			`${cwd}/workflow-output/refactor-migration-validation.md`,
+			["# Validation", "", "Exit code: 0"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/omh-runtime/artifacts/activation-5/1-migrateCallers.md`,
+			[
+				"# Migration",
+				"",
+				"Rollback notes: revert the extracted helper and restore the previous direct caller branches.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/omh-runtime/artifacts/activation-7/1-cleanupDeadPath.md`,
+			["# Cleanup", "", "Rollback remains the migration rollback; no cleanup-only code was changed."].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveMigration",
+			scriptFileName: "archive-migration.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				validation: {
+					status: "pass",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			status: "accepted",
+			validation: "pass",
+			rollbackEvidenceFiles: [
+				"workflow-output/omh-runtime/artifacts/activation-5/1-migrateCallers.md",
+				"workflow-output/omh-runtime/artifacts/activation-7/1-cleanupDeadPath.md",
+			],
+		});
+		const archive = await Bun.file(`${cwd}/workflow-output/refactor-migration-archive.md`).text();
+		expect(archive).toContain("workflow-output/omh-runtime/artifacts/activation-5/1-migrateCallers.md");
+		expect(archive).toContain("revert the extracted helper");
+	});
+
 	it("blocks accepted refactor migrations without rollback evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-refactor-migration-missing-rollback-");
 		const cwd = tempDir.path();

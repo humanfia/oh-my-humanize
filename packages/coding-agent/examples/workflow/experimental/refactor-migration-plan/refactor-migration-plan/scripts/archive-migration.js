@@ -8,12 +8,16 @@ if (validation.status !== "pass") {
 const archivePath = "workflow-output/refactor-migration-archive.md";
 const taskText = await readOptionalText("task.md");
 const validationText = await readOptionalText("workflow-output/refactor-migration-validation.md");
-const rollbackText = await rollbackEvidenceText();
+const rollbackEvidenceEntries = await rollbackEvidenceSources();
+const rollbackText = rollbackEvidenceText(rollbackEvidenceEntries);
 const materialProjectDiff = await projectMaterialDiff();
 const outcome = materialProjectDiff.status === "empty" ? "rejected" : "accepted";
-const rollbackEvidenceFiles = await rollbackEvidenceFilePaths();
+const rollbackEvidenceFiles = rollbackEvidenceEntries
+	.filter(entry => entry.kind === "file")
+	.map(entry => entry.source);
+const rollbackEvidenceSourceLabels = rollbackEvidenceEntries.map(entry => entry.source);
 
-if (outcome === "accepted" && rollbackEvidenceFiles.length === 0) {
+if (outcome === "accepted" && rollbackEvidenceEntries.length === 0) {
 	throw new Error("cannot archive accepted refactor migration without rollback evidence");
 }
 
@@ -55,6 +59,7 @@ return {
 				validation: "pass",
 				materialProjectDiff,
 				rollbackEvidenceFiles,
+				rollbackEvidenceSources: rollbackEvidenceSourceLabels,
 			},
 		},
 	],
@@ -68,17 +73,16 @@ async function readOptionalText(filePath) {
 	}
 }
 
-async function rollbackEvidenceText() {
+function rollbackEvidenceText(entries) {
 	const sections = [];
-	for (const filePath of await rollbackEvidenceFilePaths()) {
-		const text = await readOptionalText(filePath);
-		if (!text.trim()) continue;
-		sections.push(["### ", filePath, "\n\n", boundedLines(text, 120)].join(""));
+	for (const entry of entries) {
+		sections.push(["### ", entry.source, "\n\n", boundedLines(entry.text, 120)].join(""));
 	}
 	return sections.join("\n\n");
 }
 
-async function rollbackEvidenceFilePaths() {
+async function rollbackEvidenceSources() {
+	const entries = [];
 	const paths = [
 		"workflow-output/refactor-migration-rollback.md",
 		"workflow-output/compatibility-design.md",
@@ -91,13 +95,60 @@ async function rollbackEvidenceFilePaths() {
 		"workflow-output/cleanupDeadPath.json",
 		"workflow-output/refactor-migration-cleanup.md",
 	];
-	const present = [];
 	for (const filePath of paths) {
 		const text = await readOptionalText(filePath);
 		if (!hasRollbackEvidence(text)) continue;
-		present.push(filePath);
+		entries.push({ kind: "file", source: filePath, text });
 	}
-	return present;
+	for (const filePath of await runtimeArtifactEvidencePaths()) {
+		if (paths.includes(filePath)) continue;
+		const text = await readOptionalText(filePath);
+		if (!hasRollbackEvidence(text)) continue;
+		entries.push({ kind: "file", source: filePath, text });
+	}
+	for (const entry of stateRollbackEvidenceSources()) {
+		if (!hasRollbackEvidence(entry.text)) continue;
+		entries.push(entry);
+	}
+	return dedupeEvidenceEntries(entries);
+}
+
+async function runtimeArtifactEvidencePaths() {
+	const matches = [];
+	const glob = new Bun.Glob("workflow-output/omh-runtime/artifacts/**/*");
+	for await (const match of glob.scan({ cwd: process.cwd(), dot: true, onlyFiles: true })) {
+		if (!/\.(?:md|json)$/iu.test(match)) continue;
+		matches.push(match);
+	}
+	return matches.sort();
+}
+
+function stateRollbackEvidenceSources() {
+	const sources = [];
+	for (const key of ["compatibility", "migration", "cleanup", "review"]) {
+		const value = state[key];
+		const text = evidenceTextFromStateValue(value);
+		if (!text.trim()) continue;
+		sources.push({ kind: "state", source: `state:/${key}`, text });
+	}
+	return sources;
+}
+
+function evidenceTextFromStateValue(value) {
+	if (typeof value === "string") return value;
+	if (value === null || typeof value !== "object") return "";
+	return JSON.stringify(value, null, 2);
+}
+
+function dedupeEvidenceEntries(entries) {
+	const seen = new Set();
+	const deduped = [];
+	for (const entry of entries) {
+		if (seen.has(entry.source)) continue;
+		seen.add(entry.source);
+		deduped.push(entry);
+	}
+	return deduped;
 }
 
 function hasRollbackEvidence(text) {

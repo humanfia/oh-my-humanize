@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration workflow so accepted archives
+  recognize rollback evidence materialized under workflow runtime activation
+  artifacts, not only legacy workflow-output filenames.
 - Fixed the experimental performance-optimization-search workflow so terminal
   no-win repair artifacts flow through selection guard, finalization, and
   archive nodes after an isolation-blocked join.
