@@ -111,94 +111,94 @@ sequence:
               state: /task
       writes:
         - /inventory
+  - parallel:
+      - node:
+          id: auditApiDocs
+          type: agent
+          agent: task
+          workspaceAccess: read
+          model:
+            role: writer
+          reads:
+            - /task
+            - /inventory
+            - /review
+          prompt:
+            template:
+              file: prompts/audit-api.md
+              bindings:
+                task:
+                  state: /task
+                inventory:
+                  state: /inventory
+                review:
+                  state: /review
+          writes:
+            - /apiDocsAudit
+      - node:
+          id: auditTutorials
+          type: agent
+          agent: task
+          workspaceAccess: read
+          model:
+            role: writer
+          reads:
+            - /task
+            - /inventory
+            - /review
+          prompt:
+            template:
+              file: prompts/audit-tutorials.md
+              bindings:
+                task:
+                  state: /task
+                inventory:
+                  state: /inventory
+                review:
+                  state: /review
+          writes:
+            - /tutorialAudit
+      - node:
+          id: auditExamples
+          type: agent
+          agent: task
+          workspaceAccess: read
+          model:
+            role: writer
+          reads:
+            - /task
+            - /inventory
+            - /review
+          prompt:
+            template:
+              file: prompts/audit-examples.md
+              bindings:
+                task:
+                  state: /task
+                inventory:
+                  state: /inventory
+                review:
+                  state: /review
+          writes:
+            - /examplesAudit
+    join:
+      id: compactAuditFindings
+      type: script
+      script:
+        language: js
+        file: scripts/compact-audit-findings.js
+      reads:
+        - /task
+        - /inventory
+        - /apiDocsAudit
+        - /tutorialAudit
+        - /examplesAudit
+      writes:
+        - /auditDigest
   - template:
       kind: retry_until
       body:
         sequence:
-          - parallel:
-              - node:
-                  id: auditApiDocs
-                  type: agent
-                  agent: task
-                  workspaceAccess: read
-                  model:
-                    role: writer
-                  reads:
-                    - /task
-                    - /inventory
-                    - /review
-                  prompt:
-                    template:
-                      file: prompts/audit-api.md
-                      bindings:
-                        task:
-                          state: /task
-                        inventory:
-                          state: /inventory
-                        review:
-                          state: /review
-                  writes:
-                    - /apiDocsAudit
-              - node:
-                  id: auditTutorials
-                  type: agent
-                  agent: task
-                  workspaceAccess: read
-                  model:
-                    role: writer
-                  reads:
-                    - /task
-                    - /inventory
-                    - /review
-                  prompt:
-                    template:
-                      file: prompts/audit-tutorials.md
-                      bindings:
-                        task:
-                          state: /task
-                        inventory:
-                          state: /inventory
-                        review:
-                          state: /review
-                  writes:
-                    - /tutorialAudit
-              - node:
-                  id: auditExamples
-                  type: agent
-                  agent: task
-                  workspaceAccess: read
-                  model:
-                    role: writer
-                  reads:
-                    - /task
-                    - /inventory
-                    - /review
-                  prompt:
-                    template:
-                      file: prompts/audit-examples.md
-                      bindings:
-                        task:
-                          state: /task
-                        inventory:
-                          state: /inventory
-                        review:
-                          state: /review
-                  writes:
-                    - /examplesAudit
-            join:
-              id: compactAuditFindings
-              type: script
-              script:
-                language: js
-                file: scripts/compact-audit-findings.js
-              reads:
-                - /task
-                - /inventory
-                - /apiDocsAudit
-                - /tutorialAudit
-                - /examplesAudit
-              writes:
-                - /auditDigest
           - node:
               id: consolidateAudit
               type: agent
@@ -209,6 +209,7 @@ sequence:
               reads:
                 - /task
                 - /auditDigest
+                - /review
               prompt:
                 template:
                   file: prompts/consolidate.md
@@ -217,6 +218,8 @@ sequence:
                       state: /task
                     auditDigest:
                       state: /auditDigest
+                    review:
+                      state: /review
               writes:
                 - /audit
           - node:

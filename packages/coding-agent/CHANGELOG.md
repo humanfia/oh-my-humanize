@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- Fixed the experimental documentation-audit workflow so review-driven retries
+  reuse the initial discovery digest and focus on repair/review instead of
+  re-running the full parallel audit fanout after every `continue` verdict.
 - Fixed the experimental research-reproduction workflow so multi-line task
   commands fail closed during precheck instead of being silently truncated.
 - Fixed the experimental refactor-migration workflow so reviewers cannot finish

@@ -851,6 +851,25 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("keeps documentation discovery fanout outside the repair retry loop", async () => {
+		const flow = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/documentation-audit/documentation-audit.omhflow`,
+		).text();
+
+		const retryLoop = flow.match(
+			/kind:\s*retry_until[\s\S]*?retryWhen:\s*outputs\.consistencyReview\.verdict == "continue"/u,
+		);
+		expect(retryLoop?.[0]).toContain("id: consolidateAudit");
+		expect(retryLoop?.[0]).toContain("id: patchDocs");
+		expect(retryLoop?.[0]).toContain("id: consistencyReview");
+		expect(retryLoop?.[0]).not.toContain("id: auditApiDocs");
+		expect(retryLoop?.[0]).not.toContain("id: auditTutorials");
+		expect(retryLoop?.[0]).not.toContain("id: auditExamples");
+		expect(flow).toMatch(
+			/id:\s*auditApiDocs[\s\S]*?id:\s*auditTutorials[\s\S]*?id:\s*auditExamples[\s\S]*?id:\s*compactAuditFindings[\s\S]*?kind:\s*retry_until/u,
+		);
+	});
+
 	it("keeps documentation patch evidence separate from terminal workflow artifacts", async () => {
 		const prompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/documentation-audit/documentation-audit/prompts/patch-docs.md`,
