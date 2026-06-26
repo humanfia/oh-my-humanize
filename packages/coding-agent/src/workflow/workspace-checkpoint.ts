@@ -11,6 +11,10 @@ export interface WorkflowCheckpointWorkspaceCaptureOptions {
 	ignoredDirtyPathPrefixes?: readonly string[];
 }
 
+export interface WorkflowCheckpointWorkspaceMatchOptions {
+	ignoredDirtyPathPrefixes?: readonly string[];
+}
+
 export async function captureWorkflowCheckpointWorkspace(
 	workspaceRoot: string | undefined,
 	options: WorkflowCheckpointWorkspaceCaptureOptions = {},
@@ -59,9 +63,15 @@ export async function captureWorkflowCheckpointWorkspace(
 export async function assertWorkflowCheckpointWorkspaceMatches(
 	checkpoint: WorkflowCheckpointSnapshot,
 	workspaceRoot: string | undefined,
+	options: WorkflowCheckpointWorkspaceMatchOptions = {},
 ): Promise<void> {
 	if (checkpoint.workspace === undefined) return;
-	const actual = await captureWorkflowCheckpointWorkspace(workspaceRoot);
+	const actual = await captureWorkflowCheckpointWorkspace(workspaceRoot, {
+		ignoredDirtyPathPrefixes: [
+			...workflowRuntimeScratchDirtyPathPrefixes(workspaceRoot),
+			...(options.ignoredDirtyPathPrefixes ?? []),
+		],
+	});
 	if (actual === undefined) {
 		throw new WorkflowLifecycleError(
 			`Workflow checkpoint ${checkpoint.id} saved workspace state, but restart has no workspace root to validate`,

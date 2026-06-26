@@ -1,14 +1,19 @@
 const state = workflowContext.state && typeof workflowContext.state === "object" ? workflowContext.state : {};
 const checks = state.checks && typeof state.checks === "object" ? state.checks : {};
+const releaseGate = state.releaseGate && typeof state.releaseGate === "object" ? state.releaseGate : {};
 
 if (checks.status !== "pass") {
 	throw new Error("cannot archive release hardening flow before declared checks pass");
+}
+if (releaseGate.status !== "pass") {
+	throw new Error("cannot archive release hardening flow before release gate passes");
 }
 
 const archivePath = "workflow-output/release-hardening-archive.md";
 const taskText = await readOptionalText("task.md");
 const checksText = await readOptionalText("workflow-output/release-checks.md");
 const rollbackText = await readOptionalText("workflow-output/release-rollback.md");
+const gateText = await readOptionalText("workflow-output/release-gate.md");
 
 await Bun.write(
 	archivePath,
@@ -26,6 +31,10 @@ await Bun.write(
 		"## Rollback",
 		"",
 		rollbackText.trim() ? boundedLines(rollbackText, 120) : "No rollback notes were present.",
+		"",
+		"## Release Gate",
+		"",
+		boundedLines(gateText, 120),
 		"",
 	].join("\n"),
 );

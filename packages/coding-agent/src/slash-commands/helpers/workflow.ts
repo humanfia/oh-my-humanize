@@ -921,6 +921,18 @@ function abortWorkflowActivation(controller: AbortController, reason: string): v
 	}
 }
 
+function workflowFreezeControlArtifactPaths(workspaceRoot: string, freeze: FlowFreeze): string[] {
+	const paths: string[] = [];
+	for (const candidate of [freeze.flowPath, freeze.resourceDir]) {
+		if (candidate.length === 0) continue;
+		const resolved = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(workspaceRoot, candidate);
+		const relative = path.relative(workspaceRoot, resolved);
+		if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+		paths.push(resolved);
+	}
+	return paths;
+}
+
 async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const parsed = parseWorkflowRestartArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
@@ -949,7 +961,9 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 		return usage(`Workflow checkpoint has no restartable frontier: ${parsed.checkpointId}`, runtime);
 	}
 	try {
-		await assertWorkflowCheckpointWorkspaceMatches(located.checkpoint, runtime.cwd);
+		await assertWorkflowCheckpointWorkspaceMatches(located.checkpoint, runtime.cwd, {
+			ignoredDirtyPathPrefixes: workflowFreezeControlArtifactPaths(runtime.cwd, freeze),
+		});
 	} catch (error) {
 		return usage(errorMessage(error), runtime);
 	}

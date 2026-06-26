@@ -1888,6 +1888,78 @@ describe("workflow graph view rendering", () => {
 		expect(view.actions).not.toContain("Restart: /workflow restart checkpoint-1 --background");
 	});
 
+	it("advertises the applied freeze when a stopped checkpoint is ready to restart", () => {
+		const freezeA = createFreeze({
+			name: "adaptive-before",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "build", type: "script" },
+				{ id: "weakReview", type: "review" },
+			],
+			edges: [{ from: "build", to: "weakReview" }],
+		});
+		const freezeB = createFreeze({
+			name: "adaptive-after",
+			version: 2,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{ id: "build", type: "script" },
+				{ id: "strongReview", type: "review" },
+			],
+			edges: [{ from: "build", to: "strongReview" }],
+		});
+		const family: WorkflowRunFamilySnapshot = {
+			id: "adaptive:family",
+			freezes: [freezeA, freezeB],
+			attempts: [
+				{
+					id: "attempt-source",
+					familyId: "adaptive:family",
+					freezeId: freezeA.id,
+					startNodeId: "build",
+					status: "stopped",
+					runtimeBindingSnapshot: createBinding(),
+					activations: [],
+				},
+			],
+			checkpoints: [
+				{
+					id: "checkpoint-1",
+					familyId: "adaptive:family",
+					attemptId: "attempt-source",
+					completedActivationIds: [],
+					abortedActivationIds: [],
+					frontierNodeIds: ["weakReview"],
+					state: {},
+					sourceMapping: { weakReview: "weakReview" },
+				},
+			],
+			changeRequests: [
+				{
+					id: "change-review",
+					familyId: "adaptive:family",
+					attemptId: "attempt-source",
+					checkpointId: "checkpoint-1",
+					status: "approved",
+					actor: "agent:reviewer",
+					origin: "internal-agent",
+					reason: "upgrade the restart review frontier",
+					operations: [{ op: "add_node", node: { id: "strongReview", type: "review" } }],
+					frontierMapping: { weakReview: "strongReview" },
+					approvedBy: "human:operator",
+					applications: [{ target: "freeze", actor: "human:operator", freezeId: freezeB.id }],
+				},
+			],
+		};
+
+		const view = buildWorkflowGraphView(family);
+
+		expect(view.actions).toContain(`Restart: /workflow restart checkpoint-1 --freeze-id ${freezeB.id} --background`);
+		expect(view.nodes.map(node => node.id)).toContain("strongReview");
+		expect(view.nodes.map(node => node.id)).not.toContain("weakReview");
+	});
+
 	it("does not advertise Agent Hub controls when running work has no live agent", () => {
 		const definition: WorkflowDefinition = {
 			name: "script-running",

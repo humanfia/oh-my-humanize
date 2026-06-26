@@ -24,6 +24,9 @@ Return `continue` when any of these are true:
 
 Return `finish` only when release readiness is coherent, frozen-task-scoped,
 validation passed, required optional checks passed, and rollback notes exist.
+Finish is still subject to the script-level release gate: any blocker-like
+changelog or compatibility audit finding must be repaired or explicitly waived
+with evidence in `workflow-output/release-audit.md`.
 
 Output contract:
 

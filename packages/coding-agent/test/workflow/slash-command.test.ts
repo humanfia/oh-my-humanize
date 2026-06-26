@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { $ } from "bun";
 import { Settings } from "../../src/config/settings";
 import { PluginManager } from "../../src/extensibility/plugins/manager";
 import { MarketplaceManager } from "../../src/extensibility/plugins/marketplace";
@@ -52,6 +53,7 @@ import {
 import type { WorkflowAgentTaskRunner } from "../../src/workflow/session-runtime";
 import { createSessionWorkflowRuntimeHost } from "../../src/workflow/session-runtime";
 import { createShellScriptRunner } from "../../src/workflow/shell-script-runtime";
+import { captureWorkflowCheckpointWorkspace } from "../../src/workflow/workspace-checkpoint";
 
 interface CapturedEntry {
 	type: "custom";
@@ -97,6 +99,15 @@ async function createTempDir(): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-workflow-slash-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+async function initializeSlashGitWorkspace(workspace: string): Promise<void> {
+	await $`git init`.cwd(workspace).quiet();
+	await Bun.write(path.join(workspace, "README.md"), "baseline\n");
+	await $`git add README.md`.cwd(workspace).quiet();
+	await $`git -c user.name=omh-test -c user.email=omh-test@example.invalid -c commit.gpgsign=false commit -m baseline`
+		.cwd(workspace)
+		.quiet();
 }
 
 async function waitForFileText(filePath: string, needle: string): Promise<string> {
@@ -4649,6 +4660,88 @@ edges: []
 			["attempt-1", "flowfreeze:a", "stopped"],
 			["attempt-2", "flowfreeze:b", "completed"],
 		]);
+	});
+
+	it("allows checkpoint restart after generated freeze control artifacts are written", async () => {
+		const workspace = await createTempDir();
+		await initializeSlashGitWorkspace(workspace);
+		await Bun.write(path.join(workspace, "src", "partial.ts"), "export const partial = true;\n");
+		const checkpointWorkspace = await captureWorkflowCheckpointWorkspace(workspace);
+
+		const entries: CapturedEntry[] = [];
+		const freezeA = createFreeze("flowfreeze:a", ["build", "weakReview"]);
+		const freezeB = createFreeze("flowfreeze:b", ["strongReview"]);
+		freezeB.flowPath = path.join(workspace, "workflow-output", "adaptive-review-upgrade.omhflow");
+		freezeB.resourceDir = path.join(workspace, "workflow-output", "adaptive-review-upgrade");
+		const host = createHostFromEntries(entries);
+		startWorkflowFamily(host, { familyId: "family-control-artifacts" });
+		recordWorkflowFreeze(host, freezeA, { familyId: "family-control-artifacts" });
+		startWorkflowAttempt(host, {
+			familyId: "family-control-artifacts",
+			attemptId: "attempt-1",
+			freezeId: freezeA.id,
+			startNodeId: "build",
+			runtimeBindingSnapshot: binding("binding-1"),
+		});
+		requestWorkflowAttemptStop(host, {
+			attemptId: "attempt-1",
+			deadlineMs: 5,
+			reason: "stop before adaptive flow refreeze",
+		});
+		createWorkflowCheckpoint(host, {
+			checkpointId: "checkpoint-control-artifacts",
+			familyId: "family-control-artifacts",
+			attemptId: "attempt-1",
+			completedActivationIds: [],
+			abortedActivationIds: [],
+			frontierNodeIds: ["weakReview"],
+			state: {},
+			sourceMapping: { weakReview: "weakReview" },
+			workspace: checkpointWorkspace,
+		});
+		proposeWorkflowChangeRequest(host, {
+			changeRequestId: "change-control-artifacts",
+			familyId: "family-control-artifacts",
+			checkpointId: "checkpoint-control-artifacts",
+			actor: "agent:reviewer",
+			origin: "internal-agent",
+			reason: "upgrade review after checkpoint",
+			operations: [{ op: "add_node", node: { id: "strongReview", type: "script" } }],
+			frontierMapping: { weakReview: "strongReview" },
+		});
+		approveWorkflowChangeRequest(host, {
+			changeRequestId: "change-control-artifacts",
+			actor: "human:operator",
+		});
+		recordWorkflowFreeze(host, freezeB, { familyId: "family-control-artifacts" });
+		recordWorkflowChangeRequestApplied(host, {
+			changeRequestId: "change-control-artifacts",
+			actor: "human:operator",
+			target: "freeze",
+			freezeId: freezeB.id,
+		});
+		await Bun.write(freezeB.flowPath, "generated adaptive draft\n");
+		await Bun.write(path.join(freezeB.resourceDir, "prompts", "review.md"), "review the resumed work\n");
+
+		const calls: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				calls.push(input.node.id);
+				return { summary: `ran ${input.node.id}` };
+			},
+		};
+		const { output, runtime } = createRuntime(entries, runtimeHost);
+		runtime.cwd = workspace;
+
+		expect(
+			await executeAcpBuiltinSlashCommand(
+				"/workflow restart checkpoint-control-artifacts --freeze-id flowfreeze:b",
+				runtime,
+			),
+		).toEqual({ consumed: true });
+
+		expect(calls).toEqual(["strongReview"]);
+		expect(output.join("\n")).not.toContain("Workflow checkpoint workspace state does not match current workspace");
 	});
 
 	it("does not use approved restart frontier mappings until they are applied to the selected freeze", async () => {

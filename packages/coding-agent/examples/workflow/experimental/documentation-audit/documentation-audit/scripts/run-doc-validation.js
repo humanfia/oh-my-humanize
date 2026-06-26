@@ -13,6 +13,10 @@ await Bun.write(outputPath, evidenceMarkdown(docsCommand, docs, validationComman
 
 const docsPass = docs === undefined || docs.exitCode === 0;
 const validationPass = validation.exitCode === 0;
+const startFailure = commandStartFailure(docs, "docs") ?? commandStartFailure(validation, "validation");
+if (startFailure !== undefined) {
+	throw new Error(`fail_closed_validation_unstartable: ${startFailure}`);
+}
 
 return {
 	summary: `documentation validation docs=${docsPass ? "pass" : "fail"} validation=${
@@ -65,8 +69,16 @@ function evidenceMarkdown(docsCommand, docs, validationCommand, validation) {
 			"",
 			`Exit code: ${docs.exitCode}`,
 			"",
+			"### Stdout",
+			"",
 			"```text",
-			docs.stdout || docs.stderr || "(empty)",
+			docs.stdout || "(empty)",
+			"```",
+			"",
+			"### Stderr",
+			"",
+			"```text",
+			docs.stderr || "(empty)",
 			"```",
 			"",
 		);
@@ -80,12 +92,32 @@ function evidenceMarkdown(docsCommand, docs, validationCommand, validation) {
 		"",
 		`Exit code: ${validation.exitCode}`,
 		"",
+		"### Stdout",
+		"",
 		"```text",
-		validation.stdout || validation.stderr || "(empty)",
+		validation.stdout || "(empty)",
+		"```",
+		"",
+		"### Stderr",
+		"",
+		"```text",
+		validation.stderr || "(empty)",
 		"```",
 		"",
 	);
 	return lines.join("\n");
+}
+
+function commandStartFailure(result, label) {
+	if (result === undefined) return undefined;
+	const stderr = result.stderr || "";
+	const stdout = result.stdout || "";
+	if (result.exitCode !== 126 && result.exitCode !== 127) return undefined;
+	const combined = `${stderr}\n${stdout}`.trim();
+	if (!/not found|command not found|No such file|cannot execute|permission denied/u.test(combined)) {
+		return undefined;
+	}
+	return `${label} command could not start (exit ${result.exitCode}): ${combined || "(no output)"}`;
 }
 
 function bounded(text) {

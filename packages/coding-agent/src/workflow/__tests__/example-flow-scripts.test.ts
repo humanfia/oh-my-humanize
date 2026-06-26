@@ -16,6 +16,7 @@ const TEST_GENERATION_HARDENING_DIR = `${import.meta.dir}/../../../examples/work
 const KDA_HUMANIZE_SUBFLOW_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/kda-humanize/kda-humanize/humanize-rlcr-subflow`;
 const AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/agent-build-review-loop/agent-build-review-loop/scripts`;
 const RESEARCH_REPRODUCTION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction/scripts`;
+const RELEASE_HARDENING_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/release-hardening/release-hardening/scripts`;
 
 describe("example workflow scripts", () => {
 	it("keeps research reproduction agent prompts read-only around command evidence", async () => {
@@ -422,6 +423,145 @@ describe("example workflow scripts", () => {
 			`${import.meta.dir}/../../../examples/workflow/experimental/documentation-audit/documentation-audit.omhflow`,
 		).text();
 		expect(flow).toMatch(/id:\s*precheckTaskContract[\s\S]*?writes:[\s\S]*?- \/patch/u);
+	});
+
+	it("fails documentation audit closed when validation cannot start", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-audit-validation-start-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runDocsValidation",
+			scriptFileName: "run-doc-validation.js",
+			scriptDir: DOCUMENTATION_AUDIT_SCRIPT_DIR,
+			writes: ["/validation"],
+			initialState: {
+				task: {
+					validationCommand: "omh-definitely-missing-doc-validator",
+				},
+				patch: {
+					status: "patched",
+					changed_files: ["examples/error/index.js"],
+				},
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "runDocsValidation")?.status).toBe(
+			"failed",
+		);
+		const evidence = await Bun.file(`${cwd}/workflow-output/documentation-validation.md`).text();
+		expect(evidence).toContain("Exit code: 127");
+		expect(evidence).toContain("omh-definitely-missing-doc-validator");
+		expect(evidence).toMatch(/not found|command not found/u);
+	});
+
+	it("blocks release archive when audit blockers lack repair or waiver evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-release-gate-blockers-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/release-audit.md`,
+			[
+				"# Release-Facing Audit Evidence",
+				"",
+				"## Compatibility-sensitive completion behavior audit",
+				"",
+				"Finding: release-facing docs and tests were inspected.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/release-rollback.md`,
+			["# Release Rollback Notes", "", "- Delete workflow-output artifacts if this attempt is abandoned."].join(
+				"\n",
+			),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "enforceReleaseGate",
+			scriptFileName: "enforce-release-gate.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/releaseGate"],
+			initialState: {
+				changelog: {
+					findings: ["site/content/completions/zsh.md is stale and should block release until documented"],
+				},
+				compatibility: {
+					risks: ["ArgAliases with OnlyValidArgs has a compatibility gap that needs repair or waiver"],
+				},
+				checks: {
+					status: "pass",
+					validationExitCode: 0,
+					outputPath: "workflow-output/release-checks.md",
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "enforceReleaseGate")?.status).toBe(
+			"failed",
+		);
+		const gate = await Bun.file(`${cwd}/workflow-output/release-gate.md`).text();
+		expect(gate).toContain("unresolved audit blocker");
+		expect(gate).toContain("zsh.md is stale");
+		expect(gate).toContain("ArgAliases");
+	});
+
+	it("allows release archive when audit blockers have explicit waiver evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-release-gate-waived-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/release-audit.md`,
+			[
+				"# Release-Facing Audit Evidence",
+				"",
+				"## Waivers",
+				"",
+				"- Waived `site/content/completions/zsh.md` stale wording: implementation and shell-specific docs agree after inspection.",
+				"- Waived `ArgAliases` compatibility gap: existing tests cover the release surface and no code/doc change is required.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/release-rollback.md`,
+			["# Release Rollback Notes", "", "- Delete workflow-output artifacts if this attempt is abandoned."].join(
+				"\n",
+			),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "enforceReleaseGate",
+			scriptFileName: "enforce-release-gate.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/releaseGate"],
+			initialState: {
+				changelog: {
+					findings: ["site/content/completions/zsh.md is stale and should block release until documented"],
+				},
+				compatibility: {
+					risks: ["ArgAliases with OnlyValidArgs has a compatibility gap that needs repair or waiver"],
+				},
+				checks: {
+					status: "pass",
+					validationExitCode: 0,
+					outputPath: "workflow-output/release-checks.md",
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.releaseGate).toMatchObject({
+			status: "pass",
+			unresolvedBlockers: [],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/release-gate.md`).text()).toContain("status: pass");
 	});
 
 	it("fails performance optimization closed when the baseline command is not reproducible", async () => {

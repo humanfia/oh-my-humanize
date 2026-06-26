@@ -236,11 +236,16 @@ export function buildWorkflowGraphView(
 ): WorkflowGraphView {
 	const latestFreeze = family.freezes.at(-1);
 	const currentAttempt = family.attempts.at(-1);
+	const currentCheckpoint = currentAttempt ? findWorkflowCheckpointForAttempt(family, currentAttempt) : undefined;
+	const checkpointRestartFreeze =
+		currentAttempt?.status === "running" || currentCheckpoint === undefined
+			? undefined
+			: workflowRestartFreezeForCheckpoint(family, currentCheckpoint);
 	const currentFreeze =
+		checkpointRestartFreeze ??
 		(currentAttempt ? family.freezes.find(freeze => freeze.id === currentAttempt.freezeId) : undefined) ??
 		latestFreeze;
-	const currentCheckpoint = currentAttempt ? findWorkflowCheckpointForAttempt(family, currentAttempt) : undefined;
-	const nodeStatuses = buildWorkflowGraphNodeStatuses(family, currentAttempt, currentCheckpoint);
+	const nodeStatuses = buildWorkflowGraphNodeStatuses(family, currentAttempt, currentCheckpoint, currentFreeze);
 	const nodeActivationCounts =
 		currentAttempt === undefined ? undefined : buildWorkflowGraphNodeActivationCounts(currentAttempt);
 	const nodeActivations =
@@ -1597,6 +1602,7 @@ function buildWorkflowGraphNodeStatuses(
 	family: WorkflowRunFamilySnapshot,
 	currentAttempt: WorkflowRunAttemptSnapshot | undefined,
 	currentCheckpoint: WorkflowCheckpointSnapshot | undefined,
+	currentFreeze: WorkflowRunFamilySnapshot["freezes"][number] | undefined,
 ): Map<string, WorkflowGraphNodeStatusRecord> {
 	const statuses = new Map<string, WorkflowGraphNodeStatusRecord>();
 	const checkpointedActivationIds = new Set(currentCheckpoint?.completedActivationIds ?? []);
@@ -1614,12 +1620,7 @@ function buildWorkflowGraphNodeStatuses(
 			});
 		}
 		for (const frontierNodeId of currentCheckpoint.frontierNodeIds) {
-			const nodeId = mapWorkflowCheckpointFrontierNode(
-				family,
-				currentCheckpoint,
-				frontierNodeId,
-				currentWorkflowFreeze(family),
-			);
+			const nodeId = mapWorkflowCheckpointFrontierNode(family, currentCheckpoint, frontierNodeId, currentFreeze);
 			if (!statuses.has(nodeId)) statuses.set(nodeId, { status: "frontier" });
 		}
 	}
@@ -1758,14 +1759,28 @@ function mapWorkflowCheckpointFrontierNode(
 	return checkpoint.sourceMapping[frontierNodeId] ?? frontierNodeId;
 }
 
-function currentWorkflowFreeze(
+function workflowRestartFreezeForCheckpoint(
 	family: WorkflowRunFamilySnapshot,
+	checkpoint: WorkflowCheckpointSnapshot,
 ): WorkflowRunFamilySnapshot["freezes"][number] | undefined {
-	const currentAttempt = family.attempts.at(-1);
-	return (
-		(currentAttempt ? family.freezes.find(freeze => freeze.id === currentAttempt.freezeId) : undefined) ??
-		family.freezes.at(-1)
-	);
+	const appliedFreezeIds = new Set<string>();
+	for (const request of family.changeRequests) {
+		if (request.status !== "approved") continue;
+		if (request.checkpointId !== undefined && request.checkpointId !== checkpoint.id) continue;
+		if (request.attemptId !== undefined && request.attemptId !== checkpoint.attemptId) continue;
+		for (const application of request.applications) {
+			if (application.target === "freeze" && application.freezeId !== undefined) {
+				appliedFreezeIds.add(application.freezeId);
+			}
+		}
+	}
+	const appliedFreeze = family.freezes
+		.slice()
+		.reverse()
+		.find(freeze => appliedFreezeIds.has(freeze.id));
+	if (appliedFreeze !== undefined) return appliedFreeze;
+	const checkpointAttempt = family.attempts.find(attempt => attempt.id === checkpoint.attemptId);
+	return family.freezes.find(freeze => freeze.id === checkpointAttempt?.freezeId);
 }
 
 function migrationFrontierMappings(
@@ -2507,7 +2522,11 @@ function formatWorkflowGraphActions(
 		const runningResume = findRunningWorkflowCheckpointResumeAttempt(family, currentCheckpoint.id);
 		if (runningResume !== undefined)
 			actions.push(`Resume in progress: ${runningResume.id} from ${currentCheckpoint.id}`);
-		else actions.push(`Restart: /workflow restart ${currentCheckpoint.id} --background`);
+		else {
+			const restartFreeze = workflowRestartFreezeForCheckpoint(family, currentCheckpoint) ?? latestFreeze;
+			const freezeArg = restartFreeze === undefined ? "" : ` --freeze-id ${restartFreeze.id}`;
+			actions.push(`Restart: /workflow restart ${currentCheckpoint.id}${freezeArg} --background`);
+		}
 	}
 	return actions;
 }

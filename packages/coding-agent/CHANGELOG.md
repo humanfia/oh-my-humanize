@@ -19,6 +19,18 @@
 
 ### Fixed
 
+- Fixed workflow checkpoint restarts so selected `.omhflow` freeze artifacts and
+  same-name resource directories generated after a checkpoint do not invalidate
+  the saved workspace snapshot, while ordinary workspace drift still fails
+  closed.
+- Fixed workflow manager restart controls so stopped checkpoints with an applied
+  freeze show the explicit `--freeze-id` restart command and render the target
+  restart graph instead of the stale stopped-attempt graph.
+- Fixed the experimental documentation-audit workflow so validation commands
+  that cannot start fail closed instead of looping with incomplete stderr
+  evidence.
+- Fixed the experimental release-hardening workflow so archive creation requires
+  an explicit repair or evidence-backed waiver for material audit blockers.
 - Fixed experimental workflow contract guards so parallel implementation/review
   preserves validation command shell-prefix environment assignments, and
   performance optimization search fails closed when tracked or untracked lane
