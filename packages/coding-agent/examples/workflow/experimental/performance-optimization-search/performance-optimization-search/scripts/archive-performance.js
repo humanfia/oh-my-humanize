@@ -6,7 +6,7 @@ const selection = state.selection && typeof state.selection === "object" ? state
 if (!benchmarkCommandPassed(benchmark)) {
 	throw new Error("cannot archive performance search before the benchmark command passes");
 }
-if (!["pass", "blocked"].includes(String(selection.status))) {
+if (!["pass", "blocked", "rejected"].includes(String(selection.status))) {
 	throw new Error("cannot archive performance search before finalizePerformanceSelection passes");
 }
 
@@ -23,9 +23,9 @@ const finalSelectionText = [algorithmicText, cachingText, ioText].join("\n");
 const hasRollbackEvidence = /\brollback\b/iu.test(finalSelectionText);
 const hasFinalSelection = /\bfinal-selection\s*:\s*yes\b/iu.test(finalSelectionText);
 const hasNoWinEvidence = /\bno-win-result\s*:\s*yes\b/iu.test(finalSelectionText);
-if (!["positive", "no-win", "no-win-validation-blocked"].includes(String(selection.terminalState))) {
+if (!["positive", "no-win", "no-win-validation-blocked", "rejected-no-win-not-authorized"].includes(String(selection.terminalState))) {
 	throw new Error(
-		"cannot archive performance search before selection terminalState is positive, no-win, or no-win-validation-blocked",
+		"cannot archive performance search before selection terminalState is positive, no-win, no-win-validation-blocked, or rejected-no-win-not-authorized",
 	);
 }
 if (!hasRollbackEvidence) {
@@ -68,6 +68,7 @@ await Bun.write(
 		"",
 		`- terminalState: ${selection.terminalState}`,
 		`- validation: ${selection.terminalState === "no-win-validation-blocked" ? "blocked" : "pass"}`,
+		`- outcome: ${selection.status === "rejected" ? "rejected" : "accepted"}`,
 		`- selectedBranches: ${Array.isArray(selection.selectedBranches) ? selection.selectedBranches.join(", ") || "none" : "unknown"}`,
 		`- noWinBranches: ${Array.isArray(selection.noWinBranches) ? selection.noWinBranches.join(", ") || "none" : "unknown"}`,
 		"",
@@ -98,6 +99,7 @@ return {
 			path: "/archive",
 			value: {
 				file: outputPath,
+				status: selection.status === "rejected" ? "rejected" : "accepted",
 				benchmark: "pass",
 				validation: selection.terminalState === "no-win-validation-blocked" ? "blocked" : "pass",
 				projectChangedFiles,

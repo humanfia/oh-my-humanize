@@ -21,6 +21,12 @@
 
 - Fixed the experimental research-reproduction workflow so multi-line task
   commands fail closed during precheck instead of being silently truncated.
+- Fixed the experimental refactor-migration workflow so reviewers cannot finish
+  based on agent-written validation claims while structured validation state is
+  still failing.
+- Fixed the experimental performance-optimization-search workflow so measured
+  no-win results without explicit no-win authorization archive as rejected
+  terminal outcomes instead of triggering another broad optimization loop.
 - Fixed workflow agent artifact references so project-local observability points
   to readable workspace-local mirrors instead of long encoded session paths or
   misused `local://` absolute session files.

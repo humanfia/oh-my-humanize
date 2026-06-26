@@ -1765,6 +1765,11 @@ describe("example workflow scripts", () => {
 		expect(repairPrompt).toContain("workflow-output/performance-final-archive.md");
 		expect(hypothesesPrompt).toContain("selection/rollback repair");
 		expect(optimizationPrompt).toContain("selection/rollback repair");
+		expect(
+			await Bun.file(
+				`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/perf-review.md`,
+			).text(),
+		).toContain("archive a rejected no-win result");
 	});
 
 	it("keeps performance parallel lanes lane-local until selection applies a candidate", async () => {
@@ -2025,6 +2030,93 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("archives performance no-win evidence as rejected when the task lacks no-win authorization", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-no-win-rejected-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance no-win rejected canary",
+			"",
+			"Benchmark Command:",
+			"cargo test --no-run",
+			"",
+			"Validation Command:",
+			"cargo test",
+		].join("\n");
+
+		await Bun.write(`${cwd}/README.md`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "README.md", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			["# Algorithmic", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching",
+				"",
+				"final-selection: no",
+				"no-win-result: yes",
+				"rollback evidence: no project changes remain after losing candidates",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# IO", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/performance-benchmark.md`, "# Benchmark\n\nExit code: 0\n");
+
+		const finalize = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+					outputPath: "workflow-output/performance-benchmark.md",
+				},
+			},
+		});
+
+		expect(finalize.scheduler.state.selection).toMatchObject({
+			status: "rejected",
+			terminalState: "rejected-no-win-not-authorized",
+			noWinBranches: ["caching"],
+		});
+
+		const archive = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archivePerformance",
+			scriptFileName: "archive-performance.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: finalize.scheduler.state,
+		});
+
+		expect(archive.scheduler.state.archive).toMatchObject({
+			status: "rejected",
+			noWin: true,
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-archive.md`).text()).toContain(
+			"terminalState: rejected-no-win-not-authorized",
+		);
+	});
+
 	it("blocks performance repair nodes from writing terminal archive artifacts", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-repair-terminal-artifact-");
 		const cwd = tempDir.path();
@@ -2266,6 +2358,22 @@ describe("example workflow scripts", () => {
 			status: "pass",
 			reportPath: "workflow-output/refactor-migration-compatibility-gate.md",
 		});
+	});
+
+	it("keeps refactor migration finish gates tied to structured validation state", async () => {
+		const reviewPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/refactor-migration-plan/refactor-migration-plan/prompts/review.md`,
+		).text();
+		const cleanupPrompt = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/refactor-migration-plan/refactor-migration-plan/prompts/cleanup.md`,
+		).text();
+
+		expect(reviewPrompt).toMatch(
+			/Treat the structured `Validation` object above as the canonical validation\s+state\./u,
+		);
+		expect(reviewPrompt).toContain("Do not return `finish` when `validation.status` is not `pass`");
+		expect(cleanupPrompt).toContain("Do not overwrite `workflow-output/refactor-migration-validation.md`");
+		expect(cleanupPrompt).toMatch(/request a `continue` review so the\s+program validation node can rerun/u);
 	});
 
 	it("archives refactor migrations as rejected when only whitespace churn remains", async () => {

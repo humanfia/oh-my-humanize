@@ -19,11 +19,6 @@ const validationPassed = validationCommandPassed(benchmark);
 let terminalState;
 let selectionStatus = "pass";
 if (projectChangedFiles.length === 0) {
-	if (!noWinAllowed) {
-		throw new Error(
-			"no-win performance selection requires explicit no-win or no-code/no-change authorization in task.md when project diff is empty",
-		);
-	}
 	if (noWinBranches.length === 0) {
 		throw new Error("no-win performance selection requires at least one branch with `no-win-result: yes`");
 	}
@@ -33,8 +28,13 @@ if (projectChangedFiles.length === 0) {
 	if (selectedBranches.length > 0) {
 		throw new Error("no-win performance selection cannot also contain `final-selection: yes`");
 	}
-	terminalState = validationPassed ? "no-win" : "no-win-validation-blocked";
-	selectionStatus = validationPassed ? "pass" : "blocked";
+	if (!noWinAllowed) {
+		terminalState = "rejected-no-win-not-authorized";
+		selectionStatus = "rejected";
+	} else {
+		terminalState = validationPassed ? "no-win" : "no-win-validation-blocked";
+		selectionStatus = validationPassed ? "pass" : "blocked";
+	}
 } else {
 	if (noWinBranches.length > 0 && selectedBranches.length === 0) {
 		throw new Error("no-win performance selection requires an empty project diff");

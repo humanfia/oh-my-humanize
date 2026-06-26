@@ -41,6 +41,11 @@ Return `finish` only when:
   `No-Code Allowed: Yes`; the current project diff is empty; and at
   least one branch records `no-win-result: yes` plus rollback/no-change
   evidence;
+- when all attempted branches are losing, reverted, or inconclusive; the
+  project diff is empty; at least one branch records `no-win-result: yes`; and
+  the task does not explicitly authorize a no-win success, return `finish` so
+  the finalizer can archive a rejected no-win result. Do not restart broad
+  optimization fanout for a measured rejected no-win terminal state.
 - when a documented no-win result meets the previous bullet but the
   task-declared Validation Command failed, return `finish` only if the failure
   is preserved as validation-blocked evidence and there are no retained project

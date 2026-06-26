@@ -24,6 +24,12 @@ Validation:
 
 {{jsonStringify validation}}
 
+Treat the structured `Validation` object above as the canonical validation
+state. Do not return `finish` when `validation.status` is not `pass`, even if
+the migration or cleanup text claims that commands passed later. In that case,
+return `continue` and ask for the program validation node to rerun so `/validation`
+is updated by the workflow runtime.
+
 Return `finish` only when the migration preserves behavior, validation is real
 and passing, cleanup is justified or explicitly deferred, rollback notes are
 clear, and the final project diff contains material non-whitespace migration
