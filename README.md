@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>A coding agent with the IDE wired in.</strong>
+  <strong>Workflow-native terminal coding for long-running human-in-the-loop development.</strong>
   <strong><a href="https://omh.sh">omh.sh</a></strong>
 </p>
 
@@ -14,10 +14,6 @@
   <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&colorA=222222&logo=typescript&logoColor=white" alt="TypeScript"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-DEA584?style=flat&colorA=222222&logo=rust&logoColor=white" alt="Rust"></a>
   <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat&colorA=222222" alt="Bun"></a>
-</p>
-
-<p align="center">
-  OMH began as a fork of <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a>.
 </p>
 
 OMH is a workflow-native terminal coding agent for building, testing, editing,
@@ -62,13 +58,13 @@ OMH-specific distribution channels are published.
 **macOS · Linux**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh -s -- --source --ref main
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Source -Ref main
 ```
 
 For source installs, use Bun ≥ 1.3.14. The installed binary exposes `omh` as the
@@ -105,11 +101,10 @@ Edits that land on the first attempt. Reads that summarize files instead of dump
 - `lsp` : everything your IDE knows, the agent knows
 - `prompts` : adjusted relentlessly for each model
 
-[Read the full post ↗](https://blog.can.ac/2026/02/12/the-harness-problem/)
+## A terminal agent, now workflow-native.
 
-## The agent _you know_, now workflow-native.
-
-Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), OMH adds workflow orchestration, hardened coding-agent tooling, and the interactive surfaces needed for long-running human-in-the-loop development.
+OMH adds workflow orchestration, hardened coding-agent tooling, and the
+interactive surfaces needed for long-running human-in-the-loop development.
 
 ### 01 · Code execution w/ tool-calling
 
@@ -286,7 +281,7 @@ Ollama `local` · Ollama Cloud · LM Studio `local` · llama.cpp `local` · vLLM
 
 ### Four knobs that make routing useful
 
-- **Custom providers** — Declare anything that speaks `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `anthropic-messages`, `google-generative-ai`, or `google-vertex` in the active OMH agent config directory. The compatibility path is currently `~/.omp/agent/models.yml`.
+- **Custom providers** — Declare anything that speaks `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `anthropic-messages`, `google-generative-ai`, or `google-vertex` in the active OMH agent config directory. Use `omh config path` to inspect the active local config root.
 - **Fallback chains** — Per-role chains under `retry.fallbackChains`. When the primary throws 429s or hits a quota wall, the next entry takes the rest of the turn — restored on cooldown.
 - **Path-scoped models** — Scope `enabledModels` and `disabledProviders` entries to a `path:` prefix to pin a different model set on one repo without touching the global config. Scoped entries cover the path and everything under it.
 - **Round-robin credentials** — Stack API keys per provider and the runtime rotates with session affinity and per-credential backoff. Useful when one key would burn its quota by lunch.
@@ -389,10 +384,10 @@ The same prompt cards surface over ACP, so editors get the picker without writin
 
 ### SDK — embed in Node
 
-The SDK surface lives with the CLI under [packages/coding-agent](packages/coding-agent).
-Public OMH package-install documentation will be added here once the package
-rename is complete. For now, use source checkout development or the CLI
-interfaces below.
+The SDK surface lives with the CLI under
+[packages/coding-agent](packages/coding-agent). Public OMH SDK package
+documentation will be published when the package namespace is finalized. For
+now, use source checkout development or the CLI interfaces below.
 
 ### RPC — drive over stdio
 
@@ -427,7 +422,10 @@ Full reference: [docs/sdk.md](docs/sdk.md).
 
 Pick it up at **[omh.sh](https://omh.sh)**.
 
-omh is a fork of [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), rewritten as a coding-first surface: sessions, subagents, slash commands, extensions — all TypeScript, all MIT, all on [GitHub](https://github.com/humanfia/oh-my-humanize). Shape it from config, hook it from outside, or read the source when you need to.
+omh is a coding-first terminal surface: sessions, subagents, slash commands,
+workflow orchestration, and extensions, all TypeScript, all MIT, all on
+[GitHub](https://github.com/humanfia/oh-my-humanize). Shape it from config,
+hook it from outside, or read the source when you need to.
 
 ### Primitives
 
@@ -443,7 +441,9 @@ Ask omh to write the piece you're missing, then `/reload-plugins`. Keep it local
 
 ## Philosophy
 
-omh is a fork of [pi-mono](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), extended with a batteries-included coding workflow.
+omh is developed as a workflow-native terminal coding platform. It preserves a
+terminal-first coding loop while adding auditable workflow execution and
+human-in-the-loop control.
 
 Key ideas:
 
