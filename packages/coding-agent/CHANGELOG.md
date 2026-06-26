@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- Fixed the experimental parallel implementation/review workflow so its join
+  guard fails closed when required lane evidence is missing or any lane reports
+  failed validation before downstream review.
 - Fixed the experimental agent build/review workflow so rejected terminal
   archives complete with a rejected tuple state instead of surfacing as workflow
   script crashes in the dashboard.
