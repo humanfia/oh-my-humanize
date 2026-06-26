@@ -418,11 +418,15 @@ describe("example workflow scripts", () => {
 			changed_files: [],
 			rollback_notes: [],
 		});
+		expect(result.scheduler.state.validationStartup).toMatchObject({
+			status: "not-run",
+			summary: "No documentation validation startup probe has run yet.",
+		});
 
 		const flow = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/documentation-audit/documentation-audit.omhflow`,
 		).text();
-		expect(flow).toMatch(/id:\s*precheckTaskContract[\s\S]*?writes:[\s\S]*?- \/patch/u);
+		expect(flow).toMatch(/id:\s*precheckTaskContract[\s\S]*?writes:[\s\S]*?- \/validationStartup[\s\S]*?- \/patch/u);
 	});
 
 	it("fails documentation audit closed when validation cannot start", async () => {

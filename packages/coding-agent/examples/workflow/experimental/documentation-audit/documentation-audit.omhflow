@@ -79,6 +79,7 @@ sequence:
         - /runtime
         - /review
         - /validation
+        - /validationStartup
         - /patch
   - node:
       id: checkValidationStartup

@@ -25,6 +25,9 @@
 - Fixed the experimental documentation-audit workflow so validation startup is
   probed before parallel audit fanout, stopping early when the declared
   validation command cannot start.
+- Fixed the experimental documentation-audit workflow contract so the precheck
+  node is allowed to initialize validation-startup state before the startup
+  probe runs.
 - Fixed workflow checkpoint restarts so selected `.omhflow` freeze artifacts and
   same-name resource directories generated after a checkpoint do not invalidate
   the saved workspace snapshot, while ordinary workspace drift still fails
