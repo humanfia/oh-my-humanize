@@ -152,9 +152,21 @@ function dedupeEvidenceEntries(entries) {
 }
 
 function hasRollbackEvidence(text) {
+	if (declaresRollbackEvidenceUnavailable(text)) return false;
 	const parsed = parseJsonEvidence(text);
 	if (parsed !== undefined) return hasStructuredRollbackEvidence(parsed);
 	return hasMarkdownRollbackEvidence(text);
+}
+
+function declaresRollbackEvidenceUnavailable(text) {
+	const normalized = text.replace(/\s+/gu, " ").toLowerCase();
+	return (
+		normalized.includes("no actionable rollback instruction") ||
+		normalized.includes("no live actionable rollback evidence") ||
+		normalized.includes("rollback-evidence acceptance must remain blocked") ||
+		normalized.includes("archive acceptance must remain blocked") ||
+		normalized.includes("acceptance must remain blocked until live actionable rollback evidence")
+	);
 }
 
 function parseJsonEvidence(text) {

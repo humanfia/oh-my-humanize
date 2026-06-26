@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration workflow so runtime artifacts that
+  explicitly say rollback evidence is unavailable cannot satisfy accepted
+  archive rollback gates through incidental `rollback_notes` fields.
 - Fixed the experimental refactor-migration workflow so accepted archives
   require actionable rollback instructions instead of accepting generic
   rollback-risk or rollback-policy mentions as evidence.

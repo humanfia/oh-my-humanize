@@ -2846,6 +2846,70 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("blocks accepted refactor migrations when runtime evidence declares rollback is not actionable", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-migration-rollback-self-blocking-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Reject runtime evidence that contains rollback notes but says they are not actionable.",
+				"",
+				"Validation Command:",
+				"echo validate",
+			].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "material migration\n");
+		await Bun.write(
+			`${cwd}/workflow-output/refactor-migration-validation.md`,
+			["# Validation", "", "Exit code: 0"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/omh-runtime/artifacts/activation-8/1-migrationReview.md`,
+			`${JSON.stringify(
+				{
+					archive_and_evidence_gate: {
+						current_runtime_evidence:
+							"Completed workflow activations exist, but they contain no actionable rollback instruction.",
+						archive_decision_rule:
+							"Validation can pass, but archive acceptance must remain blocked until live actionable rollback evidence exists.",
+					},
+					rollback_notes: [
+						"Rollback evidence for archive purposes must cite a live activation that issued the actionable instruction.",
+					],
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveMigration",
+			scriptFileName: "archive-migration.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				validation: {
+					status: "pass",
+				},
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "archiveMigration")?.status).toBe(
+			"failed",
+		);
+	});
+
 	it("blocks accepted refactor migrations without rollback evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-refactor-migration-missing-rollback-");
 		const cwd = tempDir.path();
