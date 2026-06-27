@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/pi-*", "crates/vendor/*"]
-exclude = ["crates/vendor/brush-core", "crates/vendor/brush-builtins"]
+exclude = ["crates/vendor/brush-core", "crates/vendor/brush-builtins", "temp/playground"]
 resolver = "3"
 
 [workspace.package]

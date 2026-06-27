@@ -325,7 +325,7 @@ function workflowAgentTaskReasonIsTransient(reason: string): boolean {
 }
 
 const WORKFLOW_AGENT_TRANSIENT_PROVIDER_ERROR_PATTERN =
-	/(?:\b429\b|too many requests|rate[_ -]?limit|temporar(?:y|ily) unavailable|overloaded|service unavailable|bad gateway|gateway timeout|upstream[^.\n]*(?:unavailable|timeout|rate limit)|\b5\d\d\b|HTTP\/2[^.\n]*(?:error|not closed cleanly)|\bINTERNAL_ERROR\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN)/iu;
+	/(?:\b429\b|too many requests|rate[_ -]?limit|temporar(?:y|ily) unavailable|overloaded|service unavailable|bad gateway|gateway timeout|upstream[^.\n]*(?:unavailable|timeout|rate limit)|\b5\d\d\b|HTTP\/2[^.\n]*(?:error|not closed cleanly)|\bINTERNAL_ERROR\b|stream[_ -]read[_ -]error|stream[_ -]interrupted(?:[_ -]after[_ -]content)?|ECONNRESET|ETIMEDOUT|EAI_AGAIN)/iu;
 
 function formatWorkflowErrorReason(error: unknown): string {
 	if (error instanceof Error) return `${error.name}: ${error.message}`;
