@@ -3,6 +3,7 @@ const benchmarkCommand = requiredCommand(taskText, "Benchmark Command");
 const validationCommand = requiredCommand(taskText, "Validation Command");
 const baselineCommand = optionalCommand(taskText, "Baseline Command") || benchmarkCommand;
 const scratchRoot = requiredScratchRoot(taskText);
+const sharedGitWorktrees = await currentSharedGitWorktreePaths();
 const runtime = runtimeFromTaskContract(taskText);
 
 await Bun.write(
@@ -32,6 +33,10 @@ await Bun.write(
 		"",
 		scratchRoot,
 		"",
+		"## Shared Git Worktrees At Start",
+		"",
+		sharedGitWorktrees.length > 0 ? sharedGitWorktrees.map(worktree => `- ${worktree}`).join("\n") : "- none",
+		"",
 	].join("\n"),
 );
 
@@ -48,6 +53,7 @@ return {
 				validationCommand,
 				baselineCommand,
 				scratchRoot,
+				sharedGitWorktrees,
 			},
 		},
 		{ op: "set", path: "/runtime", value: runtime },
@@ -122,6 +128,29 @@ function runtimeFromTaskContract() {
 	return {
 		startedAtMs: Date.now(),
 	};
+}
+
+async function currentSharedGitWorktreePaths() {
+	const proc = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`git worktree list failed during performance precheck: ${stderr.trim() || stdout.trim()}`);
+	}
+	const currentWorkspace = normalizeAbsolutePath(process.cwd());
+	return stdout
+		.split(/\r?\n/u)
+		.map(line => line.match(/^worktree\s+(.+)$/u)?.[1]?.trim() ?? "")
+		.map(normalizeAbsolutePath)
+		.filter(worktree => worktree !== "" && worktree !== currentWorkspace)
+		.sort();
 }
 
 function normalizeAbsolutePath(path) {

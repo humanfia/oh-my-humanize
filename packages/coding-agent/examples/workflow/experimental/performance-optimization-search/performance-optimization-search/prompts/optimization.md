@@ -16,13 +16,18 @@ Previous review, if any:
 
 Work from the current project directory, but keep the shared workspace clean.
 Use the shared project directory only for read-only inspection plus durable
-`workflow-output/` artifacts. Do not leave project-file edits in the shared
-workspace. For any code candidate, create a lane-local scratch copy or git
-worktree outside the project tree and scoped to this workflow run. Use the
+`workflow-output/` artifacts. Do not leave project-file edits or git metadata
+changes in the shared workspace. For any code candidate, create a lane-local
+independent scratch copy or clone outside the project tree and scoped to this
+workflow run. Use the
 absolute `task.scratchRoot` value from the task contract JSON, for example
 `<task.scratchRoot>/{{strategy}}-*`. Do not try to rediscover this from the
 shell environment. Never use bare `/tmp`, shared sibling scratch such as
 `../workflow-scratch`, or any scratch root outside `task.scratchRoot`.
+Do not run `git worktree add` from the shared task checkout: it mutates the
+shared checkout's `.git/worktrees` metadata even when the new worktree path is
+under `task.scratchRoot`. Use an independent scratch copy or `git clone
+--no-hardlinks` into a lane directory under `task.scratchRoot` instead.
 Never create a writable bare `/tmp` execution surface inside a sandbox. Commands
 such as `bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`
 are invalid; bind or mount a lane directory under `task.scratchRoot` instead.
@@ -35,9 +40,10 @@ project-file diff with `git diff HEAD --name-only` except `workflow-output/`
 artifacts and `task.md`. If a candidate cannot be tested without mutating
 another branch's shared files, record the conflict in
 `workflow-output/perf-{{strategy}}.md` instead of editing the shared workspace.
-Do not run branch build, benchmark, validation, apply-check, or candidate
-execution commands from `cwd: .` or the shared task workspace. Those commands
-must run from the lane-local worktree or copy under `task.scratchRoot`.
+Do not run branch build, benchmark, validation, apply-check, candidate
+execution, or scratch-workspace creation commands from `cwd: .` or the shared
+task workspace. Those commands must run from the lane-local clone or copy under
+`task.scratchRoot`.
 
 When you create a candidate patch, preserve enough evidence for selection:
 

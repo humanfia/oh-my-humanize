@@ -1767,10 +1767,16 @@ describe("example workflow scripts", () => {
 		process.env.OMH_RUN_TMP = `${cwd}/run-tmp`;
 
 		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			await Bun.write(
 				`${cwd}/task.md`,
 				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
 			);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
 
 			const result = await runExampleScript({
 				cwd,
@@ -1783,6 +1789,7 @@ describe("example workflow scripts", () => {
 
 			expect(result.scheduler.state.task).toMatchObject({
 				scratchRoot: `${cwd}/run-tmp`,
+				sharedGitWorktrees: [],
 			});
 			expect(await Bun.file(`${cwd}/workflow-output/performance-precheck.md`).text()).toContain(`${cwd}/run-tmp`);
 		} finally {
@@ -1838,7 +1845,9 @@ describe("example workflow scripts", () => {
 			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/perf-review.md`,
 		).text();
 
-		expect(optimizationPrompt).toContain("Do not leave project-file edits in the shared\nworkspace");
+		expect(optimizationPrompt).toContain("Do not leave project-file edits or git metadata\nchanges");
+		expect(optimizationPrompt).toContain("Do not run `git worktree add` from the shared task checkout");
+		expect(optimizationPrompt).toContain("git clone\n--no-hardlinks");
 		expect(optimizationPrompt).toContain("candidate patch");
 		expect(optimizationPrompt).toContain("git apply --check");
 		expect(optimizationPrompt).toContain("outside the project tree");
@@ -1848,24 +1857,27 @@ describe("example workflow scripts", () => {
 		expect(optimizationPrompt).toContain("bwrap --tmpfs /tmp");
 		expect(optimizationPrompt).toContain("read-only inspection plus durable");
 		expect(optimizationPrompt).toContain("Do not run branch build, benchmark, validation, apply-check");
-		expect(optimizationPrompt).toContain("from `cwd: .` or the shared task workspace");
+		expect(optimizationPrompt).toContain("from `cwd: .` or the shared\ntask workspace");
+		expect(optimizationPrompt).toContain("scratch-workspace creation commands");
 		expect(optimizationPrompt).not.toContain("workflow-output/tmp/{{strategy}}-*");
 		expect(optimizationPrompt).not.toContain("../workflow-scratch/{{strategy}}-*");
 		expect(repairPrompt).toContain("apply at most one selected candidate patch");
 		expect(repairPrompt).toContain("clean shared workspace");
+		expect(repairPrompt).toContain("reject `.git/worktrees/*` metadata");
 		expect(repairPrompt).toContain("project-local scratch");
 		expect(repairPrompt).toContain("shared sibling scratch");
 		expect(repairPrompt).toContain("bare `/tmp` scratch");
 		expect(repairPrompt).toContain("writable bare `/tmp` sandbox mounts");
-		expect(repairPrompt).toContain("reject branch evidence where build, benchmark, validation, apply-check");
-		expect(repairPrompt).toContain("or the unmodified\n  shared workspace");
+		expect(repairPrompt).toContain("reject branch evidence where scratch-workspace creation, build, benchmark");
+		expect(repairPrompt).toContain("or the unmodified shared workspace");
 		expect(repairPrompt).toContain("task.scratchRoot");
 		expect(reviewPrompt).toContain("branch left no project-file edits in the shared workspace");
+		expect(reviewPrompt).toContain("no branch mutated shared git metadata");
 		expect(reviewPrompt).toContain("outside the project tree");
 		expect(reviewPrompt).toContain("shared sibling scratch");
 		expect(reviewPrompt).toContain("bare `/tmp` scratch");
 		expect(reviewPrompt).toContain("writable bare `/tmp` sandbox mounts");
-		expect(reviewPrompt).toContain("did\n  not run from `cwd: .`");
+		expect(reviewPrompt).toContain("and candidate execution did not run from `cwd: .`");
 		expect(reviewPrompt).toContain("task.scratchRoot");
 	});
 
@@ -1909,6 +1921,94 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain(
 			"Parallel Lane Isolation Violation",
 		);
+	});
+
+	it("blocks performance benchmark joins when branches mutate shared git worktree metadata", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-shared-git-worktree-guard-");
+		using scratchDir = TempDir.createSync("@omh-performance-linked-worktree-");
+		const cwd = tempDir.path();
+		const linkedWorktree = `${scratchDir.path()}/caching-worktree`;
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await runGit(cwd, ["worktree", "add", "--detach", linkedWorktree, "HEAD"]);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+					sharedGitWorktrees: [],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "fail",
+			isolationViolation: true,
+			sharedGitWorktreeMetadataPaths: [linkedWorktree],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain(
+			"Shared Git Worktree Metadata Violation",
+		);
+	});
+
+	it("allows preexisting shared git worktrees recorded by performance precheck", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-existing-git-worktree-");
+		using scratchDir = TempDir.createSync("@omh-performance-existing-linked-worktree-");
+		const cwd = tempDir.path();
+		const linkedWorktree = `${scratchDir.path()}/existing-worktree`;
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await runGit(cwd, ["worktree", "add", "--detach", linkedWorktree, "HEAD"]);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+					sharedGitWorktrees: [linkedWorktree],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "pass",
+			benchmarkExitCode: 0,
+			validationExitCode: 0,
+		});
+		expect(result.scheduler.state.benchmark).not.toHaveProperty("isolationViolation");
 	});
 
 	it("allows empty performance workflow tmp directories before benchmark joins", async () => {

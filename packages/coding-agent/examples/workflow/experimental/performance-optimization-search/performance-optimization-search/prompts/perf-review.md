@@ -26,6 +26,9 @@ Return `finish` only when:
   before selection; candidate code must be represented as a branch-local patch
   and project-external lane-local measurement evidence until the selection
   repair node applies at most one selected candidate;
+- no branch mutated shared git metadata such as `.git/worktrees/*`; running
+  `git worktree add` from the shared checkout is not read-only inspection even
+  when the resulting worktree is under `task.scratchRoot`;
 - lane scratch, worktrees, benchmark fixtures, and temporary data stayed outside the project tree
   and were scoped to this workflow run; durable candidate
   patches and reports may live under `workflow-output/`, but execution scratch
@@ -36,10 +39,11 @@ Return `finish` only when:
 - branch execution did not create writable bare `/tmp` sandbox mounts such as
   `bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`; sandbox
   scratch must be backed by a lane directory under `task.scratchRoot`;
-- branch build, benchmark, validation, apply-check, and candidate execution did
-  not run from `cwd: .`, the task workspace, or the unmodified shared workspace;
-  shared project files may be inspected, but branch execution evidence must come
-  from lane-local worktrees or copies under `task.scratchRoot`;
+- branch scratch-workspace creation, build, benchmark, validation, apply-check,
+  and candidate execution did not run from `cwd: .`, the task workspace, or the
+  unmodified shared workspace; shared project files may be inspected, but branch
+  execution evidence must come from lane-local clones or copies under
+  `task.scratchRoot`;
 - there is a clearly selected positive optimization or a documented no-win
   result with rollback evidence;
 - losing or negative branches are reverted or explicitly isolated;

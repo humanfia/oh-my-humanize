@@ -56,6 +56,30 @@ if (projectLocalScratchPaths.length > 0) {
 	};
 }
 
+const sharedGitWorktreeMetadataPaths = await newSharedGitWorktreeMetadataPaths(task);
+if (sharedGitWorktreeMetadataPaths.length > 0) {
+	const outputPath = "workflow-output/performance-benchmark.md";
+	await Bun.write(outputPath, sharedGitWorktreeMetadataViolationMarkdown(sharedGitWorktreeMetadataPaths));
+	return {
+		summary: `parallel lane isolation violation: ${sharedGitWorktreeMetadataPaths.length} shared git worktree metadata path(s) found`,
+		data: { isolationViolation: true, sharedGitWorktreeMetadataPaths },
+		statePatch: [
+			{
+				op: "set",
+				path: "/benchmark",
+				value: {
+					status: "fail",
+					isolationViolation: true,
+					sharedGitWorktreeMetadataPaths,
+					benchmarkCommand,
+					validationCommand,
+					outputPath,
+				},
+			},
+		],
+	};
+}
+
 const sharedScratchReferences = await branchEvidenceWithSharedScratchReferences();
 if (sharedScratchReferences.length > 0) {
 	const outputPath = "workflow-output/performance-benchmark.md";
@@ -232,6 +256,37 @@ async function existingProjectLocalScratchPaths() {
 		if (await pathHasChildren(scratchPath)) existingPaths.push(scratchPath);
 	}
 	return existingPaths;
+}
+
+async function newSharedGitWorktreeMetadataPaths(task) {
+	const baseline = Array.isArray(task?.sharedGitWorktrees)
+		? task.sharedGitWorktrees.map(value => (typeof value === "string" ? normalizeAbsolutePath(value) : "")).filter(Boolean)
+		: [];
+	const baselineSet = new Set(baseline);
+	return (await currentSharedGitWorktreePaths()).filter(worktree => !baselineSet.has(worktree));
+}
+
+async function currentSharedGitWorktreePaths() {
+	const proc = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`git worktree list failed before performance benchmark join: ${stderr.trim() || stdout.trim()}`);
+	}
+	const currentWorkspace = normalizeAbsolutePath(process.cwd());
+	return stdout
+		.split(/\r?\n/u)
+		.map(line => line.match(/^worktree\s+(.+)$/u)?.[1]?.trim() ?? "")
+		.map(normalizeAbsolutePath)
+		.filter(worktree => worktree !== "" && worktree !== currentWorkspace)
+		.sort();
 }
 
 async function branchEvidenceWithSharedScratchReferences() {
@@ -515,6 +570,23 @@ function sharedScratchIsolationViolationMarkdown(sharedScratchReferences) {
 		"## Evidence Files With Shared Scratch References",
 		"",
 		sharedScratchReferences.map((file) => `- ${file}`).join("\n"),
+		"",
+	].join("\n");
+}
+
+function sharedGitWorktreeMetadataViolationMarkdown(sharedGitWorktreeMetadataPaths) {
+	return [
+		"# Performance Benchmark Evidence",
+		"",
+		"## Shared Git Worktree Metadata Violation",
+		"",
+		"Parallel optimization lanes may not create git worktrees from the shared task checkout.",
+		"`git worktree add` mutates the shared checkout's `.git/worktrees` metadata, so it is not read-only shared-workspace inspection even when the worktree path is under `task.scratchRoot`.",
+		"Use an independent scratch copy or clone under `task.scratchRoot` instead, and keep branch build, benchmark, validation, apply-check, and candidate execution there.",
+		"",
+		"## Shared Git Worktree Metadata Paths",
+		"",
+		sharedGitWorktreeMetadataPaths.map((file) => `- ${file}`).join("\n"),
 		"",
 	].join("\n");
 }

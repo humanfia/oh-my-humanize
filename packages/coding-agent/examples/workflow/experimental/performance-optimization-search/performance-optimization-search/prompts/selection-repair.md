@@ -28,6 +28,10 @@ that the reviewer can evaluate:
   scratch, worktrees, benchmark fixtures, and temporary data must live outside
   the project tree and be scoped to this workflow run, while only durable
   candidate patches and reports belong in `workflow-output/`;
+- also reject `.git/worktrees/*` metadata in the shared task checkout. It means
+  a branch ran `git worktree add` from the shared checkout, which mutates shared
+  git metadata and is not read-only inspection. Branches must use independent
+  scratch copies or clones under `task.scratchRoot`;
 - reject shared sibling scratch such as `../workflow-scratch`; it can reuse
   stale work from another tuple and does not prove lane isolation;
 - reject bare `/tmp` scratch unless the task explicitly declares it as the
@@ -35,10 +39,11 @@ that the reviewer can evaluate:
 - reject writable bare `/tmp` sandbox mounts such as `bwrap --tmpfs /tmp`,
   `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`; sandbox scratch must be backed
   by a lane directory under `task.scratchRoot`;
-- reject branch evidence where build, benchmark, validation, apply-check, or
-  candidate execution ran from `cwd: .`, the task workspace, or the unmodified
-  shared workspace. Shared project files may be inspected, but branch execution
-  evidence must come from lane-local worktrees or copies under `task.scratchRoot`;
+- reject branch evidence where scratch-workspace creation, build, benchmark,
+  validation, apply-check, or candidate execution ran from `cwd: .`, the task
+  workspace, or the unmodified shared workspace. Shared project files may be
+  inspected, but branch execution evidence must come from lane-local clones or
+  copies under `task.scratchRoot`;
 - if validation or benchmark failed, preserve the failure evidence and explain
   the minimal next repair needed;
 - if one branch has a measured positive result, apply at most one selected candidate patch
