@@ -35,6 +35,10 @@ Patch-node evidence contract:
 
 - Do not write terminal workflow artifacts. The validation, review, and archive
   nodes own terminal evidence.
+- Before finalizing your patch response, inspect
+  `git status --short --untracked-files=all` and include every tracked and
+  untracked project change in `changed_files`; `git diff --stat` is insufficient
+  because it omits new untracked docs/example files.
 - You may update non-terminal workflow evidence artifacts when prior review
   feedback explicitly says they are incomplete. For example, if a mutable
   workflow guard wrote `workflow-output/human-scope-guard.md`, append a bounded

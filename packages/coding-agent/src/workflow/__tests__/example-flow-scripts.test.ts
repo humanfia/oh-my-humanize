@@ -1401,6 +1401,14 @@ describe("example workflow scripts", () => {
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
 
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(`${cwd}/httpx/_client.py`, "# build_request base_url note\n");
+		await runGit(cwd, ["add", "httpx/_client.py"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/httpx/_client.py`, "# build_request base_url note\n# header precedence note\n");
+
 		const result = await runExampleScript({
 			cwd,
 			previousCwd,
@@ -1634,6 +1642,44 @@ describe("example workflow scripts", () => {
 		expect(result.scheduler.activations.find(activation => activation.nodeId === "archiveDocs")?.status).toBe(
 			"failed",
 		);
+	});
+
+	it("blocks documentation patch validation when patch evidence omits untracked project files", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-untracked-patch-evidence-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(`${cwd}/docs/page.md`, "baseline\n");
+		await runGit(cwd, ["add", "docs/page.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/docs/page.md`, "updated\n");
+		await Bun.write(`${cwd}/docs_src/example.py`, "print('example')\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardReviewRepair",
+			scriptFileName: "guard-review-repair.js",
+			scriptDir: DOCUMENTATION_AUDIT_SCRIPT_DIR,
+			writes: ["/reviewRepair"],
+			initialState: {
+				review: "finish",
+				patch: {
+					status: "patched",
+					changed_files: ["docs/page.md"],
+				},
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "guardReviewRepair")?.status).toBe(
+			"failed",
+		);
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "guardReviewRepair")?.error,
+		).toContain("docs_src/example.py");
 	});
 
 	it("archives documentation audit when prior review feedback has explicit resolution evidence", async () => {
