@@ -377,15 +377,19 @@ function hasSharedWorkspaceExecutionSurface(line, workspaceRoot) {
 }
 
 function extractEvidencePaths(line) {
-	const matches = line.match(/(?:\/[^\s`"'<>),;]+)+/gu);
-	return matches ?? [];
+	return [...line.matchAll(/(?:^|[\s`"'(=])((?:\/[^\s`"'<>),;]+)+)/gu)].map(match => match[1]).filter(Boolean);
 }
 
 function isNegativeScratchDeclaration(line) {
+	const scratchReference = String.raw`(?:\/tmp|workflow-output\/tmp|\.\.\/workflow-scratch)`;
 	return (
-		/\b(?:did not|never|not|no)\b.{0,180}\b(?:use|used|create|created|run|ran|leave|left|mount|mounted)\b.{0,180}(?:\/tmp|workflow-output\/tmp|\.\.\/workflow-scratch)\b/iu.test(
+		/\b(?:did not|never|not|no)\b.{0,180}\b(?:use|used|create|created|place|placed|run|ran|leave|left|mount|mounted)\b.{0,180}(?:\/tmp|workflow-output\/tmp|\.\.\/workflow-scratch)\b/iu.test(
 			line,
 		) ||
+		new RegExp(
+			String.raw`\b(?:did not|never|not|no)\b.{0,220}${scratchReference}\b.{0,220}\b(?:use|used|create|created|place|placed|run|ran|execute|executed|mount|mounted)\b`,
+			"iu",
+		).test(line) ||
 		/(?:\/tmp|workflow-output\/tmp|\.\.\/workflow-scratch)\b.{0,180}\b(?:absent|not present|not used|was not used|were not used|unused|forbidden)\b/iu.test(
 			line,
 		)
@@ -393,8 +397,13 @@ function isNegativeScratchDeclaration(line) {
 }
 
 function isNegativeSharedWorkspaceDeclaration(line) {
-	return /\b(?:did not|never|not|no)\b.{0,100}\b(?:run|ran|execute|executed|execution|benchmark|validation|test|build|command)\b.{0,100}\b(?:shared|task|project|current)\s+(?:workspace|project directory|project tree)\b/iu.test(
-		line,
+	return (
+		/\b(?:did not|never|not|no)\b.{0,100}\b(?:run|ran|execute|executed|execution|benchmark|validation|test|build|command)\b.{0,100}\b(?:shared|task|project|current)\s+(?:workspace|project directory|project tree)\b/iu.test(
+			line,
+		) ||
+		/\bnot\b.{0,60}\bfrom\b.{0,60}\b(?:shared|task|project|current)\s+(?:workspace|project directory|project tree)\b/iu.test(
+			line,
+		)
 	);
 }
 

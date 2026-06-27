@@ -2180,9 +2180,23 @@ describe("example workflow scripts", () => {
 			await runGit(cwd, ["config", "user.name", "OMH Test"]);
 			await runGit(cwd, ["add", "src.txt", "task.md"]);
 			await runGit(cwd, ["commit", "-m", "baseline"]);
-			await Bun.write(
-				`${cwd}/workflow-output/perf-io.md`,
-				[
+			const laneReports = {
+				algorithmic: [
+					"# Algorithmic candidate",
+					"",
+					`Candidate worktree: ${runTmp}/lanes/algorithmic/worktree`,
+					`Apply-check worktree: ${runTmp}/lanes/algorithmic/apply-check/worktree`,
+					`Candidate patch path: ${cwd}/workflow-output/perf-algorithmic-candidate.diff`,
+					"All build, benchmark, validation, apply-check, and candidate execution commands were run from these lane-local scratch paths, not from the shared task workspace. No `TMPDIR=/tmp`, `workflow-output/tmp`, `bwrap --tmpfs /tmp`, `bwrap --bind /tmp`, or `bwrap --dir /tmp` execution surface was used.",
+				],
+				caching: [
+					"# Caching candidate",
+					"",
+					`Candidate scratch change only: src/walk.rs in ${runTmp}/lanes/caching/worktree.`,
+					`Candidate patch path: ${cwd}/workflow-output/perf-caching-candidate.diff`,
+					"No lane-local execution scratch, fixture, worktree, or target directory was placed under `workflow-output/tmp`; no writable bare `/tmp` sandbox mount or bare `TMPDIR=/tmp` execution surface was used.",
+				],
+				io: [
 					"# IO candidate",
 					"",
 					`worktree: ${runTmp}/worktrees/io`,
@@ -2192,8 +2206,12 @@ describe("example workflow scripts", () => {
 					"I did not use bare `/tmp`, `../workflow-scratch`, or `workflow-output/tmp`.",
 					"candidate patch path: workflow-output/perf-io-candidate.diff",
 					`All command cwd values below are under task.scratchRoot. All temp directories were under ${runTmp}/io/tmp. No command used \`TMPDIR=/tmp\`, \`bwrap --tmpfs /tmp\`, \`bwrap --bind /tmp\`, \`bwrap --dir /tmp\`, or another writable bare \`/tmp\` execution surface.`,
-				].join("\n"),
-			);
+					`TMPDIR values used for branch commands were lane-local directories under task.scratchRoot. No bwrap command, writable bare \`/tmp\` mount, \`--tmpfs /tmp\`, \`--bind /tmp\`, \`--dir /tmp\`, or \`TMPDIR=/tmp\` execution surface was used.`,
+				],
+			};
+			for (const [lane, reportLines] of Object.entries(laneReports)) {
+				await Bun.write(`${cwd}/workflow-output/perf-${lane}.md`, reportLines.join("\n"));
+			}
 
 			const result = await runExampleScript({
 				cwd,
