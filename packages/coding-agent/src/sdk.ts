@@ -5,6 +5,7 @@ import {
 	type AgentTelemetryConfig,
 	type AgentTool,
 	AppendOnlyContextManager,
+	filterProviderReplayMessages,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import {
@@ -31,6 +32,7 @@ import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
+import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { ModelRegistry } from "./config/model-registry";
 import {
 	formatModelString,
@@ -116,6 +118,7 @@ import {
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
+import { clampProviderContextImages } from "./session/provider-image-budget";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
@@ -158,8 +161,9 @@ import {
 	discoverStartupLspServers,
 	EditTool,
 	EvalTool,
-	FindTool,
 	filterInitialToolsForDiscoveryAll,
+	GlobTool,
+	GrepTool,
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isImageProviderPreference,
@@ -170,7 +174,6 @@ import {
 	ReadTool,
 	ResolveTool,
 	renderSearchToolBm25Description,
-	SearchTool,
 	SearchToolBm25Tool,
 	setExcludedSearchProviders,
 	setPreferredImageProvider,
@@ -181,6 +184,7 @@ import {
 	WriteTool,
 	warmupLspServers,
 } from "./tools";
+import { normalizeToolName, normalizeToolNames } from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
 import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
@@ -621,12 +625,12 @@ export {
 	createTools,
 	EditTool,
 	EvalTool,
-	FindTool,
+	GlobTool,
+	GrepTool,
 	HIDDEN_TOOLS,
 	loadSshTool,
 	ReadTool,
 	ResolveTool,
-	SearchTool,
 	type ToolSession,
 	WebSearchTool,
 	WriteTool,
@@ -1238,7 +1242,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const allowedModels = await logger.time("resolveAllowedModels", () =>
 		resolveAllowedModels(modelRegistry, settings, modelMatchPreferences),
 	);
-	const defaultRoleSpec = logger.time("resolveDefaultModelRole", () =>
+	let defaultRoleSpec = logger.time("resolveDefaultModelRole", () =>
 		resolveModelRoleValue(settings.getModelRole("default"), allowedModels, {
 			settings,
 			matchPreferences: modelMatchPreferences,
@@ -1504,9 +1508,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			hasUI: options.hasUI ?? false,
 			enableLsp,
 			get hasEditTool() {
-				const requestedToolNames = options.toolNames
-					? [...new Set(options.toolNames.map(name => name.toLowerCase()))]
-					: undefined;
+				const requestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
 				return !requestedToolNames || requestedToolNames.includes("edit");
 			},
 			skipPythonPreflight: options.skipPythonPreflight,
@@ -1538,6 +1540,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
 			getActiveModel: () => agent?.state.model ?? model,
+			getServiceTier: () => session?.serviceTier,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			getPlanModeState: () => session?.getPlanModeState(),
 			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
@@ -1963,9 +1966,47 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Re-resolve the allowed set: extension factories above may have
 			// registered providers/models that weren't visible at startup.
 			const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
-			const defaultModel = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
-			if (defaultModel) {
-				model = defaultModel;
+
+			// Retry the default-role lookup against the post-extension allowed
+			// set. Extension factories register providers AFTER the early
+			// `defaultRoleSpec` resolution, so a role pointing at an extension
+			// model (e.g. an openai-compat plugin's `posthog/claude-opus-4-8`)
+			// returned `undefined` there. Without this retry the next step's
+			// `pickDefaultAvailableModel` happily replaces the user's configured
+			// default with a bundled provider's default whenever a stray
+			// `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` is in the environment.
+			// (issue #3569)
+			if (!hasExplicitModel && !defaultRoleSpec.model) {
+				const reResolvedRoleSpec = resolveModelRoleValue(settings.getModelRole("default"), fallbackCandidates, {
+					settings,
+					matchPreferences: modelMatchPreferences,
+					modelRegistry,
+				});
+				if (reResolvedRoleSpec.model) {
+					defaultRoleSpec = reResolvedRoleSpec;
+					const resolvedDefaultModel = reResolvedRoleSpec.model;
+					model = resolvedDefaultModel;
+					modelFallbackMessage = undefined;
+					// Recompute the thinking level against the now-real model.
+					// `pickInitialThinkingLevel` closes over `defaultRoleSpec`,
+					// so the role's explicit selector (e.g. `:max`) now applies.
+					thinkingLevel = pickInitialThinkingLevel(resolvedDefaultModel);
+					autoThinking = thinkingLevel === AUTO_THINKING;
+					effectiveThinkingLevel = thinkingLevel === AUTO_THINKING ? undefined : thinkingLevel;
+					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
+						autoThinking
+							? resolveProvisionalAutoLevel(resolvedDefaultModel)
+							: resolveThinkingLevelForModel(resolvedDefaultModel, effectiveThinkingLevel),
+					);
+					preconnectModelHost(resolvedDefaultModel.baseUrl);
+				}
+			}
+
+			if (!model) {
+				const defaultModel = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
+				if (defaultModel) {
+					model = defaultModel;
+				}
 			}
 			if (model) {
 				if (modelFallbackMessage) {
@@ -2141,7 +2182,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			emitEvent: event => cursorEventEmitter?.(event),
 		});
 
-		const inlineToolDescriptors = settings.get("inlineToolDescriptors");
+		// Resolve the inline-descriptors setting against the session-start model.
+		// `auto` enforces the per-model policy (inline for Gemini, off otherwise);
+		// like the rest of the prune machinery this is fixed for the session, so a
+		// mid-session model switch keeps the start-time decision.
+		const inlineToolDescriptors = shouldInlineToolDescriptors(
+			settings.get("inlineToolDescriptors"),
+			model ? (modelRegistry.getCanonicalId(model) ?? model.id) : undefined,
+		);
 		const eagerTasks = settings.get("task.eager") !== "default";
 		const eagerTasksAlways = settings.get("task.eager") === "always";
 		const intentField = $flag("PI_INTENT_TRACING", settings.get("tools.intentTracing")) ? INTENT_FIELD : undefined;
@@ -2243,6 +2291,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				memoryRootEnabled: memoryBackend.id === "local",
 				model: settings.get("includeModelInPrompt") ? getActiveModelString() : undefined,
 				personality: agentKind === "sub" ? "none" : settings.get("personality"),
+				renderMermaid: settings.get("tui.renderMermaid"),
 			});
 
 			if (options.systemPrompt === undefined) {
@@ -2258,9 +2307,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		};
 
 		const toolNamesFromRegistry = Array.from(toolRegistry.keys());
-		const explicitlyRequestedToolNames = options.toolNames
-			? [...new Set(options.toolNames.map(name => name.toLowerCase()))]
-			: undefined;
+		const explicitlyRequestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
 		// When `requireYieldTool` is set, the subagent's prompts and idle-reminders demand a
 		// `yield` call to terminate. The tool registry already includes `yield` (see
 		// `createTools`), but an explicit `toolNames` list would otherwise drop it from the
@@ -2310,13 +2357,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					discoveryDefaultServers,
 				)
 			: [];
+		const normalizeRenamedBuiltinToolName = normalizeToolName;
 		let initialSelectedMCPToolNames: string[] = [];
 		let defaultSelectedMCPToolNames: string[] = [];
 		let initialToolNames = [...initialRequestedActiveToolNames];
 		if (mcpDiscoveryEnabled) {
-			const restoredSelectedMCPToolNames = existingSession.selectedMCPToolNames.filter(name =>
-				toolRegistry.has(name),
-			);
+			const restoredSelectedMCPToolNames = existingSession.selectedMCPToolNames
+				.map(normalizeRenamedBuiltinToolName)
+				.filter(name => toolRegistry.has(name));
 			defaultSelectedMCPToolNames = [
 				...new Set([...discoveryDefaultServerToolNames, ...explicitlyRequestedMCPToolNames]),
 			];
@@ -2365,10 +2413,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			initialToolNames = filterInitialToolsForDiscoveryAll(initialToolNames, {
 				loadModeOf: name => toolRegistry.get(name)?.loadMode,
 				essentialNames: new Set(computeEssentialBuiltinNames(settings)),
-				explicitlyRequested: new Set(options.toolNames?.map(name => name.toLowerCase()) ?? []),
+				explicitlyRequested: new Set(options.toolNames ? normalizeToolNames(options.toolNames) : []),
 				// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
 				// activation persistence is a follow-up). MCP names won't collide with built-in names.
-				restored: new Set(existingSession.selectedMCPToolNames),
+				restored: new Set(existingSession.selectedMCPToolNames.map(normalizeRenamedBuiltinToolName)),
 				forceActive,
 			});
 		}
@@ -2432,9 +2480,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		};
 
-		// Final convertToLlm: chain block-images filter with secret obfuscation
+		// Final convertToLlm: live provider replay drops API-level refusal errors,
+		// then applies secret obfuscation to the remaining outbound context.
 		const convertToLlmFinal = (messages: AgentMessage[]): Message[] => {
-			const converted = convertToLlmWithBlockImages(messages);
+			const converted = filterProviderReplayMessages(convertToLlmWithBlockImages(messages));
 			if (!obfuscator?.hasSecrets()) return converted;
 			return obfuscateMessages(obfuscator, converted);
 		};
@@ -2444,8 +2493,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return wrapSteeringForModel(withContext);
 		};
 		// Per-request provider-context transforms. Obfuscate FIRST so secrets are
-		// redacted from text before snapcompact rasterizes it into PNG frames.
-		// Both operate on the transient outgoing Context only — never persisted.
+		// redacted from text before snapcompact rasterizes it into PNG frames, then
+		// clamp images to the active provider budget before the request is sent.
 		const snapcompactSystemPromptMode = settings.get("snapcompact.systemPrompt");
 		const snapcompactInline =
 			snapcompactSystemPromptMode !== "none" || settings.get("snapcompact.toolResults")
@@ -2460,14 +2509,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						createSnapcompactSavingsRecorder(() => sessionManager.getSessionFile() ?? null),
 					)
 				: undefined;
-		const transformProviderContext =
-			obfuscator || snapcompactInline
-				? async (context: Context, transformModel: Model): Promise<Context> => {
-						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
-						if (snapcompactInline) transformed = await snapcompactInline.transform(transformed, transformModel);
-						return transformed;
-					}
-				: undefined;
+		const transformProviderContext = async (context: Context, transformModel: Model): Promise<Context> => {
+			let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
+			if (snapcompactInline) transformed = await snapcompactInline.transform(transformed, transformModel);
+			return clampProviderContextImages(transformed, transformModel);
+		};
 		const onPayload = async (payload: unknown, _model?: Model) => {
 			return await extensionRunner.emitBeforeProviderRequest(payload);
 		};
@@ -2610,7 +2656,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		// Hard-isolated read-only toolset for the advisor (built unconditionally so
-		// it can be toggled at runtime). Fresh ReadTool/SearchTool/FindTool bound to a
+		// it can be toggled at runtime). Fresh ReadTool/GrepTool/GlobTool bound to a
 		// DISTINCT ToolSession so the advisor's investigative reads never touch the
 		// primary's snapshot, seen-lines, conflict, or summary caches (all keyed on
 		// session identity). `cwd` stays dynamic; edit/yield capabilities are off.

@@ -83,6 +83,7 @@ export class ChatTranscriptBuilder {
 	#pendingUsage: Usage | undefined;
 	#lastAssistantUsage: Usage | undefined;
 	#waitingPoll: ToolExecutionComponent | null = null;
+	#todoSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 
@@ -100,6 +101,12 @@ export class ChatTranscriptBuilder {
 		// Flush the trailing turn's usage row only once its tools are materialized
 		// (a read whose result has not arrived stays pending); otherwise the row
 		// would sit above its tools. The drain happens here at the end of the pass.
+		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
+	}
+
+	/** Append newly persisted entries without rebuilding already rendered rows. */
+	append(entries: SessionMessageEntry[]): void {
+		for (const entry of entries) this.#appendChatMessage(entry.message);
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
 	}
 
@@ -122,6 +129,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsage = undefined;
 		this.#lastAssistantUsage = undefined;
 		this.#waitingPoll = null;
+		this.#todoSnapshot = null;
 		this.#expandables = [];
 		this.container.dispose();
 		this.container.clear();
@@ -144,6 +152,24 @@ export class ChatTranscriptBuilder {
 		if (nextToolName === "job" && previous.isDisplaceableBlock()) {
 			this.container.removeChild(previous);
 		}
+		previous.seal();
+	}
+
+	#resolveTodoSnapshot(nextToolName?: string): void {
+		const previous = this.#todoSnapshot;
+		if (!previous) return;
+		if (!previous.isDisplaceableBlock()) {
+			this.#todoSnapshot = null;
+			return;
+		}
+		if (previous.canBeDisplacedBy(nextToolName)) {
+			this.#todoSnapshot = null;
+			this.container.removeChild(previous);
+			previous.seal();
+			return;
+		}
+		if (nextToolName !== undefined) return;
+		this.#todoSnapshot = null;
 		previous.seal();
 	}
 
@@ -183,6 +209,7 @@ export class ChatTranscriptBuilder {
 			case "developer": {
 				// A user prompt closes the poll-displacement window, same as the live path.
 				if (message.role === "user") this.#resolveWaitingPoll();
+				if (message.role === "user") this.#resolveTodoSnapshot();
 				const textContent = message.role === "user" ? userMessageText(message) : "";
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
@@ -339,6 +366,16 @@ export class ChatTranscriptBuilder {
 		this.#pendingTools.delete(message.toolCallId);
 		if (message.toolName === "job" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
 			this.#waitingPoll = pending;
+		} else if (
+			message.toolName === "todo" &&
+			pending instanceof ToolExecutionComponent &&
+			pending.canBeDisplacedBy("todo")
+		) {
+			// A successful todo result supersedes the prior live snapshot. Failed
+			// follow-ups return false from canBeDisplacedBy("todo"), so the
+			// last-good panel stays on screen.
+			this.#resolveTodoSnapshot("todo");
+			this.#todoSnapshot = pending;
 		}
 	}
 

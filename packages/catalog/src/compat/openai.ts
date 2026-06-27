@@ -167,6 +167,53 @@ function detectStrictModeSupport(provider: string, baseUrl: string): boolean {
 }
 
 /**
+ * Local OpenAI-compatible inference servers whose chat templates re-tokenize
+ * the entire prompt every request — llama.cpp prefix-KV-cache reuse only
+ * survives when the rendered tokens stay byte-identical across turns. The
+ * runtime auto-enables {@link OpenAICompat.replayReasoningContent} for these
+ * providers (and for any provider pointed at a loopback / RFC1918 baseUrl) so
+ * Qwen3 / DeepSeek-R1 / GLM templates can reconstruct the prior assistant
+ * turn's `<think>` block from `reasoning_content` (#3528).
+ */
+const LOCAL_OPENAI_COMPAT_PROVIDERS = new Set(["llama.cpp", "lm-studio", "vllm", "ollama"]);
+
+/**
+ * Local proxy providers that share the loopback-default baseUrl but forward
+ * to an unrelated upstream (OpenAI, Anthropic, …) rather than running a
+ * chat-template renderer themselves — `replayReasoningContent` would push
+ * `reasoning_content` to the upstream, which gains no KV-cache benefit and
+ * may 400 on the extra field. Excluded from BOTH the provider check above
+ * and the loopback heuristic below; users who want the replay on a custom
+ * proxy setup can opt in via the sparse `compat.replayReasoningContent`
+ * override.
+ */
+const PROXY_OPENAI_COMPAT_PROVIDERS = new Set(["litellm"]);
+
+function hasLocalLoopbackBaseUrl(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return false;
+	let hostname: string;
+	try {
+		hostname = new URL(baseUrl).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	if (
+		hostname === "localhost" ||
+		hostname === "127.0.0.1" ||
+		hostname === "0.0.0.0" ||
+		hostname === "::1" ||
+		hostname === "[::1]"
+	) {
+		return true;
+	}
+	if (/^10\./.test(hostname)) return true;
+	if (/^192\.168\./.test(hostname)) return true;
+	if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname)) return true;
+	if (hostname.endsWith(".local")) return true;
+	return false;
+}
+
+/**
  * Build the resolved chat-completions compat record for a model spec.
  * Provider takes precedence over URL-based detection since it's explicitly configured.
  */
@@ -356,6 +403,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		disableReasoningOnToolChoice: isDeepseekFamily && Boolean(spec.reasoning) && !isOpenRouter,
 		supportsToolChoice: !isDirectDeepseekReasoning,
 		supportsForcedToolChoice: true,
+		supportsNamedToolChoice: provider !== "llama.cpp",
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: isMistral,
 		requiresAssistantAfterToolResult: isMistral,
@@ -374,7 +422,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		reasoningDisableMode: resolveReasoningDisableMode(thinkingFormat),
 		omitReasoningEffort: false,
 		includeEncryptedReasoning: true,
-		filterReasoningHistory: false,
+		filterReasoningHistory: isOpenRouter && isAnthropicModel,
 		thinkingKeep: usesMoonshotKimiPreservedThinking ? "all" : undefined,
 		reasoningContentField: "reasoning_content",
 		// Backends that 400 follow-up requests when prior assistant tool-call turns lack `reasoning_content`:
@@ -400,6 +448,41 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		// DeepSeek V4 and Xiaomi MiMo reject synthetic reasoning_content placeholders (".") on tool-call turns.
 		// Kimi and OpenRouter accept them when actual reasoning is unavailable.
 		allowsSyntheticReasoningContentForToolCalls: (!isDeepseekFamily || !spec.reasoning) && !isXiaomiMimo,
+		// Local llama.cpp-style servers re-tokenize the entire chat-template
+		// prompt each request; Qwen3 / DeepSeek-R1 / GLM templates reconstruct
+		// the prior assistant turn's `<think>` block from `reasoning_content`,
+		// so dropping the field re-renders the assistant turn without thinking
+		// content and forces full prompt re-processing (#3528). The
+		// `requires*ReasoningContent*` flags above stay off for these hosts —
+		// they accept but don't validate the field — so the encoder needs a
+		// distinct opt-in to replay on every reasoning turn. NOT gated on
+		// `spec.reasoning`: the runtime discovery paths for `llama.cpp` /
+		// `lm-studio` / `openai-models-list` hardcode `reasoning: false`
+		// because the upstream `/models` endpoints don't advertise the
+		// capability, but the OpenAI stream parser still records incoming
+		// `reasoning_content` deltas as thinking blocks. Gating on the spec
+		// flag would leave every discovered local Qwen / DeepSeek model
+		// re-triggering #3528. The encoder only writes `reasoning_content`
+		// when a thinking block actually exists on the turn
+		// (`nonEmptyThinkingBlocks.length > 0`), so the flag is a no-op on
+		// pure-text histories.
+		replayReasoningContent:
+			!PROXY_OPENAI_COMPAT_PROVIDERS.has(provider) &&
+			(LOCAL_OPENAI_COMPAT_PROVIDERS.has(provider) || hasLocalLoopbackBaseUrl(baseUrl)),
+		// `preserve_thinking: true` makes the Qwen3.6+ chat template render
+		// `<think>...</think>` for older assistant turns too, instead of
+		// stripping it the moment a new user message moves them past
+		// `last_query_index`. Without it, the slot's KV cache (which holds the
+		// raw `<think>X</think>` tokens emitted during generation) diverges
+		// from the next-turn render and llama.cpp falls back to full prompt
+		// re-processing — the exact symptom reported in #3541. Auto-enabled
+		// for Qwen thinking dialects on local llama.cpp-style backends (paired
+		// with `replayReasoningContent` above). Non-Qwen templates ignore the
+		// parameter, so the flag stays a no-op outside the Qwen path.
+		qwenPreserveThinking:
+			(thinkingFormat === "qwen" || thinkingFormat === "qwen-chat-template") &&
+			!PROXY_OPENAI_COMPAT_PROVIDERS.has(provider) &&
+			(LOCAL_OPENAI_COMPAT_PROVIDERS.has(provider) || hasLocalLoopbackBaseUrl(baseUrl)),
 		requiresAssistantContentForToolCalls: isKimiModel || isDirectDeepseekReasoning,
 		cacheControlFormat: isOpenRouter && spec.id.startsWith("anthropic/") ? "anthropic" : undefined,
 		openRouterRouting: undefined,
@@ -480,6 +563,7 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 	const id = spec.id ?? "";
 	const thinkingFormat: ResolvedOpenAISharedCompat["thinkingFormat"] = isOpenRouter ? "openrouter" : "openai";
 	const isKimiModel = id ? isKimiModelId(id) : false;
+	const isAnthropicModel = id ? isClaudeModelId(id) || isAnthropicNamespacedModelId(id) : false;
 	const isDeepseekFamily = id ? isDeepseekModelIdOrName(id) || isDeepseekModelIdOrName(spec.name) : false;
 	const reasoningCapable = Boolean(spec.reasoning);
 
@@ -505,17 +589,25 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		reasoningDisableMode: resolveReasoningDisableMode(thinkingFormat),
 		omitReasoningEffort: false,
 		includeEncryptedReasoning: spec.provider !== "xai-oauth",
-		filterReasoningHistory: spec.provider === "xai-oauth",
+		filterReasoningHistory: spec.provider === "xai-oauth" || (isOpenRouter && isAnthropicModel),
 		disableReasoningOnForcedToolChoice: isKimiModel,
 		disableReasoningOnToolChoice: isDeepseekFamily && reasoningCapable && !isOpenRouter,
 		supportsToolChoice: true,
 		supportsForcedToolChoice: true,
+		supportsNamedToolChoice: true,
 		reasoningContentField: "reasoning_content",
 		requiresReasoningContentForToolCalls:
 			(isKimiModel || (isDeepseekFamily && reasoningCapable) || (isOpenRouter && reasoningCapable)) &&
 			reasoningCapable,
 		requiresReasoningContentForAllAssistantTurns: isDeepseekFamily && reasoningCapable && !isOpenRouter,
 		allowsSyntheticReasoningContentForToolCalls: !isDeepseekFamily || !reasoningCapable,
+		// The Responses API replays reasoning through encrypted `summary` items,
+		// not via a top-level `reasoning_content` field — this flag is
+		// chat-completions-only.
+		replayReasoningContent: false,
+		// Responses-only; the Qwen `preserve_thinking` template knob lives on
+		// the chat-completions wire shape, never on Responses.
+		qwenPreserveThinking: false,
 		requiresThinkingAsText: false,
 		requiresMistralToolIds: false,
 		requiresToolResultName: false,

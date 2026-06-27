@@ -3,6 +3,7 @@ import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core
 import { type } from "arktype";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
 import { getThemeByName } from "../../modes/theme/theme";
+import advisorSystemPrompt from "../../prompts/advisor/system.md" with { type: "text" };
 import { SecretObfuscator } from "../../secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../session/session-history-format";
 import { YieldQueue } from "../../session/yield-queue";
@@ -21,6 +22,41 @@ import {
 } from "..";
 
 describe("advisor", () => {
+	describe("advisor system prompt", () => {
+		it("forbids concrete claims about tool arguments hidden from the advisor transcript", () => {
+			const messages = [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "search-timeout",
+							name: "grep",
+							arguments: { pattern: "needle", paths: ["packages/coding-agent/src"] },
+						},
+					],
+					timestamp: 1,
+				},
+				{
+					role: "toolResult",
+					toolCallId: "search-timeout",
+					toolName: "grep",
+					content: [{ type: "text", text: "timed out after 30s" }],
+					isError: true,
+					timestamp: 2,
+				},
+			] as unknown as AgentMessage[];
+
+			const rendered = formatSessionHistoryMarkdown(messages);
+
+			expect(rendered).toContain("→ search(needle @ packages/coding-agent/src) ⇒ error");
+			expect(rendered).not.toContain("paths[0]");
+			expect(advisorSystemPrompt).toContain("Arguments absent from the rendered transcript are UNKNOWN");
+			expect(advisorSystemPrompt).toContain("NEVER assert concrete values, array indexes");
+			expect(advisorSystemPrompt).toContain("NEVER claim `paths[0]`, array flattening, or malformed `paths`");
+		});
+	});
+
 	describe("formatSessionHistoryMarkdown includeThinking", () => {
 		it("includes thinking text when includeThinking is true", () => {
 			const thinking = "I should check the edge case first.";
@@ -197,6 +233,50 @@ describe("advisor", () => {
 			expect(onAdvice).toHaveBeenCalledWith("x", "concern");
 			expect(result.details).toEqual({ note: "x", severity: "concern" });
 			expect(result.useless).toBe(true);
+		});
+
+		it("suppresses duplicate advice notes from the same advisor session", async () => {
+			const onAdvice = vi.fn();
+			const tool = new AdviseTool(onAdvice);
+			const note = "I'll pause here and wait for the YAML revision.";
+
+			await tool.execute("tc-1", { note, severity: "nit" });
+			await tool.execute("tc-2", { note, severity: "nit" });
+
+			expect(onAdvice).toHaveBeenCalledTimes(1);
+			expect(onAdvice).toHaveBeenCalledWith(note, "nit");
+		});
+
+		it("allows the same advice after delivered-note memory resets", async () => {
+			const onAdvice = vi.fn();
+			const tool = new AdviseTool(onAdvice);
+			const note = "Acknowledged.";
+
+			await tool.execute("tc-1", { note, severity: "nit" });
+			tool.resetDeliveredNotes();
+			await tool.execute("tc-2", { note, severity: "nit" });
+
+			expect(onAdvice).toHaveBeenCalledTimes(2);
+			expect(onAdvice).toHaveBeenNthCalledWith(1, note, "nit");
+			expect(onAdvice).toHaveBeenNthCalledWith(2, note, "nit");
+		});
+
+		it("forwards escalations of an already-delivered note and suppresses downgrades", async () => {
+			const onAdvice = vi.fn();
+			const tool = new AdviseTool(onAdvice);
+			const note = "Rename collides with the existing helper.";
+
+			await tool.execute("tc-1", { note, severity: "nit" });
+			await tool.execute("tc-2", { note, severity: "concern" });
+			await tool.execute("tc-3", { note, severity: "blocker" });
+			// De-escalation back to nit or concern is treated as a duplicate.
+			await tool.execute("tc-4", { note, severity: "concern" });
+			await tool.execute("tc-5", { note, severity: "nit" });
+
+			expect(onAdvice).toHaveBeenCalledTimes(3);
+			expect(onAdvice).toHaveBeenNthCalledWith(1, note, "nit");
+			expect(onAdvice).toHaveBeenNthCalledWith(2, note, "concern");
+			expect(onAdvice).toHaveBeenNthCalledWith(3, note, "blocker");
 		});
 
 		it("validates parameters using ArkType", () => {
@@ -631,13 +711,13 @@ describe("advisor", () => {
 				} as AgentMessage,
 				{
 					role: "assistant",
-					content: [{ type: "toolCall", id: "b", name: "search", arguments: { pattern: "y" } }],
+					content: [{ type: "toolCall", id: "b", name: "grep", arguments: { pattern: "y" } }],
 					timestamp: 4,
 				} as unknown as AgentMessage,
 				{
 					role: "toolResult",
 					toolCallId: "b",
-					toolName: "search",
+					toolName: "grep",
 					content: [{ type: "text", text: "ok" }],
 					isError: false,
 					timestamp: 5,
@@ -964,9 +1044,9 @@ describe("advisor", () => {
 
 	describe("read-only tool allowlist", () => {
 		it("selects only the investigation tools from a mixed toolset", () => {
-			const toolset = ["read", "edit", "search", "bash", "find", "write", "advise"];
+			const toolset = ["read", "edit", "grep", "bash", "glob", "write", "advise"];
 			const selected = toolset.filter(name => ADVISOR_READONLY_TOOL_NAMES.has(name));
-			expect(selected).toEqual(["read", "search", "find"]);
+			expect(selected).toEqual(["read", "grep", "glob"]);
 			expect(ADVISOR_READONLY_TOOL_NAMES.has("edit")).toBe(false);
 			expect(ADVISOR_READONLY_TOOL_NAMES.has("bash")).toBe(false);
 			expect(ADVISOR_READONLY_TOOL_NAMES.has("write")).toBe(false);

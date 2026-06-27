@@ -35,6 +35,12 @@ import {
 } from "../tts/models";
 import { EDIT_MODES } from "../utils/edit-mode";
 import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_PREFERENCES, type SearchProviderId } from "../web/search/types";
+import {
+	SERVICE_TIER_INHERIT_OPTIONS,
+	SERVICE_TIER_INHERIT_SETTING_VALUES,
+	SERVICE_TIER_OPTIONS,
+	SERVICE_TIER_SETTING_VALUES,
+} from "./service-tier";
 
 /** Unified settings schema - single source of truth for all settings.
  *
@@ -283,13 +289,13 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	},
 	{
 		pattern: "^\\s*(grep|rg|ripgrep|ag|ack)\\s+",
-		tool: "search",
-		message: "Use the `search` tool instead of grep/rg. It respects .gitignore and provides structured output.",
+		tool: "grep",
+		message: "Use the `grep` tool instead of grep/rg. It respects .gitignore and provides structured output.",
 	},
 	{
 		pattern: "^\\s*(find|fd|locate)\\s+.*(-name|-iname|-type|--type|-glob)",
-		tool: "find",
-		message: "Use the `find` tool instead of find/fd. It respects .gitignore and is faster for glob patterns.",
+		tool: "glob",
+		message: "Use the `glob` tool instead of find/fd. It respects .gitignore and is faster for glob patterns.",
 	},
 	{
 		pattern: "^\\s*sed\\s+(-i|--in-place)",
@@ -784,6 +790,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tui.renderMermaid": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Render Mermaid Diagrams",
+			description: "Render Mermaid fenced code blocks as ASCII diagrams",
+		},
+	},
+
 	"tui.hyperlinks": {
 		type: "enum",
 		values: ["off", "auto", "always"] as const,
@@ -944,15 +961,37 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	inlineToolDescriptors: {
+	"model.loopGuard.toolCallReminder": {
 		type: "boolean",
-		default: false,
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Loop Guard Tool-Call Reminder",
+			description:
+				"When a Gemini reasoning stream emits many consecutive planning headers without calling a tool, interrupt it and inject a reminder to issue a tool call (requires Loop Guard)",
+		},
+	},
+
+	inlineToolDescriptors: {
+		type: "enum",
+		values: ["auto", "on", "off"] as const,
+		default: "auto",
 		ui: {
 			tab: "model",
 			group: "Prompt",
 			label: "Inline Tool Descriptors",
 			description:
-				"Render full tool descriptors in the system prompt and strip top-level/nested descriptions from provider tool schemas so descriptor text is sent once",
+				"Render full tool descriptors in the system prompt and strip top-level/nested descriptions from provider tool schemas so descriptor text is sent once. Auto enables this for Gemini models and disables it otherwise",
+			options: [
+				{
+					value: "auto",
+					label: "Auto",
+					description: "Inline descriptors for Gemini models; keep them in tool schemas otherwise",
+				},
+				{ value: "on", label: "On", description: "Always inline descriptors in the system prompt" },
+				{ value: "off", label: "Off", description: "Keep descriptors in provider tool schemas only" },
+			],
 		},
 	},
 
@@ -1122,7 +1161,7 @@ export const SETTINGS_SCHEMA = {
 
 	serviceTier: {
 		type: "enum",
-		values: ["none", "auto", "default", "flex", "scale", "priority", "openai-only", "claude-only"] as const,
+		values: SERVICE_TIER_SETTING_VALUES,
 		default: "none",
 		ui: {
 			tab: "model",
@@ -1130,28 +1169,36 @@ export const SETTINGS_SCHEMA = {
 			label: "Service Tier",
 			description:
 				'Processing priority hint (none = omit). OpenAI accepts the tier values directly; Anthropic realizes `priority` as `speed: "fast"` on supported Opus models. Scoped values target one family.',
-			options: [
-				{ value: "none", label: "None", description: "Omit service_tier parameter" },
-				{ value: "auto", label: "Auto", description: "Use provider default tier selection (OpenAI)" },
-				{ value: "default", label: "Default", description: "Standard priority processing (OpenAI)" },
-				{ value: "flex", label: "Flex", description: "Flexible capacity tier when available (OpenAI)" },
-				{ value: "scale", label: "Scale", description: "Scale Tier credits when available (OpenAI)" },
-				{
-					value: "priority",
-					label: "Priority",
-					description: "Priority on every supported provider (OpenAI `service_tier`, Anthropic fast mode)",
-				},
-				{
-					value: "openai-only",
-					label: "Priority (OpenAI only)",
-					description: "Priority on OpenAI/OpenAI-Codex requests; ignored elsewhere",
-				},
-				{
-					value: "claude-only",
-					label: "Priority (Claude only)",
-					description: "Anthropic fast mode on direct Claude requests; ignored elsewhere (incl. Bedrock/Vertex)",
-				},
-			],
+			options: SERVICE_TIER_OPTIONS,
+		},
+	},
+
+	serviceTierSubagent: {
+		type: "enum",
+		values: SERVICE_TIER_INHERIT_SETTING_VALUES,
+		default: "inherit",
+		ui: {
+			tab: "model",
+			group: "Sampling",
+			label: "Service Tier - Subagent",
+			description:
+				"Service Tier for spawned task/eval subagents. Inherit = match the main agent's live tier (tracks /fast); pick a value to scope subagents independently.",
+			options: SERVICE_TIER_INHERIT_OPTIONS,
+		},
+	},
+
+	serviceTierAdvisor: {
+		type: "enum",
+		values: SERVICE_TIER_INHERIT_SETTING_VALUES,
+		default: "none",
+		ui: {
+			tab: "model",
+			group: "Sampling",
+			label: "Service Tier - Advisor",
+			description:
+				"Service Tier for the advisor model. None = standard processing; Inherit = match the main agent's live tier; pick a value (e.g. Priority) to run the advisor on a faster serving path.",
+			options: SERVICE_TIER_INHERIT_OPTIONS,
+			condition: "advisorEnabled",
 		},
 	},
 
@@ -1683,6 +1730,17 @@ export const SETTINGS_SCHEMA = {
 			group: "Compaction",
 			label: "Auto-Compact",
 			description: "Automatically compact context when it gets too large",
+		},
+	},
+
+	"compaction.midTurnEnabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "Compaction",
+			label: "Mid-Turn Compaction",
+			description: "Check thresholds at safe mid-turn tool-loop boundaries before the next provider request",
 		},
 	},
 
@@ -3192,37 +3250,37 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Search and AST tools
-	"find.enabled": {
+	// Grep, glob, and AST tools
+	"glob.enabled": {
 		type: "boolean",
 		default: true,
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
-			label: "Find",
-			description: "Enable the find tool for glob-based file lookup",
+			label: "Glob",
+			description: "Enable the glob tool for glob-based file lookup",
 		},
 	},
 
-	"search.enabled": {
+	"grep.enabled": {
 		type: "boolean",
 		default: true,
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
-			label: "Search",
-			description: "Enable the search tool for regex content search",
+			label: "Grep",
+			description: "Enable the grep tool for regex content search",
 		},
 	},
 
-	"search.contextBefore": {
+	"grep.contextBefore": {
 		type: "number",
 		default: 1,
 		ui: {
 			tab: "tools",
-			group: "Search & Browser",
-			label: "Search Context Before",
-			description: "Lines of context before each search match",
+			group: "Grep & Browser",
+			label: "Grep Context Before",
+			description: "Lines of context before each grep match",
 			options: [
 				{ value: "0", label: "0 lines" },
 				{ value: "1", label: "1 line" },
@@ -3233,14 +3291,14 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"search.contextAfter": {
+	"grep.contextAfter": {
 		type: "number",
 		default: 3,
 		ui: {
 			tab: "tools",
-			group: "Search & Browser",
-			label: "Search Context After",
-			description: "Lines of context after each search match",
+			group: "Grep & Browser",
+			label: "Grep Context After",
+			description: "Lines of context after each grep match",
 			options: [
 				{ value: "0", label: "0 lines" },
 				{ value: "1", label: "1 line" },
@@ -3572,7 +3630,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "Essential Tools Override",
 			description:
-				"Override the always-loaded built-in tools (default: read, bash, edit, write, find, eval). Leave empty to use defaults.",
+				"Override the always-loaded built-in tools (default: read, bash, edit, write, glob, eval). Leave empty to use defaults.",
 		},
 	},
 
@@ -3772,6 +3830,18 @@ export const SETTINGS_SCHEMA = {
 				{ value: "generic", label: "Generic", description: "Static commit message" },
 				{ value: "ai", label: "AI", description: "AI-generated commit message from diff" },
 			],
+		},
+	},
+
+	"worktree.base": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tasks",
+			group: "Isolation",
+			label: "Worktree Base Directory",
+			description:
+				"Base directory for agent-managed worktrees — task-isolation copies, `github` PR checkouts, and `omp worktree` cleanup all live here. Unset uses ~/.omp/wt. Must be an absolute or ~-relative path; relative paths are ignored. The OMP_WORKTREE_DIR env var overrides this.",
 		},
 	},
 
@@ -4041,6 +4111,17 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// Provider selection
+	"providers.ollama-cloud.maxConcurrency": {
+		type: "number",
+		default: 3,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Ollama Cloud Max Concurrency",
+			description:
+				"Maximum concurrent Ollama Cloud subagent runs per process; 0 disables the provider-specific limit",
+		},
+	},
 	"providers.webSearch": {
 		type: "enum",
 		values: SEARCH_PROVIDER_PREFERENCES,
@@ -4605,6 +4686,18 @@ export const SETTINGS_SCHEMA = {
 		default: "unset" as const,
 	},
 
+	"gc.blobs": { type: "boolean", default: true },
+
+	"gc.archive": { type: "boolean", default: true },
+
+	"gc.wal": { type: "boolean", default: true },
+
+	"gc.coldArchiveAfterDays": { type: "number", default: 30 },
+
+	"gc.retainNewestGlobal": { type: "number", default: 20 },
+
+	"gc.retainNewestPerCwd": { type: "number", default: 10 },
+
 	"thinkingBudgets.minimal": { type: "number", default: 1024 },
 
 	"thinkingBudgets.low": { type: "number", default: 2048 },
@@ -4706,6 +4799,7 @@ export interface CompactionSettings {
 	thresholdTokens: number;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	midTurnEnabled: boolean;
 	handoffSaveToDisk: boolean;
 	autoContinue: boolean;
 	remoteEnabled: boolean;
@@ -4850,6 +4944,15 @@ export interface CodexResetsSettings {
 	keepCredits: number;
 }
 
+export interface GcSettings {
+	blobs: boolean;
+	archive: boolean;
+	wal: boolean;
+	coldArchiveAfterDays: number;
+	retainNewestGlobal: number;
+	retainNewestPerCwd: number;
+}
+
 /** Map group prefix -> typed settings interface */
 export interface GroupTypeMap {
 	compaction: CompactionSettings;
@@ -4869,6 +4972,7 @@ export interface GroupTypeMap {
 	cycleOrder: string[];
 	shellMinimizer: ShellMinimizerSettings;
 	codexResets: CodexResetsSettings;
+	gc: GcSettings;
 }
 
 export type GroupPrefix = keyof GroupTypeMap;

@@ -317,6 +317,24 @@ export class UiHelpers {
 			// updateResult armed.
 			previous.seal();
 		};
+		let todoSnapshot: ToolExecutionComponent | null = null;
+		const resolveTodoSnapshot = (nextToolName?: string) => {
+			const previous = todoSnapshot;
+			if (!previous) return;
+			if (!previous.isDisplaceableBlock()) {
+				todoSnapshot = null;
+				return;
+			}
+			if (previous.canBeDisplacedBy(nextToolName)) {
+				todoSnapshot = null;
+				this.ctx.chatContainer.removeChild(previous);
+				previous.seal();
+				return;
+			}
+			if (nextToolName !== undefined) return;
+			todoSnapshot = null;
+			previous.seal();
+		};
 		const messages = sessionContext.messages;
 		const count = messages.length;
 		for (let i = 0; i < count; i++) {
@@ -477,11 +495,22 @@ export class UiHelpers {
 						component.isDisplaceableBlock()
 					) {
 						waitingPoll = component;
+					} else if (
+						message.toolName === "todo" &&
+						component instanceof ToolExecutionComponent &&
+						component.canBeDisplacedBy("todo")
+					) {
+						// A successful todo result supersedes the prior live snapshot. Failed
+						// follow-ups return false from canBeDisplacedBy("todo"), so the
+						// last-good panel stays on screen.
+						resolveTodoSnapshot("todo");
+						todoSnapshot = component;
 					}
 				}
 			} else {
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
+				if (message.role === "user") resolveTodoSnapshot();
 				// All other messages use standard rendering
 				this.ctx.addMessageToChat(message, options);
 			}
@@ -495,6 +524,17 @@ export class UiHelpers {
 		// A trailing waiting poll is final history on rebuild; seal it so it
 		// freezes (and its spinner timer stops) like every other block.
 		resolveWaitingPoll();
+		// A trailing todo snapshot is live state, not history: when the rebuild
+		// runs mid-turn (settings overlay close, focus attach during streaming),
+		// hand it back to the controller so a follow-up `todo` update keeps
+		// displacing instead of stacking. Idle rebuilds (resume / compaction)
+		// fall through to the seal path so the snapshot freezes as history.
+		if (todoSnapshot && this.ctx.session?.isStreaming) {
+			this.ctx.eventController?.inheritDisplaceableTodo(todoSnapshot);
+			todoSnapshot = null;
+		} else {
+			resolveTodoSnapshot();
+		}
 
 		this.ctx.pendingTools.clear();
 		this.ctx.ui.requestRender();
@@ -517,9 +557,9 @@ export class UiHelpers {
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
-		// Display always uses the full-history transcript: compactions show as
-		// inline dividers instead of restarting the visible conversation.
-		const context = this.ctx.viewSession.buildTranscriptSessionContext();
+		// Live display uses the compacted transcript tail; export/resume callers
+		// can still request the full inline compaction history.
+		const context = this.ctx.viewSession.buildTranscriptSessionContext({ collapseCompactedHistory: true });
 		this.ctx.renderSessionContext(context, {
 			updateFooter: true,
 			populateHistory: !this.ctx.focusedAgentId,

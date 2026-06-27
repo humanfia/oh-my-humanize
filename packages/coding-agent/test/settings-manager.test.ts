@@ -153,6 +153,12 @@ describe("Settings", () => {
 			const nestedLegacy = { snapcompact: { systemPrompt: false } } as Partial<Record<SettingPath, unknown>>;
 			expect(Settings.isolated(nestedLegacy).get("snapcompact.systemPrompt")).toBe("none");
 		});
+
+		it("migrates legacy inlineToolDescriptors booleans to the on/off enum", () => {
+			expect(Settings.isolated({ inlineToolDescriptors: true }).get("inlineToolDescriptors")).toBe("on");
+			expect(Settings.isolated({ inlineToolDescriptors: false }).get("inlineToolDescriptors")).toBe("off");
+			expect(Settings.isolated().get("inlineToolDescriptors")).toBe("auto");
+		});
 	});
 
 	describe("statusLine.sessionAccent hooks", () => {
@@ -364,6 +370,22 @@ describe("Settings", () => {
 		});
 	});
 
+	describe("getEditVariantForModel", () => {
+		it("matches configured model variants case-insensitively", async () => {
+			await writeSettings({
+				edit: {
+					modelVariants: {
+						kimi: "hashline",
+					},
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.getEditVariantForModel("openrouter/moonshotai/Kimi-K2-Instruct")).toBe("hashline");
+		});
+	});
+
 	describe("migrations", () => {
 		it("maps removed atom edit mode settings to hashline", async () => {
 			await writeSettings({
@@ -487,6 +509,69 @@ describe("Settings", () => {
 			await Settings.init({ cwd: projectDir, agentDir });
 
 			expect(fs.readFileSync(path.join(agentDir, "last-changelog-version"), "utf8")).toBe("0.41.0");
+		});
+
+		it("migrates legacy find and search settings to glob and grep", async () => {
+			await writeSettings({
+				find: { enabled: false },
+				search: {
+					enabled: false,
+					contextBefore: 2,
+					contextAfter: 5,
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("glob.enabled")).toBe(false);
+			expect(settings.get("grep.enabled")).toBe(false);
+			expect(settings.get("grep.contextBefore")).toBe(2);
+			expect(settings.get("grep.contextAfter")).toBe(5);
+		});
+
+		it("migrates flat legacy find and search settings keys to nested glob and grep", async () => {
+			await writeSettings({
+				"find.enabled": false,
+				"search.enabled": false,
+				"search.contextBefore": 2,
+				"search.contextAfter": 5,
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("glob.enabled")).toBe(false);
+			expect(settings.get("grep.enabled")).toBe(false);
+			expect(settings.get("grep.contextBefore")).toBe(2);
+			expect(settings.get("grep.contextAfter")).toBe(5);
+		});
+
+		it("does not clobber existing glob/grep settings when migrating legacy find/search ones", async () => {
+			await writeSettings({
+				find: { enabled: false },
+				glob: { enabled: true },
+				search: { enabled: false },
+				grep: { enabled: true },
+				"find.enabled": false,
+				"glob.enabled": true,
+				"search.enabled": false,
+				"grep.enabled": true,
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("glob.enabled")).toBe(true);
+			expect(settings.get("grep.enabled")).toBe(true);
+		});
+
+		it("migrates legacy tool names in persisted essential overrides", async () => {
+			await writeSettings({
+				tools: { essentialOverride: ["read", "find", "search", "grep"] },
+				"tools.essentialOverride": ["find", "search", "read"],
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("tools.essentialOverride")).toEqual(["read", "glob", "grep"]);
 		});
 
 		it("migrates from settings.json containing comments", async () => {

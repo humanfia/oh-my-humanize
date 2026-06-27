@@ -162,7 +162,7 @@ export declare function __ompInstallTokioRuntime(): void
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV16_1_16(): void
+export declare function __piNativesV16_1_23(): void
 
 /**
  * Apply conservative pre-execution rewrites to a bash command.
@@ -1376,6 +1376,8 @@ export interface SearchResult {
   /** Error message, if any. */
   error?: string
 }
+
+export declare function setHangulCompatJamoWidthOverride(value: number): void
 
 /** Options for executing a shell command via brush-core. */
 export interface ShellExecuteOptions {

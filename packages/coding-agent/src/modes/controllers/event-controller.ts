@@ -5,7 +5,7 @@ import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
-import type { AssistantMessageComponent } from "../../modes/components/assistant-message";
+import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
 import {
 	ReadToolGroupComponent,
@@ -77,17 +77,22 @@ export class EventController {
 	// one persistent poll instead of a stack of "waiting on N jobs" frames —
 	// and sealed in place the moment anything else lands below it.
 	#displaceablePollComponent: ToolExecutionComponent | undefined = undefined;
+	// Most recent successful `todo` snapshot in the active turn. It stays live
+	// across intervening tool output so a later `todo` update can replace the
+	// old full list; the turn boundary seals the final snapshot as history.
+	#displaceableTodoComponent: ToolExecutionComponent | undefined = undefined;
 	// Most recent TTSR notification block. A new ttsr_triggered event merges its
 	// rules into this block while it is still the (live-region) transcript tail.
 	#lastTtsrNotification: TtsrNotificationComponent | undefined = undefined;
 	#streamingReveal: StreamingRevealController;
 	#toolArgsReveal: ToolArgsRevealController;
+	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
 
 	constructor(private ctx: InteractiveModeContext) {
 		this.#streamingReveal = new StreamingRevealController({
 			getSmoothStreaming: () => this.ctx.settings.get("display.smoothStreaming"),
-			getHideThinkingBlock: () => this.ctx.hideThinkingBlock,
+			getHideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			getProseOnlyThinking: () => this.ctx.proseOnlyThinking,
 			requestRender: () => this.ctx.ui.requestRender(),
 		});
@@ -120,7 +125,27 @@ export class EventController {
 			thinking_level_changed: async () => {
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
-				this.ctx.ui.requestRender();
+				const hideThinking = this.ctx.effectiveHideThinkingBlock;
+				// Only do the expensive full resetDisplay when the effective
+				// visibility actually changed. Auto-classification (e.g. high→medium)
+				// emits thinking_level_changed without changing visibility — a full
+				// terminal replay for those would be disruptive.
+				if (hideThinking === this.#prevHideThinking) {
+					this.ctx.ui.requestRender();
+					return;
+				}
+				this.#prevHideThinking = hideThinking;
+				// Propagate visibility to existing rendered messages.
+				for (const child of this.ctx.chatContainer.children) {
+					if (child instanceof AssistantMessageComponent) {
+						child.setHideThinkingBlock(hideThinking);
+					}
+				}
+				if (this.ctx.streamingComponent && this.ctx.streamingMessage) {
+					this.ctx.streamingComponent.setHideThinkingBlock(hideThinking);
+					this.#streamingReveal.resyncVisibility();
+				}
+				this.ctx.ui.resetDisplay();
 			},
 			goal_updated: async () => {},
 		} satisfies AgentSessionEventHandlers;
@@ -226,6 +251,7 @@ export class EventController {
 		this.#ircExpiryTimers.clear();
 		this.#liveIrcCards.clear();
 		this.#displaceablePollComponent = undefined;
+		this.#displaceableTodoComponent = undefined;
 		this.#lastTtsrNotification = undefined;
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
@@ -248,6 +274,7 @@ export class EventController {
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
 		this.#resetReadGroup();
+		this.#resolveDisplaceableTodo();
 		this.#lastAssistantComponent = undefined;
 		// Restore the previous turn's inline error in the transcript before dropping
 		// the banner, so the error stays in history once the banner is gone.
@@ -296,6 +323,7 @@ export class EventController {
 
 			this.#resetReadGroup();
 			this.#resolveDisplaceablePoll();
+			this.#resolveDisplaceableTodo();
 			const wasOptimistic = this.ctx.optimisticUserMessageSignature === signature;
 			const matchedLocalSubmission = this.ctx.locallySubmittedUserSignatures.delete(signature);
 			const replacesOptimistic =
@@ -421,6 +449,38 @@ export class EventController {
 		// just-removed component it only clears the animation timer).
 		previous.seal();
 		this.ctx.ui.requestRender();
+	}
+
+	#resolveDisplaceableTodo(nextToolName?: string): void {
+		const previous = this.#displaceableTodoComponent;
+		if (!previous) return;
+		if (!previous.isDisplaceableBlock()) {
+			this.#displaceableTodoComponent = undefined;
+			return;
+		}
+		if (previous.canBeDisplacedBy(nextToolName)) {
+			this.#displaceableTodoComponent = undefined;
+			this.ctx.chatContainer.removeChild(previous);
+			previous.seal();
+			this.ctx.ui.requestRender();
+			return;
+		}
+		if (nextToolName !== undefined) return;
+		this.#displaceableTodoComponent = undefined;
+		previous.seal();
+		this.ctx.ui.requestRender();
+	}
+
+	/**
+	 * Adopt a rebuilt-tail todo snapshot as the controller's tracked live
+	 * snapshot. Used by rebuild paths (settings/extensions overlay close, focus
+	 * attach, /resume) to preserve displacement continuity when a turn is still
+	 * active — without this, the next same-turn `todo` update would stack
+	 * another panel because the controller's tracker was reset before rebuild.
+	 * Drops the candidate when it is no longer a displaceable todo.
+	 */
+	inheritDisplaceableTodo(component: ToolExecutionComponent | null | undefined): void {
+		this.#displaceableTodoComponent = component?.canBeDisplacedBy("todo") ? component : undefined;
 	}
 
 	async #handleNotice(event: Extract<AgentSessionEvent, { type: "notice" }>): Promise<void> {
@@ -699,8 +759,8 @@ export class EventController {
 
 	async #handleToolExecutionStart(event: Extract<AgentSessionEvent, { type: "tool_execution_start" }>): Promise<void> {
 		this.#updateWorkingMessageFromIntent(event.intent);
+		this.#resolveDisplaceablePoll(event.toolName);
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
-			this.#resolveDisplaceablePoll(event.toolName);
 			if (event.toolName === "read" && readArgsHaveTarget(event.args) && !readArgsTargetInternalUrl(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				const component = this.ctx.pendingTools.get(event.toolCallId);
@@ -830,13 +890,22 @@ export class EventController {
 					this.ctx.pendingTools.delete(event.toolCallId);
 					this.#backgroundToolCallIds.delete(event.toolCallId);
 				}
-				if (
-					event.toolName === "job" &&
-					component instanceof ToolExecutionComponent &&
-					component.isDisplaceableBlock()
-				) {
-					// Remember the waiting poll so the next `job` call can displace it.
-					this.#displaceablePollComponent = component;
+				if (component instanceof ToolExecutionComponent && component.isDisplaceableBlock()) {
+					if (event.toolName === "job" && component.canBeDisplacedBy("job")) {
+						// Remember the waiting poll so the next `job` call can displace it.
+						this.#displaceablePollComponent = component;
+					} else if (event.toolName === "todo" && component.canBeDisplacedBy("todo")) {
+						// Successful todo update supersedes the prior live snapshot. A failed
+						// follow-up never reaches this branch (canBeDisplacedBy("todo") returns
+						// false for errored results), so the last-good panel stays on screen.
+						const previous = this.#displaceableTodoComponent;
+						if (previous && previous !== component && previous.isDisplaceableBlock()) {
+							this.#displaceableTodoComponent = undefined;
+							this.ctx.chatContainer.removeChild(previous);
+							previous.seal();
+						}
+						this.#displaceableTodoComponent = component;
+					}
 				}
 				this.ctx.ui.requestRender();
 			}
@@ -918,6 +987,7 @@ export class EventController {
 		// The turn is over: nothing else lands this turn, so the waiting poll is
 		// final history — seal it instead of letting its spinner tick while idle.
 		this.#resolveDisplaceablePoll();
+		this.#resolveDisplaceableTodo();
 		this.#lastAssistantComponent = undefined;
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();

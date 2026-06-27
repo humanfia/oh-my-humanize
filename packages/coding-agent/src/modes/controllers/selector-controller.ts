@@ -22,6 +22,7 @@ import {
 	getSymbolTheme,
 	previewTheme,
 	setColorBlindMode,
+	setMarkdownMermaidRendering,
 	setSymbolPreset,
 	setTheme,
 	theme,
@@ -84,6 +85,22 @@ export class SelectorController {
 			),
 		);
 	}
+
+	/**
+	 * Restore keyboard focus to whatever currently owns the editor slot. The
+	 * slot can hold the editor itself or a hook selector/input/editor pushed
+	 * in by `ExtensionUiController` — e.g. an approval prompt that fired while
+	 * a fullscreen overlay was up. `overlayHandle.hide()` restores focus to
+	 * the component focused when the overlay opened, which is stale in that
+	 * case (the editor was swapped out): keys land on a hidden editor and the
+	 * visible prompt receives nothing (issue #3349). Call this after the
+	 * overlay hides to re-target focus at the visible slot owner.
+	 */
+	focusActiveEditorArea(): void {
+		const visible = this.ctx.editorContainer.children[0] ?? this.ctx.editor;
+		this.ctx.ui.setFocus(visible);
+	}
+
 	/**
 	 * Shows a selector component in place of the editor.
 	 * @param create Factory that receives a `done` callback and returns the component and focus target
@@ -109,7 +126,7 @@ export class SelectorController {
 			let overlayHandle: OverlayHandle | undefined;
 			const done = () => {
 				overlayHandle?.hide();
-				this.ctx.ui.setFocus(this.ctx.editor);
+				this.focusActiveEditorArea();
 				this.ctx.ui.requestRender();
 			};
 			const selector = new SettingsSelectorComponent(
@@ -216,14 +233,19 @@ export class SelectorController {
 	 */
 	async showExtensionsDashboard(): Promise<void> {
 		const dashboard = await ExtensionDashboard.create(getProjectDir(), this.ctx.settings, this.ctx.ui.terminal.rows);
+		// Fullscreen dashboard on the alternate screen (the /settings idiom): the
+		// overlay borrows the terminal's alt buffer and enables mouse tracking for
+		// its lifetime, leaving the transcript untouched underneath.
 		const overlay = this.ctx.ui.showOverlay(dashboard, {
 			width: "100%",
 			maxHeight: "100%",
 			anchor: "top-left",
 			margin: 0,
+			fullscreen: true,
 		});
 		dashboard.onClose = () => {
 			overlay.hide();
+			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
 		dashboard.onRequestRender = () => {
@@ -251,6 +273,7 @@ export class SelectorController {
 		});
 		dashboard.onClose = () => {
 			overlay.hide();
+			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
 		dashboard.onRequestRender = () => {
@@ -318,7 +341,7 @@ export class SelectorController {
 				this.ctx.hideThinkingBlock = value as boolean;
 				for (const child of this.ctx.chatContainer.children) {
 					if (child instanceof AssistantMessageComponent) {
-						child.setHideThinkingBlock(value as boolean);
+						child.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 					}
 				}
 				// Full clear + replay so blocks frozen in committed scrollback on
@@ -350,6 +373,15 @@ export class SelectorController {
 				this.ctx.ui.invalidate();
 				this.ctx.updateEditorTopBorder();
 				this.ctx.ui.requestRender();
+				break;
+
+			case "tui.renderMermaid":
+				setMarkdownMermaidRendering(value as boolean);
+				this.ctx.session.refreshBaseSystemPrompt().catch(err => {
+					this.ctx.showError(`Failed to apply Mermaid rendering setting: ${err}`);
+				});
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
 				break;
 
 			case "theme": {
@@ -1270,7 +1302,7 @@ export class SelectorController {
 			getTool: name => this.ctx.session.getToolByName(name),
 			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
 			cwd: this.ctx.sessionManager.getCwd(),
-			hideThinkingBlock: () => this.ctx.hideThinkingBlock,
+			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
 			focusAgent: id => this.ctx.focusAgentSession(id),
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,

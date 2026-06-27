@@ -1,6 +1,21 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+
+- Added `REM` section op to delete files
+- Added `MV` section op to rename or move files, including snapshot history migration
+- Added whole-file `REM` and `MV DEST` section ops so a hashline patch can delete or rename/move files (optionally after line edits) without leaving the edit tool. `MV` relocates read/snapshot history to the destination path.
+
+## [16.1.23] - 2026-06-26
+
+### Added
+
+- Updated prompt documentation to include support for Markdown section operations
+
+### Fixed
+
+- Improved file path recovery to correctly handle read-only or incorrectly typed paths
 
 ### Changed
 

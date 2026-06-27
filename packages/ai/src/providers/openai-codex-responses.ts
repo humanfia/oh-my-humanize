@@ -14,6 +14,7 @@ import {
 	extractHttpStatusFromError,
 	fetchWithRetry,
 	logger,
+	parseStreamingJson,
 	readSseJson,
 	structuredCloneJSON,
 } from "@oh-my-pi/pi-utils";
@@ -51,7 +52,6 @@ import {
 	getOpenAIStreamIdleTimeoutMs,
 	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
-import { parseStreamingJson } from "../utils/json-parse";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
 import { adaptSchemaForStrict, NO_STRICT, sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
 import { notifyRawSseEvent } from "../utils/sse-debug";
@@ -61,6 +61,7 @@ import {
 	type CodexRequestOptions,
 	type InputItem,
 	type RequestBody,
+	shouldUseCodexResponsesLite,
 	transformRequestBody,
 } from "./openai-codex/request-transformer";
 import { CodexApiError } from "./openai-codex/response-handler";
@@ -697,7 +698,7 @@ async function buildCodexRequestContext(
 	};
 
 	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
-	const responsesLite = options?.responsesLite === true;
+	const responsesLite = shouldUseCodexResponsesLite(transformedBody, options?.responsesLite);
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (sessionKey && publicSessionKey) {

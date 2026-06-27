@@ -392,6 +392,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		// must not be killed by `task.maxRuntimeMs`. Force the limit off
 		// regardless of the inherited session setting.
 		maxRuntimeMs: 0,
+		keepAlive: false,
 		mcpManager,
 		contextFiles,
 		skills: availableSkills,
@@ -404,6 +405,8 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		parentMnemopiSessionState: options.session.getMnemopiSessionState?.(),
 		parentTelemetry: options.session.getTelemetry?.(),
 		parentAgentId: options.session.getAgentId?.() ?? MAIN_AGENT_ID,
+		// Live source of truth for `serviceTierSubagent: inherit` (null = explicit none).
+		parentServiceTier: options.session.getServiceTier ? (options.session.getServiceTier() ?? null) : undefined,
 		// Deliberately omit parentEvalSessionId: the parent's Python kernel is
 		// blocked on this bridge call, so sharing the eval session would deadlock
 		// (subagent queues behind the parent's in-flight execution, parent waits

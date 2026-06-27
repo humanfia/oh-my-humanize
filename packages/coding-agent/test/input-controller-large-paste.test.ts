@@ -15,15 +15,17 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 function createContext(options?: { threshold?: number; choice?: string; artifactsDir?: string }) {
 	const insertPaste = vi.fn();
 	const insertText = vi.fn();
+	const pasteText = vi.fn();
 	const requestRender = vi.fn();
 	const showStatus = vi.fn();
 	const showError = vi.fn();
 	const showHookSelector = vi.fn(async (_title: string, _options: unknown, _dialog?: unknown) => options?.choice);
 	const ctx = {
-		editor: { insertPaste, insertText } as unknown as InteractiveModeContext["editor"],
+		editor: { insertPaste, insertText, pasteText } as unknown as InteractiveModeContext["editor"],
 		ui: { requestRender } as unknown as InteractiveModeContext["ui"],
 		settings: { get: () => options?.threshold ?? 100 } as unknown as InteractiveModeContext["settings"],
 		sessionManager: {
+			getCwd: () => process.cwd(),
 			getArtifactsDir: () => options?.artifactsDir ?? null,
 			getSessionId: () => "test-session",
 		} as unknown as InteractiveModeContext["sessionManager"],
@@ -32,7 +34,10 @@ function createContext(options?: { threshold?: number; choice?: string; artifact
 		showError,
 	} as unknown as InteractiveModeContext;
 	const controller = new InputController(ctx);
-	return { controller, spies: { insertPaste, insertText, requestRender, showStatus, showError, showHookSelector } };
+	return {
+		controller,
+		spies: { insertPaste, insertText, pasteText, requestRender, showStatus, showError, showHookSelector },
+	};
 }
 
 afterEach(() => {

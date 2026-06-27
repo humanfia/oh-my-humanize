@@ -10,7 +10,13 @@ import type { ModelManagerOptions } from "../model-manager";
 import { getBundledModels } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec, Provider, ThinkingConfig } from "../types";
 import { isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
-import { COPILOT_API_HEADERS, getGitHubCopilotBaseUrl, parseGitHubCopilotApiKey } from "../wire/github-copilot";
+import { coreWeaveProjectHeaders } from "../wire/coreweave";
+import {
+	COPILOT_API_HEADERS,
+	getGitHubCopilotBaseUrl,
+	isPersonalGitHubCopilotBaseUrl,
+	parseGitHubCopilotApiKey,
+} from "../wire/github-copilot";
 import { createBundledReferenceMap, createReferenceResolver, toModelSpec } from "./bundled-references";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
@@ -465,7 +471,19 @@ function isLikelyNanoGptTextModelId(id: string): boolean {
 	return !NANO_GPT_NON_TEXT_MODEL_TOKENS.some(token => normalized.includes(token));
 }
 
-type SimpleProviderConfig = { apiKey?: string; baseUrl?: string; fetch?: FetchImpl };
+type SimpleProviderDiscoveryHeaders = Record<string, string> | (() => Record<string, string> | undefined);
+type SimpleProviderConfig = {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+	headers?: SimpleProviderDiscoveryHeaders;
+};
+
+function resolveSimpleProviderHeaders(
+	headers: SimpleProviderDiscoveryHeaders | undefined,
+): Record<string, string> | undefined {
+	return typeof headers === "function" ? headers() : headers;
+}
 
 export function createSimpleOpenAICompletionsOptions(
 	providerId: Parameters<typeof getBundledModels>[0],
@@ -484,6 +502,7 @@ export function createSimpleOpenAICompletionsOptions(
 					provider: providerId,
 					baseUrl,
 					apiKey,
+					headers: resolveSimpleProviderHeaders(config?.headers),
 					mapModel: (entry, defaults) => {
 						const reference = references.get(defaults.id);
 						return mapWithBundledReference(entry, defaults, reference);
@@ -511,6 +530,7 @@ function createSimpleOpenAIResponsesOptions(
 					provider: providerId,
 					baseUrl,
 					apiKey,
+					headers: resolveSimpleProviderHeaders(config?.headers),
 					mapModel: (entry, defaults) => {
 						const reference = references.get(defaults.id);
 						return mapWithBundledReference(entry, defaults, reference);
@@ -566,7 +586,9 @@ const UMANS_REASONING_EFFORT_BY_LEVEL: Record<string, Effort> = {
 	medium: Effort.Medium,
 	high: Effort.High,
 	xhigh: Effort.XHigh,
+	max: Effort.XHigh,
 };
+const UMANS_MAX_REASONING_EFFORT_MAP = { [Effort.XHigh]: "max" } as const;
 const UMANS_DEFAULT_REASONING_EFFORTS = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] as const;
 const UMANS_VIA_HANDOFF_MODEL_IDS = ["umans-glm-5.1", "umans-glm-5.2"] as const;
 
@@ -620,10 +642,20 @@ function mapUmansReasoningEfforts(value: unknown): readonly Effort[] {
 	return efforts.length > 0 ? efforts : UMANS_DEFAULT_REASONING_EFFORTS;
 }
 
+function umansHasMaxReasoningLevel(value: unknown): boolean {
+	return isRecord(value) && Array.isArray(value.levels) && value.levels.includes("max");
+}
+
 function mapUmansThinkingConfig(value: unknown): ThinkingConfig | undefined {
 	if (!umansReasoningSupported(value)) return undefined;
 	const efforts = mapUmansReasoningEfforts(value);
-	const thinking: ThinkingConfig = { mode: "budget", efforts };
+	const thinking: ThinkingConfig = {
+		mode: umansHasMaxReasoningLevel(value) ? "anthropic-budget-effort" : "budget",
+		efforts,
+	};
+	if (thinking.mode === "anthropic-budget-effort") {
+		thinking.effortMap = UMANS_MAX_REASONING_EFFORT_MAP;
+	}
 	if (isRecord(value)) {
 		if (value.can_disable === false) {
 			thinking.requiresEffort = true;
@@ -2464,6 +2496,25 @@ export function togetherModelManagerOptions(
 }
 
 // ---------------------------------------------------------------------------
+// 15.5 CoreWeave Serverless Inference
+// ---------------------------------------------------------------------------
+
+export interface CoreWeaveModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+export function coreWeaveModelManagerOptions(
+	config?: CoreWeaveModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	return createSimpleOpenAICompletionsOptions("coreweave", "https://api.inference.wandb.ai/v1", {
+		...config,
+		headers: () => coreWeaveProjectHeaders(Bun.env),
+	});
+}
+
+// ---------------------------------------------------------------------------
 // 16. Moonshot
 // ---------------------------------------------------------------------------
 
@@ -3113,10 +3164,16 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 								? entry.name
 								: (reference?.name ?? defaults.name);
 						const api = inferCopilotApi(defaults.id);
+						// `supports.vision` reports the model's intrinsic capability, but
+						// the business/enterprise endpoints respond `400 vision is not
+						// supported` on image inputs. Only honour the flag for the
+						// canonical personal-Copilot host.
 						const supportsVision = extractCopilotSupportsVision(entry);
-						const input: ModelSpec<Api>["input"] = supportsVision
-							? ["text", "image"]
-							: (reference?.input ?? defaults.input);
+						const input: ModelSpec<Api>["input"] = isPersonalGitHubCopilotBaseUrl(baseUrl)
+							? supportsVision
+								? ["text", "image"]
+								: (reference?.input ?? defaults.input)
+							: ["text"];
 						// With COPILOT_API_HEADERS the served window is the long-context
 						// ceiling; the default tier ends at token_prices.default.context_max
 						// prompt tokens. Cap the base entry to the default tier — the long
@@ -3630,6 +3687,19 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_CORE: readonly ModelsDevProviderDescriptor
 	openAiCompletionsDescriptor("cerebras", "cerebras", "https://api.cerebras.ai/v1"),
 	// --- Together ---
 	openAiCompletionsDescriptor("togetherai", "together", "https://api.together.xyz/v1"),
+	// --- CoreWeave Serverless Inference ---
+	openAiCompletionsDescriptor("wandb", "coreweave", "https://api.inference.wandb.ai/v1", {
+		transformModel: model => {
+			if (!model.id.startsWith("openai/gpt-oss-")) {
+				return model;
+			}
+			return {
+				...model,
+				reasoning: true,
+				thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High] },
+			};
+		},
+	}),
 	// --- NVIDIA ---
 	openAiCompletionsDescriptor("nvidia", "nvidia", "https://integrate.api.nvidia.com/v1", {
 		defaultContextWindow: 131072,

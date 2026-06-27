@@ -136,8 +136,8 @@ export {
 // Fail-safe: any unknown tool makes the agent not read-only.
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"read",
-	"search",
-	"find",
+	"grep",
+	"glob",
 	"web_search",
 	"ast_grep",
 	"yield",
@@ -802,13 +802,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					onSettled?.(true);
 					throw new Error("Aborted before execution");
 				}
-				markRunning();
-				progress.status = "running";
-				await reportProgress(
-					`Running background task ${agentId}...`,
-					buildDetails("running", ownJobId) as unknown as Record<string, unknown>,
-				);
 				try {
+					markRunning();
+					progress.status = "running";
+					await reportProgress(
+						`Running background task ${agentId}...`,
+						buildDetails("running", ownJobId) as unknown as Record<string, unknown>,
+					);
 					const result = await this.#executeSync(
 						toolCallId,
 						spawnParams,
@@ -1080,7 +1080,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 
 		const planModeState = this.session.getPlanModeState?.();
-		const planModeBaseTools = ["read", "search", "find", "lsp", "web_search"];
+		const planModeBaseTools = ["read", "grep", "glob", "lsp", "web_search"];
 		const planModeTools = [
 			...planModeBaseTools,
 			...(agent.tools ?? []).filter(
@@ -1313,6 +1313,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentEvalSessionId,
 				completionLifecycle: this.session.taskAgentCompletionLifecycle,
 				parentAgentId: this.session.getAgentId?.() ?? MAIN_AGENT_ID,
+				// Live source of truth for `serviceTierSubagent: inherit`. When the
+				// session exposes a tier accessor, pass tier-or-null (null = explicit
+				// none, e.g. /fast off); otherwise leave undefined so inherit falls
+				// back to the configured serviceTier setting.
+				parentServiceTier: this.session.getServiceTier ? (this.session.getServiceTier() ?? null) : undefined,
 			};
 
 			const runTask = async (): Promise<SingleResult> => {

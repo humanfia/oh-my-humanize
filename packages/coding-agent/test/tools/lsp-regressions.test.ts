@@ -7,7 +7,7 @@ import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers"
 import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
-import { getServersForFile, loadConfig } from "@oh-my-pi/pi-coding-agent/lsp/config";
+import { getServersForFile, type LspConfig, loadConfig } from "@oh-my-pi/pi-coding-agent/lsp/config";
 import { applyTextEditsToString, applyWorkspaceEdit } from "@oh-my-pi/pi-coding-agent/lsp/edits";
 import { renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
 import type {
@@ -2018,6 +2018,56 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");
+		try {
+			const server: ServerConfig = {
+				command: "test-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: ["package.json"],
+			};
+			const configs: LspConfig[] = [
+				{ servers: {}, idleTimeoutMs: undefined },
+				{ servers: { "test-lsp": server }, idleTimeoutMs: undefined },
+				{ servers: { "test-lsp": server }, idleTimeoutMs: undefined },
+			];
+			const loadConfigSpy = vi
+				.spyOn(lspConfig, "loadConfig")
+				.mockImplementation(() => configs.shift() ?? configs[0]);
+			const client = { proc: { kill: vi.fn() } } as unknown as LspClient;
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			vi.spyOn(lspClient, "sendRequest").mockResolvedValue(null);
+
+			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const initial = await tool.execute("reload-redetect-status", { action: "status" });
+			const initialOutput = initial.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+			expect(initialOutput).toContain("No language servers configured for this project");
+
+			const starResult = await tool.execute("reload-redetect-star", { action: "reload", file: "*" });
+			const starOutput = starResult.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			const omittedResult = await tool.execute("reload-redetect-omitted", { action: "reload" });
+			const omittedOutput = omittedResult.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			expect(loadConfigSpy).toHaveBeenCalledTimes(3);
+			expect(starOutput).toContain("Reloaded test-lsp");
+			expect(omittedOutput).toContain("Reloaded test-lsp");
+			expect(lspClient.getOrCreateClient).toHaveBeenCalledWith(server, tempDir.path());
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
 	it("status distinguishes configured servers from started clients", async () => {
 		// `loadConfig` claims rust-analyzer + tsls are configured, but only
 		// tsls has actually been spawned. Status must reflect that — claiming
@@ -2047,6 +2097,76 @@ describe("lsp regressions", () => {
 
 		expect(output).toContain("rust-analyzer (configured, not started)");
 		expect(output).toContain("typescript-language-server (ready)");
+	});
+
+	it("reload * invalidates the per-cwd config cache so newly written .omp/lsp.json is observed", async () => {
+		// #3546: `getConfig` caches the first `loadConfig` result per cwd
+		// permanently. Creating `.omp/lsp.json` after the first LSP call left
+		// the tool stuck on "No language servers configured" until the process
+		// restarted. `reload *` (the user's explicit refresh) must invalidate
+		// that cache so subsequent calls observe the fresh config from disk.
+		const tempDir = TempDir.createSync("@omp-lsp-config-cache-reload-");
+		try {
+			const cwd = tempDir.path();
+			const empty: LspConfig = { servers: {}, idleTimeoutMs: undefined };
+			const withServer: LspConfig = {
+				servers: {
+					"fake-pylsp": {
+						command: "true",
+						fileTypes: [".py"],
+						rootMarkers: [".python-root"],
+						resolvedCommand: "/bin/true",
+					},
+				},
+				idleTimeoutMs: undefined,
+			};
+			const loadConfigSpy = vi
+				.spyOn(lspConfig, "loadConfig")
+				.mockImplementation(() => (loadConfigSpy.mock.calls.length === 1 ? empty : withServer));
+			// Prevent any real LSP subprocess from spawning when reload iterates
+			// the refreshed server list — the spawn path would race with the
+			// test's teardown.
+			vi.spyOn(lspClient, "getOrCreateClient").mockRejectedValue(new Error("spawn suppressed in test"));
+			vi.spyOn(lspClient, "getActiveClients").mockReturnValue([]);
+
+			const tool = new LspTool({ cwd } as ToolSession);
+
+			const status1 = await tool.execute("cache-1", { action: "status" });
+			const text1 = status1.content
+				.filter(b => b.type === "text")
+				.map(b => b.text)
+				.join("\n");
+			expect(text1).toContain("No language servers configured");
+			expect(loadConfigSpy).toHaveBeenCalledTimes(1);
+
+			// Second status hits the cache — proves caching is the baseline, so
+			// the next assertion measures invalidation, not a missing cache.
+			await tool.execute("cache-2", { action: "status" });
+			expect(loadConfigSpy).toHaveBeenCalledTimes(1);
+
+			// `reload *` MUST drop the cached empty config and re-read from disk.
+			const reload = await tool.execute("cache-3", { action: "reload", file: "*" });
+			expect(loadConfigSpy).toHaveBeenCalledTimes(2);
+			const reloadText = reload.content
+				.filter(b => b.type === "text")
+				.map(b => b.text)
+				.join("\n");
+			// Spawn was suppressed, so the per-server output is the failure line —
+			// the contract under test is that the fresh server was even considered.
+			expect(reloadText).toContain("fake-pylsp");
+
+			// The refreshed config now sits in the cache; status sees the new
+			// server without another disk read.
+			const status3 = await tool.execute("cache-4", { action: "status" });
+			const text3 = status3.content
+				.filter(b => b.type === "text")
+				.map(b => b.text)
+				.join("\n");
+			expect(text3).toContain("fake-pylsp (configured, not started)");
+			expect(loadConfigSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			tempDir.removeSync();
+		}
 	});
 });
 
