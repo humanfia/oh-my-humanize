@@ -2151,6 +2151,127 @@ describe("example workflow scripts", () => {
 		}
 	});
 
+	it("allows durable workflow-output candidate paths while enforcing scratch roots", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-durable-artifact-path-guard-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		const runTmp = `${cwd}/run-tmp`;
+		process.env.OMH_RUN_TMP = runTmp;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			await Bun.write(
+				`${cwd}/task.md`,
+				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+			await Bun.write(
+				`${cwd}/workflow-output/perf-io.md`,
+				[
+					"# IO candidate",
+					"",
+					`worktree: ${runTmp}/worktrees/io`,
+					`apply-check cwd: ${runTmp}/apply-check/io`,
+					`git apply --check ${cwd}/workflow-output/perf-io-candidate.diff`,
+					"I did not use bare `/tmp`, `../workflow-scratch`, or `workflow-output/tmp`.",
+					"candidate patch path: workflow-output/perf-io-candidate.diff",
+				].join("\n"),
+			);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "benchmarkCandidates",
+				scriptFileName: "run-benchmark-validation.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/benchmark"],
+				initialState: {
+					task: {
+						text: await Bun.file(`${cwd}/task.md`).text(),
+						scratchRoot: runTmp,
+						benchmarkCommand: "echo benchmark",
+						validationCommand: "echo validation",
+					},
+				},
+			});
+
+			expect(result.scheduler.state.benchmark).toMatchObject({
+				status: "pass",
+				benchmarkExitCode: 0,
+				validationExitCode: 0,
+			});
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
+	it("blocks performance benchmark joins when branch evidence references workflow tmp scratch", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-workflow-tmp-reference-guard-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		process.env.OMH_RUN_TMP = `${cwd}/run-tmp`;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			await Bun.write(
+				`${cwd}/task.md`,
+				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+			await Bun.write(
+				`${cwd}/workflow-output/perf-io.md`,
+				[
+					"# IO candidate",
+					"",
+					`worktree: ${cwd}/workflow-output/tmp/io-worktree`,
+					"candidate patch path: workflow-output/perf-io-candidate.diff",
+				].join("\n"),
+			);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "benchmarkCandidates",
+				scriptFileName: "run-benchmark-validation.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/benchmark"],
+				initialState: {
+					task: {
+						text: await Bun.file(`${cwd}/task.md`).text(),
+						benchmarkCommand: "echo benchmark",
+						validationCommand: "echo validation",
+					},
+				},
+			});
+
+			expect(result.scheduler.state.benchmark).toMatchObject({
+				status: "fail",
+				isolationViolation: true,
+				disallowedScratchReferences: ["workflow-output/perf-io.md"],
+			});
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
 	it("archives performance no-win evidence when validation is blocked without retained project changes", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-no-win-validation-blocked-");
 		const cwd = tempDir.path();

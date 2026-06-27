@@ -257,12 +257,19 @@ function hasDisallowedScratchRoot(text, roots) {
 function scratchEvidenceLines(text) {
 	return text
 		.split(/\r?\n/u)
-		.filter(line => /\b(?:scratch|worktree|cwd|built from|applycheck|lane-local|run-local)\b/iu.test(line));
+		.filter(line => /\b(?:scratch|worktree|cwd|built from|applycheck|lane-local|run-local)\b/iu.test(line))
+		.filter(line => !isNegativeScratchDeclaration(line));
 }
 
 function extractEvidencePaths(line) {
 	const matches = line.match(/(?:\/[^\s`"'<>),;]+)+/gu);
 	return matches ?? [];
+}
+
+function isNegativeScratchDeclaration(line) {
+	return /\b(?:did not use|never used|not used|no)\b.{0,80}\b(?:\/tmp|workflow-output\/tmp|\.\.\/workflow-scratch)\b/iu.test(
+		line,
+	);
 }
 
 function normalizeAbsolutePath(path) {
