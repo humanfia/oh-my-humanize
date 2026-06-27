@@ -6,6 +6,10 @@ const selectionRepair = state.selectionRepair && typeof state.selectionRepair ==
 const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
 const reviewGate = reviewFinishGate(state.review);
 
+if (benchmark.isolationViolation === true) {
+	throw new Error("cannot archive performance search after a parallel lane isolation violation");
+}
+
 if (!reviewGate.passed) {
 	throw new Error(`cannot archive performance search before reviewer finish: ${reviewGate.reason}`);
 }

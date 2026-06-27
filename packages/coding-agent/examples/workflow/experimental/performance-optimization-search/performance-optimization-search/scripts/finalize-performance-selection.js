@@ -5,6 +5,10 @@ const selectionRepair = state.selectionRepair && typeof state.selectionRepair ==
 const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
 const reviewGate = reviewFinishGate(state.review);
 
+if (benchmark.isolationViolation === true) {
+	throw new Error("cannot finalize performance selection after a parallel lane isolation violation");
+}
+
 if (!reviewGate.passed) {
 	throw new Error(`cannot finalize performance selection before reviewer finish: ${reviewGate.reason}`);
 }

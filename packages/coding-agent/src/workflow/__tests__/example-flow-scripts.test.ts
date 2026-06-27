@@ -3422,7 +3422,7 @@ describe("example workflow scripts", () => {
 		}
 	});
 
-	it("allows performance repair reports to finalize validation-blocked no-win outcomes", async () => {
+	it("refuses performance repair reports that try to override lane isolation violations", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-repair-report-finalize-");
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
@@ -3534,12 +3534,11 @@ describe("example workflow scripts", () => {
 			},
 		});
 
-		expect(finalize.scheduler.state.selection).toMatchObject({
-			status: "blocked",
-			terminalState: "no-win-validation-blocked",
-			validationPassed: false,
-			noWinBranches: ["algorithmic", "caching", "io"],
-		});
+		expect(
+			finalize.scheduler.activations.find(activation => activation.nodeId === "finalizePerformanceSelection")
+				?.status,
+		).toBe("failed");
+		expect(finalize.scheduler.state.selection).toBeUndefined();
 	});
 
 	it("finalizes performance repair no-win evidence from branch-style exit lines", async () => {
@@ -3583,9 +3582,9 @@ describe("example workflow scripts", () => {
 			[
 				"# Performance Benchmark Evidence",
 				"",
-				"## Disallowed Scratch Root Violation",
+				"## Prior Benchmark Failure",
 				"",
-				"- workflow-output/perf-algorithmic.md",
+				"Initial branch benchmark evidence was inconclusive before repair.",
 			].join("\n"),
 		);
 		await Bun.write(
@@ -3612,7 +3611,8 @@ describe("example workflow scripts", () => {
 				},
 				benchmark: {
 					status: "fail",
-					isolationViolation: true,
+					benchmarkExitCode: 1,
+					validationExitCode: 1,
 					outputPath: "workflow-output/performance-benchmark.md",
 				},
 				selectionRepair: {
@@ -4037,7 +4037,7 @@ describe("example workflow scripts", () => {
 		);
 	});
 
-	it("finalizes performance repair no-win evidence after an isolation-blocked join", async () => {
+	it("refuses performance repair state after an isolation-blocked join", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-repaired-no-win-validation-blocked-");
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
@@ -4117,29 +4117,11 @@ describe("example workflow scripts", () => {
 			},
 		});
 
-		expect(finalize.scheduler.state.selection).toMatchObject({
-			status: "blocked",
-			terminalState: "no-win-validation-blocked",
-			validationPassed: false,
-			noWinBranches: ["no-win"],
-		});
-
-		const archive = await runExampleScript({
-			cwd,
-			previousCwd,
-			nodeId: "archivePerformance",
-			scriptFileName: "archive-performance.js",
-			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
-			writes: ["/archive"],
-			initialState: finalize.scheduler.state,
-		});
-
-		expect(archive.scheduler.state.archive).toMatchObject({
-			benchmark: "pass",
-			validation: "blocked",
-			noWin: true,
-		});
-		expect(await Bun.file(`${cwd}/workflow-output/performance-archive.md`).text()).toContain("### No-win");
+		expect(
+			finalize.scheduler.activations.find(activation => activation.nodeId === "finalizePerformanceSelection")
+				?.status,
+		).toBe("failed");
+		expect(finalize.scheduler.state.selection).toBeUndefined();
 	});
 
 	it("archives performance no-win evidence as rejected when the task lacks no-win authorization", async () => {
