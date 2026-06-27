@@ -41,6 +41,9 @@ export interface WorkflowAgentTaskRequest {
 	nodeId: string;
 	modelOverride?: string;
 	modelOverrideAuthFallback?: boolean;
+	isolated?: boolean;
+	apply?: boolean;
+	merge?: boolean;
 	signal?: AbortSignal;
 	task: WorkflowAgentTaskItem;
 }
@@ -61,6 +64,9 @@ export interface WorkflowAgentTaskResult {
 	agentId?: string;
 	outputPath?: string;
 	sessionFile?: string;
+	patchPath?: string;
+	branchName?: string;
+	changesApplied?: boolean | null;
 }
 
 export type WorkflowAgentTaskRunner = (request: WorkflowAgentTaskRequest) => Promise<WorkflowAgentTaskResult>;
@@ -141,6 +147,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				nodeId: input.node.id,
 				task,
 			};
+			applyWorkflowNodeIsolation(request, input.node);
 			if (input.modelOverride !== undefined) {
 				request.modelOverride = input.modelOverride;
 				request.modelOverrideAuthFallback = false;
@@ -212,6 +219,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 					assignment,
 				},
 			};
+			applyWorkflowNodeIsolation(request, input.node);
 			if (input.modelOverride !== undefined) {
 				request.modelOverride = input.modelOverride;
 				request.modelOverrideAuthFallback = false;
@@ -225,6 +233,17 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			return output;
 		},
 	};
+}
+
+function applyWorkflowNodeIsolation(
+	request: WorkflowAgentTaskRequest,
+	node: { isolation?: { enabled: boolean; apply?: boolean; merge?: boolean } },
+): void {
+	const isolation = node.isolation;
+	if (isolation === undefined || isolation.enabled !== true) return;
+	request.isolated = true;
+	if (isolation.apply !== undefined) request.apply = isolation.apply;
+	if (isolation.merge !== undefined) request.merge = isolation.merge;
 }
 
 interface NormalizedWorkflowAgentTaskRetryPolicy {
@@ -583,10 +602,12 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 				? result.data.summary
 				: result.output;
 		const boundedSummary = boundWorkflowSummary(summarySource, `agent node "${nodeId}" completed`);
+		const data = { ...result.data };
+		applyTaskIsolationResultData(data, result);
 		return mergeActivationArtifacts(
 			{
 				summary: boundedSummary.summary,
-				data: result.data,
+				data,
 			},
 			artifacts,
 		);
@@ -601,6 +622,7 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 		data.summaryTruncated = true;
 		data.summaryBytes = boundedSummary.originalBytes;
 	}
+	applyTaskIsolationResultData(data, result);
 	const output: WorkflowActivationOutput = {
 		summary: boundedSummary.summary,
 		data,
@@ -609,6 +631,15 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 		output.artifacts = artifacts;
 	}
 	return output;
+}
+
+function applyTaskIsolationResultData(data: Record<string, unknown>, result: WorkflowAgentTaskResult): void {
+	if (result.agentId !== undefined) data.agentId = result.agentId;
+	if (result.outputPath !== undefined) data.outputPath = result.outputPath;
+	if (result.sessionFile !== undefined) data.sessionFile = result.sessionFile;
+	if (result.patchPath !== undefined) data.patchPath = result.patchPath;
+	if (result.branchName !== undefined) data.branchName = result.branchName;
+	if (result.changesApplied !== undefined) data.changesApplied = result.changesApplied;
 }
 
 function activationOutputFromHumanInputResult(result: WorkflowHumanInputResult): WorkflowActivationOutput {

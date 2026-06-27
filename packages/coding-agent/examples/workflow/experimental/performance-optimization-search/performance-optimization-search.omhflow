@@ -118,6 +118,10 @@ sequence:
                   agent: task
                   model:
                     role: optimizer
+                  isolation:
+                    enabled: true
+                    apply: false
+                    merge: false
                   reads:
                     - /task
                     - /baseline
@@ -145,6 +149,10 @@ sequence:
                   agent: task
                   model:
                     role: optimizer
+                  isolation:
+                    enabled: true
+                    apply: false
+                    merge: false
                   reads:
                     - /task
                     - /baseline
@@ -172,6 +180,10 @@ sequence:
                   agent: task
                   model:
                     role: optimizer
+                  isolation:
+                    enabled: true
+                    apply: false
+                    merge: false
                   reads:
                     - /task
                     - /baseline
@@ -233,6 +245,12 @@ sequence:
                       state: /baseline
                     hypotheses:
                       state: /hypotheses
+                    algorithmic:
+                      state: /algorithmic
+                    caching:
+                      state: /caching
+                    io:
+                      state: /io
                     benchmark:
                       state: /benchmark
                     review:

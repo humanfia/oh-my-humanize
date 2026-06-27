@@ -13,6 +13,12 @@ Hypotheses:
 Benchmark and validation evidence:
 {{jsonStringify benchmark}}
 
+Branch attempt state:
+
+- algorithmic: {{jsonStringify algorithmic}}
+- caching: {{jsonStringify caching}}
+- io: {{jsonStringify io}}
+
 Previous reviewer feedback:
 {{jsonStringify review}}
 
@@ -47,7 +53,9 @@ that the reviewer can evaluate:
 - if validation or benchmark failed, preserve the failure evidence and explain
   the minimal next repair needed;
 - if one branch has a measured positive result, apply at most one selected candidate patch
-  from that branch into the clean shared workspace, verify it with
+  from that branch into the clean shared workspace. Prefer the branch state's
+  captured `patchPath` or branch report artifact when the branch ran under
+  workflow isolation. Verify it with
   `git apply --check` before applying, rerun the task-declared validation, and
   update that branch note with `final-selection: yes`;
 - a positive retained candidate also needs a project-specific semantic behavior

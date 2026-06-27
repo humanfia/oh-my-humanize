@@ -189,6 +189,9 @@ function parseWorkflowPatchNode(value: unknown, pathLabel: string, missingMessag
 	const script = parseWorkflowPatchScriptSource(raw.script, `${pathLabel}.script`);
 	if (script !== undefined) node.script = script;
 	if (raw.gates !== undefined) node.gates = parseWorkflowPatchStringArray(raw.gates, `${pathLabel}.gates`);
+	if (raw.isolation !== undefined) {
+		node.isolation = parseWorkflowPatchNodeIsolation(raw.isolation, `${pathLabel}.isolation`);
+	}
 	if (raw.reads !== undefined) node.reads = parseWorkflowPatchStringArray(raw.reads, `${pathLabel}.reads`);
 	if (raw.writes !== undefined) node.writes = parseWorkflowPatchStringArray(raw.writes, `${pathLabel}.writes`);
 	if (raw.workspaceAccess !== undefined) {
@@ -201,6 +204,21 @@ function parseWorkflowPatchNode(value: unknown, pathLabel: string, missingMessag
 function parseWorkflowPatchWorkspaceAccess(value: unknown, pathLabel: string): WorkflowWorkspaceAccess {
 	if (value === "read" || value === "write") return value;
 	throw new Error(`${pathLabel} must be "read" or "write"`);
+}
+
+function parseWorkflowPatchNodeIsolation(value: unknown, pathLabel: string): WorkflowNode["isolation"] {
+	const raw = expectWorkflowPatchRecord(value, pathLabel);
+	const isolation: NonNullable<WorkflowNode["isolation"]> = {
+		enabled: expectWorkflowPatchBoolean(raw.enabled, `${pathLabel}.enabled`),
+	};
+	if (raw.apply !== undefined) isolation.apply = expectWorkflowPatchBoolean(raw.apply, `${pathLabel}.apply`);
+	if (raw.merge !== undefined) isolation.merge = expectWorkflowPatchBoolean(raw.merge, `${pathLabel}.merge`);
+	return isolation;
+}
+
+function expectWorkflowPatchBoolean(value: unknown, pathLabel: string): boolean {
+	if (typeof value === "boolean") return value;
+	throw new Error(`${pathLabel} must be a boolean`);
 }
 
 function parseWorkflowPatchEdge(value: unknown, pathLabel: string, missingMessage?: string): WorkflowEdge {

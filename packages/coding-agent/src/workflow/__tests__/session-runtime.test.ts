@@ -3,17 +3,82 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import type { ToolSession } from "../../tools";
 import { EvalTool, type EvalToolParams } from "../../tools/eval";
-import type { WorkflowDefinition, WorkflowNode } from "../definition";
+import { parseWorkflowDefinition, type WorkflowDefinition, type WorkflowNode } from "../definition";
 import { createEvalToolScriptRunner } from "../eval-tool-runtime";
 import { runWorkflow } from "../runner";
 import {
 	createSessionWorkflowRuntimeHost,
+	type WorkflowAgentTaskRequest,
 	type WorkflowHumanInputRequest,
 	type WorkflowScriptEvalRequest,
 	type WorkflowShellScriptRequest,
 } from "../session-runtime";
 
 describe("createSessionWorkflowRuntimeHost review nodes", () => {
+	it("parses workflow node isolation contracts", () => {
+		const definition = parseWorkflowDefinition(`
+name: lane-isolation
+version: 1
+models:
+  roles: {}
+  defaults: {}
+nodes:
+  - id: branch
+    type: agent
+    agent: task
+    prompt: Try a lane-local change.
+    isolation:
+      enabled: true
+      apply: false
+      merge: false
+    writes:
+      - /branch
+edges: []
+`);
+
+		expect(definition.nodes[0]?.isolation).toEqual({ enabled: true, apply: false, merge: false });
+	});
+
+	it("passes workflow node isolation to task runners and exposes captured patch metadata", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: "lane completed in isolation",
+					patchPath: "/workspace/.omh/artifacts/lane.patch",
+					changesApplied: null,
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = {
+			id: "branch",
+			type: "agent",
+			agent: "task",
+			prompt: "Try a lane-local change.",
+			isolation: { enabled: true, apply: false, merge: false },
+		};
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+
+		expect(capturedRequest?.isolated).toBe(true);
+		expect(capturedRequest?.apply).toBe(false);
+		expect(capturedRequest?.merge).toBe(false);
+		expect(output.data).toMatchObject({
+			exitCode: 0,
+			patchPath: "/workspace/.omh/artifacts/lane.patch",
+			changesApplied: null,
+		});
+	});
+
 	it("retries transient provider failures for agent nodes before completing", async () => {
 		const calls: string[] = [];
 		const host = createSessionWorkflowRuntimeHost({

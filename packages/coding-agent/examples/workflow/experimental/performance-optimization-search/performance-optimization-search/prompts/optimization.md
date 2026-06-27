@@ -14,12 +14,11 @@ Shared hypotheses:
 Previous review, if any:
 {{jsonStringify review}}
 
-Work from the current project directory, but keep the shared workspace clean.
-Use the shared project directory only for read-only inspection plus durable
-`workflow-output/` artifacts. Do not leave project-file edits or git metadata
-changes in the shared workspace. For any code candidate, create a lane-local
-independent scratch copy or clone outside the project tree and scoped to this
-workflow run. Use the
+The workflow runtime runs this branch in an isolated lane worktree and captures
+its diff as branch state metadata such as `patchPath`; it does not apply branch
+changes back to the shared workspace before the join. Treat your current
+directory as lane-local. Keep any additional scratch copy or benchmark fixture
+outside the project tree and scoped to this workflow run. Use the
 absolute `task.scratchRoot` value from the task contract JSON, for example
 `<task.scratchRoot>/{{strategy}}-*`. Do not try to rediscover this from the
 shell environment. Never use bare `/tmp`, shared sibling scratch such as
@@ -33,13 +32,12 @@ such as `bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`
 are invalid; bind or mount a lane directory under `task.scratchRoot` instead.
 Never place lane-local execution scratch, benchmark fixtures, or worktrees
 under `workflow-output/tmp` or another project-scanned path. Apply the candidate
-only in that external scratch
-workspace, and export the durable candidate patch plus measurements into
-`workflow-output/`. Before yielding, verify the shared workspace has no
-project-file diff with `git diff HEAD --name-only` except `workflow-output/`
-artifacts and `task.md`. If a candidate cannot be tested without mutating
-another branch's shared files, record the conflict in
-`workflow-output/perf-{{strategy}}.md` instead of editing the shared workspace.
+only in the isolated lane worktree or an external scratch workspace, and export
+the durable candidate patch plus measurements into `workflow-output/`. Before
+yielding, verify the lane worktree diff and record exactly which files belong
+to this branch. If a candidate cannot be tested without mutating another
+branch's shared files, record the conflict in `workflow-output/perf-{{strategy}}.md`
+instead of editing shared state.
 Do not run branch build, benchmark, validation, apply-check, candidate
 execution, or scratch-workspace creation commands from `cwd: .` or the shared
 task workspace. Those commands must run from the lane-local clone or copy under

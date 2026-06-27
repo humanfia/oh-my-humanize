@@ -176,6 +176,10 @@ export interface TaskParams {
 	context?: string;
 	/** Run in an isolated worktree (flat form; per-item in batch form). */
 	isolated?: boolean;
+	/** Internal workflow isolation flag: keep captured changes out of the parent workspace when false. */
+	apply?: boolean;
+	/** Internal workflow isolation flag: allow branch merge mode when true; false forces patch mode. */
+	merge?: boolean;
 	/** Internal override used by workflow/model-role dispatch; not exposed in the task tool schema. */
 	modelOverride?: string | string[];
 	/** Internal workflow exactness flag; false prevents auth fallback to the parent model. */
@@ -372,6 +376,8 @@ export interface SingleResult {
 	patchPath?: string;
 	/** Branch name for isolated branch-mode output */
 	branchName?: string;
+	/** Whether an isolated task applied changes back to the parent workspace. */
+	changesApplied?: boolean | null;
 	/** Nested repo patches to apply after parent merge */
 	nestedPatches?: NestedRepoPatch[];
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */

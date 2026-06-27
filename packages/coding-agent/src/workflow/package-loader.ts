@@ -443,6 +443,7 @@ function workflowNodeToRawRecord(node: WorkflowNode): Record<string, unknown> {
 	if (node.script !== undefined) raw.script = workflowScriptSourceToRawScript(node.script);
 	if (node.gates !== undefined) raw.gates = [...node.gates];
 	if (node.fallbackVerdict !== undefined) raw.fallbackVerdict = node.fallbackVerdict;
+	if (node.isolation !== undefined) raw.isolation = structuredClone(node.isolation);
 	if (node.reads !== undefined) raw.reads = [...node.reads];
 	if (node.writes !== undefined) raw.writes = [...node.writes];
 	if (node.workspaceAccess !== undefined) raw.workspaceAccess = node.workspaceAccess;

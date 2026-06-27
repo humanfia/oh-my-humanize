@@ -221,5 +221,5 @@ edges:
   - from: reportReview
     to: archiveReproduction
     when: outputs.reportReview.verdict != "continue" && state.reproduction.exercised == true && state.variant.validationExercised == true
-    label: reproduction accepted
+    label: archive terminal outcome
 ```

@@ -223,6 +223,19 @@ function createTaskModeError(text: string): AgentToolResult<TaskToolDetails> {
 	};
 }
 
+function isolatedApplyFalseSummary(result: SingleResult): string {
+	if (result.branchName) {
+		return `\n\nIsolation: changes captured on branch \`${result.branchName}\` (apply=false). Not merged.`;
+	}
+	if (result.patchPath) {
+		return `\n\nIsolation: changes captured at \`${result.patchPath}\` (apply=false). Not applied.`;
+	}
+	if ((result.nestedPatches?.length ?? 0) > 0) {
+		return `\n\nIsolation: changes captured for ${result.nestedPatches?.length} nested repositor${result.nestedPatches?.length === 1 ? "y" : "ies"} (apply=false). Not applied.`;
+	}
+	return "\n\nIsolation: no changes captured.";
+}
+
 /**
  * Reject fields the current configuration does not accept. `schema` is never
  * accepted (structured output comes from the agent definition's `output`
@@ -325,6 +338,8 @@ function spawnParamsFor(params: TaskParams, item: TaskItem): TaskParams {
 	} else if ("isolated" in params) {
 		spawn.isolated = params.isolated;
 	}
+	if (params.apply !== undefined) spawn.apply = params.apply;
+	if (params.merge !== undefined) spawn.merge = params.merge;
 	if (params.modelOverride !== undefined) spawn.modelOverride = params.modelOverride;
 	if (params.modelOverrideAuthFallback !== undefined) {
 		spawn.modelOverrideAuthFallback = params.modelOverrideAuthFallback;
@@ -1043,7 +1058,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const isolationMode = this.session.settings.get("task.isolation.mode");
 		const isolationRequested = "isolated" in params ? params.isolated === true : false;
 		const isIsolated = isolationMode !== "none" && isolationRequested;
-		const mergeMode = this.session.settings.get("task.isolation.merge");
+		const mergeMode = params.merge === false ? "patch" : this.session.settings.get("task.isolation.merge");
+		const applyChanges = params.apply !== false;
 		const taskDepth = this.session.taskDepth ?? 0;
 		const subagentLspEnabled = (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp");
 
@@ -1366,15 +1382,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			let mergeSummary = "";
 			let changesApplied: boolean | null = null;
 			let mergedBranchForNestedPatches = false;
-			if (isIsolated && repoRoot) {
+			if (isIsolated && repoRoot && applyChanges) {
 				const outcome = await mergeIsolatedChanges({ result, repoRoot, mergeMode });
 				mergeSummary = outcome.summary;
 				changesApplied = outcome.changesApplied;
 				mergedBranchForNestedPatches = outcome.mergedBranchForNestedPatches;
+			} else if (isIsolated) {
+				changesApplied = null;
+				mergeSummary = isolatedApplyFalseSummary(result);
 			}
 
 			// Apply nested repo patches (separate from parent git).
-			if (isIsolated && repoRoot) {
+			if (isIsolated && repoRoot && applyChanges) {
 				mergeSummary += await applyEligibleNestedPatches({
 					result,
 					repoRoot,
@@ -1386,13 +1405,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 
 			// Cleanup temp directory if used
-			const shouldCleanupTempArtifacts =
-				tempArtifactsDir && (!isIsolated || changesApplied === true || changesApplied === null);
+			const shouldCleanupTempArtifacts = tempArtifactsDir && (!isIsolated || changesApplied === true);
 			if (shouldCleanupTempArtifacts) {
 				await fs.rm(tempArtifactsDir, { recursive: true, force: true });
 			}
 
-			return this.#buildResultPayload(result, projectAgentsDir, Date.now() - startTime, mergeSummary);
+			const resultWithIsolation = isIsolated ? { ...result, changesApplied } : result;
+			return this.#buildResultPayload(resultWithIsolation, projectAgentsDir, Date.now() - startTime, mergeSummary);
 		} catch (err) {
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${err}` }],

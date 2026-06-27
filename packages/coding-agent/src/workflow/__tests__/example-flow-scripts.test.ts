@@ -457,6 +457,78 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: rejected");
 	});
 
+	it("archives research reproduction comparison rejections as rejected", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-comparison-reject-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/reproduction-baseline.json`,
+			`${JSON.stringify(
+				{
+					exerciseSummary: {
+						exercised: true,
+						positiveSignals: ["assertion-backed-command"],
+						negativeSignals: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/reproduction-variant.json`,
+			`${JSON.stringify(
+				{
+					variantExerciseSummary: {
+						exercised: false,
+						positiveSignals: [],
+						negativeSignals: false,
+					},
+					validationExerciseSummary: {
+						exercised: true,
+						positiveSignals: ["passed-count"],
+						negativeSignals: false,
+						passedCounts: 25,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveReproduction",
+			scriptFileName: "archive-reproduction.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				reproduction: {
+					status: "pass",
+					exercised: true,
+					evidencePath: "workflow-output/reproduction-baseline.json",
+				},
+				variant: {
+					status: "pass",
+					validationExercised: true,
+					evidencePath: "workflow-output/reproduction-variant.json",
+				},
+				comparison: {
+					status: "rejected_non_exercising_variant",
+					overallOutcome: "inconclusive",
+				},
+				review: "verdict finish; rejected/inconclusive outcome is correct",
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			outcome: "rejected",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: rejected");
+	});
+
 	it("keeps research reproduction command streams in artifacts instead of inline state", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-variant-output-state-");
 		const cwd = tempDir.path();
@@ -2593,7 +2665,11 @@ describe("example workflow scripts", () => {
 			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/perf-review.md`,
 		).text();
 
-		expect(optimizationPrompt).toContain("Do not leave project-file edits or git metadata\nchanges");
+		expect(optimizationPrompt).toContain("runs this branch in an isolated lane worktree");
+		expect(optimizationPrompt).toContain(
+			"does not apply branch\nchanges back to the shared workspace before the join",
+		);
+		expect(optimizationPrompt).toContain("Treat your current\ndirectory as lane-local");
 		expect(optimizationPrompt).toContain("Do not run `git worktree add` from the shared task checkout");
 		expect(optimizationPrompt).toContain("git clone\n--no-hardlinks");
 		expect(optimizationPrompt).toContain("candidate patch");
@@ -2603,7 +2679,6 @@ describe("example workflow scripts", () => {
 		expect(optimizationPrompt).toContain("Never use bare `/tmp`");
 		expect(optimizationPrompt).toContain("writable bare `/tmp` execution surface");
 		expect(optimizationPrompt).toContain("bwrap --tmpfs /tmp");
-		expect(optimizationPrompt).toContain("read-only inspection plus durable");
 		expect(optimizationPrompt).toContain("Do not run branch build, benchmark, validation, apply-check");
 		expect(optimizationPrompt).toContain("from `cwd: .` or the shared\ntask workspace");
 		expect(optimizationPrompt).toContain("scratch-workspace creation commands");

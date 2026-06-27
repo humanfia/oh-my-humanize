@@ -21,6 +21,9 @@ export function createTaskToolAgentRunner(toolSession: ToolSession): WorkflowAge
 		if (request.modelOverrideAuthFallback !== undefined) {
 			params.modelOverrideAuthFallback = request.modelOverrideAuthFallback;
 		}
+		if (request.isolated !== undefined) params.isolated = request.isolated;
+		if (request.apply !== undefined) params.apply = request.apply;
+		if (request.merge !== undefined) params.merge = request.merge;
 		const result = await taskTool.execute(`workflow-${request.activationId}`, params, request.signal);
 		const taskResult = result.details?.results[0];
 		if (!taskResult) {
@@ -41,6 +44,9 @@ export function createTaskToolAgentRunner(toolSession: ToolSession): WorkflowAge
 		if (data !== undefined) output.data = data;
 		if (taskResult.outputPath !== undefined) output.outputPath = taskResult.outputPath;
 		if (taskResult.sessionFile !== undefined) output.sessionFile = taskResult.sessionFile;
+		if (taskResult.patchPath !== undefined) output.patchPath = taskResult.patchPath;
+		if (taskResult.branchName !== undefined) output.branchName = taskResult.branchName;
+		if (taskResult.changesApplied !== undefined) output.changesApplied = taskResult.changesApplied;
 		return output;
 	};
 }

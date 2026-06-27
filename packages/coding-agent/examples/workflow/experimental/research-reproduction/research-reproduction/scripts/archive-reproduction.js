@@ -1,6 +1,7 @@
 const state = workflowContext.state && typeof workflowContext.state === "object" ? workflowContext.state : {};
 const reproduction = state.reproduction && typeof state.reproduction === "object" ? state.reproduction : {};
 const variant = state.variant && typeof state.variant === "object" ? state.variant : {};
+const comparison = state.comparison && typeof state.comparison === "object" ? state.comparison : {};
 const structuredEvidence = await readStructuredEvidence(reproduction, variant);
 
 if (reproduction.exercised !== true || structuredEvidence.reproduction.exercised !== true) {
@@ -10,7 +11,7 @@ if (variant.validationExercised !== true || structuredEvidence.validation.exerci
 	throw new Error("cannot archive research reproduction before the Validation Command exercises the declared claim");
 }
 
-const outcome = reproduction.status === "pass" && variant.status === "pass" ? "accepted" : "rejected";
+const outcome = acceptedOutcome(reproduction, variant, comparison, structuredEvidence) ? "accepted" : "rejected";
 
 const outputPath = "workflow-output/reproduction-archive.md";
 const precheck = await readOptionalText("workflow-output/reproduction-precheck.md");
@@ -48,9 +49,12 @@ await Bun.write(
 		`- reproduction exercised: ${structuredEvidence.reproduction.exercised}`,
 		`- reproduction positive signals: ${structuredEvidence.reproduction.positiveSignals.join(", ") || "none"}`,
 		`- reproduction ok packages: ${structuredEvidence.reproduction.okPackages}`,
+		`- variant exercised: ${structuredEvidence.variant.exercised}`,
+		`- variant positive signals: ${structuredEvidence.variant.positiveSignals.join(", ") || "none"}`,
 		`- validation exercised: ${structuredEvidence.validation.exercised}`,
 		`- validation positive signals: ${structuredEvidence.validation.positiveSignals.join(", ") || "none"}`,
 		`- validation ok packages: ${structuredEvidence.validation.okPackages}`,
+		`- comparison outcome: ${comparisonOutcome(comparison)}`,
 		"",
 	].join("\n"),
 );
@@ -66,6 +70,7 @@ return {
 				outcome,
 				reproduction: String(reproduction.status ?? "unknown"),
 				validation: String(variant.status ?? "unknown"),
+				comparison: comparisonOutcome(comparison),
 			},
 		},
 	],
@@ -83,9 +88,11 @@ async function readStructuredEvidence(reproductionState, variantState) {
 	const reproductionEvidence = await readRequiredJson(reproductionState.evidencePath, "reproduction structured evidence");
 	const variantEvidence = await readRequiredJson(variantState.evidencePath, "variant structured evidence");
 	const reproductionSummary = reproductionEvidence.exerciseSummary ?? {};
+	const variantSummary = variantEvidence.variantExerciseSummary ?? {};
 	const validationSummary = variantEvidence.validationExerciseSummary ?? {};
 	return {
 		reproduction: normalizeExerciseSummary(reproductionSummary),
+		variant: normalizeExerciseSummary(variantSummary),
 		validation: normalizeExerciseSummary(validationSummary),
 	};
 }
@@ -109,6 +116,36 @@ function normalizeExerciseSummary(summary) {
 		okPackages: Number.isFinite(summary.okPackages) ? summary.okPackages : 0,
 		passedCounts: Number.isFinite(summary.passedCounts) ? summary.passedCounts : 0,
 	};
+}
+
+function acceptedOutcome(reproductionState, variantState, comparisonState, evidence) {
+	if (comparisonRejects(comparisonState)) return false;
+	if (reproductionState.status !== "pass" || variantState.status !== "pass") return false;
+	if (hasVariantCommand(variantState) && evidence.variant.exercised !== true) return false;
+	return true;
+}
+
+function hasVariantCommand(variantState) {
+	return typeof variantState.variantCommand === "string" && variantState.variantCommand.trim() !== "";
+}
+
+function comparisonRejects(comparisonState) {
+	const text = structuredText(comparisonState);
+	return /\b(?:reject(?:ed|ion)?|inconclusive|non[-_ ]exercising)\b/iu.test(text);
+}
+
+function comparisonOutcome(comparisonState) {
+	const status = comparisonState.status ?? comparisonState.overallOutcome ?? "unknown";
+	return String(status);
+}
+
+function structuredText(value) {
+	if (value === null || value === undefined) return "";
+	if (typeof value === "string") return value;
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	if (Array.isArray(value)) return value.map(structuredText).join("\n");
+	if (typeof value === "object") return Object.values(value).map(structuredText).join("\n");
+	return "";
 }
 
 function boundedLines(text, limit) {

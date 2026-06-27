@@ -122,6 +122,12 @@ export interface WorkflowScriptSource {
 	timeoutMs?: number;
 }
 
+export interface WorkflowNodeIsolation {
+	enabled: boolean;
+	apply?: boolean;
+	merge?: boolean;
+}
+
 export interface WorkflowNode {
 	id: string;
 	type: WorkflowNodeType;
@@ -132,6 +138,7 @@ export interface WorkflowNode {
 	script?: WorkflowScriptSource;
 	gates?: string[];
 	fallbackVerdict?: string;
+	isolation?: WorkflowNodeIsolation;
 	reads?: string[];
 	writes?: string[];
 	workspaceAccess?: WorkflowWorkspaceAccess;
@@ -235,6 +242,7 @@ function parseNodes(value: unknown, sourcePath?: string): WorkflowNode[] {
 		const gates = parseOptionalStringList(node.gates, `${path}.gates`, sourcePath);
 		const fallbackVerdict = parseOptionalString(node.fallbackVerdict, `${path}.fallbackVerdict`, sourcePath);
 		validateFallbackVerdict(id, type, gates, fallbackVerdict, path, sourcePath);
+		const isolation = parseNodeIsolation(node.isolation, `${path}.isolation`, sourcePath);
 		const reads = parseOptionalStringList(node.reads, `${path}.reads`, sourcePath);
 		const writes = parseOptionalStringList(node.writes, `${path}.writes`, sourcePath);
 		const workspaceAccess = parseWorkspaceAccess(node.workspaceAccess, `${path}.workspaceAccess`, sourcePath);
@@ -249,6 +257,7 @@ function parseNodes(value: unknown, sourcePath?: string): WorkflowNode[] {
 			script,
 			gates,
 			fallbackVerdict,
+			isolation,
 			reads,
 			writes,
 			workspaceAccess,
@@ -723,6 +732,16 @@ function parseWorkspaceAccess(value: unknown, path: string, sourcePath?: string)
 	throw new WorkflowDefinitionError(`${path} must be "read" or "write"`, sourcePath);
 }
 
+function parseNodeIsolation(value: unknown, path: string, sourcePath?: string): WorkflowNodeIsolation | undefined {
+	if (value === undefined) return undefined;
+	const raw = expectRecord(value, path, sourcePath);
+	const enabled = expectBoolean(raw.enabled, `${path}.enabled`, sourcePath);
+	const isolation: WorkflowNodeIsolation = { enabled };
+	if (raw.apply !== undefined) isolation.apply = expectBoolean(raw.apply, `${path}.apply`, sourcePath);
+	if (raw.merge !== undefined) isolation.merge = expectBoolean(raw.merge, `${path}.merge`, sourcePath);
+	return isolation;
+}
+
 function parseNodeCheckpoint(value: unknown, path: string, sourcePath?: string): WorkflowNodeCheckpoint | undefined {
 	if (value === undefined) return undefined;
 	if (value === "after") return value;
@@ -747,6 +766,7 @@ function compactNode(node: WorkflowNode): WorkflowNode {
 	if (node.script !== undefined) result.script = node.script;
 	if (node.gates !== undefined) result.gates = node.gates;
 	if (node.fallbackVerdict !== undefined) result.fallbackVerdict = node.fallbackVerdict;
+	if (node.isolation !== undefined) result.isolation = node.isolation;
 	if (node.reads !== undefined) result.reads = node.reads;
 	if (node.writes !== undefined) result.writes = node.writes;
 	if (node.workspaceAccess !== undefined) result.workspaceAccess = node.workspaceAccess;
@@ -798,6 +818,11 @@ function expectString(value: unknown, path: string, sourcePath?: string): string
 function expectNumber(value: unknown, path: string, sourcePath?: string): number {
 	if (typeof value === "number" && Number.isFinite(value)) return value;
 	throw new WorkflowDefinitionError(`${path} must be a finite number`, sourcePath);
+}
+
+function expectBoolean(value: unknown, path: string, sourcePath?: string): boolean {
+	if (typeof value === "boolean") return value;
+	throw new WorkflowDefinitionError(`${path} must be a boolean`, sourcePath);
 }
 
 function expectRecord(value: unknown, path: string, sourcePath?: string): Record<string, unknown> {
