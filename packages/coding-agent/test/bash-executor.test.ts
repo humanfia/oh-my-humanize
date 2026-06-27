@@ -164,6 +164,23 @@ describe("executeBash", () => {
 		expect(result.output.trim()).toBe("unset:hello");
 	});
 
+	it("keeps explicit workflow PYTHONPATH while clearing inherited Python path pollution", async () => {
+		const pythonPathExpansion = "$" + "{PYTHONPATH-unset}";
+		const pythonNoUserSiteExpansion = "$" + "{PYTHONNOUSERSITE-unset}";
+		const result = await executeBash(
+			`printf "PYTHONPATH=%s\\nPYTHONNOUSERSITE=%s\\n" "${pythonPathExpansion}" "${pythonNoUserSiteExpansion}"`,
+			{
+				cwd: tempDir,
+				timeout: 5000,
+				env: { PYTHONPATH: "src" },
+				environmentPolicy: "workflow",
+			},
+		);
+
+		expect(result.output).toContain("PYTHONPATH=src");
+		expect(result.output).toContain("PYTHONNOUSERSITE=unset");
+	});
+
 	it("runs non-bash shellPath commands through the configured shell", async () => {
 		if (process.platform === "win32") {
 			return;

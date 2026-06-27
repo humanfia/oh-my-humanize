@@ -19,12 +19,14 @@ export function buildWorkflowShellEnvironment(
 	baseEnv: Record<string, string | undefined> = Bun.env,
 	platform: NodeJS.Platform = process.platform,
 ): Record<string, string> {
+	const inheritedEnv = definedShellEnvironment(baseEnv);
+	delete inheritedEnv.PYTHONNOUSERSITE;
+	delete inheritedEnv.PYTHONPATH;
 	const env = {
-		...definedShellEnvironment(baseEnv),
+		...inheritedEnv,
 		...buildNonInteractiveEnv(overrides, baseEnv, platform),
 	};
-	delete env.PYTHONNOUSERSITE;
-	delete env.PYTHONPATH;
+	if (!hasEnvOverride(overrides, "PYTHONNOUSERSITE", platform)) delete env.PYTHONNOUSERSITE;
 	return env;
 }
 
@@ -34,4 +36,15 @@ function definedShellEnvironment(baseEnv: Record<string, string | undefined>): R
 		if (value !== undefined) env[key] = value;
 	}
 	return env;
+}
+
+function hasEnvOverride(
+	overrides: Record<string, string> | undefined,
+	key: string,
+	platform: NodeJS.Platform,
+): boolean {
+	if (!overrides) return false;
+	if (platform !== "win32") return overrides[key] !== undefined;
+	const normalizedKey = key.toLowerCase();
+	return Object.keys(overrides).some(candidate => candidate.toLowerCase() === normalizedKey);
 }
