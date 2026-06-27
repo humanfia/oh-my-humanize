@@ -153,15 +153,16 @@ describe("executeBash", () => {
 		expect(result.output.trim()).toBe("0:hello");
 	});
 
-	it("lets workflow-owned agents use Python user-site tools while keeping explicit env", async () => {
-		const result = await executeBash('printenv PYTHONNOUSERSITE || printf unset; printf ":%s\\n" "$PI_TEST_ENV"', {
+	it("disables Python user-site for workflow-owned agent bash commands", async () => {
+		const pythonNoUserSiteExpansion = "$" + "{PYTHONNOUSERSITE-unset}";
+		const result = await executeBash(`printf "%s:%s\\n" "${pythonNoUserSiteExpansion}" "$PI_TEST_ENV"`, {
 			cwd: tempDir,
 			timeout: 5000,
 			env: { PI_TEST_ENV: "hello" },
 			environmentPolicy: "workflow",
 		});
 
-		expect(result.output.trim()).toBe("unset:hello");
+		expect(result.output.trim()).toBe("1:hello");
 	});
 
 	it("keeps explicit workflow PYTHONPATH while clearing inherited Python path pollution", async () => {
@@ -178,7 +179,7 @@ describe("executeBash", () => {
 		);
 
 		expect(result.output).toContain("PYTHONPATH=src");
-		expect(result.output).toContain("PYTHONNOUSERSITE=unset");
+		expect(result.output).toContain("PYTHONNOUSERSITE=1");
 	});
 
 	it("runs non-bash shellPath commands through the configured shell", async () => {

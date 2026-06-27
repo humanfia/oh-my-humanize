@@ -162,6 +162,35 @@ describe("workflow CLI", () => {
 		expect(result.runs[0]?.stateKeys).toEqual(["message"]);
 	});
 
+	it("disables Python user-site pollution for headless shell script nodes", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-python-env-");
+		const root = tempDir.path();
+		await Bun.write(`${root}/python-env-smoke.omhflow`, workflowPythonEnvSmokeFlow());
+		await Bun.write(`${root}/python-env-smoke/scripts/check-python-env.sh`, workflowPythonEnvSmokeScript());
+		const output: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+
+		await runWorkflowCommand({
+			action: "start",
+			args: [`${root}/python-env-smoke.omhflow`],
+			flags: {
+				cwd: root,
+				json: true,
+				runId: "python-env-smoke-run",
+			},
+		});
+
+		const result = JSON.parse(output.join("").trim()) as {
+			run: { status: string; completed: number; failed: number };
+			runs: { stateKeys: string[] }[];
+		};
+		expect(result.run).toMatchObject({ status: "completed", completed: 1, failed: 0 });
+		expect(result.runs[0]?.stateKeys).toEqual(["pythonEnv"]);
+	});
+
 	it("runs headless js workflow scripts from the requested cwd", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-js-cwd-");
 		const root = tempDir.path();
@@ -352,6 +381,58 @@ function workflowResourceSmokeScript(): string {
 		"set -eu",
 		'message=$(cat "$OMP_WORKFLOW_RESOURCE_DIR/data/message.txt")',
 		'printf \'{"summary":"resource observed","statePatch":[{"op":"set","path":"/message","value":"%s"}]}\\n\' "$message"',
+	].join("\n");
+}
+
+function workflowPythonEnvSmokeFlow(): string {
+	return [
+		"---",
+		"name: python-env-smoke",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: python-env-smoke",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# Python env smoke",
+		"",
+		"```yaml workflow",
+		"stateSchema:",
+		"  version: 1",
+		"  shape:",
+		"    pythonEnv: object",
+		"resources:",
+		"  - path: scripts/check-python-env.sh",
+		"    kind: script",
+		"sequence:",
+		"  - node:",
+		"      id: checkPythonEnv",
+		"      type: script",
+		"      script:",
+		"        language: sh",
+		"        file: scripts/check-python-env.sh",
+		"      writes:",
+		"        - /pythonEnv",
+		"```",
+	].join("\n");
+}
+
+function workflowPythonEnvSmokeScript(): string {
+	const pythonNoUserSiteExpansion = "$" + "{PYTHONNOUSERSITE:-}";
+	const pythonPathSetExpansion = "$" + "{PYTHONPATH+x}";
+	const pythonPathExpansion = "$" + "{PYTHONPATH-unset}";
+	return [
+		"#!/bin/sh",
+		"set -eu",
+		`test "${pythonNoUserSiteExpansion}" = "1"`,
+		`test "${pythonPathSetExpansion}" != "x"`,
+		`printf '{"summary":"python env isolated","statePatch":[{"op":"set","path":"/pythonEnv","value":{"noUserSite":"%s","pythonPath":"%s"}}]}\\n' "$PYTHONNOUSERSITE" "${pythonPathExpansion}"`,
 	].join("\n");
 }
 

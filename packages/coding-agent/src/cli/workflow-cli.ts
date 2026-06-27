@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
+import { buildWorkflowShellEnvironment } from "../exec/shell-environment-policy";
 import type { CustomEntry, SessionEntry } from "../session/session-entries";
 import {
 	installWorkflowArtifact,
@@ -461,7 +462,7 @@ async function runHeadlessShellScript(
 		stdout: "pipe",
 		stderr: "pipe",
 		signal: request.signal,
-		env: workflowScriptEnvironment(request, Bun.env),
+		env: buildWorkflowShellEnvironment(workflowScriptEnvironment(request, Bun.env)),
 	});
 	const [stdout, stderr, exitCode] = await Promise.all([
 		streamText(child.stdout),
