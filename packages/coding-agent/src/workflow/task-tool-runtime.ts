@@ -7,7 +7,9 @@ const WORKFLOW_TASK_RETRY_MAX_DELAY_MS = 300_000;
 
 export function createTaskToolAgentRunner(toolSession: ToolSession): WorkflowAgentTaskRunner {
 	return async request => {
-		const taskTool = await TaskTool.create(await synchronousTaskToolSession(toolSession));
+		const taskTool = await TaskTool.create(
+			await synchronousTaskToolSession(toolSession, { requireIsolation: request.isolated === true }),
+		);
 		const params: TaskParams = {
 			agent: request.agent,
 			id: request.task.id,
@@ -26,28 +28,30 @@ export function createTaskToolAgentRunner(toolSession: ToolSession): WorkflowAge
 		if (request.merge !== undefined) params.merge = request.merge;
 		const result = await taskTool.execute(`workflow-${request.activationId}`, params, request.signal);
 		const taskResult = result.details?.results[0];
+		const output = textContent(result.content);
 		if (!taskResult) {
+			const suffix = output ? `: ${output}` : "";
 			return {
 				exitCode: 1,
-				output: textContent(result.content),
-				error: `workflow agent node "${request.nodeId}" did not return a task result`,
+				output,
+				error: `workflow agent node "${request.nodeId}" did not return a task result${suffix}`,
 			};
 		}
-		const output: WorkflowAgentTaskResult = {
+		const taskOutput: WorkflowAgentTaskResult = {
 			exitCode: taskResult.exitCode,
 			output: taskResult.output,
 			stderr: taskResult.stderr,
 			agentId: taskResult.id,
 		};
-		if (taskResult.error !== undefined) output.error = taskResult.error;
+		if (taskResult.error !== undefined) taskOutput.error = taskResult.error;
 		const data = finalSuccessfulYieldData(taskResult.extractedToolData);
-		if (data !== undefined) output.data = data;
-		if (taskResult.outputPath !== undefined) output.outputPath = taskResult.outputPath;
-		if (taskResult.sessionFile !== undefined) output.sessionFile = taskResult.sessionFile;
-		if (taskResult.patchPath !== undefined) output.patchPath = taskResult.patchPath;
-		if (taskResult.branchName !== undefined) output.branchName = taskResult.branchName;
-		if (taskResult.changesApplied !== undefined) output.changesApplied = taskResult.changesApplied;
-		return output;
+		if (data !== undefined) taskOutput.data = data;
+		if (taskResult.outputPath !== undefined) taskOutput.outputPath = taskResult.outputPath;
+		if (taskResult.sessionFile !== undefined) taskOutput.sessionFile = taskResult.sessionFile;
+		if (taskResult.patchPath !== undefined) taskOutput.patchPath = taskResult.patchPath;
+		if (taskResult.branchName !== undefined) taskOutput.branchName = taskResult.branchName;
+		if (taskResult.changesApplied !== undefined) taskOutput.changesApplied = taskResult.changesApplied;
+		return taskOutput;
 	};
 }
 
@@ -68,9 +72,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function synchronousTaskToolSession(toolSession: ToolSession): Promise<ToolSession> {
+interface SynchronousTaskToolSessionOptions {
+	requireIsolation?: boolean;
+}
+
+async function synchronousTaskToolSession(
+	toolSession: ToolSession,
+	options: SynchronousTaskToolSessionOptions = {},
+): Promise<ToolSession> {
 	const settings = await toolSession.settings.cloneForCwd(toolSession.cwd);
 	settings.override("async.enabled", false);
+	if (options.requireIsolation === true && settings.get("task.isolation.mode") === "none") {
+		settings.override("task.isolation.mode", "auto");
+	}
 	const retryBaseDelayMs = Math.max(settings.get("retry.baseDelayMs"), WORKFLOW_TASK_RETRY_BASE_DELAY_MS);
 	settings.override("retry.baseDelayMs", retryBaseDelayMs);
 	settings.override(

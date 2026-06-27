@@ -284,6 +284,79 @@ describe("workflow task tool runtime adapter", () => {
 		expect(capturedSession?.shellEnvironmentPolicy).toBe("workflow");
 	});
 
+	it("enables task isolation for workflow nodes that request isolated execution", async () => {
+		const parentSettings = Settings.isolated({ "task.isolation.mode": "none" });
+		let capturedSession: ToolSession | undefined;
+		let capturedParams: TaskParams | undefined;
+		const taskTool = {
+			execute: async (_toolCallId: string, params: unknown): Promise<AgentToolResult<TaskToolDetails>> => {
+				capturedParams = params as TaskParams;
+				return {
+					content: [{ type: "text", text: "task tool completed" }],
+					details: {
+						projectAgentsDir: null,
+						totalDurationMs: 12,
+						results: [
+							{
+								index: 0,
+								id: "build",
+								agent: "task",
+								agentSource: "project",
+								task: "Implement the workflow feature.",
+								assignment: "Implement the workflow feature.",
+								description: "Builder · Build",
+								exitCode: 0,
+								output: "agent completed",
+								stderr: "",
+								truncated: false,
+								durationMs: 12,
+								tokens: 0,
+								requests: 1,
+							},
+						],
+					},
+				};
+			},
+		};
+		vi.spyOn(taskModule.TaskTool, "create").mockImplementation(async session => {
+			capturedSession = session;
+			return taskTool as unknown as taskModule.TaskTool;
+		});
+		const runner = createTaskToolAgentRunner(createToolSession(parentSettings));
+
+		const result = await runner({ ...createRequest(), isolated: true, apply: false, merge: false });
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedParams?.isolated).toBe(true);
+		expect(capturedParams?.apply).toBe(false);
+		expect(capturedParams?.merge).toBe(false);
+		expect(capturedSession?.settings.get("task.isolation.mode")).toBe("auto");
+		expect(parentSettings.get("task.isolation.mode")).toBe("none");
+	});
+
+	it("surfaces TaskTool rejection text when a workflow agent node returns no task result", async () => {
+		const taskTool = {
+			execute: async (): Promise<AgentToolResult<TaskToolDetails>> => ({
+				content: [{ type: "text", text: "Task isolation is disabled." }],
+				details: {
+					projectAgentsDir: null,
+					totalDurationMs: 0,
+					results: [],
+				},
+			}),
+		};
+		vi.spyOn(taskModule.TaskTool, "create").mockResolvedValue(taskTool as unknown as taskModule.TaskTool);
+		const runner = createTaskToolAgentRunner(createToolSession());
+
+		const result = await runner({ ...createRequest(), isolated: true });
+
+		expect(result).toEqual({
+			exitCode: 1,
+			output: "Task isolation is disabled.",
+			error: 'workflow agent node "build" did not return a task result: Task isolation is disabled.',
+		});
+	});
+
 	it("passes workflow abort signals into TaskTool execution", async () => {
 		const controller = new AbortController();
 		let capturedSignal: AbortSignal | undefined;
