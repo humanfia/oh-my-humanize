@@ -14,6 +14,8 @@ import type { WorkflowActivation } from "./scheduler";
 import { readWorkflowState } from "./state";
 
 export const DEFAULT_WORKFLOW_MAX_PROMPT_BYTES = 32 * 1024;
+const MIN_WORKFLOW_TEMPLATE_BINDING_BYTES = 512;
+const TEXT_ENCODER = new TextEncoder();
 
 export interface WorkflowPromptResolutionContext {
 	state: Record<string, unknown>;
@@ -121,9 +123,15 @@ function resolveTemplatePromptBindings(
 } {
 	const values: Record<string, string> = {};
 	const sources: Record<string, WorkflowResolvedTemplatePromptBindingSource> = {};
-	for (const [name, binding] of Object.entries(source.bindings)) {
+	const entries = Object.entries(source.bindings);
+	const maxPromptBytes = context.maxPromptBytes ?? DEFAULT_WORKFLOW_MAX_PROMPT_BYTES;
+	const bindingBudget = Math.max(
+		MIN_WORKFLOW_TEMPLATE_BINDING_BYTES,
+		Math.floor(maxPromptBytes / Math.max(2, entries.length + 1)),
+	);
+	for (const [name, binding] of entries) {
 		if (binding.kind === "inline") {
-			values[name] = binding.text;
+			values[name] = compactPromptTemplateBindingText(node, name, binding.text, bindingBudget);
 			sources[name] = binding;
 			continue;
 		}
@@ -132,22 +140,30 @@ function resolveTemplatePromptBindings(
 				node,
 				name,
 				readWorkflowState(context.state, binding.path, { allowedReadPaths: node.reads }),
+				bindingBudget,
 			);
 			sources[name] = binding;
 			continue;
 		}
 		const activation = selectOutputPromptActivation(node, binding, context);
-		values[name] = promptTemplateBindingText(node, name, readOutputPromptValue(node, binding, activation));
+		values[name] = promptTemplateBindingText(
+			node,
+			name,
+			readOutputPromptValue(node, binding, activation),
+			bindingBudget,
+		);
 		sources[name] = { ...binding, activationId: activation.id };
 	}
 	return { values, sources };
 }
 
-function promptTemplateBindingText(node: WorkflowNode, bindingName: string, value: unknown): string {
-	if (typeof value === "string") return value;
+function promptTemplateBindingText(node: WorkflowNode, bindingName: string, value: unknown, maxBytes: number): string {
+	if (typeof value === "string") {
+		return compactPromptTemplateBindingText(node, bindingName, value, maxBytes);
+	}
 	try {
 		const serialized = JSON.stringify(value, null, 2);
-		if (serialized !== undefined) return serialized;
+		if (serialized !== undefined) return compactPromptTemplateBindingText(node, bindingName, serialized, maxBytes);
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new WorkflowPromptSourceError(
@@ -272,15 +288,89 @@ function resolvedPrompt(
 			`workflow prompt source for node "${node.id}" at "${label}" must resolve to a string`,
 		);
 	}
-	const byteLength = new TextEncoder().encode(value).byteLength;
-	if (byteLength > (context.maxPromptBytes ?? DEFAULT_WORKFLOW_MAX_PROMPT_BYTES)) {
+	const maxPromptBytes = context.maxPromptBytes ?? DEFAULT_WORKFLOW_MAX_PROMPT_BYTES;
+	let promptValue = value;
+	let byteLength = utf8ByteLength(promptValue);
+	if (byteLength > maxPromptBytes && source.kind === "template") {
+		promptValue = compactRenderedTemplatePrompt(node, promptValue, maxPromptBytes);
+		byteLength = utf8ByteLength(promptValue);
+	}
+	if (byteLength > maxPromptBytes) {
 		throw new WorkflowPromptSourceError(`workflow prompt source for node "${node.id}" exceeds the prompt size limit`);
 	}
-	return { value, byteLength, contentHash: contentHash(value), source };
+	return { value: promptValue, byteLength, contentHash: contentHash(promptValue), source };
 }
 
 function contentHash(value: string): string {
 	const hasher = new Bun.CryptoHasher("sha256");
 	hasher.update(value);
 	return `sha256:${hasher.digest("hex")}`;
+}
+
+function compactPromptTemplateBindingText(
+	node: WorkflowNode,
+	bindingName: string,
+	value: string,
+	maxBytes: number,
+): string {
+	return compactPromptText(value, maxBytes, original =>
+		[
+			`workflow prompt binding "${bindingName}" was compacted for node "${node.id}"`,
+			`originalBytes=${original.byteLength}`,
+			`contentHash=${original.contentHash}`,
+			"full value remains in workflow state or activation artifacts referenced by this flow",
+		].join("; "),
+	);
+}
+
+function compactRenderedTemplatePrompt(node: WorkflowNode, value: string, maxBytes: number): string {
+	return compactPromptText(value, maxBytes, original =>
+		[
+			`workflow template prompt for node "${node.id}" was compacted after rendering`,
+			`originalBytes=${original.byteLength}`,
+			`contentHash=${original.contentHash}`,
+			"reduce template bindings or raise maxPromptBytes for full context",
+		].join("; "),
+	);
+}
+
+interface PromptCompactionOriginal {
+	byteLength: number;
+	contentHash: string;
+}
+
+function compactPromptText(
+	value: string,
+	maxBytes: number,
+	notice: (original: PromptCompactionOriginal) => string,
+): string {
+	const byteLength = utf8ByteLength(value);
+	if (byteLength <= maxBytes) return value;
+	const suffix = `\n\n[${notice({ byteLength, contentHash: contentHash(value) })}]`;
+	const suffixBytes = utf8ByteLength(suffix);
+	if (suffixBytes >= maxBytes) {
+		return truncateUtf8(suffix, maxBytes);
+	}
+	const prefix = truncateUtf8(value, maxBytes - suffixBytes).trimEnd();
+	return `${prefix}${suffix}`;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) return "";
+	if (utf8ByteLength(value) <= maxBytes) return value;
+	let low = 0;
+	let high = value.length;
+	while (low < high) {
+		const mid = Math.ceil((low + high) / 2);
+		if (utf8ByteLength(value.slice(0, mid)) <= maxBytes) {
+			low = mid;
+		} else {
+			high = mid - 1;
+		}
+	}
+	return value.slice(0, low);
+}
+
+function utf8ByteLength(value: string): number {
+	return TEXT_ENCODER.encode(value).byteLength;
 }
