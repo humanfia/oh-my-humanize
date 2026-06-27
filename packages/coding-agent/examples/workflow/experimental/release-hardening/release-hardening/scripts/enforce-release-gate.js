@@ -1,6 +1,8 @@
 const state = workflowContext.state && typeof workflowContext.state === "object" ? workflowContext.state : {};
 const checks = state.checks && typeof state.checks === "object" ? state.checks : {};
 const outputPath = "workflow-output/release-gate.md";
+const reviewVerdict = String(state.review ?? "");
+const holdingForFreshContract = reviewVerdict === "hold";
 
 const auditText = await readOptionalText("workflow-output/release-audit.md");
 const rollbackText = await readOptionalText("workflow-output/release-rollback.md");
@@ -11,10 +13,10 @@ const blockers = [
 const unresolvedBlockers = blockers.filter(blocker => !auditResolvesBlocker(auditText, blocker));
 const failures = [];
 
-if (state.review !== "finish") {
-	failures.push(`release reviewer verdict is not finish: ${String(state.review ?? "(missing)")}`);
+if (reviewVerdict !== "finish" && !holdingForFreshContract) {
+	failures.push(`release reviewer verdict is not finish or hold: ${reviewVerdict || "(missing)"}`);
 }
-if (checks.status !== "pass") {
+if (checks.status !== "pass" && !holdingForFreshContract) {
 	failures.push(`declared checks did not pass: ${String(checks.status ?? "(missing)")}`);
 }
 if (!auditText.trim()) {
@@ -26,25 +28,35 @@ if (!rollbackText.trim()) {
 for (const blocker of unresolvedBlockers) {
 	failures.push(`unresolved audit blocker from ${blocker.source}: ${blocker.text}`);
 }
+const holdReasons = holdingForFreshContract
+	? [
+			`release reviewer requested fresh task contract: ${reviewVerdict}`,
+			...(checks.status === "pass" ? [] : [`declared checks did not pass: ${String(checks.status ?? "(missing)")}`]),
+			...failures,
+		]
+	: [];
+const status = holdingForFreshContract ? "hold" : failures.length === 0 ? "pass" : "fail_closed";
 
-await Bun.write(outputPath, gateMarkdown({ checks, failures, blockers, unresolvedBlockers }));
+await Bun.write(outputPath, gateMarkdown({ checks, failures, blockers, unresolvedBlockers, status, holdReasons }));
 
-if (failures.length > 0) {
+if (failures.length > 0 && !holdingForFreshContract) {
 	throw new Error(`release gate fail-closed: ${failures[0]}`);
 }
 
 return {
-	summary: "release gate passed",
-	data: { status: "pass", unresolvedBlockers },
+	summary: holdingForFreshContract ? "release gate held for fresh task contract" : "release gate passed",
+	data: { status, unresolvedBlockers, holdReasons },
 	statePatch: [
 		{
 			op: "set",
 			path: "/releaseGate",
 			value: {
-				status: "pass",
+				status,
+				outcome: holdingForFreshContract ? "rejected" : "accepted",
 				outputPath,
 				blockerCount: blockers.length,
 				unresolvedBlockers,
+				holdReasons,
 			},
 		},
 	],
@@ -98,14 +110,15 @@ function evidenceTokens(text) {
 	);
 }
 
-function gateMarkdown({ checks, failures, blockers, unresolvedBlockers }) {
+function gateMarkdown({ checks, failures, blockers, unresolvedBlockers, status, holdReasons }) {
 	return [
 		"# Release Gate Evidence",
 		"",
-		`status: ${failures.length === 0 ? "pass" : "fail_closed"}`,
+		`status: ${status}`,
 		`checks_status: ${String(checks.status ?? "(missing)")}`,
 		`audit_blockers: ${blockers.length}`,
 		`unresolved_blockers: ${unresolvedBlockers.length}`,
+		...(holdReasons.length ? ["", "## Hold Reasons", "", ...holdReasons.map(reason => `- ${reason}`)] : []),
 		"",
 		"## Failures",
 		"",

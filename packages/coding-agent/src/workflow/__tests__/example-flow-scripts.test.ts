@@ -2423,6 +2423,88 @@ describe("example workflow scripts", () => {
 		expect(gate).toContain("audit_blockers: 1");
 	});
 
+	it("archives release hardening holds when frozen task checks require a fresh contract", async () => {
+		using tempDir = TempDir.createSync("@omh-release-gate-hold-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/release-audit.md`,
+			[
+				"# Release-Facing Audit Evidence",
+				"",
+				"## Fresh contract required",
+				"",
+				"- Waived stale docs after a bounded repair, but the Security Command selector is absent in this checkout.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/release-rollback.md`,
+			["# Release Rollback Notes", "", "- Revert README.md and docs/source/introduction.rst."].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/release-checks.md`,
+			[
+				"# Release Check Evidence",
+				"",
+				"## Validation Command",
+				"",
+				"Exit code: 0",
+				"",
+				"## Security Command",
+				"",
+				"Exit code: 4",
+				"",
+				"pytest: not found: Test.*Release",
+			].join("\n"),
+		);
+
+		const gateResult = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "enforceReleaseGate",
+			scriptFileName: "enforce-release-gate.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/releaseGate"],
+			initialState: {
+				checks: {
+					status: "fail",
+					validationExitCode: 0,
+					securityExitCode: 4,
+					outputPath: "workflow-output/release-checks.md",
+				},
+				review: "hold",
+			},
+		});
+
+		expect(
+			gateResult.scheduler.activations.find(activation => activation.nodeId === "enforceReleaseGate")?.status,
+		).toBe("completed");
+		expect(gateResult.scheduler.state.releaseGate).toMatchObject({
+			status: "hold",
+			outcome: "rejected",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/release-gate.md`).text()).toContain("status: hold");
+
+		const archiveResult = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveRelease",
+			scriptFileName: "archive-release.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: gateResult.scheduler.state,
+		});
+
+		expect(archiveResult.scheduler.state.archive).toMatchObject({
+			outcome: "rejected",
+			validation: "hold",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/release-hardening-archive.md`).text()).toContain(
+			"Outcome: rejected",
+		);
+	});
+
 	it("blocks no-code bug triage archives when cause evidence proposes a fix without reconciliation", async () => {
 		using tempDir = TempDir.createSync("@omh-bug-triage-unreconciled-cause-");
 		const cwd = tempDir.path();

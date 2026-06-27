@@ -10,8 +10,9 @@ Read `workflow-output/release-precheck.md`, inspect the current diff, and compar
 
 Do not edit `task.md` or `workflow-output/release-precheck.md`. Treat them as
 operator-owned frozen task-contract inputs for this attempt. If they appear
-wrong or drifted, return `continue` with a handoff to stop and restart from a
-fresh task contract rather than repairing those files inside the workflow.
+wrong, drifted, or impossible to satisfy from bounded release-hardening repair,
+return `hold` with a handoff to stop and restart from a fresh task contract
+rather than repairing those files inside the workflow.
 
 Return `continue` when any of these are true:
 
@@ -19,8 +20,13 @@ Return `continue` when any of these are true:
 - release-facing notes or compatibility evidence are missing;
 - rollback notes are missing;
 - changes are broader than the release-hardening scope;
-- security or compatibility checks declared by the task are missing or failed;
 - another bounded repair round is required.
+
+Return `hold` when the frozen task contract itself needs operator refresh, for
+example a declared security/compatibility selector is absent, obsolete,
+environment-bound, or impossible to make pass without changing the frozen task
+inputs. `hold` is a terminal rejected outcome for this attempt, not a repair
+request.
 
 Return `finish` only when release readiness is coherent, frozen-task-scoped,
 validation passed, required optional checks passed, and rollback notes exist.
@@ -30,5 +36,5 @@ with evidence in `workflow-output/release-audit.md`.
 
 Output contract:
 
-- First line must be exactly `continue` or `finish`.
+- First line must be exactly `continue`, `hold`, or `finish`.
 - After the first line, include concise release-gate evidence and next handoff.

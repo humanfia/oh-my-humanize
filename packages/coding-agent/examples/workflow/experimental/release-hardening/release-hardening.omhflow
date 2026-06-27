@@ -157,6 +157,7 @@ nodes:
       - /review
     gates:
       - continue
+      - hold
       - finish
     fallbackVerdict: continue
 
@@ -208,7 +209,7 @@ edges:
   - from: releaseReview
     to: enforceReleaseGate
     when: outputs.releaseReview.verdict != "continue"
-    label: release gate accepted
+    label: release gate terminal decision
   - from: enforceReleaseGate
     to: archiveRelease
 ```

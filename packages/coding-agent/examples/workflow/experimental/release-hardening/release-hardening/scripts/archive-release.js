@@ -1,11 +1,12 @@
 const state = workflowContext.state && typeof workflowContext.state === "object" ? workflowContext.state : {};
 const checks = state.checks && typeof state.checks === "object" ? state.checks : {};
 const releaseGate = state.releaseGate && typeof state.releaseGate === "object" ? state.releaseGate : {};
+const heldForFreshContract = releaseGate.status === "hold";
 
-if (checks.status !== "pass") {
+if (checks.status !== "pass" && !heldForFreshContract) {
 	throw new Error("cannot archive release hardening flow before declared checks pass");
 }
-if (releaseGate.status !== "pass") {
+if (releaseGate.status !== "pass" && !heldForFreshContract) {
 	throw new Error("cannot archive release hardening flow before release gate passes");
 }
 
@@ -14,11 +15,16 @@ const taskText = await readOptionalText("task.md");
 const checksText = await readOptionalText("workflow-output/release-checks.md");
 const rollbackText = await readOptionalText("workflow-output/release-rollback.md");
 const gateText = await readOptionalText("workflow-output/release-gate.md");
+const outcome = heldForFreshContract ? "rejected" : "accepted";
+const validation = heldForFreshContract ? "hold" : "pass";
 
 await Bun.write(
 	archivePath,
 	[
 		"# Release Hardening Archive",
+		"",
+		`Outcome: ${outcome}`,
+		`Validation: ${validation}`,
 		"",
 		"## Task",
 		"",
@@ -47,7 +53,8 @@ return {
 			path: "/archive",
 			value: {
 				file: archivePath,
-				validation: "pass",
+				outcome,
+				validation,
 			},
 		},
 	],
