@@ -173,6 +173,9 @@ function analyzeExercise(result, command) {
 	if (result.exitCode === 0 && assertionBackedCommand(command) && text.trim().length > 0) {
 		positiveSignals.push("assertion-backed-command");
 	}
+	if (result.exitCode === 0 && negativeControlOutput(text)) {
+		positiveSignals.push("negative-control-output");
+	}
 	const negativeSignals = (
 		text.includes("[no test files]") ||
 		text.includes("no tests ran") ||
@@ -204,6 +207,12 @@ function exerciseSignals(text) {
 
 function assertionBackedCommand(command) {
 	return /\b(?:assert|assertRaises|pytest\.raises|unittest\.TestCase\(\)\.assert)\b/u.test(command);
+}
+
+function negativeControlOutput(text) {
+	return /\b(?:reject(?:ed|ion)?|caught|raised|raises?|badsignature|bad signature|invalid|tamper(?:ed)?|failed as expected)\b/u.test(
+		text,
+	);
 }
 
 function countMatches(text, pattern) {

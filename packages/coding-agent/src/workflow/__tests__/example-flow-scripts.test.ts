@@ -635,6 +635,52 @@ describe("example workflow scripts", () => {
 		expect(evidence).toContain("896 passed");
 	});
 
+	it("counts script-backed negative controls as research reproduction variant exercise", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-negative-control-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		await Bun.write(
+			`${cwd}/workflow-output/scripts/tamper_reject.py`,
+			[
+				"try:",
+				"    raise ValueError('bad signature')",
+				"except ValueError:",
+				"    print('tamper rejected')",
+				"else:",
+				"    raise SystemExit('tamper unexpectedly accepted')",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runVariant",
+			scriptFileName: "run-variant.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/variant"],
+			initialState: {
+				task: {
+					variantCommand: "python workflow-output/scripts/tamper_reject.py",
+					validationCommand: `python -c "print('4 passed')"`,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.variant).toMatchObject({
+			status: "pass",
+			variantExerciseSummary: {
+				exercised: true,
+				positiveSignals: ["negative-control-output"],
+			},
+		});
+		const evidence = await Bun.file(`${cwd}/workflow-output/reproduction-variant.json`).json();
+		expect(evidence.variantExerciseSummary).toMatchObject({
+			exercised: true,
+			positiveSignals: ["negative-control-output"],
+		});
+	});
+
 	it("accepts markdown validation command sections in agent build review tasks", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-validation-section-");
 		const cwd = tempDir.path();
@@ -4464,6 +4510,42 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${blockedDir.path()}/workflow-output/test-hardening-gap-report.md`).text()).toContain(
 			"No module named pytest",
 		);
+	});
+
+	it("fails closed when test-hardening validation has an unclean baseline", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-gap-unclean-baseline-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeGapReport",
+			scriptFileName: "materialize-gap-report.js",
+			scriptDir: `${TEST_GENERATION_HARDENING_DIR}/scripts`,
+			writes: ["/gaps"],
+			initialState: {
+				gaps: {
+					status: "ready",
+					summary: "validation command started but imported the installed package instead of this checkout",
+					validation: {
+						startable: true,
+						command: "python -m pytest tests/test_options.py -q",
+						status: "started and completed with baseline test failures",
+						exitCode: 1,
+						stderr:
+							"798 passed, 9 failed; tracebacks resolve click to site-packages/click, not src/click in this checkout.",
+					},
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "materializeGapReport")?.status,
+		).toBe("failed");
+		const report = await Bun.file(`${cwd}/workflow-output/test-hardening-gap-report.md`).text();
+		expect(report).toContain("baseline test failures");
+		expect(report).toContain("site-packages/click");
 	});
 
 	it("blocks refactor migration when compatibility design is fail-closed", async () => {
