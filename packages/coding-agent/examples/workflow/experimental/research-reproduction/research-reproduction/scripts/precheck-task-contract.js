@@ -1,4 +1,5 @@
 const taskText = await readRequiredTaskText();
+const claimSource = requiredField(taskText, "Claim Source");
 const reproductionCommand = requiredCommand(taskText, "Reproduction Command");
 const validationCommand = requiredCommand(taskText, "Validation Command");
 const setupCommand = optionalCommand(taskText, "Setup Command");
@@ -13,6 +14,12 @@ await Bun.write(
 	"workflow-output/reproduction-precheck.md",
 	[
 		"# Research Reproduction Precheck",
+		"",
+		"## Claim Source",
+		"",
+		"```text",
+		claimSource,
+		"```",
 		"",
 		"## Reproduction Command",
 		"",
@@ -50,6 +57,7 @@ return {
 			value: {
 				file: "task.md",
 				text: taskText,
+				claimSource,
 				reproductionCommand,
 				validationCommand,
 				setupCommand,
@@ -76,9 +84,15 @@ async function readRequiredTaskText() {
 }
 
 function requiredCommand(taskContract, label) {
-	const command = optionalCommand(taskContract, label);
+	const command = optionalField(taskContract, label);
 	if (!command) throw new Error(`research-reproduction task.md must declare ${label}`);
 	return command;
+}
+
+function requiredField(taskContract, label) {
+	const value = optionalField(taskContract, label);
+	if (!value) throw new Error(`research-reproduction task.md must declare ${label}`);
+	return value;
 }
 
 function validateShellCommand(command, label) {
@@ -90,6 +104,10 @@ function validateShellCommand(command, label) {
 }
 
 function optionalCommand(taskContract, label) {
+	return optionalField(taskContract, label);
+}
+
+function optionalField(taskContract, label) {
 	const lines = taskContract.split(/\r?\n/u);
 	const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 	const pattern = new RegExp(`^\\s*${escaped}\\s*:\\s*(.*)\\s*$`, "iu");

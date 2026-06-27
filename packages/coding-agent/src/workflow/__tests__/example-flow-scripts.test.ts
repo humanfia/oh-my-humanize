@@ -184,6 +184,9 @@ describe("example workflow scripts", () => {
 				"Objective:",
 				"Reject command contracts that cannot be preserved as a single shell command.",
 				"",
+				"Claim Source:",
+				"tests/test_json.py contains a concrete JSON behavior claim for this command-contract regression fixture.",
+				"",
 				"Setup Command:",
 				"```sh",
 				"PYTHONPATH=. python - <<'PY'",
@@ -228,6 +231,9 @@ describe("example workflow scripts", () => {
 				"Objective:",
 				"Reject hidden multi-line command contracts that are fragile under shell quoting.",
 				"",
+				"Claim Source:",
+				"tests/test_json.py contains a concrete JSON behavior claim for this escaped-newline fixture.",
+				"",
 				"Reproduction Command:",
 				`PYTHONPATH=src python -c "print('start')\\nprint('done')"`,
 				"",
@@ -251,6 +257,73 @@ describe("example workflow scripts", () => {
 		expect(
 			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.error,
 		).toContain("Reproduction Command must not contain escaped newline sequences");
+	});
+
+	it("requires research reproduction tasks to provide an auditable claim source", async () => {
+		using missingDir = TempDir.createSync("@omh-research-reproduction-missing-claim-source-");
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${missingDir.path()}/task.md`,
+			[
+				"Objective:",
+				"Reject reproduction tasks that ask the claim agent to infer a claim from broad test commands only.",
+				"",
+				"Reproduction Command:",
+				"python -m pytest tests/test_json.py -q",
+				"",
+				"Validation Command:",
+				"python -m pytest tests/test_json.py -q",
+			].join("\n"),
+		);
+
+		const missing = await runExampleScript({
+			cwd: missingDir.path(),
+			previousCwd,
+			nodeId: "precheckTaskContract",
+			scriptFileName: "precheck-task-contract.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/task", "/runtime", "/review"],
+		});
+
+		expect(
+			missing.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
+		).toBe("failed");
+		expect(
+			missing.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.error,
+		).toContain("Claim Source");
+
+		using readyDir = TempDir.createSync("@omh-research-reproduction-ready-claim-source-");
+		await Bun.write(
+			`${readyDir.path()}/task.md`,
+			[
+				"Objective:",
+				"Reproduce an explicit JSON serialization behavior.",
+				"",
+				"Claim Source:",
+				"tests/test_json.py asserts that model JSON serialization preserves decimal string output for the selected fixture.",
+				"",
+				"Reproduction Command:",
+				"python -m pytest tests/test_json.py -q",
+				"",
+				"Validation Command:",
+				"python -m pytest tests/test_json.py -q",
+			].join("\n"),
+		);
+
+		const ready = await runExampleScript({
+			cwd: readyDir.path(),
+			previousCwd,
+			nodeId: "precheckTaskContract",
+			scriptFileName: "precheck-task-contract.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/task", "/runtime", "/review"],
+		});
+
+		expect(ready.scheduler.state.task).toMatchObject({
+			claimSource:
+				"tests/test_json.py asserts that model JSON serialization preserves decimal string output for the selected fixture.",
+		});
 	});
 
 	it("keeps non-exercising research reproduction evidence on the refinement route", async () => {

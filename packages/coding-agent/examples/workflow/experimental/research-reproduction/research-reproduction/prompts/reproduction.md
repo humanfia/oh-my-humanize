@@ -35,7 +35,10 @@ Tool and artifact boundary:
   missing, say what is missing instead of generating it yourself.
 
 - Extract claim: identify the concrete claim, metric, expected behavior,
-  environment, and failure criteria from the task contract only.
+  environment, and failure criteria from `task.claimSource` and the surrounding
+  task contract only. If `task.claimSource` is absent or does not name a
+  source/test/doc-derived claim, report `blocked_missing_claim_source`; do not
+  infer a claim from broad test commands.
 - Compare results: compare command evidence against the claim, explain
   variance, and identify missing evidence from the script-node outputs only.
   Treat `variant.variantCommandEvidence` and
