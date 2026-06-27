@@ -576,6 +576,63 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("routes completed agent build reviews to semantic archive despite incidental continue text", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-complete-review-route-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const classifyRouteScript = await Bun.file(
+			`${AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR}/classify-review-route.js`,
+		).text();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Objective:", "Route a completed review to archive.", "", "Validation Command:", "echo validate"].join("\n"),
+		);
+		await Bun.write(`${cwd}/progress.md`, "ROUND 1: added focused test evidence and validation passed.\n");
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "agent-loop-review-route",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "reviewRound",
+						type: "script",
+						script: {
+							language: "js",
+							code: [
+								"return {",
+								"  summary: 'The review assignment is complete: the task contract, progress log, diff, local instructions, and validation artifacts were checked, and the required output verdict was already determined as complete. No merge-blocking project issue was found in the reviewed state.',",
+								"  data: { verdict: 'continue' },",
+								"};",
+							].join("\n"),
+						},
+						writes: ["/review"],
+					},
+					{
+						id: "classifyReviewRoute",
+						type: "script",
+						script: {
+							language: "js",
+							code: classifyRouteScript,
+						},
+						writes: ["/reviewRoute"],
+					},
+				],
+				edges: [{ from: "reviewRound", to: "classifyReviewRoute" }],
+			},
+		});
+
+		expect(result.scheduler.state.reviewRoute).toMatchObject({
+			decision: "complete",
+			reviewVerdict: "continue",
+			completionSatisfiedButContinued: true,
+		});
+	});
+
 	it("treats trailing slash allowed paths as recursive scope fences", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-trailing-slash-scope-");
 		const cwd = tempDir.path();

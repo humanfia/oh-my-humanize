@@ -176,6 +176,9 @@ function isCompletionSatisfiedReview(text) {
 
 function mentionsCompletionSatisfied(text) {
 	return (
+		/\breview\s+assignment\s+is\s+complete\b/iu.test(text) ||
+		/\brequired\s+output\s+verdict\b.{0,120}\b(?:complete|accepted|finish)\b/ius.test(text) ||
+		/\bno\s+merge-blocking\s+project\s+issue\s+was\s+found\b/iu.test(text) ||
 		/\b(?:task|work|implementation|result)\s+is\s+complete\b/iu.test(text) ||
 		/\b(?:review\s+route|route)\s+is\s+complete\b/iu.test(text) ||
 		/\b(?:acceptance criteria|acceptance|task-specific acceptance)\b.{0,120}\b(?:satisfied|met|complete)\b/ius.test(
