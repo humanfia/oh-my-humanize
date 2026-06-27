@@ -619,6 +619,54 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("treats multiline allowed path bullets as recursive scope fences", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-multiline-scope-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Verify multiline scope fence matching.",
+				"",
+				"Validation Command: python -m pytest tests/test_cli/test_help.py -q",
+				"",
+				"Allowed paths:",
+				"- typer/",
+				"- tests/test_cli/",
+				"- workflow-output/",
+				"- progress.md",
+				"",
+				"Acceptance Criteria:",
+				"- Keep edits inside the declared folders.",
+			].join("\n"),
+		);
+		await runGit(cwd, ["add", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/tests/test_cli/test_help.py`, "def test_help_panel():\n    assert True\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "PASS",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/semantic-archive-guard.json`).json()).toMatchObject({
+			verdict: "PASS",
+			findings: [],
+		});
+	});
+
 	it("records the manifest run id as the canonical tuple id in the task contract", async () => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-precheck-");
 		const cwd = tempDir.path();
@@ -762,6 +810,70 @@ describe("example workflow scripts", () => {
 		});
 		expect(await Bun.file(`${cwd}/workflow-output/validation-stdout-stderr-${tupleId}.txt`).text()).toContain(
 			"validation stdout",
+		);
+	});
+
+	it("reuses exact declared validation evidence from any implementation lane", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-core-validation-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "P89-T01-core-validation";
+		const validationCommand = "go test ./...";
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Reuse declared validation from whichever lane already ran it.",
+				"",
+				"Validation Command:",
+				validationCommand,
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(
+			`${cwd}/workflow-output/core-lane-${tupleId}.json`,
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementCore",
+					status: "source_changed",
+					verification: {
+						validation: {
+							command: validationCommand,
+							environment: {},
+							result: "pass",
+							exit_code: 0,
+							output: "ok github.com/spf13/cobra; ok github.com/spf13/cobra/doc",
+						},
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runDeclaredValidation",
+			scriptFileName: "run-declared-validation.js",
+		});
+
+		expect(result.scheduler.state.declaredValidation).toMatchObject({
+			tuple_id: tupleId,
+			validation: {
+				command: validationCommand,
+				environment: {},
+				result: "passed",
+				exitCode: 0,
+				reusedFromLane: `workflow-output/core-lane-${tupleId}.json`,
+			},
+		});
+		const artifact = await Bun.file(`${cwd}/workflow-output/validation-${tupleId}.json`).json();
+		expect(artifact.validation.stdoutArtifact).toBe(`workflow-output/validation-reused-${tupleId}.stdout`);
+		expect(await Bun.file(`${cwd}/workflow-output/validation-reused-${tupleId}.stdout`).text()).toContain(
+			"github.com/spf13/cobra",
 		);
 	});
 
@@ -3338,6 +3450,126 @@ describe("example workflow scripts", () => {
 			terminalState: "no-win",
 			validationPassed: true,
 			noWinBranches: ["algorithmic", "caching", "io"],
+		});
+	});
+
+	it("finalizes positive performance repair evidence from status-style report lines", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-repair-status-lines-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance status-style repair evidence",
+			"",
+			"Benchmark Command:",
+			"python -m timeit -s 'from src.click.parser import normalize' 'normalize(\"--help\")'",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_parser.py -q",
+			"",
+			"Allowed paths:",
+			"- src/click/parser.py",
+			"- tests/test_parser.py",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/click/parser.py`, "def normalize(value):\n    return value\n");
+		await Bun.write(`${cwd}/tests/test_parser.py`, "def test_normalize():\n    assert True\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/click/parser.py", "tests/test_parser.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/click/parser.py`, "def normalize(value):\n    return value.lstrip('-')\n");
+		await Bun.write(
+			`${cwd}/tests/test_parser.py`,
+			"def test_normalize():\n    assert normalize('--help') == 'help'\n",
+		);
+
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Algorithmic",
+				"",
+				"final-selection: yes",
+				"rollback evidence: rejected branches were reverted before retaining this candidate",
+			].join("\n"),
+		);
+		for (const name of ["caching", "io"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				["# Branch", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+			);
+		}
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"- Benchmark status: pass.",
+				"- Benchmark artifact: `workflow-output/click-benchmark.out` = `0.04297649699947215` seconds.",
+				"- Validation status: pass.",
+				"- Validation result: `782 passed`, `1 skipped`.",
+				"- Focused parser verification: `8 passed`.",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/click-benchmark.out`, "0.04297649699947215\n");
+
+		const guard = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					status: "fail",
+					benchmarkExitCode: 1,
+					validationExitCode: 1,
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+			},
+		});
+
+		expect(guard.scheduler.state.selectionGuard).toMatchObject({
+			benchmarkPassed: true,
+			validationPassed: true,
+			projectChangedFiles: ["src/click/parser.py", "tests/test_parser.py"],
+		});
+
+		const finalize = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				...guard.scheduler.state,
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					status: "fail",
+					benchmarkExitCode: 1,
+					validationExitCode: 1,
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+			},
+		});
+
+		expect(finalize.scheduler.state.selection).toMatchObject({
+			status: "pass",
+			terminalState: "positive",
+			validationPassed: true,
+			selectedBranches: ["algorithmic"],
 		});
 	});
 

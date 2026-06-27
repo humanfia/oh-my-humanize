@@ -26,7 +26,7 @@ if (!validationCommand) {
 }
 
 assertSafeValidationCommand(validationCommand);
-const reusableValidation = await reusableExactTestLaneValidation({
+const reusableValidation = await reusableExactLaneValidation({
 	tupleId,
 	validationCommand,
 	validationEnvironment,
@@ -39,7 +39,7 @@ if (reusableValidation) {
 		reusableValidation,
 	});
 	return {
-		summary: `declared validation reused exact ${reusableValidation.result} test-lane evidence: ${reusableValidation.artifact}`,
+		summary: `declared validation reused exact ${reusableValidation.result} lane evidence: ${reusableValidation.artifact}`,
 		verdict: reusableValidation.result === "passed" ? "PASS" : "FAIL",
 		data: artifact,
 		statePatch: [{ op: "set", path: "/declaredValidation", value: artifact }],
@@ -97,39 +97,74 @@ async function writeValidationArtifact({
 async function writeReusedValidationArtifact({ tupleId, validationCommand, validationEnvironment, reusableValidation }) {
 	const suffix = tupleId ? `-${tupleId}` : "";
 	const artifactPath = `workflow-output/validation${suffix}.json`;
-	const stdout = await readOptionalText(reusableValidation.stdoutArtifact);
-	const stderr = await readOptionalText(reusableValidation.stderrArtifact);
+	const materialized = await materializeReusableValidationArtifacts({ tupleId, reusableValidation });
+	const stdout = await readOptionalText(materialized.stdoutArtifact);
+	const stderr = await readOptionalText(materialized.stderrArtifact);
 	const stdoutStderrArtifact = await writeCombinedValidationOutput({
 		tupleId,
-		stdoutArtifact: reusableValidation.stdoutArtifact,
-		stderrArtifact: reusableValidation.stderrArtifact,
+		stdoutArtifact: materialized.stdoutArtifact,
+		stderrArtifact: materialized.stderrArtifact,
 		stdout,
 		stderr,
 	});
+	const validationRecord = {
+		command: validationCommand,
+		environment: validationEnvironment,
+		runtime_environment: reusableValidation.runtimeEnvironment,
+		result: reusableValidation.result,
+		status: reusableValidation.result,
+		exitCode: reusableValidation.exitCode,
+		stdoutArtifact: materialized.stdoutArtifact,
+		stderrArtifact: materialized.stderrArtifact,
+		exitCodeArtifact: materialized.exitCodeArtifact,
+		stdoutStderrArtifact,
+		reusedFromLane: reusableValidation.artifact,
+		reusedArtifactHashes: reusableValidation.recordedHashes,
+		reusedCoverageProfiles: reusableValidation.coverageProfiles,
+	};
+	if (reusableValidation.producerNode === "implementTests") {
+		validationRecord.reusedFromTestLane = reusableValidation.artifact;
+	}
 	const artifact = {
 		tuple_id: tupleId,
 		artifact: artifactPath,
 		producer_node: "runDeclaredValidation",
 		producer_kind: "workflow-script",
-		validation: {
-			command: validationCommand,
-			environment: validationEnvironment,
-			runtime_environment: reusableValidation.runtimeEnvironment,
-			result: reusableValidation.result,
-			status: reusableValidation.result,
-			exitCode: reusableValidation.exitCode,
-			stdoutArtifact: reusableValidation.stdoutArtifact,
-			stderrArtifact: reusableValidation.stderrArtifact,
-			exitCodeArtifact: reusableValidation.exitCodeArtifact,
-			stdoutStderrArtifact,
-			reusedFromTestLane: reusableValidation.artifact,
-			reusedArtifactHashes: reusableValidation.recordedHashes,
-			reusedCoverageProfiles: reusableValidation.coverageProfiles,
-		},
+		validation: validationRecord,
 		checked_at_ms: Date.now(),
 	};
 	await Bun.write(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
 	return artifact;
+}
+
+async function materializeReusableValidationArtifacts({ tupleId, reusableValidation }) {
+	if (
+		reusableValidation.stdoutArtifact &&
+		reusableValidation.stderrArtifact &&
+		reusableValidation.exitCodeArtifact &&
+		(await Promise.all([
+			fileExists(reusableValidation.stdoutArtifact),
+			fileExists(reusableValidation.stderrArtifact),
+			fileExists(reusableValidation.exitCodeArtifact),
+		])).every(Boolean)
+	) {
+		return {
+			stdoutArtifact: reusableValidation.stdoutArtifact,
+			stderrArtifact: reusableValidation.stderrArtifact,
+			exitCodeArtifact: reusableValidation.exitCodeArtifact,
+		};
+	}
+	const suffix = tupleId ? `-${tupleId}` : "";
+	const stdoutArtifact = `workflow-output/validation-reused${suffix}.stdout`;
+	const stderrArtifact = `workflow-output/validation-reused${suffix}.stderr`;
+	const exitCodeArtifact = `workflow-output/validation-reused${suffix}.exitcode`;
+	await Bun.write(stdoutArtifact, reusableValidation.stdout ?? "");
+	await Bun.write(stderrArtifact, reusableValidation.stderr ?? "");
+	await Bun.write(exitCodeArtifact, `${reusableValidation.exitCode}\n`);
+	reusableValidation.recordedHashes[stdoutArtifact] = await sha256File(stdoutArtifact);
+	reusableValidation.recordedHashes[stderrArtifact] = await sha256File(stderrArtifact);
+	reusableValidation.recordedHashes[exitCodeArtifact] = await sha256File(exitCodeArtifact);
+	return { stdoutArtifact, stderrArtifact, exitCodeArtifact };
 }
 
 async function writeCombinedValidationOutput({ tupleId, stdoutArtifact, stderrArtifact, stdout, stderr }) {
@@ -156,12 +191,12 @@ async function writeCombinedValidationOutput({ tupleId, stdoutArtifact, stderrAr
 	return combinedArtifact;
 }
 
-async function reusableExactTestLaneValidation({ tupleId, validationCommand, validationEnvironment }) {
-	const candidates = await testLaneValidationArtifacts(tupleId);
+async function reusableExactLaneValidation({ tupleId, validationCommand, validationEnvironment }) {
+	const candidates = await laneValidationArtifacts(tupleId);
 	for (const artifact of candidates) {
 		const data = await readJson(artifact);
-		const validation = data?.validation;
-		if (!data || data.producer_node !== "implementTests") continue;
+		const validation = declaredValidationObject(data);
+		if (!data || !isReusableLaneProducer(data.producer_node)) continue;
 		if (!validation || typeof validation !== "object") continue;
 		if (validation.command !== validationCommand) continue;
 		if (!environmentMatches(validation.environment, validationEnvironment)) continue;
@@ -181,6 +216,7 @@ async function reusableExactTestLaneValidation({ tupleId, validationCommand, val
 			runtimeEnvironment: objectField(validation, "runtime_environment"),
 			recordedHashes,
 			coverageProfiles: await recordedCoverageProfiles(data),
+			producerNode: data.producer_node,
 		};
 	}
 	for (const artifact of candidates) {
@@ -194,13 +230,23 @@ async function reusableExactTestLaneValidation({ tupleId, validationCommand, val
 		});
 		if (fallback) return fallback;
 	}
+	for (const artifact of candidates) {
+		const data = await readJson(artifact);
+		const fallback = await reusableInlineLaneValidation({
+			artifact,
+			data,
+			validationCommand,
+			validationEnvironment,
+		});
+		if (fallback) return fallback;
+	}
 	return null;
 }
 
-async function testLaneValidationArtifacts(tupleId) {
+async function laneValidationArtifacts(tupleId) {
 	const files = [];
 	try {
-		const glob = new Bun.Glob("workflow-output/tests-lane*.json");
+		const glob = new Bun.Glob("workflow-output/*lane*.json");
 		for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
 			if (tupleId && !filePath.includes(tupleId)) continue;
 			files.push(filePath);
@@ -209,6 +255,10 @@ async function testLaneValidationArtifacts(tupleId) {
 		return [];
 	}
 	return files.sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function isReusableLaneProducer(value) {
+	return typeof value === "string" && /^implement[A-Z]/u.test(value);
 }
 
 async function readJson(filePath) {
@@ -246,7 +296,7 @@ async function reusableTupleScopedValidationFiles({
 	validationCommand,
 	validationEnvironment,
 }) {
-	if (!tupleId || !data || data.producer_node !== "implementTests") return null;
+	if (!tupleId || !data || !isReusableLaneProducer(data.producer_node)) return null;
 	const validation = declaredValidationObject(data);
 	if (!validation || typeof validation !== "object") return null;
 	const { stdoutArtifact, stderrArtifact, exitCodeArtifact } = validationArtifactPaths(data, validation, tupleId);
@@ -281,16 +331,58 @@ async function reusableTupleScopedValidationFiles({
 		coverageProfiles,
 		validationCommand,
 		validationEnvironment,
+		producerNode: data.producer_node,
+	};
+}
+
+async function reusableInlineLaneValidation({
+	artifact,
+	data,
+	validationCommand,
+	validationEnvironment,
+}) {
+	if (!data || !isReusableLaneProducer(data.producer_node)) return null;
+	const validation = declaredValidationObject(data);
+	if (!validation || typeof validation !== "object") return null;
+	if (validation.command !== validationCommand) return null;
+	if (!environmentMatches(validation.environment, validationEnvironment)) return null;
+	const outcome = validationOutcome(validation);
+	if (!outcome) return null;
+	const stdout = stringField(validation, "stdout") || stringField(validation, "output") || stringField(validation, "stdout_stderr");
+	const stderr = stringField(validation, "stderr");
+	const recordedHashes = {
+		...(await recordedValidationHashes(data)),
+		[artifact]: await sha256File(artifact),
+	};
+	if (Object.keys(recordedHashes).length === 0) return null;
+	if (!(await recordedHashesStillMatch(recordedHashes))) return null;
+	return {
+		artifact,
+		result: outcome.result,
+		exitCode: outcome.exitCode,
+		stdoutArtifact: "",
+		stderrArtifact: "",
+		exitCodeArtifact: "",
+		runtimeEnvironment: objectField(validation, "runtime_environment"),
+		recordedHashes,
+		coverageProfiles: await recordedCoverageProfiles(data),
+		validationCommand,
+		validationEnvironment,
+		stdout,
+		stderr,
+		producerNode: data.producer_node,
 	};
 }
 
 function declaredValidationObject(data) {
 	const validation = optionalObjectField(data, "validation");
 	const validations = optionalObjectField(data, "validations");
+	const verification = optionalObjectField(data, "verification");
 	return (
 		optionalObjectField(data, "declared_validation") ??
 		optionalObjectField(validation, "declared") ??
 		optionalObjectField(validations, "declared") ??
+		optionalObjectField(verification, "validation") ??
 		declaredValidationArrayEntry(data) ??
 		validation ??
 		{}

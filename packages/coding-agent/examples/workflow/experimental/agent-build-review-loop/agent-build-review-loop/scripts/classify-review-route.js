@@ -515,25 +515,56 @@ function isExternalValidationBlocker({ text, signature, changedFiles, allowedSco
 }
 
 function taskAllowedScopes(taskText) {
-	const allowedLine = /Allowed paths:\s*([^\n]+)/iu.exec(taskText)?.[1] ?? "";
 	const scopes = [];
-	for (const match of allowedLine.matchAll(/`([^`]+)`/gu)) {
-		const rawScope = match[1]?.trim();
-		if (!rawScope || ignoredEvidencePath(rawScope)) continue;
-		scopes.push(rawScope);
+	for (const rawEntry of allowedPathEntries(taskText)) {
+		const backtickMatches = Array.from(rawEntry.matchAll(/`([^`]+)`/gu));
+		const rawScopes = backtickMatches.length > 0 ? backtickMatches.map(item => item[1] ?? "") : rawEntry.split(",");
+		for (const rawScope of rawScopes) {
+			const scope = normalizeEvidencePath(rawScope.trim().replace(/^[-*]\s*/u, "").replace(/^and\s+/iu, ""));
+			if (!scope || ignoredEvidencePath(scope)) continue;
+			scopes.push(scope);
+		}
 	}
-	return scopes;
+	return uniqueSorted(scopes);
+}
+
+function allowedPathEntries(taskText) {
+	const entries = [];
+	const lines = taskText.split(/\r?\n/u);
+	for (let index = 0; index < lines.length; index += 1) {
+		const match = /^\s*Allowed paths\s*:\s*(.*)$/iu.exec(lines[index] ?? "");
+		if (!match) continue;
+		const inline = (match[1] ?? "").trim();
+		if (inline) {
+			entries.push(inline);
+			continue;
+		}
+		for (let nextIndex = index + 1; nextIndex < lines.length; nextIndex += 1) {
+			const line = lines[nextIndex] ?? "";
+			const trimmed = line.trim();
+			if (!trimmed) break;
+			const bullet = /^\s*[-*]\s+(.+)$/u.exec(line);
+			if (bullet) {
+				entries.push(bullet[1] ?? "");
+				continue;
+			}
+			if (/^\s*[A-Za-z][A-Za-z0-9 /_-]*:\s*/u.test(line)) break;
+			entries.push(trimmed);
+		}
+	}
+	return entries;
 }
 
 function scopeMatchesPath(scope, filePath) {
 	const normalizedScope = normalizeEvidencePath(scope);
+	const normalizedPath = normalizeEvidencePath(filePath);
 	if (normalizedScope.endsWith("/**")) {
-		return filePath.startsWith(normalizedScope.slice(0, -2));
+		return normalizedPath.startsWith(normalizedScope.slice(0, -2));
 	}
 	if (normalizedScope.endsWith("/*")) {
-		return filePath.startsWith(normalizedScope.slice(0, -1));
+		return normalizedPath.startsWith(normalizedScope.slice(0, -1));
 	}
-	return filePath === normalizedScope || filePath.startsWith(`${normalizedScope}/`);
+	return normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
 }
 
 function pathsOverlap(left, right) {
@@ -560,7 +591,8 @@ function normalizeGitPath(filePath) {
 }
 
 function normalizeEvidencePath(filePath) {
-	return filePath.replace(/^\.\//u, "").replace(/\\/gu, "/").replace(/[),.;:]+$/u, "");
+	const normalized = filePath.replace(/^\.\//u, "").replace(/\\/gu, "/").replace(/[),.;:]+$/u, "");
+	return normalized === "/" ? normalized : normalized.replace(/\/+$/u, "");
 }
 
 function ignoredEvidencePath(file) {

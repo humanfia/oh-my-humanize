@@ -404,11 +404,9 @@ function normalizeGitPath(filePath) {
 
 function taskAllowedScopes(taskText) {
 	const scopes = [];
-	for (const match of taskText.matchAll(/Allowed paths:\s*([^\n]+)/giu)) {
-		const allowedLine = match[1] ?? "";
-		const backtickMatches = Array.from(allowedLine.matchAll(/`([^`]+)`/gu));
-		const rawScopes =
-			backtickMatches.length > 0 ? backtickMatches.map(item => item[1] ?? "") : allowedLine.split(",");
+	for (const rawEntry of allowedPathEntries(taskText)) {
+		const backtickMatches = Array.from(rawEntry.matchAll(/`([^`]+)`/gu));
+		const rawScopes = backtickMatches.length > 0 ? backtickMatches.map(item => item[1] ?? "") : rawEntry.split(",");
 		for (const rawScope of rawScopes) {
 			const scope = normalizeEvidencePath(rawScope.trim().replace(/^[-*]\s*/u, "").replace(/^and\s+/iu, ""));
 			if (!scope || ignoredEvidencePath(scope)) continue;
@@ -416,6 +414,33 @@ function taskAllowedScopes(taskText) {
 		}
 	}
 	return uniqueSorted(scopes);
+}
+
+function allowedPathEntries(taskText) {
+	const entries = [];
+	const lines = taskText.split(/\r?\n/u);
+	for (let index = 0; index < lines.length; index += 1) {
+		const match = /^\s*Allowed paths\s*:\s*(.*)$/iu.exec(lines[index] ?? "");
+		if (!match) continue;
+		const inline = (match[1] ?? "").trim();
+		if (inline) {
+			entries.push(inline);
+			continue;
+		}
+		for (let nextIndex = index + 1; nextIndex < lines.length; nextIndex += 1) {
+			const line = lines[nextIndex] ?? "";
+			const trimmed = line.trim();
+			if (!trimmed) break;
+			const bullet = /^\s*[-*]\s+(.+)$/u.exec(line);
+			if (bullet) {
+				entries.push(bullet[1] ?? "");
+				continue;
+			}
+			if (/^\s*[A-Za-z][A-Za-z0-9 /_-]*:\s*/u.test(line)) break;
+			entries.push(trimmed);
+		}
+	}
+	return entries;
 }
 
 function changedFilesOutsideAllowedScopes(changedFiles, allowedScopes) {
