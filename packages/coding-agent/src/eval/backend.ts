@@ -8,6 +8,7 @@ export interface ExecutorBackendExecOptions {
 	sessionId: string;
 	sessionFile: string | undefined;
 	kernelOwnerId: string | undefined;
+	env?: Record<string, string>;
 	signal?: AbortSignal;
 	session: ToolSession;
 	/**

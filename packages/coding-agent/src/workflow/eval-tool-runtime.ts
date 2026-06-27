@@ -1,13 +1,16 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { EvalToolDetails } from "../eval/types";
+import { buildWorkflowShellEnvironment } from "../exec/shell-environment-policy";
 import type { ToolSession } from "../tools";
 import { EvalTool, type EvalToolParams } from "../tools/eval";
+import { workflowScriptEnvironment } from "./script-runtime-env";
 import { resolveWorkflowScriptTimeoutMs } from "./script-timeout-policy";
-import type { WorkflowScriptEvalResult, WorkflowScriptEvalRunner } from "./session-runtime";
+import type { WorkflowScriptEvalRequest, WorkflowScriptEvalResult, WorkflowScriptEvalRunner } from "./session-runtime";
 
 export function createEvalToolScriptRunner(toolSession: ToolSession): WorkflowScriptEvalRunner {
+	const runnerSessionId = crypto.randomUUID();
 	return async request => {
-		const evalTool = new EvalTool(await workflowScriptToolSession(toolSession));
+		const evalTool = new EvalTool(await workflowScriptToolSession(toolSession, request, runnerSessionId));
 		const params: EvalToolParams = {
 			language: request.language,
 			code: request.code,
@@ -19,7 +22,11 @@ export function createEvalToolScriptRunner(toolSession: ToolSession): WorkflowSc
 	};
 }
 
-async function workflowScriptToolSession(toolSession: ToolSession): Promise<ToolSession> {
+async function workflowScriptToolSession(
+	toolSession: ToolSession,
+	request: WorkflowScriptEvalRequest,
+	runnerSessionId: string,
+): Promise<ToolSession> {
 	const settings = await toolSession.settings.cloneForCwd(toolSession.cwd);
 	if (settings.get("tools.outputMaxColumns") !== 0) {
 		settings.override("tools.outputMaxColumns", 0);
@@ -27,7 +34,14 @@ async function workflowScriptToolSession(toolSession: ToolSession): Promise<Tool
 	// Workflow script nodes are attempt-scoped runtime resources. Do not retain
 	// Python kernels under the interactive session after a workflow has completed.
 	settings.override("python.kernelMode", "per-call");
-	return { ...toolSession, getEvalKernelOwnerId: () => null, settings };
+	const evalEnvironment = buildWorkflowShellEnvironment(workflowScriptEnvironment(request));
+	return {
+		...toolSession,
+		getEvalSessionId: () => `workflow-script:${runnerSessionId}:${request.activationId}`,
+		getEvalEnvironment: () => evalEnvironment,
+		getEvalKernelOwnerId: () => null,
+		settings,
+	};
 }
 
 function workflowScriptResultFromEvalTool(

@@ -727,6 +727,43 @@ edges: []
 		expect(result.scheduler.state).toEqual({ ledger: { round: 3 } });
 	});
 
+	it("isolates Python user-site pollution for child processes spawned by js workflow scripts", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-eval-python-env-");
+		const previousPythonPath = Bun.env.PYTHONPATH;
+		const previousPythonNoUserSite = Bun.env.PYTHONNOUSERSITE;
+		Bun.env.PYTHONPATH = "/stale/editable/site";
+		delete Bun.env.PYTHONNOUSERSITE;
+		try {
+			const settings = await Settings.init();
+			const session: ToolSession = {
+				cwd: tempDir.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => null,
+				settings,
+			};
+			const host = createSessionWorkflowRuntimeHost({
+				cwd: tempDir.path(),
+				runEvalScript: createEvalToolScriptRunner(session),
+			});
+
+			const result = await runWorkflow({
+				host: new MemoryWorkflowHost(),
+				definition: jsSpawnEnvDefinition(),
+				runId: "run-real-eval-python-env",
+				startNodeId: "checkEnv",
+				runtimeHost: host,
+			});
+
+			expect(result.scheduler.state).toEqual({ pythonEnv: "1:unset" });
+		} finally {
+			if (previousPythonPath === undefined) delete Bun.env.PYTHONPATH;
+			else Bun.env.PYTHONPATH = previousPythonPath;
+			if (previousPythonNoUserSite === undefined) delete Bun.env.PYTHONNOUSERSITE;
+			else Bun.env.PYTHONNOUSERSITE = previousPythonNoUserSite;
+		}
+	});
+
 	it("gives js workflow script nodes the workflow script timeout by default", async () => {
 		const calls: EvalToolParams[] = [];
 		const executeSpy = spyOn(EvalTool.prototype, "execute").mockImplementation(async (_toolCallId, params) => {
@@ -1001,6 +1038,41 @@ function contextEvalDefinition(): WorkflowDefinition {
 			},
 		],
 		edges: [{ from: "seed", to: "record" }],
+	};
+}
+
+function jsSpawnEnvDefinition(): WorkflowDefinition {
+	const pythonNoUserSiteExpansion = "$" + "{PYTHONNOUSERSITE-unset}";
+	const pythonPathExpansion = "$" + "{PYTHONPATH-unset}";
+	const shellCommand = `printf "%s:%s\\n" "${pythonNoUserSiteExpansion}" "${pythonPathExpansion}"`;
+	return {
+		name: "eval-child-env",
+		version: 1,
+		models: { roles: {}, defaults: {} },
+		nodes: [
+			{
+				id: "checkEnv",
+				type: "script",
+				script: {
+					language: "js",
+					code: [
+						`const proc = Bun.spawn(${JSON.stringify(["sh", "-c", shellCommand])}, { stdout: "pipe", stderr: "pipe" });`,
+						"const [stdout, stderr, exitCode] = await Promise.all([",
+						"  new Response(proc.stdout).text(),",
+						"  new Response(proc.stderr).text(),",
+						"  proc.exited,",
+						"]);",
+						'if (exitCode !== 0) throw new Error(stderr || "child exited " + exitCode);',
+						"return {",
+						'  summary: "child env observed",',
+						'  statePatch: [{ op: "set", path: "/pythonEnv", value: stdout.trim() }],',
+						"};",
+					].join("\n"),
+				},
+				writes: ["/pythonEnv"],
+			},
+		],
+		edges: [],
 	};
 }
 

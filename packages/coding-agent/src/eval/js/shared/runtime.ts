@@ -36,6 +36,7 @@ export interface RunContext {
 export interface RuntimeOptions {
 	initialCwd: string;
 	sessionId: string;
+	env?: Record<string, string>;
 	/**
 	 * Extra globals installed alongside `__omp_helpers__` / prelude. Use for stable, lifetime-
 	 * of-the-worker bindings (e.g. browser's `page`, `browser`). Per-run scope should be set
@@ -54,6 +55,7 @@ export interface RuntimeOptions {
 // accepted — the Anthropic API only honors strict base64 in image sources.
 const BASE64_STRICT_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 const DECIMAL_CSV_RE = /^\d{1,3}(?:,\d{1,3})*$/;
+const PROCESS_ENV_KEYS_CLEARED_WHEN_ABSENT = ["PYTHONPATH"] as const;
 
 const PRELUDE_GLOBAL_KEYS = [
 	"__omp_js_prelude_loaded__",
@@ -149,6 +151,7 @@ export class JsRuntime {
 	#ownedGlobalKeys = new Set<string>();
 	#disposed = false;
 	#runHookResolver = () => this.#als.getStore()?.hooks;
+	#runEnvResolver = () => (this.#als.getStore() && this.#managedProcessEnvironment ? this.#env : undefined);
 
 	#ownGlobal(key: string): void {
 		if (this.#ownedGlobalKeys.has(key)) return;
@@ -165,6 +168,7 @@ export class JsRuntime {
 	#cwd: string;
 	readonly sessionId: string;
 	#env: Map<string, string>;
+	#managedProcessEnvironment: boolean;
 	#als = new AsyncLocalStorage<RunContext>();
 	#moduleLoader: LocalModuleLoader;
 	#localRoots: Record<string, string>;
@@ -172,7 +176,9 @@ export class JsRuntime {
 	constructor(opts: RuntimeOptions) {
 		this.#cwd = opts.initialCwd;
 		this.sessionId = opts.sessionId;
-		this.#env = new Map();
+		this.#env = new Map(Object.entries(opts.env ?? {}));
+		this.#managedProcessEnvironment = opts.env !== undefined;
+		applyRuntimeProcessEnvironment(opts.env);
 		this.#moduleLoader = new LocalModuleLoader(this.sessionId);
 		this.#localRoots = opts.localRoots ?? {};
 		this.helpers = createHelpers({
@@ -193,6 +199,17 @@ export class JsRuntime {
 		this.#cwd = cwd;
 		const session = (globalThis as { __omp_session__?: { cwd?: string } }).__omp_session__;
 		if (session) session.cwd = cwd;
+	}
+
+	setEnvironment(env: Record<string, string> | undefined): void {
+		if (env === undefined) return;
+		this.#activateGlobals("set environment");
+		this.#managedProcessEnvironment = true;
+		this.#env.clear();
+		for (const [key, value] of Object.entries(env)) {
+			this.#env.set(key, value);
+		}
+		applyRuntimeProcessEnvironment(env);
 	}
 
 	/**
@@ -399,15 +416,28 @@ export class JsRuntime {
 		indirectEval(JAVASCRIPT_PRELUDE_SOURCE);
 		for (const key of allGlobalKeys) recordGlobalValue(key, this.#globalOwner);
 		RUN_HOOK_RESOLVERS.add(this.#runHookResolver);
+		RUN_ENV_RESOLVERS.add(this.#runEnvResolver);
 		patchStdioOnce();
+		patchBunSpawnOnce();
 	}
 
 	dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		RUN_HOOK_RESOLVERS.delete(this.#runHookResolver);
+		RUN_ENV_RESOLVERS.delete(this.#runEnvResolver);
 		for (const key of this.#ownedGlobalKeys) releaseGlobalKey(key, this.#globalOwner);
 		this.#ownedGlobalKeys.clear();
+	}
+}
+
+function applyRuntimeProcessEnvironment(env: Record<string, string> | undefined): void {
+	if (env === undefined) return;
+	for (const [key, value] of Object.entries(env)) {
+		Bun.env[key] = value;
+	}
+	for (const key of PROCESS_ENV_KEYS_CLEARED_WHEN_ABSENT) {
+		if (!(key in env)) delete Bun.env[key];
 	}
 }
 
@@ -517,15 +547,25 @@ function enterGlobalRun(owner: symbol, action: string): () => void {
 
 /** Resolvers for each live runtime's active-run hooks (one per JsRuntime instance). */
 const RUN_HOOK_RESOLVERS = new Set<() => RuntimeHooks | undefined>();
+const RUN_ENV_RESOLVERS = new Set<() => Map<string, string> | undefined>();
 
 /** Streams whose `write` the runtime has already wrapped (patch-once guard). */
 const PATCHED_STDIO_STREAMS = new WeakSet<NodeJS.WriteStream>();
+let bunSpawnPatched = false;
 
 /** Hooks for whichever registered runtime currently has an active run, if any. */
 function activeRunHooks(): RuntimeHooks | undefined {
 	for (const resolve of RUN_HOOK_RESOLVERS) {
 		const hooks = resolve();
 		if (hooks) return hooks;
+	}
+	return undefined;
+}
+
+function activeRunEnvironment(): Map<string, string> | undefined {
+	for (const resolve of RUN_ENV_RESOLVERS) {
+		const env = resolve();
+		if (env && env.size > 0) return env;
 	}
 	return undefined;
 }
@@ -558,6 +598,42 @@ function patchStdioOnce(): void {
 		};
 		stream.write = routed as unknown as typeof stream.write;
 	}
+}
+
+function patchBunSpawnOnce(): void {
+	if (bunSpawnPatched) return;
+	bunSpawnPatched = true;
+	const originalSpawn = Bun.spawn.bind(Bun) as typeof Bun.spawn;
+	const originalSpawnSync = Bun.spawnSync.bind(Bun) as typeof Bun.spawnSync;
+	Bun.spawn = ((...args: unknown[]) => {
+		return originalSpawn(...(withDefaultSpawnEnvironment(args) as Parameters<typeof Bun.spawn>));
+	}) as typeof Bun.spawn;
+	Bun.spawnSync = ((...args: unknown[]) => {
+		return originalSpawnSync(...(withDefaultSpawnEnvironment(args) as Parameters<typeof Bun.spawnSync>));
+	}) as typeof Bun.spawnSync;
+}
+
+function withDefaultSpawnEnvironment(args: readonly unknown[]): unknown[] {
+	const env = activeRunEnvironment();
+	if (!env) return [...args];
+	const envRecord = Object.fromEntries(env);
+	const first = args[0];
+	if (isSpawnOptionsRecord(first) && "cmd" in first) {
+		return [{ ...first, env: spawnOptionsEnvironment(first.env, envRecord) }, ...args.slice(1)];
+	}
+	const second = args[1];
+	if (isSpawnOptionsRecord(second)) {
+		return [first, { ...second, env: spawnOptionsEnvironment(second.env, envRecord) }, ...args.slice(2)];
+	}
+	return [first, { env: envRecord }, ...args.slice(1)];
+}
+
+function spawnOptionsEnvironment(existing: unknown, fallback: Record<string, string>): unknown {
+	return existing === undefined ? fallback : existing;
+}
+
+function isSpawnOptionsRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Coerce a `write()` chunk to text, honoring an explicit encoding for byte chunks. */

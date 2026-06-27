@@ -66,11 +66,13 @@ export class WorkerCore {
 	#ensureRuntime(snapshot: SessionSnapshot): JsRuntime {
 		if (this.#runtime) {
 			this.#runtime.setCwd(snapshot.cwd);
+			this.#runtime.setEnvironment(snapshot.env);
 			return this.#runtime;
 		}
 		this.#runtime = new JsRuntime({
 			initialCwd: snapshot.cwd,
 			sessionId: snapshot.sessionId,
+			env: snapshot.env,
 			localRoots: snapshot.localRoots,
 		});
 		return this.#runtime;

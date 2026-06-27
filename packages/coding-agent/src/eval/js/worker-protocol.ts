@@ -5,6 +5,7 @@ export type { JsDisplayOutput } from "./shared/types";
 export interface SessionSnapshot {
 	cwd: string;
 	sessionId: string;
+	env?: Record<string, string>;
 	/**
 	 * On-disk roots the helpers substitute for internal-URL schemes
 	 * (e.g. `{ local: "/…/artifacts/local" }`). Lets `read`/`write`

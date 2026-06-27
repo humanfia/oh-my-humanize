@@ -224,6 +224,8 @@ export interface ToolSession {
 	defaultSubagentModelOverrideAuthFallback?: boolean;
 	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;
+	/** Get environment overrides for eval runtime processes owned by this session. */
+	getEvalEnvironment?: () => Record<string, string> | undefined;
 	/** Get session file */
 	getSessionFile: () => string | null;
 	/** Get eval kernel owner ID for session-scoped retained-kernel cleanup. */

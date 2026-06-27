@@ -23,6 +23,7 @@ export interface JsExecutorOptions {
 	sessionFile?: string;
 	artifactPath?: string;
 	artifactId?: string;
+	env?: Record<string, string>;
 	session: ToolSession;
 	/** On-disk roots the helpers substitute for internal-URL schemes (e.g. `local://`). */
 	localRoots?: Record<string, string>;
@@ -101,6 +102,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			sessionKey: options.sessionId,
 			sessionId: options.sessionId,
 			cwd: options.cwd ?? options.session.cwd,
+			env: options.env,
 			session: options.session,
 			localRoots: options.localRoots,
 			reset: options.reset,
