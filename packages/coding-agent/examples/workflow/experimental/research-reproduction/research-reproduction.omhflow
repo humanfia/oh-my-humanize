@@ -140,6 +140,10 @@ nodes:
             state: /reproduction
           variant:
             state: /variant
+          variantCommandEvidence:
+            state: /variant/variantCommandEvidence
+          validationCommandEvidence:
+            state: /variant/validationCommandEvidence
           review:
             state: /review
     writes:
@@ -170,6 +174,10 @@ nodes:
             state: /reproduction
           variant:
             state: /variant
+          variantCommandEvidence:
+            state: /variant/variantCommandEvidence
+          validationCommandEvidence:
+            state: /variant/validationCommandEvidence
           comparison:
             state: /comparison
     writes:

@@ -42,6 +42,27 @@ describe("example workflow scripts", () => {
 		expect(prompt).toContain("Only script nodes may execute task-declared commands and write command evidence.");
 	});
 
+	it("binds research reproduction validation evidence as standalone prompt context", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,
+		);
+		const nodes = new Map(artifact.definition.nodes.map(node => [node.id, node]));
+
+		for (const nodeId of ["compareResults", "reportReview"]) {
+			const promptSource = nodes.get(nodeId)?.promptSource;
+			expect(promptSource?.kind).toBe("template");
+			if (promptSource?.kind !== "template") throw new Error(`${nodeId} must use a template prompt`);
+			expect(promptSource.bindings.variantCommandEvidence).toEqual({
+				kind: "state",
+				path: "/variant/variantCommandEvidence",
+			});
+			expect(promptSource.bindings.validationCommandEvidence).toEqual({
+				kind: "state",
+				path: "/variant/validationCommandEvidence",
+			});
+		}
+	});
+
 	it("does not count prose markers as research reproduction exercise evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-marker-");
 		const cwd = tempDir.path();

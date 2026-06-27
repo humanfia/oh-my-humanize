@@ -15,6 +15,12 @@ Reproduction evidence:
 Variant evidence:
 {{jsonStringify variant}}
 
+Variant command evidence:
+{{jsonStringify variantCommandEvidence}}
+
+Validation command evidence:
+{{jsonStringify validationCommandEvidence}}
+
 Comparison:
 {{jsonStringify comparison}}
 
