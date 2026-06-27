@@ -33,6 +33,9 @@ Return `finish` only when:
   `../workflow-scratch`; bare `/tmp` scratch is accepted only when the task
   explicitly declares it as the scratch directory; otherwise branch evidence
   must point under `task.scratchRoot`;
+- branch execution did not create writable bare `/tmp` sandbox mounts such as
+  `bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`; sandbox
+  scratch must be backed by a lane directory under `task.scratchRoot`;
 - there is a clearly selected positive optimization or a documented no-win
   result with rollback evidence;
 - losing or negative branches are reverted or explicitly isolated;

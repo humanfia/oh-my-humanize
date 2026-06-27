@@ -104,6 +104,31 @@ if (disallowedScratchReferences.length > 0) {
 	};
 }
 
+const bareTmpSandboxReferences = await branchEvidenceWithBareTmpSandboxReferences();
+if (bareTmpSandboxReferences.length > 0) {
+	const outputPath = "workflow-output/performance-benchmark.md";
+	await Bun.write(outputPath, disallowedScratchRootViolationMarkdown(bareTmpSandboxReferences, allowedScratchRoots(task)));
+	return {
+		summary: `parallel lane isolation violation: ${bareTmpSandboxReferences.length} bare tmp sandbox evidence file(s) found`,
+		data: { isolationViolation: true, disallowedScratchReferences: bareTmpSandboxReferences, bareTmpSandboxReferences },
+		statePatch: [
+			{
+				op: "set",
+				path: "/benchmark",
+				value: {
+					status: "fail",
+					isolationViolation: true,
+					disallowedScratchReferences: bareTmpSandboxReferences,
+					bareTmpSandboxReferences,
+					benchmarkCommand,
+					validationCommand,
+					outputPath,
+				},
+			},
+		],
+	};
+}
+
 const benchmark = await runShell(benchmarkCommand);
 const validation = await runShell(validationCommand);
 const outputPath = "workflow-output/performance-benchmark.md";
@@ -213,6 +238,16 @@ async function branchEvidenceWithDisallowedScratchRoots(task) {
 	return references.sort();
 }
 
+async function branchEvidenceWithBareTmpSandboxReferences() {
+	const evidenceGlob = new Bun.Glob("workflow-output/perf-*");
+	const references = [];
+	for await (const filePath of evidenceGlob.scan({ cwd: process.cwd(), onlyFiles: true })) {
+		const text = await Bun.file(filePath).text();
+		if (hasBareTmpSandboxReference(text)) references.push(filePath);
+	}
+	return references.sort();
+}
+
 function allowedScratchRoots(task) {
 	const taskText = typeof task?.text === "string" ? task.text : "";
 	return [
@@ -254,11 +289,24 @@ function hasDisallowedScratchRoot(text, roots) {
 	);
 }
 
+function hasBareTmpSandboxReference(text) {
+	return text
+		.split(/\r?\n/u)
+		.filter(line => !isNegativeScratchDeclaration(line))
+		.some(line => hasBareTmpExecutionSurface(line));
+}
+
 function scratchEvidenceLines(text) {
 	return text
 		.split(/\r?\n/u)
 		.filter(line => /\b(?:scratch|worktree|cwd|built from|applycheck|lane-local|run-local)\b/iu.test(line))
 		.filter(line => !isNegativeScratchDeclaration(line));
+}
+
+function hasBareTmpExecutionSurface(line) {
+	return /(?:^|[\s`"'])(?:--tmpfs|--dir|--bind|--bind-try|--dev-bind|--dev-bind-try)\s+\/tmp(?:$|[\s`"'])|(?:^|[\s`"'])--setenv\s+TMPDIR\s+\/tmp(?:$|[\s`"'])|(?:^|[\s`"'])TMPDIR=\/tmp(?:$|[\s`"'])|\bmount\b[^\r\n]*\s\/tmp(?:$|[\s`"'])/iu.test(
+		line,
+	);
 }
 
 function extractEvidencePaths(line) {
@@ -386,6 +434,7 @@ function disallowedScratchRootViolationMarkdown(disallowedScratchReferences, roo
 		"",
 		"Parallel optimization lanes must keep scratch copies, worktrees, benchmark fixtures, and temporary data under this run's allowed scratch root.",
 		"Evidence that points at `/tmp` or another scratch root outside `OMH_RUN_TMP` or the task-declared scratch directory cannot prove tuple isolation.",
+		"Writable bare `/tmp` sandbox mounts such as `bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp` are not valid isolation evidence; mount or bind a directory under the allowed run-local scratch root instead.",
 		"",
 		"## Allowed Scratch Roots",
 		"",

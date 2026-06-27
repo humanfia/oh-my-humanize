@@ -18,6 +18,9 @@ The task contract JSON contains `scratchRoot`; branch worktrees, scratch copies,
 benchmark fixtures, and apply-check directories must live under that absolute
 path. Do not use bare `/tmp` or shared sibling scratch such as
 `../workflow-scratch`.
+Do not create writable bare `/tmp` sandbox mounts either; commands such as
+`bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp` are invalid
+even when another environment variable points at `task.scratchRoot`.
 
 If the previous performance review is a selection/rollback repair request after
 a passing benchmark and validation, do not invent a new broad optimization

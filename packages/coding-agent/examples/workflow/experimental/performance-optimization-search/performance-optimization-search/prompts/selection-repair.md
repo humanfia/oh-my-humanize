@@ -32,6 +32,9 @@ that the reviewer can evaluate:
   stale work from another tuple and does not prove lane isolation;
 - reject bare `/tmp` scratch unless the task explicitly declares it as the
   scratch directory; lane evidence must point under `task.scratchRoot`;
+- reject writable bare `/tmp` sandbox mounts such as `bwrap --tmpfs /tmp`,
+  `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`; sandbox scratch must be backed
+  by a lane directory under `task.scratchRoot`;
 - if validation or benchmark failed, preserve the failure evidence and explain
   the minimal next repair needed;
 - if one branch has a measured positive result, apply at most one selected candidate patch
@@ -58,6 +61,8 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
   whether the shared workspace was clean before selection;
 - whether project-local scratch and shared sibling scratch were absent before
   selection, and whether all branch scratch paths were under `task.scratchRoot`;
+- whether branch evidence avoided writable bare `/tmp` sandbox mounts and
+  `TMPDIR=/tmp` execution surfaces;
 - exact rollback/no-change evidence;
 - the branch report files you updated.
 

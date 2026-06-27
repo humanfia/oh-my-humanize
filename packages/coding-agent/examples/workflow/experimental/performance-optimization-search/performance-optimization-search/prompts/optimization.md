@@ -22,6 +22,9 @@ the task contract JSON, for example `<task.scratchRoot>/{{strategy}}-*`. Do not
 try to rediscover this from the shell environment. Never use bare `/tmp`, shared
 sibling scratch such as `../workflow-scratch`, or any scratch root outside
 `task.scratchRoot`.
+Never create a writable bare `/tmp` execution surface inside a sandbox. Commands
+such as `bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`
+are invalid; bind or mount a lane directory under `task.scratchRoot` instead.
 Never place lane-local execution scratch, benchmark fixtures, or worktrees
 under `workflow-output/tmp` or another project-scanned path. Apply the candidate
 only in that external scratch
