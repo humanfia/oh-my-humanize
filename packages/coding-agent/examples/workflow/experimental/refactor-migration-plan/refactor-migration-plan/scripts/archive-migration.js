@@ -11,11 +11,16 @@ const validationText = await readOptionalText("workflow-output/refactor-migratio
 const rollbackEvidenceEntries = await rollbackEvidenceSources();
 const rollbackText = rollbackEvidenceText(rollbackEvidenceEntries);
 const materialProjectDiff = await projectMaterialDiff();
+const workspaceGuard = await workspaceCleanlinessGuard(taskText);
 const outcome = materialProjectDiff.status === "empty" ? "rejected" : "accepted";
 const rollbackEvidenceFiles = rollbackEvidenceEntries
 	.filter(entry => entry.kind === "file")
 	.map(entry => entry.source);
 const rollbackEvidenceSourceLabels = rollbackEvidenceEntries.map(entry => entry.source);
+
+if (workspaceGuard.blockers.length > 0) {
+	throw new Error(`cannot archive refactor migration with workspace scope blockers: ${workspaceGuard.blockers.join(", ")}`);
+}
 
 if (outcome === "accepted" && rollbackEvidenceEntries.length === 0) {
 	throw new Error("cannot archive accepted refactor migration without rollback evidence");
@@ -31,6 +36,10 @@ await Bun.write(
 		"## Materiality Gate",
 		"",
 		materialityMarkdown(materialProjectDiff),
+		"",
+		"## Workspace Cleanliness",
+		"",
+		workspaceGuardMarkdown(workspaceGuard),
 		"",
 		"## Task",
 		"",
@@ -58,6 +67,7 @@ return {
 				status: outcome,
 				validation: "pass",
 				materialProjectDiff,
+				workspaceGuard,
 				rollbackEvidenceFiles,
 				rollbackEvidenceSources: rollbackEvidenceSourceLabels,
 			},
@@ -245,6 +255,132 @@ async function projectMaterialDiff() {
 		bytes: stdout.length,
 		diffPreview: bounded(stdout, 4000),
 	};
+}
+
+async function workspaceCleanlinessGuard(taskText) {
+	const status = await gitStatus();
+	const changedFiles = status.entries.filter(entry => !ignoredStatusPath(entry.path));
+	const allowedScopes = allowedPathsFromTask(taskText);
+	const outsideAllowedChangedFiles =
+		allowedScopes.length === 0
+			? []
+			: changedFiles
+					.map(entry => entry.path)
+					.filter(filePath => allowedScopes.every(scope => !scopeMatchesPath(scope, filePath)));
+	const untrackedProjectFiles = changedFiles
+		.filter(entry => entry.status.includes("?"))
+		.map(entry => entry.path)
+		.filter(filePath => !allowedGeneratedPath(filePath));
+	const blockers = [
+		...outsideAllowedChangedFiles.map(filePath => `${filePath} changed outside task allowed paths`),
+		...untrackedProjectFiles.map(filePath => `${filePath} is an untracked project file`),
+	];
+	return {
+		status: blockers.length === 0 ? "pass" : "blocked",
+		blockers,
+		changedFiles: changedFiles.map(entry => ({ status: entry.status, path: entry.path })).slice(0, 100),
+		allowedScopes,
+	};
+}
+
+async function gitStatus() {
+	const proc = Bun.spawn(["git", "status", "--short", "--untracked-files=all"], {
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`git status failed before refactor migration archive: ${stderr.trim() || stdout.trim()}`);
+	}
+	return {
+		entries: stdout
+			.split(/\r?\n/u)
+			.map(statusLineToEntry)
+			.filter(entry => entry !== undefined),
+	};
+}
+
+function statusLineToEntry(line) {
+	if (!line.trim()) return undefined;
+	const status = line.slice(0, 2);
+	const rawPath = line.slice(3).trim();
+	const renamed = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1) ?? rawPath : rawPath;
+	const path = renamed.replace(/^"|"$/gu, "");
+	return path ? { status, path } : undefined;
+}
+
+function ignoredStatusPath(filePath) {
+	return (
+		filePath === "task.md" ||
+		filePath === "progress.md" ||
+		filePath === "manifest-entry.json" ||
+		filePath === "monitor-assignment.json" ||
+		filePath.startsWith("workflow-output/") ||
+		filePath.startsWith("transcripts/")
+	);
+}
+
+function allowedGeneratedPath(filePath) {
+	return ignoredStatusPath(filePath) || filePath === ".pytest_cache" || filePath.startsWith(".pytest_cache/");
+}
+
+function allowedPathsFromTask(taskText) {
+	const scopes = [];
+	for (const line of taskText.split(/\r?\n/u)) {
+		const trimmed = line.trim();
+		const match = /^(?:[-*]\s*)?(?:allowed paths?|scope fence)\s*:\s*(.+)$/iu.exec(trimmed);
+		if (!match) continue;
+		scopes.push(...scopeListFromText(match[1] ?? ""));
+	}
+	return uniqueStrings(scopes.map(normalizeScope).filter(Boolean));
+}
+
+function scopeListFromText(text) {
+	return text
+		.split(/[,;]/u)
+		.map(scope => scope.trim())
+		.filter(Boolean);
+}
+
+function normalizeScope(scope) {
+	return scope
+		.replace(/^`+|`+$/gu, "")
+		.replace(/^['"]|['"]$/gu, "")
+		.trim()
+		.replace(/^\.\//u, "");
+}
+
+function scopeMatchesPath(scope, filePath) {
+	if (scope.endsWith("/")) return filePath.startsWith(scope);
+	return filePath === scope || filePath.startsWith(`${scope}/`);
+}
+
+function uniqueStrings(values) {
+	return [...new Set(values)];
+}
+
+function workspaceGuardMarkdown(workspaceGuard) {
+	const lines = [
+		`Status: ${workspaceGuard.status}`,
+		"",
+		"### Blockers",
+		"",
+		workspaceGuard.blockers.length > 0
+			? workspaceGuard.blockers.map(blocker => `- ${blocker}`).join("\n")
+			: "- No workspace cleanliness blockers.",
+		"",
+		"### Changed Files",
+		"",
+		workspaceGuard.changedFiles.length > 0
+			? workspaceGuard.changedFiles.map(entry => `- ${entry.status} ${entry.path}`).join("\n")
+			: "- No changed project files outside ignored workflow artifacts.",
+	];
+	return lines.join("\n");
 }
 
 function materialityMarkdown(materialProjectDiff) {
