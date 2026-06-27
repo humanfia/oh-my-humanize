@@ -2483,6 +2483,7 @@ function formatWorkflowLifecycleHelp(): string {
 		"",
 		"Safe mutation path:",
 		"- Stop, checkpoint, change the flow, then restart from the checkpoint.",
+		"- At a workflow human gate, choose `Checkpoint for commands` to return to the prompt before running change commands.",
 	].join("\n");
 }
 

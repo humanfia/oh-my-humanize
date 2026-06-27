@@ -5,6 +5,7 @@ const baselineCommand = optionalCommand(taskText, "Baseline Command") || benchma
 const scratchRoot = requiredScratchRoot(taskText);
 const sharedGitWorktrees = await currentSharedGitWorktreePaths();
 const runtime = runtimeFromTaskContract(taskText);
+const validationPreflight = await runShell(validationCommand);
 
 await Bun.write(
 	"workflow-output/performance-precheck.md",
@@ -37,8 +38,18 @@ await Bun.write(
 		"",
 		sharedGitWorktrees.length > 0 ? sharedGitWorktrees.map(worktree => `- ${worktree}`).join("\n") : "- none",
 		"",
+		"## Validation Preflight",
+		"",
+		commandEvidenceMarkdown(validationCommand, validationPreflight),
+		"",
 	].join("\n"),
 );
+
+if (validationPreflight.exitCode !== 0) {
+	throw new Error(
+		`performance-optimization-search validation command failed preflight with exit code ${validationPreflight.exitCode}`,
+	);
+}
 
 return {
 	summary: "validated performance optimization task contract",
@@ -54,6 +65,11 @@ return {
 				baselineCommand,
 				scratchRoot,
 				sharedGitWorktrees,
+				validationPreflight: {
+					exitCode: validationPreflight.exitCode,
+					stdout: validationPreflight.stdout,
+					stderr: validationPreflight.stderr,
+				},
 			},
 		},
 		{ op: "set", path: "/runtime", value: runtime },
@@ -128,6 +144,34 @@ function runtimeFromTaskContract() {
 	return {
 		startedAtMs: Date.now(),
 	};
+}
+
+async function runShell(command) {
+	const proc = Bun.spawn(["sh", "-c", command], {
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	return { stdout, stderr, exitCode };
+}
+
+function commandEvidenceMarkdown(command, result) {
+	return [
+		"```sh",
+		command,
+		"```",
+		"",
+		`Exit code: ${result.exitCode}`,
+		"",
+		"```text",
+		result.stdout || result.stderr || "(empty)",
+		"```",
+	].join("\n");
 }
 
 async function currentSharedGitWorktreePaths() {

@@ -2027,6 +2027,57 @@ describe("example workflow scripts", () => {
 		}
 	});
 
+	it("fails performance optimization precheck before fanout when validation cannot run", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-validation-precheck-fail-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		process.env.OMH_RUN_TMP = `${cwd}/run-tmp`;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			await Bun.write(
+				`${cwd}/task.md`,
+				[
+					"Benchmark Command:",
+					"echo benchmark",
+					"",
+					"Validation Command:",
+					"printf 'validation command shape is invalid\\n' >&2; exit 17",
+				].join("\n"),
+			);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "precheckTaskContract",
+				scriptFileName: "precheck-task-contract.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/task", "/runtime", "/review"],
+			});
+
+			expect(
+				result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
+			).toBe("failed");
+			expect(result.scheduler.state.task).toBeUndefined();
+			const evidence = await Bun.file(`${cwd}/workflow-output/performance-precheck.md`).text();
+			expect(evidence).toContain("## Validation Preflight");
+			expect(evidence).toContain("Exit code: 17");
+			expect(evidence).toContain("validation command shape is invalid");
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
 	it("routes performance optimization through selection repair before reviewer loops", async () => {
 		const flow = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search.omhflow`,

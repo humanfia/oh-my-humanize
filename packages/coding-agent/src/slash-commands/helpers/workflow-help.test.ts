@@ -51,6 +51,16 @@ describe("/workflow help", () => {
 		expect(text).toContain("/workflow manager");
 	});
 
+	it("documents the human-gate checkpoint path for lifecycle commands", async () => {
+		const { output, runtime } = createWorkflowHelpRuntime();
+
+		await handleWorkflowAcp({ name: "workflow", args: "help lifecycle", text: "/workflow help lifecycle" }, runtime);
+
+		const text = output.join("\n");
+		expect(text).toContain("Checkpoint for commands");
+		expect(text).toContain("/workflow restart");
+	});
+
 	it("changes dashboard mode through the visible collapse command", async () => {
 		const { output, runtime, getMode } = createWorkflowHelpRuntime();
 

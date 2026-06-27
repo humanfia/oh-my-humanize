@@ -5,6 +5,8 @@ import { ToolAbortError } from "../tools/tool-errors";
 import { WorkflowNodeAbortedError } from "./node-runtime";
 import type { WorkflowHumanInputResult, WorkflowHumanInputRunner } from "./session-runtime";
 
+const WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION = "Checkpoint for commands";
+
 export function createAskToolHumanInputRunner(
 	toolSession: ToolSession,
 	getToolContext: () => AgentToolContext,
@@ -32,6 +34,10 @@ export function createAskToolHumanInputRunner(
 									label: "Approve",
 									description: "Proceed only after reading the prompt and evidence.",
 								},
+								{
+									label: WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION,
+									description: "Stop safely, create a checkpoint, then use /workflow lifecycle commands.",
+								},
 							],
 							recommended: 0,
 						},
@@ -47,6 +53,11 @@ export function createAskToolHumanInputRunner(
 			throw error;
 		}
 		const details = result.details;
+		if (workflowHumanCheckpointForCommandsRequested(details)) {
+			throw new WorkflowNodeAbortedError(
+				`workflow human node "${request.nodeId}" checkpointed for operator commands`,
+			);
+		}
 		const response = responseFromAskDetails(details);
 		const output: WorkflowHumanInputResult = {
 			response,
@@ -55,6 +66,10 @@ export function createAskToolHumanInputRunner(
 		if (details?.customInput !== undefined) output.customInput = details.customInput;
 		return output;
 	};
+}
+
+function workflowHumanCheckpointForCommandsRequested(details: WorkflowAskDetails | undefined): boolean {
+	return details?.selectedOptions?.includes(WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION) === true;
 }
 
 function responseFromAskDetails(details: WorkflowAskDetails | undefined): string {

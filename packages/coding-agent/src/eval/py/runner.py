@@ -1058,8 +1058,11 @@ async def _handle_request_async(req: dict) -> None:
             status = "error"
             _emit_error(rid, KeyboardInterrupt("Execution interrupted"))
         except SystemExit as exc:
-            status = "error"
-            _emit_error(rid, exc)
+            if _is_clean_system_exit(exc):
+                status = "ok"
+            else:
+                status = "error"
+                _emit_error(rid, exc)
         except BaseException as exc:  # noqa: BLE001 - we want to surface every user error
             status = "error"
             _emit_error(rid, exc)
@@ -1084,6 +1087,11 @@ async def _handle_request_async(req: dict) -> None:
         _flush_stream_proxies(rid)
         _CURRENT_RID.reset(token)
         _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
+
+
+def _is_clean_system_exit(exc: SystemExit) -> bool:
+    code = exc.code
+    return code is None or code == 0
 
 
 def _emit_error(rid: str, exc: BaseException) -> None:
