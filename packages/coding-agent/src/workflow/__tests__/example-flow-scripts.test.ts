@@ -2188,8 +2188,10 @@ describe("example workflow scripts", () => {
 					`worktree: ${runTmp}/worktrees/io`,
 					`apply-check cwd: ${runTmp}/apply-check/io`,
 					`git apply --check ${cwd}/workflow-output/perf-io-candidate.diff`,
+					"No branch build, benchmark, validation, apply-check, or candidate execution command was run from the shared workspace. No `bwrap`, bare `/tmp`, `TMPDIR=/tmp`, or `workflow-output/tmp` path was used.",
 					"I did not use bare `/tmp`, `../workflow-scratch`, or `workflow-output/tmp`.",
 					"candidate patch path: workflow-output/perf-io-candidate.diff",
+					`All command cwd values below are under task.scratchRoot. All temp directories were under ${runTmp}/io/tmp. No command used \`TMPDIR=/tmp\`, \`bwrap --tmpfs /tmp\`, \`bwrap --bind /tmp\`, \`bwrap --dir /tmp\`, or another writable bare \`/tmp\` execution surface.`,
 				].join("\n"),
 			);
 
@@ -2409,6 +2411,126 @@ describe("example workflow scripts", () => {
 				process.env.OMH_RUN_TMP = previousRunTmp;
 			}
 		}
+	});
+
+	it("allows performance repair reports to finalize validation-blocked no-win outcomes", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-repair-report-finalize-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance repair report canary",
+			"",
+			"Benchmark Command:",
+			"cargo test --no-run",
+			"",
+			"Validation Command:",
+			"cargo test",
+			"",
+			"No-Code/No-Change Allowed: Yes",
+		].join("\n");
+
+		await Bun.write(`${cwd}/README.md`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "README.md", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		for (const name of ["algorithmic", "caching", "io"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				[
+					"# Branch",
+					"",
+					"final-selection: no",
+					"no-win-result: yes",
+					"rollback and no-change evidence: no project files remain changed",
+				].join("\n"),
+			);
+		}
+		await Bun.write(
+			`${cwd}/workflow-output/performance-benchmark.md`,
+			[
+				"# Performance Benchmark Evidence",
+				"",
+				"## Disallowed Scratch Root Violation",
+				"",
+				"- workflow-output/perf-algorithmic.md",
+				"- workflow-output/perf-caching.md",
+				"- workflow-output/perf-io.md",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"- Repair-node clean shared workspace benchmark command: `cargo test --no-run` exited 0 after all rollback.",
+				"- Repair-node clean shared workspace validation command: `cargo test` exited 101 after all rollback.",
+				"- Post-rollback project diff: `git diff --name-only` returned no paths.",
+				"- Post-rollback benchmark command: `cargo test --no-run` exited 0.",
+				"- Post-rollback validation command: `cargo test` exited 101.",
+			].join("\n"),
+		);
+
+		const guard = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					status: "fail",
+					isolationViolation: true,
+					outputPath: "workflow-output/performance-benchmark.md",
+				},
+				selectionRepair: {
+					status: "completed",
+				},
+			},
+		});
+
+		expect(guard.scheduler.state.selectionGuard).toMatchObject({
+			benchmarkPassed: true,
+			validationPassed: false,
+			projectChangedFiles: [],
+		});
+
+		const finalize = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				...guard.scheduler.state,
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					status: "fail",
+					isolationViolation: true,
+					outputPath: "workflow-output/performance-benchmark.md",
+				},
+				selectionRepair: {
+					status: "completed",
+				},
+			},
+		});
+
+		expect(finalize.scheduler.state.selection).toMatchObject({
+			status: "blocked",
+			terminalState: "no-win-validation-blocked",
+			validationPassed: false,
+			noWinBranches: ["algorithmic", "caching", "io"],
+		});
 	});
 
 	it("archives performance no-win evidence when validation is blocked without retained project changes", async () => {

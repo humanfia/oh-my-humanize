@@ -2,8 +2,9 @@ const state = workflowContext.state && typeof workflowContext.state === "object"
 const task = state.task && typeof state.task === "object" ? state.task : {};
 const benchmark = state.benchmark && typeof state.benchmark === "object" ? state.benchmark : {};
 const selectionRepair = state.selectionRepair && typeof state.selectionRepair === "object" ? state.selectionRepair : {};
+const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
 
-if (!benchmarkCommandPassed(benchmark, selectionRepair)) {
+if (!benchmarkCommandPassed(benchmark, selectionRepair, selectionRepairText)) {
 	throw new Error("cannot finalize performance selection before the benchmark command passes");
 }
 
@@ -15,7 +16,7 @@ const selectedBranches = branchReports.filter((report) => /\bfinal-selection\s*:
 const noWinBranches = branchReports.filter((report) => /\bno-win-result\s*:\s*yes\b/iu.test(report.text));
 const hasRollbackEvidence = /\brollback\b/iu.test(joinedText);
 const noWinAllowed = allowsNoWinArchive(task);
-const validationPassed = validationCommandPassed(benchmark, selectionRepair);
+const validationPassed = validationCommandPassed(benchmark, selectionRepair, selectionRepairText);
 
 let terminalState;
 let selectionStatus = "pass";
@@ -130,16 +131,20 @@ function allowsNoWinArchive(taskValue) {
 	);
 }
 
-function benchmarkCommandPassed(benchmarkValue, selectionRepairValue) {
+function benchmarkCommandPassed(benchmarkValue, selectionRepairValue, repairText) {
 	const repairBenchmark = commandPassedFromRepairEvidence(selectionRepairValue?.benchmark);
 	if (repairBenchmark !== undefined) return repairBenchmark;
+	const repairReportBenchmark = commandPassedFromRepairReport(repairText, "benchmark");
+	if (repairReportBenchmark !== undefined) return repairReportBenchmark;
 	if (typeof benchmarkValue.benchmarkExitCode === "number") return benchmarkValue.benchmarkExitCode === 0;
 	return benchmarkValue.status === "pass";
 }
 
-function validationCommandPassed(benchmarkValue, selectionRepairValue) {
+function validationCommandPassed(benchmarkValue, selectionRepairValue, repairText) {
 	const repairValidation = commandPassedFromRepairEvidence(selectionRepairValue?.validation);
 	if (repairValidation !== undefined) return repairValidation;
+	const repairReportValidation = commandPassedFromRepairReport(repairText, "validation");
+	if (repairReportValidation !== undefined) return repairReportValidation;
 	if (typeof benchmarkValue.validationExitCode === "number") return benchmarkValue.validationExitCode === 0;
 	return benchmarkValue.status === "pass";
 }
@@ -150,6 +155,20 @@ function commandPassedFromRepairEvidence(value) {
 	if (typeof exitCode === "number") return exitCode === 0;
 	if (typeof value.status === "string") return value.status.toLowerCase() === "pass";
 	return undefined;
+}
+
+function commandPassedFromRepairReport(text, commandName) {
+	if (typeof text !== "string" || text.trim() === "") return undefined;
+	const commandPattern = commandName === "benchmark" ? /\bbenchmark command\b/iu : /\bvalidation command\b/iu;
+	const lines = text
+		.split(/\r?\n/u)
+		.filter((line) => commandPattern.test(line))
+		.filter((line) => /\b(?:exited|exit code)\s*(?:code\s*)?\d+\b/iu.test(line));
+	const latest = lines.at(-1);
+	if (!latest) return undefined;
+	const match = /\b(?:exited|exit code)\s*(?:code\s*)?(\d+)\b/iu.exec(latest);
+	if (!match) return undefined;
+	return Number(match[1]) === 0;
 }
 
 async function readOptionalText(filePath) {

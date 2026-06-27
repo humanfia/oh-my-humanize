@@ -319,7 +319,11 @@ function hasDisallowedScratchRoot(text, roots) {
 	return scratchEvidenceLines(text).some(line =>
 		extractEvidencePaths(line).some(path => {
 			const normalized = normalizeAbsolutePath(path);
-			return normalized !== "" && !roots.some(root => pathIsUnder(normalized, root));
+			return (
+				normalized !== "" &&
+				!isAllowedDurableWorkflowOutputPath(normalized) &&
+				!roots.some(root => pathIsUnder(normalized, root))
+			);
 		}),
 	);
 }
@@ -378,8 +382,13 @@ function extractEvidencePaths(line) {
 }
 
 function isNegativeScratchDeclaration(line) {
-	return /\b(?:did not use|never used|not used|no)\b.{0,80}\b(?:\/tmp|workflow-output\/tmp|\.\.\/workflow-scratch)\b/iu.test(
-		line,
+	return (
+		/\b(?:did not|never|not|no)\b.{0,180}\b(?:use|used|create|created|run|ran|leave|left|mount|mounted)\b.{0,180}(?:\/tmp|workflow-output\/tmp|\.\.\/workflow-scratch)\b/iu.test(
+			line,
+		) ||
+		/(?:\/tmp|workflow-output\/tmp|\.\.\/workflow-scratch)\b.{0,180}\b(?:absent|not present|not used|was not used|were not used|unused|forbidden)\b/iu.test(
+			line,
+		)
 	);
 }
 
@@ -387,6 +396,12 @@ function isNegativeSharedWorkspaceDeclaration(line) {
 	return /\b(?:did not|never|not|no)\b.{0,100}\b(?:run|ran|execute|executed|execution|benchmark|validation|test|build|command)\b.{0,100}\b(?:shared|task|project|current)\s+(?:workspace|project directory|project tree)\b/iu.test(
 		line,
 	);
+}
+
+function isAllowedDurableWorkflowOutputPath(path) {
+	const workflowOutputRoot = normalizeAbsolutePath(`${process.cwd()}/workflow-output`);
+	const workflowOutputTmp = `${workflowOutputRoot}/tmp`;
+	return pathIsUnder(path, workflowOutputRoot) && !pathIsUnder(path, workflowOutputTmp);
 }
 
 function normalizeAbsolutePath(path) {

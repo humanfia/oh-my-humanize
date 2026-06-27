@@ -3,8 +3,9 @@ const task = state.task && typeof state.task === "object" ? state.task : {};
 const benchmark = state.benchmark && typeof state.benchmark === "object" ? state.benchmark : {};
 const selection = state.selection && typeof state.selection === "object" ? state.selection : {};
 const selectionRepair = state.selectionRepair && typeof state.selectionRepair === "object" ? state.selectionRepair : {};
+const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
 
-if (!benchmarkCommandPassed(benchmark, selectionRepair)) {
+if (!benchmarkCommandPassed(benchmark, selectionRepair, selectionRepairText)) {
 	throw new Error("cannot archive performance search before the benchmark command passes");
 }
 if (!["pass", "blocked", "rejected"].includes(String(selection.status))) {
@@ -142,9 +143,11 @@ function allowsNoWinArchive(taskValue) {
 	);
 }
 
-function benchmarkCommandPassed(benchmarkValue, selectionRepairValue) {
+function benchmarkCommandPassed(benchmarkValue, selectionRepairValue, repairText) {
 	const repairBenchmark = commandPassedFromRepairEvidence(selectionRepairValue?.benchmark);
 	if (repairBenchmark !== undefined) return repairBenchmark;
+	const repairReportBenchmark = commandPassedFromRepairReport(repairText, "benchmark");
+	if (repairReportBenchmark !== undefined) return repairReportBenchmark;
 	if (typeof benchmarkValue.benchmarkExitCode === "number") return benchmarkValue.benchmarkExitCode === 0;
 	return benchmarkValue.status === "pass";
 }
@@ -155,6 +158,20 @@ function commandPassedFromRepairEvidence(value) {
 	if (typeof exitCode === "number") return exitCode === 0;
 	if (typeof value.status === "string") return value.status.toLowerCase() === "pass";
 	return undefined;
+}
+
+function commandPassedFromRepairReport(text, commandName) {
+	if (typeof text !== "string" || text.trim() === "") return undefined;
+	const commandPattern = commandName === "benchmark" ? /\bbenchmark command\b/iu : /\bvalidation command\b/iu;
+	const lines = text
+		.split(/\r?\n/u)
+		.filter((line) => commandPattern.test(line))
+		.filter((line) => /\b(?:exited|exit code)\s*(?:code\s*)?\d+\b/iu.test(line));
+	const latest = lines.at(-1);
+	if (!latest) return undefined;
+	const match = /\b(?:exited|exit code)\s*(?:code\s*)?(\d+)\b/iu.exec(latest);
+	if (!match) return undefined;
+	return Number(match[1]) === 0;
 }
 
 function isNoWinTerminalState(terminalState) {
