@@ -27,7 +27,9 @@ stateSchema:
     claim: object
     setup: object
     reproduction: object
+    /reproduction/exercised: boolean
     variant: object
+    /variant/validationExercised: boolean
     comparison: object
     review: string
     archive: object
@@ -206,10 +208,10 @@ edges:
     to: reportReview
   - from: reportReview
     to: extractClaim
-    when: outputs.reportReview.verdict == "continue"
+    when: outputs.reportReview.verdict == "continue" || state.reproduction.exercised != true || state.variant.validationExercised != true
     label: refine reproduction
   - from: reportReview
     to: archiveReproduction
-    when: outputs.reportReview.verdict != "continue"
+    when: outputs.reportReview.verdict != "continue" && state.reproduction.exercised == true && state.variant.validationExercised == true
     label: reproduction accepted
 ```

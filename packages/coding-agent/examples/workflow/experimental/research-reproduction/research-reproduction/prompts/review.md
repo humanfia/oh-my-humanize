@@ -27,7 +27,9 @@ criteria in this environment.
 Accepted evidence requires:
 
 - the Reproduction Command produced real evidence;
+- `reproduction.exercised` is true;
 - the Validation Command passed;
+- `variant.validationExercised` is true;
 - any declared Setup Command and Variant Command were run or explicitly skipped;
 - the comparison explains whether the claim reproduced, failed, or is
   inconclusive;
@@ -37,6 +39,10 @@ Accepted evidence requires:
 Rejected or inconclusive terminal evidence is appropriate when the commands
 were real and exercised the claim, but reproduction or validation failed in a
 stable way and the comparison does not identify a concrete next evidence step.
+
+If either the Reproduction Command or Validation Command did not exercise the
+declared claim, return `continue`. Do not use `finish` to archive non-exercising
+command evidence.
 
 Return `continue` only when evidence is missing, the claim is ambiguous, the
 comparison overstates the result, or there is a specific new evidence step that

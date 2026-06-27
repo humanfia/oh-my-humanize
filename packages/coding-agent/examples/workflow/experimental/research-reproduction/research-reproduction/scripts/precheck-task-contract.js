@@ -3,6 +3,10 @@ const reproductionCommand = requiredCommand(taskText, "Reproduction Command");
 const validationCommand = requiredCommand(taskText, "Validation Command");
 const setupCommand = optionalCommand(taskText, "Setup Command");
 const variantCommand = optionalCommand(taskText, "Variant Command");
+validateShellCommand(reproductionCommand, "Reproduction Command");
+validateShellCommand(validationCommand, "Validation Command");
+if (setupCommand) validateShellCommand(setupCommand, "Setup Command");
+if (variantCommand) validateShellCommand(variantCommand, "Variant Command");
 const runtime = runtimeFromTaskContract(taskText);
 
 await Bun.write(
@@ -75,6 +79,14 @@ function requiredCommand(taskContract, label) {
 	const command = optionalCommand(taskContract, label);
 	if (!command) throw new Error(`research-reproduction task.md must declare ${label}`);
 	return command;
+}
+
+function validateShellCommand(command, label) {
+	if (/\\[nr]/u.test(command)) {
+		throw new Error(
+			`${label} must not contain escaped newline sequences; put multi-step reproduction logic in a project script and call that script from task.md`,
+		);
+	}
 }
 
 function optionalCommand(taskContract, label) {

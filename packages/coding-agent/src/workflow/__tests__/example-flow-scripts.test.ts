@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import type { ToolSession } from "../../tools";
+import { evaluateWorkflowCondition } from "../condition";
 import type { WorkflowDefinition } from "../definition";
 import { createEvalToolScriptRunner } from "../eval-tool-runtime";
 import type { WorkflowLifecycleBranchEntry } from "../lifecycle";
@@ -115,6 +116,90 @@ describe("example workflow scripts", () => {
 		expect(
 			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.error,
 		).toContain("Setup Command must be a single-line command");
+	});
+
+	it("rejects escaped-newline research reproduction commands before shell execution", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-escaped-newline-command-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Reject hidden multi-line command contracts that are fragile under shell quoting.",
+				"",
+				"Reproduction Command:",
+				`PYTHONPATH=src python -c "print('start')\\nprint('done')"`,
+				"",
+				"Validation Command:",
+				"echo validated",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "precheckTaskContract",
+			scriptFileName: "precheck-task-contract.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/task", "/runtime", "/review"],
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
+		).toBe("failed");
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.error,
+		).toContain("Reproduction Command must not contain escaped newline sequences");
+	});
+
+	it("keeps non-exercising research reproduction evidence on the refinement route", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,
+		);
+		const outgoing = artifact.definition.edges.filter(edge => edge.from === "reportReview");
+		const enabledTargets = outgoing
+			.filter(edge =>
+				edge.condition === undefined
+					? true
+					: evaluateWorkflowCondition(edge.condition.source, {
+							state: {
+								reproduction: { exercised: false },
+								variant: { validationExercised: true },
+							},
+							outputs: {
+								reportReview: { verdict: "finish" },
+							},
+						}),
+			)
+			.map(edge => edge.to);
+
+		expect(enabledTargets).toEqual(["extractClaim"]);
+	});
+
+	it("archives research reproduction only after reproduction and validation both exercise the claim", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,
+		);
+		const outgoing = artifact.definition.edges.filter(edge => edge.from === "reportReview");
+		const enabledTargets = outgoing
+			.filter(edge =>
+				edge.condition === undefined
+					? true
+					: evaluateWorkflowCondition(edge.condition.source, {
+							state: {
+								reproduction: { exercised: true },
+								variant: { validationExercised: true },
+							},
+							outputs: {
+								reportReview: { verdict: "finish" },
+							},
+						}),
+			)
+			.map(edge => edge.to);
+
+		expect(enabledTargets).toEqual(["archiveReproduction"]);
 	});
 
 	it("archives terminal research reproduction rejections instead of looping forever", async () => {
