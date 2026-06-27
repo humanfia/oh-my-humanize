@@ -90,6 +90,32 @@ describe("WorkflowGraphComponent display modes", () => {
 		expect(text).toContain("Focus: selected node");
 	});
 
+	it("does not count skipped conditional branch nodes against completed workflow progress", () => {
+		const text = new WorkflowGraphComponent(completedConditionalBranchViewFixture(), {
+			displayModeProvider: () => "full",
+		})
+			.render(140)
+			.map(stripAnsi)
+			.join("\n");
+
+		expect(text).toContain("7/7 done");
+		expect(text).toContain("1 skipped");
+		expect(text).not.toContain("7/8 done");
+	});
+
+	it("summarizes skipped conditional branch nodes in collapsed completed workflows", () => {
+		const text = new WorkflowGraphComponent(completedConditionalBranchViewFixture(), {
+			displayModeProvider: () => "collapsed",
+		})
+			.render(120)
+			.map(stripAnsi)
+			.join("\n");
+
+		expect(text).toContain("7/7 done");
+		expect(text).toContain("1 skipped");
+		expect(text).not.toContain("7/8 done");
+	});
+
 	it("switches selected workflow nodes and activation summaries from keyboard input", () => {
 		const component = new WorkflowGraphComponent(workflowGraphNavigationViewFixture(), {
 			displayModeProvider: () => "full",
@@ -261,6 +287,58 @@ function workflowGraphOcclusionViewFixture(): WorkflowGraphView {
 			"Refresh",
 			"Interrupt Builder · Left branch: /workflow interrupt attempt-1 left --deadline-ms 30000",
 			"Stop attempt · /workflow stop attempt-1 --deadline-ms 30000",
+		],
+	};
+}
+
+function completedConditionalBranchViewFixture(): WorkflowGraphView {
+	return {
+		familyId: "rich-test-generation",
+		currentAttempt: {
+			id: "attempt-1",
+			status: "completed",
+			runtimeBindingId: "binding-1",
+		},
+		changes: { approved: 0, proposed: 0, rejected: 0 },
+		topology: {
+			parallelFanOuts: 0,
+			branchPoints: 1,
+			joins: 1,
+			loops: 1,
+			subflows: 0,
+		},
+		focus: {
+			nodeId: "archiveTests",
+			label: "Archive tests",
+			role: "Evidence archive",
+			status: "completed",
+			summary: "archived test hardening evidence",
+		},
+		nodes: [
+			{ id: "precheckTaskContract", kind: "Verifier", status: "completed", activationCount: 1, focused: false },
+			{ id: "inspectCoverage", kind: "Workflow agent", status: "completed", activationCount: 1, focused: false },
+			{ id: "materializeGapReport", kind: "Program", status: "completed", activationCount: 1, focused: false },
+			{ id: "generateTests", kind: "Workflow agent", status: "completed", activationCount: 1, focused: false },
+			{ id: "repairTests", kind: "Workflow agent", status: "pending", activationCount: 0, focused: false },
+			{ id: "runTestSuite", kind: "Verifier", status: "completed", activationCount: 1, focused: false },
+			{ id: "testReview", kind: "Validation review", status: "completed", activationCount: 1, focused: false },
+			{ id: "archiveTests", kind: "Evidence archive", status: "completed", activationCount: 1, focused: true },
+		],
+		edges: [
+			{ from: "precheckTaskContract", to: "inspectCoverage" },
+			{ from: "inspectCoverage", to: "materializeGapReport" },
+			{ from: "materializeGapReport", to: "generateTests" },
+			{ from: "generateTests", to: "runTestSuite" },
+			{ from: "repairTests", to: "runTestSuite" },
+			{ from: "runTestSuite", to: "testReview" },
+			{ from: "testReview", to: "repairTests", condition: "review requests test changes" },
+			{ from: "testReview", to: "archiveTests", condition: "review accepted tests" },
+		],
+		selectedRoutes: [{ from: "testReview", to: "archiveTests", condition: "review accepted tests" }],
+		lineage: [],
+		actions: [
+			"Refresh: /workflow graph --family-id rich-test-generation",
+			"Propose change: /workflow request-change <file> --family-id rich-test-generation",
 		],
 	};
 }

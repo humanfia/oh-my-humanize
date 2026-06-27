@@ -1031,15 +1031,14 @@ function workflowGraphCollapsedStatus(view: WorkflowGraphView): WorkflowGraphNod
 
 function workflowGraphProgressSummary(view: WorkflowGraphView): string {
 	if (view.nodes.length === 0) return "no nodes";
-	const counts = workflowGraphStatusCounts(view);
-	const done = counts.completed + counts.checkpointed;
-	const active = counts.running;
+	const progress = workflowGraphProgressStats(view);
 	const tail = [
-		`${done}/${view.nodes.length} done`,
-		active > 0 ? `${active} active` : undefined,
-		counts.frontier > 0 ? `${counts.frontier} frontier` : undefined,
-		counts.failed > 0 ? `${counts.failed} failed` : undefined,
-		counts.aborted > 0 ? `${counts.aborted} aborted` : undefined,
+		`${progress.done}/${progress.total} done`,
+		progress.active > 0 ? `${progress.active} active` : undefined,
+		progress.counts.frontier > 0 ? `${progress.counts.frontier} frontier` : undefined,
+		progress.counts.failed > 0 ? `${progress.counts.failed} failed` : undefined,
+		progress.counts.aborted > 0 ? `${progress.counts.aborted} aborted` : undefined,
+		progress.skipped > 0 ? `${progress.skipped} skipped` : undefined,
 	].filter((part): part is string => part !== undefined);
 	return tail.join(" · ");
 }
@@ -1132,22 +1131,42 @@ function workflowGraphDashboardOverviewLines(view: WorkflowGraphView, width: num
 
 function workflowGraphProgressLine(view: WorkflowGraphView, width: number): string | undefined {
 	if (view.nodes.length === 0) return undefined;
-	const counts = workflowGraphStatusCounts(view);
-	const done = counts.completed + counts.checkpointed;
-	const active = counts.running;
+	const progress = workflowGraphProgressStats(view);
 	const repeats = view.nodes.reduce((total, node) => total + Math.max(0, (node.activationCount ?? 0) - 1), 0);
 	const barWidth = Math.max(6, Math.min(18, Math.floor(width / 12)));
-	const filled = Math.max(0, Math.min(barWidth, Math.round((done / view.nodes.length) * barWidth)));
+	const filled = Math.max(0, Math.min(barWidth, Math.round((progress.done / progress.total) * barWidth)));
 	const bar = `${"█".repeat(filled)}${"░".repeat(barWidth - filled)}`;
 	const statusParts = [
-		`${done}/${view.nodes.length} done`,
-		active > 0 ? `${active} active` : undefined,
-		counts.frontier > 0 ? `${counts.frontier} frontier` : undefined,
-		counts.failed > 0 ? `${counts.failed} failed` : undefined,
-		counts.aborted > 0 ? `${counts.aborted} aborted` : undefined,
+		`${progress.done}/${progress.total} done`,
+		progress.active > 0 ? `${progress.active} active` : undefined,
+		progress.counts.frontier > 0 ? `${progress.counts.frontier} frontier` : undefined,
+		progress.counts.failed > 0 ? `${progress.counts.failed} failed` : undefined,
+		progress.counts.aborted > 0 ? `${progress.counts.aborted} aborted` : undefined,
+		progress.skipped > 0 ? `${progress.skipped} skipped` : undefined,
 		repeats > 0 ? `${repeats} repeats` : undefined,
 	].filter((part): part is string => part !== undefined);
 	return `Progress: ${bar} ${statusParts.join(" · ")}`;
+}
+
+interface WorkflowGraphProgressStats {
+	counts: Record<WorkflowGraphNodeStatus, number>;
+	done: number;
+	active: number;
+	skipped: number;
+	total: number;
+}
+
+function workflowGraphProgressStats(view: WorkflowGraphView): WorkflowGraphProgressStats {
+	const counts = workflowGraphStatusCounts(view);
+	const skipped = view.currentAttempt?.status === "completed" ? counts.pending : 0;
+	const total = Math.max(1, view.nodes.length - skipped);
+	return {
+		counts,
+		done: counts.completed + counts.checkpointed,
+		active: counts.running,
+		skipped,
+		total,
+	};
 }
 
 function workflowGraphStatusCounts(view: WorkflowGraphView): Record<WorkflowGraphNodeStatus, number> {

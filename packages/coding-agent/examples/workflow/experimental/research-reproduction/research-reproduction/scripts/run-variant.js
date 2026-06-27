@@ -12,15 +12,26 @@ const variant =
 const validation = await runShell(validationCommand);
 const variantExerciseSummary = variant ? analyzeExercise(variant, variantCommand) : undefined;
 const validationExerciseSummary = analyzeExercise(validation, validationCommand);
+const variantCommandEvidence = variant
+	? commandEvidence("variant", variantCommand, variant, variantExerciseSummary)
+	: undefined;
+const validationCommandEvidence = commandEvidence(
+	"validation",
+	validationCommand,
+	validation,
+	validationExerciseSummary,
+);
 const evidencePath = "workflow-output/reproduction-variant.json";
 await Bun.write(outputPath, evidenceMarkdown(variantCommand, variant, validationCommand, validation));
 await writeStructuredEvidence(evidencePath, {
 	variantCommand,
 	variant,
 	variantExerciseSummary,
+	variantCommandEvidence,
 	validationCommand,
 	validation,
 	validationExerciseSummary,
+	validationCommandEvidence,
 });
 
 const variantPass = variant === undefined || variant.exitCode === 0;
@@ -45,12 +56,14 @@ return {
 				variantStdout: variant?.stdout ?? "",
 				variantStderr: variant?.stderr ?? "",
 				variantExerciseSummary,
+				variantCommandEvidence,
 				validationCommand,
 				validationExitCode: validation.exitCode,
 				validationStdout: validation.stdout,
 				validationStderr: validation.stderr,
 				validationExercised,
 				exerciseSummary: validationExerciseSummary,
+				validationCommandEvidence,
 				status: variantPass && validationPass ? "pass" : "fail",
 				outputPath,
 				evidencePath,
@@ -71,8 +84,8 @@ async function runShell(command) {
 
 function evidenceMarkdown(variantCommand, variant, validationCommand, validation) {
 	const lines = ["# Reproduction Variant And Validation", ""];
-	appendCommand(lines, "Variant Command", variantCommand, variant);
-	appendCommand(lines, "Validation Command", validationCommand, validation);
+	appendCommand(lines, "Variant", variantCommand, variant);
+	appendCommand(lines, "Validation", validationCommand, validation);
 	return lines.join("\n");
 }
 
@@ -89,11 +102,30 @@ function appendCommand(lines, label, command, result) {
 		"",
 		`Exit code: ${result.exitCode}`,
 		"",
+		`### ${label} stdout`,
+		"",
 		"```text",
-		bounded(result.stdout || result.stderr || "(empty)"),
+		bounded(result.stdout || "(empty)"),
+		"```",
+		"",
+		`### ${label} stderr`,
+		"",
+		"```text",
+		bounded(result.stderr || "(empty)"),
 		"```",
 		"",
 	);
+}
+
+function commandEvidence(role, command, result, exerciseSummary) {
+	return {
+		role,
+		command,
+		exitCode: result.exitCode,
+		stdout: result.stdout,
+		stderr: result.stderr,
+		exerciseSummary,
+	};
 }
 
 function bounded(text) {

@@ -348,6 +348,45 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("keeps research reproduction variant and validation command evidence separate", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-separated-variant-validation-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runVariant",
+			scriptFileName: "run-variant.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/variant"],
+			initialState: {
+				task: {
+					variantCommand: `python -c "print('variant exercised')"`,
+					validationCommand: `python -c "print('896 passed')"`,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.variant).toMatchObject({
+			variantCommandEvidence: {
+				role: "variant",
+				exitCode: 0,
+				stdout: "variant exercised\n",
+			},
+			validationCommandEvidence: {
+				role: "validation",
+				exitCode: 0,
+				stdout: "896 passed\n",
+			},
+		});
+		const evidence = await Bun.file(`${cwd}/workflow-output/reproduction-variant.md`).text();
+		expect(evidence).toContain("### Variant stdout");
+		expect(evidence).toContain("variant exercised");
+		expect(evidence).toContain("### Validation stdout");
+		expect(evidence).toContain("896 passed");
+	});
+
 	it("accepts markdown validation command sections in agent build review tasks", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-validation-section-");
 		const cwd = tempDir.path();
@@ -1722,6 +1761,47 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("preserves release validation stdout and stderr as separate raw artifacts", async () => {
+		using tempDir = TempDir.createSync("@omh-release-checks-stream-artifacts-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Preserve release check streams.",
+			"",
+			"Validation Command:",
+			"printf 'validation stdout\\n'; printf 'validation stderr\\n' >&2",
+		].join("\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runReleaseChecks",
+			scriptFileName: "run-release-checks.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/checks"],
+			initialState: {
+				task: {
+					taskText,
+					validationCommand: "printf 'validation stdout\\n'; printf 'validation stderr\\n' >&2",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.checks).toMatchObject({
+			validationStdoutPath: "workflow-output/release-validation-stdout.txt",
+			validationStderrPath: "workflow-output/release-validation-stderr.txt",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/release-validation-stdout.txt`).text()).toBe("validation stdout\n");
+		expect(await Bun.file(`${cwd}/workflow-output/release-validation-stderr.txt`).text()).toBe("validation stderr\n");
+		const evidence = await Bun.file(`${cwd}/workflow-output/release-checks.md`).text();
+		expect(evidence).toContain("### Validation stdout");
+		expect(evidence).toContain("workflow-output/release-validation-stdout.txt");
+		expect(evidence).toContain("### Validation stderr");
+		expect(evidence).toContain("workflow-output/release-validation-stderr.txt");
+	});
+
 	it("allows release archive when audit blockers have explicit waiver evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-release-gate-waived-");
 		const cwd = tempDir.path();
@@ -2680,6 +2760,81 @@ describe("example workflow scripts", () => {
 				benchmarkExitCode: 0,
 				validationExitCode: 0,
 			});
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
+	it("allows read-only clone sources from the shared workspace into lane scratch", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-readonly-clone-source-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		const runTmp = `${cwd}/../.run-tmp/P67-T01-5d3fe0579a-fd-performance-cache-path-recanary/scratch`;
+		process.env.OMH_RUN_TMP = runTmp;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			const taskText = ["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join(
+				"\n",
+			);
+			await Bun.write(`${cwd}/task.md`, taskText);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+			await Bun.write(
+				`${cwd}/workflow-output/perf-algorithmic-applycheck.json`,
+				`${JSON.stringify(
+					{
+						clone: {
+							cwd: runTmp,
+							command: `git clone --no-hardlinks ${cwd} ${runTmp}/algorithmic-applycheck`,
+							exitCode: 0,
+							stdout: "",
+							stderr: `Cloning into '${runTmp}/algorithmic-applycheck'...\n`,
+						},
+						applyCheck: {
+							cwd: `${runTmp}/algorithmic-applycheck`,
+							command: `git apply --check ${cwd}/workflow-output/perf-algorithmic-candidate.diff`,
+							exitCode: 0,
+							stdout: "",
+							stderr: "",
+						},
+					},
+					null,
+					2,
+				)}\n`,
+			);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "benchmarkCandidates",
+				scriptFileName: "run-benchmark-validation.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/benchmark"],
+				initialState: {
+					task: {
+						text: taskText,
+						scratchRoot: runTmp,
+						benchmarkCommand: "echo benchmark",
+						validationCommand: "echo validation",
+					},
+				},
+			});
+
+			expect(result.scheduler.state.benchmark).toMatchObject({
+				status: "pass",
+				benchmarkExitCode: 0,
+				validationExitCode: 0,
+			});
+			expect(result.scheduler.state.benchmark).not.toHaveProperty("isolationViolation");
 		} finally {
 			if (previousRunTmp === undefined) {
 				delete process.env.OMH_RUN_TMP;

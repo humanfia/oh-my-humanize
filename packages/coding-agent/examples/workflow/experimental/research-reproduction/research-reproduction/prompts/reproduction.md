@@ -32,6 +32,12 @@ Tool and artifact boundary:
   environment, and failure criteria from the task contract only.
 - Compare results: compare command evidence against the claim, explain
   variance, and identify missing evidence from the script-node outputs only.
+  Treat `variant.variantCommandEvidence` and
+  `variant.validationCommandEvidence` as separate records. The Variant Command
+  is optional experiment setup or alternate reproduction evidence; the
+  Validation Command is the required acceptance check. Never use Validation
+  stdout, stderr, pass counts, or exit code as if they were Variant Command
+  output.
 
 Do not fabricate results. The workflow scripts run the task-declared commands
 and record stdout/stderr under `workflow-output/`.

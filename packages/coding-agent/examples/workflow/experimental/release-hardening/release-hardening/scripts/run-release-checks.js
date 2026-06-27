@@ -6,9 +6,9 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 }
 await assertTaskContractUnchanged(task);
 
-const validation = await runShell(validationCommand);
+const validation = await runShell(validationCommand, "release-validation");
 const hasSecurityCommand = typeof securityCommand === "string" && securityCommand.trim() !== "";
-const security = hasSecurityCommand ? await runShell(securityCommand) : undefined;
+const security = hasSecurityCommand ? await runShell(securityCommand, "release-security") : undefined;
 const outputPath = "workflow-output/release-checks.md";
 await Bun.write(outputPath, evidenceMarkdown(validationCommand, validation, securityCommand, security));
 
@@ -26,8 +26,12 @@ return {
 			value: {
 				validationCommand,
 				validationExitCode: validation.exitCode,
+				validationStdoutPath: validation.stdoutPath,
+				validationStderrPath: validation.stderrPath,
 				securityCommand,
 				securityExitCode: security?.exitCode,
+				securityStdoutPath: security?.stdoutPath,
+				securityStderrPath: security?.stderrPath,
 				securityStatus,
 				status: validationPass && securityPass ? "pass" : "fail",
 				outputPath,
@@ -36,7 +40,7 @@ return {
 	],
 };
 
-async function runShell(command) {
+async function runShell(command, artifactPrefix) {
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: process.cwd(),
 		stdout: "pipe",
@@ -47,10 +51,16 @@ async function runShell(command) {
 		new Response(proc.stderr).text(),
 		proc.exited,
 	]);
+	const stdoutPath = `workflow-output/${artifactPrefix}-stdout.txt`;
+	const stderrPath = `workflow-output/${artifactPrefix}-stderr.txt`;
+	await Bun.write(stdoutPath, stdout);
+	await Bun.write(stderrPath, stderr);
 	return {
 		exitCode,
 		stdout: bounded(stdout),
 		stderr: bounded(stderr),
+		stdoutPath,
+		stderrPath,
 	};
 }
 
@@ -71,38 +81,43 @@ function evidenceMarkdown(validationCommand, validation, securityCommand, securi
 	const lines = [
 		"# Release Check Evidence",
 		"",
-		"## Validation Command",
-		"",
-		"```sh",
-		validationCommand,
-		"```",
-		"",
-		`Exit code: ${validation.exitCode}`,
-		"",
-		"```text",
-		validation.stdout || validation.stderr || "(empty)",
-		"```",
-		"",
 	];
+	appendCommandEvidence(lines, "Validation", validationCommand, validation);
 	if (securityCommand && security) {
-		lines.push(
-			"## Security Command",
-			"",
-			"```sh",
-			securityCommand,
-			"```",
-			"",
-			`Exit code: ${security.exitCode}`,
-			"",
-			"```text",
-			security.stdout || security.stderr || "(empty)",
-			"```",
-			"",
-		);
+		appendCommandEvidence(lines, "Security", securityCommand, security);
 	} else {
 		lines.push("## Security Command", "", "Security command: not declared", "");
 	}
 	return lines.join("\n");
+}
+
+function appendCommandEvidence(lines, label, command, result) {
+	lines.push(
+		`## ${label} Command`,
+		"",
+		"```sh",
+		command,
+		"```",
+		"",
+		`Exit code: ${result.exitCode}`,
+		"",
+		`### ${label} stdout`,
+		"",
+		`Raw artifact: \`${result.stdoutPath}\``,
+		"",
+		"```text",
+		result.stdout || "(empty)",
+		"```",
+		"",
+		`### ${label} stderr`,
+		"",
+		`Raw artifact: \`${result.stderrPath}\``,
+		"",
+		"```text",
+		result.stderr || "(empty)",
+		"```",
+		"",
+	);
 }
 
 function bounded(text) {
