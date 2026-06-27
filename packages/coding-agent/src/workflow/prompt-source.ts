@@ -346,13 +346,17 @@ function compactPromptText(
 ): string {
 	const byteLength = utf8ByteLength(value);
 	if (byteLength <= maxBytes) return value;
-	const suffix = `\n\n[${notice({ byteLength, contentHash: contentHash(value) })}]`;
-	const suffixBytes = utf8ByteLength(suffix);
-	if (suffixBytes >= maxBytes) {
-		return truncateUtf8(suffix, maxBytes);
+	const marker = `\n\n[${notice({ byteLength, contentHash: contentHash(value) })}]\n\n`;
+	const markerBytes = utf8ByteLength(marker);
+	if (markerBytes >= maxBytes) {
+		return truncateUtf8(marker, maxBytes);
 	}
-	const prefix = truncateUtf8(value, maxBytes - suffixBytes).trimEnd();
-	return `${prefix}${suffix}`;
+	const contentBudget = maxBytes - markerBytes;
+	const prefixBudget = Math.ceil(contentBudget / 2);
+	const suffixBudget = Math.floor(contentBudget / 2);
+	const prefix = truncateUtf8(value, prefixBudget).trimEnd();
+	const suffix = truncateUtf8FromEnd(value, suffixBudget).trimStart();
+	return `${prefix}${marker}${suffix}`;
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
@@ -369,6 +373,22 @@ function truncateUtf8(value: string, maxBytes: number): string {
 		}
 	}
 	return value.slice(0, low);
+}
+
+function truncateUtf8FromEnd(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) return "";
+	if (utf8ByteLength(value) <= maxBytes) return value;
+	let low = 0;
+	let high = value.length;
+	while (low < high) {
+		const mid = Math.ceil((low + high) / 2);
+		if (utf8ByteLength(value.slice(value.length - mid)) <= maxBytes) {
+			low = mid;
+		} else {
+			high = mid - 1;
+		}
+	}
+	return value.slice(value.length - low);
 }
 
 function utf8ByteLength(value: string): number {

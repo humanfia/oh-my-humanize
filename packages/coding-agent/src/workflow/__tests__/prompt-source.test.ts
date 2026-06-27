@@ -36,11 +36,14 @@ describe("resolveWorkflowPrompt", () => {
 			packageRoot,
 			state: {
 				task: "Reproduce alias configuration behavior and review the combined validation evidence.",
-				evidence: Array.from({ length: 160 }, (_, index) => ({
-					case: `alias-config-${index}`,
-					stdout: "passed ".repeat(60),
-					stderr: "warning ".repeat(60),
-				})),
+				evidence: {
+					rows: Array.from({ length: 160 }, (_, index) => ({
+						case: `alias-config-${index}`,
+						stdout: "passed ".repeat(60),
+						stderr: "warning ".repeat(60),
+					})),
+					finalValidationSummary: "tail evidence: validation 896 passed",
+				},
 			},
 			completedActivations: [],
 			parentActivationIds: [],
@@ -54,6 +57,7 @@ describe("resolveWorkflowPrompt", () => {
 		expect(prompt?.value).toContain('workflow prompt binding "evidence" was compacted');
 		expect(prompt?.value).toContain("originalBytes");
 		expect(prompt?.value).toContain("sha256:");
+		expect(prompt?.value).toContain("tail evidence: validation 896 passed");
 	});
 });
 

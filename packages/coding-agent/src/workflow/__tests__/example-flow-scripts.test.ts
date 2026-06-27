@@ -2621,6 +2621,74 @@ describe("example workflow scripts", () => {
 		}
 	});
 
+	it("allows task-declared target cache paths while enforcing lane scratch roots", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-task-cache-path-guard-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		const runTmp = `${cwd}/run-tmp/scratch`;
+		const cacheRoot = `${cwd}/../cache/fd-performance-target`;
+		process.env.OMH_RUN_TMP = runTmp;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			const taskText = [
+				"Benchmark Command:",
+				`CARGO_TARGET_DIR=${cacheRoot} TMPDIR=${runTmp}/algorithmic/tmp echo benchmark`,
+				"",
+				"Validation Command:",
+				`CARGO_TARGET_DIR=${cacheRoot} echo validation`,
+				"",
+				"Scratch Root:",
+				runTmp,
+			].join("\n");
+			await Bun.write(`${cwd}/task.md`, taskText);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+			await Bun.write(
+				`${cwd}/workflow-output/perf-algorithmic.md`,
+				[
+					"# Algorithmic candidate",
+					"",
+					`cwd: ${runTmp}/algorithmic/fd`,
+					`command: CARGO_TARGET_DIR=${cacheRoot} TMPDIR=${runTmp}/algorithmic/tmp cargo test -q regex_helper`,
+				].join("\n"),
+			);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "benchmarkCandidates",
+				scriptFileName: "run-benchmark-validation.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/benchmark"],
+				initialState: {
+					task: {
+						text: taskText,
+						scratchRoot: runTmp,
+						benchmarkCommand: `CARGO_TARGET_DIR=${cacheRoot} echo benchmark`,
+						validationCommand: `CARGO_TARGET_DIR=${cacheRoot} echo validation`,
+					},
+				},
+			});
+
+			expect(result.scheduler.state.benchmark).toMatchObject({
+				status: "pass",
+				benchmarkExitCode: 0,
+				validationExitCode: 0,
+			});
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
 	it("blocks performance benchmark joins when branch evidence references workflow tmp scratch", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-workflow-tmp-reference-guard-");
 		const cwd = tempDir.path();
@@ -2924,6 +2992,93 @@ describe("example workflow scripts", () => {
 			status: "blocked",
 			terminalState: "no-win-validation-blocked",
 			validationPassed: false,
+			noWinBranches: ["algorithmic", "caching", "io"],
+		});
+	});
+
+	it("finalizes performance repair no-win evidence from branch-style exit lines", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-repair-branch-exit-lines-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance branch-style repair evidence",
+			"",
+			"Benchmark Command:",
+			"cargo test -q --test tests test_regex",
+			"",
+			"Validation Command:",
+			"cargo test -q --test tests test_regex && cargo test -q --test tests test_glob",
+			"",
+			"No-Code/No-Change Allowed: Yes",
+		].join("\n");
+
+		await Bun.write(`${cwd}/README.md`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "README.md", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		for (const name of ["algorithmic", "caching", "io"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				[
+					"# Branch",
+					"",
+					"final-selection: no",
+					"no-win-result: yes",
+					"rollback and no-change evidence: no project files remain changed",
+				].join("\n"),
+			);
+		}
+		await Bun.write(
+			`${cwd}/workflow-output/performance-benchmark.md`,
+			[
+				"# Performance Benchmark Evidence",
+				"",
+				"## Disallowed Scratch Root Violation",
+				"",
+				"- workflow-output/perf-algorithmic.md",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"- `workflow-output/perf-algorithmic.md`: benchmark exit code 0 and validation exit code 0, but no measured positive movement.",
+				"- `workflow-output/perf-caching.md`: benchmark exit code 0 and validation exit code 0, but no measured positive movement.",
+				"- `workflow-output/perf-io.md`: benchmark exit code 0 and validation exit code 0, but no stable positive result.",
+			].join("\n"),
+		);
+
+		const finalize = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					status: "fail",
+					isolationViolation: true,
+					outputPath: "workflow-output/performance-benchmark.md",
+				},
+				selectionRepair: {
+					status: "completed",
+				},
+			},
+		});
+
+		expect(finalize.scheduler.state.selection).toMatchObject({
+			status: "pass",
+			terminalState: "no-win",
+			validationPassed: true,
 			noWinBranches: ["algorithmic", "caching", "io"],
 		});
 	});

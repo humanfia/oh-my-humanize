@@ -371,12 +371,14 @@ function optionalTaskField(taskText, label) {
 }
 
 function hasDisallowedScratchRoot(text, roots) {
+	const taskCacheRoots = allowedTaskDeclaredCacheRoots(task);
 	return scratchEvidenceLines(text).some(line =>
 		extractEvidencePaths(line).some(path => {
 			const normalized = normalizeAbsolutePath(path);
 			return (
 				normalized !== "" &&
 				!isAllowedDurableWorkflowOutputPath(normalized) &&
+				!taskCacheRoots.some(root => pathIsUnder(normalized, root)) &&
 				!roots.some(root => pathIsUnder(normalized, root))
 			);
 		}),
@@ -402,6 +404,32 @@ function scratchEvidenceLines(text) {
 		.split(/\r?\n/u)
 		.filter(line => /\b(?:scratch|worktree|cwd|built from|applycheck|lane-local|run-local)\b/iu.test(line))
 		.filter(line => !isNegativeScratchDeclaration(line));
+}
+
+function allowedTaskDeclaredCacheRoots(task) {
+	const taskText = typeof task?.text === "string" ? task.text : "";
+	return [
+		...taskDeclaredCacheRoots(task?.benchmarkCommand),
+		...taskDeclaredCacheRoots(task?.validationCommand),
+		...taskDeclaredCacheRoots(taskText),
+	]
+		.map(normalizeAbsolutePath)
+		.filter(path => path !== "");
+}
+
+function taskDeclaredCacheRoots(text) {
+	if (typeof text !== "string" || text.trim() === "") return [];
+	return [...text.matchAll(/(?:^|[\s`"'(])([A-Za-z_][A-Za-z0-9_]*)=((?:\/[^\s`"'<>),;]+)+)/gu)]
+		.filter(match => isCacheRootEnvName(match[1] ?? ""))
+		.map(match => match[2] ?? "");
+}
+
+function isCacheRootEnvName(name) {
+	return (
+		name === "CARGO_TARGET_DIR" ||
+		/(?:^|_)(?:CACHE|TARGET)(?:_|$)/u.test(name.toUpperCase()) ||
+		/(?:CACHE|TARGET)(?:DIR|ROOT|HOME|PATH)$/u.test(name.toUpperCase())
+	);
 }
 
 function hasBareTmpExecutionSurface(line) {

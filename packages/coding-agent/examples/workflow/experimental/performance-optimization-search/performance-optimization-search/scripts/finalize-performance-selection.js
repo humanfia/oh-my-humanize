@@ -159,14 +159,18 @@ function commandPassedFromRepairEvidence(value) {
 
 function commandPassedFromRepairReport(text, commandName) {
 	if (typeof text !== "string" || text.trim() === "") return undefined;
-	const commandPattern = commandName === "benchmark" ? /\bbenchmark command\b/iu : /\bvalidation command\b/iu;
+	const commandPattern = commandName === "benchmark" ? /\bbenchmark(?: command)?\b/iu : /\bvalidation(?: command)?\b/iu;
 	const lines = text
 		.split(/\r?\n/u)
 		.filter((line) => commandPattern.test(line))
 		.filter((line) => /\b(?:exited|exit code)\s*(?:code\s*)?\d+\b/iu.test(line));
 	const latest = lines.at(-1);
 	if (!latest) return undefined;
-	const match = /\b(?:exited|exit code)\s*(?:code\s*)?(\d+)\b/iu.exec(latest);
+	const commandNamePattern = commandName === "benchmark" ? "benchmark" : "validation";
+	const match = new RegExp(
+		String.raw`\b${commandNamePattern}(?: command)?\b.{0,160}\b(?:exited|exit code)\s*(?:code\s*)?(\d+)\b`,
+		"iu",
+	).exec(latest);
 	if (!match) return undefined;
 	return Number(match[1]) === 0;
 }
