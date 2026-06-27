@@ -30,6 +30,7 @@ const noWinText = await readOptionalText("workflow-output/perf-no-win.md");
 const finalSelectionText = [algorithmicText, cachingText, ioText, noWinText].join("\n");
 const hasRollbackEvidence = /\brollback\b/iu.test(finalSelectionText);
 const hasFinalSelection = /\bfinal-selection\s*:\s*yes\b/iu.test(finalSelectionText);
+const hasSemanticProbeEvidence = semanticProbeEvidencePresent(finalSelectionText, selectionRepairText);
 const hasNoWinEvidence = /\bno-win-result\s*:\s*yes\b/iu.test(finalSelectionText);
 if (!["positive", "no-win", "no-win-validation-blocked", "rejected-no-win-not-authorized"].includes(String(selection.terminalState))) {
 	throw new Error(
@@ -55,6 +56,11 @@ if (isNoWinTerminalState(selection.terminalState) && !hasNoWinEvidence) {
 }
 if (selection.terminalState === "positive" && !hasFinalSelection) {
 	throw new Error("cannot archive performance search with project changes before one branch records `final-selection: yes`");
+}
+if (selection.terminalState === "positive" && !hasSemanticProbeEvidence) {
+	throw new Error(
+		"cannot archive positive performance search before semantic probe evidence is recorded for the retained candidate",
+	);
 }
 
 await Bun.write(
@@ -214,6 +220,15 @@ function reviewCorrectness(review, normalized) {
 
 function positiveCorrectness(value) {
 	return ["correct", "complete", "pass", "passed", "finish", "finished"].includes(value);
+}
+
+function semanticProbeEvidencePresent(branchText, repairText) {
+	const combined = `${branchText}\n${repairText}`;
+	return (
+		/\bsemantic-probe\s*:\s*(?:yes|true|pass|passed)\b/iu.test(combined) ||
+		/\bsemantic probe evidence\s*:/iu.test(combined) ||
+		/\bbehavior probe(?:s)?\b/iu.test(combined)
+	);
 }
 
 async function readOptionalText(filePath) {

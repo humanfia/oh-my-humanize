@@ -50,6 +50,13 @@ that the reviewer can evaluate:
   from that branch into the clean shared workspace, verify it with
   `git apply --check` before applying, rerun the task-declared validation, and
   update that branch note with `final-selection: yes`;
+- a positive retained candidate also needs a project-specific semantic behavior
+  probe, not only a benchmark. The probe must exercise the public behavior at
+  risk for that optimization and must address any previous reviewer feedback.
+  Record `semantic-probe: yes` plus `semantic probe evidence: ...` in the
+  selected branch report or in `performance-selection-repair.md`. If you cannot
+  produce such evidence, revert the candidate and record a no-win or blocker
+  instead of marking `final-selection: yes`;
 - mark every losing, reverted, conflict-only, or unselected branch with
   `final-selection: no` and rollback evidence;
 - if no safe positive optimization remains and the task explicitly allows it,
@@ -75,6 +82,8 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 - whether branch build, benchmark, validation, apply-check, and candidate
   execution cwd/worktree paths were lane-local under `task.scratchRoot`;
 - exact rollback/no-change evidence;
+- exact semantic probe evidence for the retained candidate, or why no candidate
+  could be safely retained;
 - the branch report files you updated.
 
 Also ensure the relevant `workflow-output/perf-*.md` files contain the final

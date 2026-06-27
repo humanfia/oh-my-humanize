@@ -3594,6 +3594,8 @@ describe("example workflow scripts", () => {
 				"# Algorithmic",
 				"",
 				"final-selection: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: focused parser verification preserves normalize behavior",
 				"rollback evidence: rejected branches were reverted before retaining this candidate",
 			].join("\n"),
 		);
@@ -3674,6 +3676,64 @@ describe("example workflow scripts", () => {
 			validationPassed: true,
 			selectedBranches: ["algorithmic"],
 		});
+	});
+
+	it("blocks positive performance selection without semantic probe evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-positive-semantic-probe-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance semantic probe canary",
+			"",
+			"Benchmark Command:",
+			"python -m timeit '1 + 1'",
+			"",
+			"Validation Command:",
+			"python -c 'print(\"ok\")'",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "selected candidate\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# IO", "", "final-selection: yes", "rollback evidence: revert src.txt"].join("\n"),
+		);
+		for (const name of ["algorithmic", "caching"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				["# Branch", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+			);
+		}
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				review: "finish",
+			},
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "finalizePerformanceSelection");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("semantic probe evidence");
 	});
 
 	it("blocks positive performance selection when the reviewer found a semantic regression", async () => {

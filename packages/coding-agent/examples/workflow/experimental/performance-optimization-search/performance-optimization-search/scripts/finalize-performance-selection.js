@@ -20,6 +20,7 @@ const joinedText = branchReports.map((report) => report.text).join("\n");
 const selectedBranches = branchReports.filter((report) => /\bfinal-selection\s*:\s*yes\b/iu.test(report.text));
 const noWinBranches = branchReports.filter((report) => /\bno-win-result\s*:\s*yes\b/iu.test(report.text));
 const hasRollbackEvidence = /\brollback\b/iu.test(joinedText);
+const hasSemanticProbeEvidence = semanticProbeEvidencePresent(joinedText, selectionRepairText);
 const noWinAllowed = allowsNoWinArchive(task);
 const validationPassed = validationCommandPassed(benchmark, selectionRepair, selectionRepairText);
 
@@ -52,6 +53,11 @@ if (projectChangedFiles.length === 0) {
 	if (selectedBranches.length !== 1) {
 		throw new Error(
 			"positive performance selection requires exactly one retained branch with `final-selection: yes`",
+		);
+	}
+	if (!hasSemanticProbeEvidence) {
+		throw new Error(
+			"positive performance selection requires semantic probe evidence for the retained candidate",
 		);
 	}
 	if (!hasRollbackEvidence) {
@@ -95,6 +101,7 @@ return {
 				noWinBranches: noWinBranches.map((report) => report.name),
 				validationPassed,
 				rollbackEvidence: hasRollbackEvidence,
+				semanticProbeEvidence: hasSemanticProbeEvidence,
 			},
 		},
 	],
@@ -217,6 +224,15 @@ function reviewCorrectness(review, normalized) {
 
 function positiveCorrectness(value) {
 	return ["correct", "complete", "pass", "passed", "finish", "finished"].includes(value);
+}
+
+function semanticProbeEvidencePresent(branchText, repairText) {
+	const combined = `${branchText}\n${repairText}`;
+	return (
+		/\bsemantic-probe\s*:\s*(?:yes|true|pass|passed)\b/iu.test(combined) ||
+		/\bsemantic probe evidence\s*:/iu.test(combined) ||
+		/\bbehavior probe(?:s)?\b/iu.test(combined)
+	);
 }
 
 async function readOptionalText(filePath) {

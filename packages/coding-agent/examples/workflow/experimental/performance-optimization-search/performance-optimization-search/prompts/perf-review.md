@@ -49,6 +49,9 @@ Return `finish` only when:
 - losing or negative branches are reverted or explicitly isolated;
 - exactly one retained branch records `final-selection: yes` with rollback
   evidence, unless the task explicitly asks for a multi-change optimization set;
+- any retained positive candidate records `semantic-probe: yes` plus concrete
+  semantic probe evidence that exercises the public behavior at risk and
+  resolves previous reviewer feedback. Benchmarks alone are insufficient;
 - a positive optimization is accepted only when the task-declared Validation
   Command passed;
 - a documented no-win result is accepted only when the task contract explicitly
