@@ -4639,6 +4639,8 @@ describe("example workflow scripts", () => {
 				},
 				compatibility: {
 					status: "ready",
+					strategy_summary:
+						"Compatibility boundary: verify=str branch keeps immediate cafile/capath return before cert handling.",
 					notes: [
 						"Behavior: lazily import warnings and call warnings.warn(message, DeprecationWarning, stacklevel=2).",
 						"Rationale: stacklevel=2 keeps warnings attributed to the public caller.",
@@ -4664,9 +4666,17 @@ describe("example workflow scripts", () => {
 		expect(compatibilityHighlights).toContain(
 			"Behavior: lazily import warnings and call warnings.warn(message, DeprecationWarning, stacklevel=2).",
 		);
+		expect(compatibilityHighlights).toContain(
+			"Compatibility boundary: verify=str branch keeps immediate cafile/capath return before cert handling.",
+		);
 		const context = await Bun.file(`${cwd}/workflow-output/refactor-migration-review-context.md`).text();
+		expect(context).toContain("## Allowed Scopes");
+		expect(context).toContain("- httpx/_config.py");
+		expect(context).toContain("- tests/test_config.py");
 		expect(context).toContain("test is an untracked project file");
 		expect(context).toContain("stacklevel=2 keeps warnings attributed");
+		expect(context).toContain("verify=str branch keeps immediate cafile/capath return before cert handling");
+		expect(context).not.toContain("strategy_summary");
 	});
 
 	it("archives accepted refactor migrations with runtime activation rollback evidence", async () => {

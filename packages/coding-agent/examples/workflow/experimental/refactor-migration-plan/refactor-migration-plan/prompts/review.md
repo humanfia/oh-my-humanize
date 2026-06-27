@@ -42,6 +42,13 @@ explain it. Do not infer cleanliness from `git diff --stat`; untracked files
 reported by `git status --short --untracked-files=all` are real blockers unless
 they are explicitly generated workflow artifacts.
 
+The review context must expose the task scope fence to the reviewer. Return
+`continue` when the generated review context omits parsed allowed scopes for a
+task that declared allowed paths or a scope fence, or when compatibility
+highlights include raw JSON keys such as `strategy_summary` instead of readable
+behavior constraints. In that case, ask the workflow to regenerate the review
+context before accepting the migration.
+
 For every compatibility highlight in `reviewContext.compatibilityHighlights`,
 verify that the final diff, migration evidence, cleanup evidence, or tests
 preserve that behavior. If a highlight names observable warning metadata,

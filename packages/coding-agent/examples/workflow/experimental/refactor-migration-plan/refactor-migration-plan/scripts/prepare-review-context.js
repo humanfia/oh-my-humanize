@@ -176,7 +176,9 @@ function compatibilityReviewHighlights(value) {
 }
 
 function cleanHighlightLine(line) {
-	return line
+	const jsonStringField = /^"?[A-Za-z0-9_. -]+"?\s*:\s*"(.*)"[,]?$/u.exec(line);
+	const raw = jsonStringField?.[1] ?? line;
+	return raw
 		.replace(/^[-*]\s*/u, "")
 		.replace(/^"/u, "")
 		.replace(/",?$/u, "")
@@ -207,6 +209,10 @@ function reviewContextMarkdown({ workspace, diff, compatibilityHighlights }) {
 		workspace.changedFiles.length > 0
 			? workspace.changedFiles.map(entry => `- ${entry.status} ${entry.path}`).join("\n")
 			: "- none",
+		"",
+		"## Allowed Scopes",
+		"",
+		workspace.allowedScopes.length > 0 ? workspace.allowedScopes.map(scope => `- ${scope}`).join("\n") : "- none",
 		"",
 		"## Compatibility Highlights",
 		"",

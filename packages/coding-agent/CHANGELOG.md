@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration workflow review context omitting parsed allowed scopes and leaking JSON key noise into compatibility highlights, so reviewers can fail closed on scope and compatibility evidence before accepting a migration.
 - Fixed the experimental performance-optimization workflow accepting non-isolated scratch/worktree evidence such as `../workflow-scratch` or bare `/tmp`; branch agents are now steered to run-local scratch, and the benchmark join fails closed when branch evidence points outside `OMH_RUN_TMP` or the task-declared scratch root.
 - Fixed workflow agent nodes failing a whole workflow on recoverable provider stream interruptions such as `stream_read_error` / `stream_interrupted_after_content`; they now reuse the existing bounded transient retry policy before surfacing a node failure.
 - Fixed `snapcompact` compaction silently falling back to an LLM summary when local preflight rejects the archive; manual and auto snapcompact now fail locally with the blocker instead of making provider calls. ([#3599](https://github.com/can1357/oh-my-pi/issues/3599))
