@@ -97,8 +97,8 @@ describe("example workflow scripts", () => {
 			status: "pass",
 			exercised: true,
 			exitCode: 0,
-			stdout: "claim reproduced\n",
-			stderr: "",
+			stdoutPreview: "claim reproduced\n",
+			stderrPreview: "",
 		});
 		expect(await Bun.file(`${cwd}/workflow-output/reproduction-baseline.json`).json()).toMatchObject({
 			exerciseSummary: {
@@ -106,6 +106,50 @@ describe("example workflow scripts", () => {
 				positiveSignals: ["assertion-backed-command"],
 			},
 		});
+	});
+
+	it("keeps research reproduction baseline streams in artifacts instead of inline state", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-baseline-output-state-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const largeReproductionCommand = [
+			"python -c 'import sys; ",
+			'sys.stdout.write("3 passed\\n"); ',
+			'[sys.stdout.write("baseline line\\\\n") for _ in range(500)]; ',
+			'sys.stdout.write("BASELINE_" + "TAIL_UNIQUE\\\\n")\'',
+		].join("");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "reproduceBaseline",
+			scriptFileName: "run-reproduction.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/reproduction"],
+			initialState: {
+				task: {
+					reproductionCommand: largeReproductionCommand,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.reproduction).toMatchObject({
+			status: "pass",
+			exercised: true,
+			exitCode: 0,
+			stdoutPath: "workflow-output/reproduction-baseline.json",
+			stderrPath: "workflow-output/reproduction-baseline.json",
+		});
+		const reproductionState = result.scheduler.state.reproduction as {
+			stdout?: unknown;
+			stderr?: unknown;
+		};
+		expect(reproductionState.stdout).toBeUndefined();
+		expect(reproductionState.stderr).toBeUndefined();
+		const serializedState = JSON.stringify(reproductionState);
+		expect(serializedState).not.toContain("BASELINE_TAIL_UNIQUE");
+		const evidence = await Bun.file(`${cwd}/workflow-output/reproduction-baseline.json`).json();
+		expect(evidence.result.stdout).toContain("BASELINE_TAIL_UNIQUE");
 	});
 
 	it("rejects multi-line research reproduction commands before they can be truncated", async () => {
@@ -319,10 +363,16 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: rejected");
 	});
 
-	it("preserves research reproduction validation stdout and stderr in state for comparison", async () => {
+	it("keeps research reproduction command streams in artifacts instead of inline state", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-variant-output-state-");
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
+		const largeValidationCommand = [
+			"python -c 'import sys; ",
+			'sys.stdout.write("3 passed\\n"); ',
+			'[sys.stdout.write("validation line\\\\n") for _ in range(500)]; ',
+			'sys.stdout.write("VALIDATION_" + "TAIL_UNIQUE\\\\n")\'',
+		].join("");
 
 		const result = await runExampleScript({
 			cwd,
@@ -334,18 +384,35 @@ describe("example workflow scripts", () => {
 			initialState: {
 				task: {
 					variantCommand: `python -c "assert 1 + 1 == 2; print('variant reproduced')"`,
-					validationCommand: `python -c "print('3 passed')"`,
+					validationCommand: largeValidationCommand,
 				},
 			},
 		});
 
 		expect(result.scheduler.state.variant).toMatchObject({
 			status: "pass",
-			variantStdout: "variant reproduced\n",
-			variantStderr: "",
-			validationStdout: "3 passed\n",
-			validationStderr: "",
+			variantCommandEvidence: {
+				role: "variant",
+				exitCode: 0,
+				stdoutPath: "workflow-output/reproduction-variant.json",
+			},
+			validationCommandEvidence: {
+				role: "validation",
+				exitCode: 0,
+				stdoutPath: "workflow-output/reproduction-variant.json",
+			},
 		});
+		const variantState = result.scheduler.state.variant as {
+			variantStdout?: unknown;
+			validationStdout?: unknown;
+		};
+		expect(variantState.variantStdout).toBeUndefined();
+		expect(variantState.validationStdout).toBeUndefined();
+		const serializedState = JSON.stringify(variantState);
+		expect(serializedState).not.toContain("VALIDATION_TAIL_UNIQUE");
+		const evidence = await Bun.file(`${cwd}/workflow-output/reproduction-variant.json`).json();
+		expect(evidence.validationCommandEvidence.stdout).toContain("VALIDATION_TAIL_UNIQUE");
+		expect(evidence.validation.stdout).toContain("VALIDATION_TAIL_UNIQUE");
 	});
 
 	it("keeps research reproduction variant and validation command evidence separate", async () => {
@@ -372,13 +439,28 @@ describe("example workflow scripts", () => {
 			variantCommandEvidence: {
 				role: "variant",
 				exitCode: 0,
-				stdout: "variant exercised\n",
+				stdoutPreview: "variant exercised\n",
 			},
 			validationCommandEvidence: {
 				role: "validation",
 				exitCode: 0,
-				stdout: "896 passed\n",
+				stdoutPreview: "896 passed\n",
 			},
+		});
+		const variantState = result.scheduler.state.variant as {
+			variantCommandEvidence?: { stdout?: unknown };
+			validationCommandEvidence?: { stdout?: unknown };
+		};
+		expect(variantState.variantCommandEvidence?.stdout).toBeUndefined();
+		expect(variantState.validationCommandEvidence?.stdout).toBeUndefined();
+		const jsonEvidence = await Bun.file(`${cwd}/workflow-output/reproduction-variant.json`).json();
+		expect(jsonEvidence.variantCommandEvidence).toMatchObject({
+			role: "variant",
+			stdout: "variant exercised\n",
+		});
+		expect(jsonEvidence.validationCommandEvidence).toMatchObject({
+			role: "validation",
+			stdout: "896 passed\n",
 		});
 		const evidence = await Bun.file(`${cwd}/workflow-output/reproduction-variant.md`).text();
 		expect(evidence).toContain("### Variant stdout");

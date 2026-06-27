@@ -34,8 +34,10 @@ function stateValue(command, result, outputPath, evidencePath, exerciseSummary) 
 		exerciseSummary,
 		command,
 		exitCode: result.exitCode,
-		stdout: result.stdout,
-		stderr: result.stderr,
+		stdoutPath: evidencePath,
+		stderrPath: evidencePath,
+		stdoutPreview: statePreview(result.stdout || ""),
+		stderrPreview: statePreview(result.stderr || ""),
 		outputPath,
 		evidencePath,
 	};
@@ -62,6 +64,12 @@ function bounded(text) {
 	const limit = 12000;
 	if (text.length <= limit) return text;
 	return `${text.slice(0, limit)}\n[truncated ${text.length - limit} bytes]`;
+}
+
+function statePreview(text) {
+	const limit = 2000;
+	if (text.length <= limit) return text;
+	return `${text.slice(0, limit)}\n[see full stream in artifact; truncated ${text.length - limit} bytes]`;
 }
 
 function nonExercisingOutput(result) {

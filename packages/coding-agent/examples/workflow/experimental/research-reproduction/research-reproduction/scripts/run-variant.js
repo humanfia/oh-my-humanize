@@ -50,24 +50,32 @@ return {
 		{
 			op: "set",
 			path: "/variant",
-			value: {
-				variantCommand,
-				variantExitCode: variant?.exitCode,
-				variantStdout: variant?.stdout ?? "",
-				variantStderr: variant?.stderr ?? "",
-				variantExerciseSummary,
-				variantCommandEvidence,
-				validationCommand,
-				validationExitCode: validation.exitCode,
-				validationStdout: validation.stdout,
-				validationStderr: validation.stderr,
-				validationExercised,
-				exerciseSummary: validationExerciseSummary,
-				validationCommandEvidence,
-				status: variantPass && validationPass ? "pass" : "fail",
-				outputPath,
-				evidencePath,
-			},
+				value: {
+					variantCommand,
+					variantExitCode: variant?.exitCode,
+					variantStdoutPath: variant ? evidencePath : undefined,
+					variantStderrPath: variant ? evidencePath : undefined,
+					variantExerciseSummary,
+					variantCommandEvidence: variant
+						? stateCommandEvidence("variant", variantCommand, variant, variantExerciseSummary, evidencePath)
+						: undefined,
+					validationCommand,
+					validationExitCode: validation.exitCode,
+					validationStdoutPath: evidencePath,
+					validationStderrPath: evidencePath,
+					validationExercised,
+					exerciseSummary: validationExerciseSummary,
+					validationCommandEvidence: stateCommandEvidence(
+						"validation",
+						validationCommand,
+						validation,
+						validationExerciseSummary,
+						evidencePath,
+					),
+					status: variantPass && validationPass ? "pass" : "fail",
+					outputPath,
+					evidencePath,
+				},
 		},
 	],
 };
@@ -126,6 +134,25 @@ function commandEvidence(role, command, result, exerciseSummary) {
 		stderr: result.stderr,
 		exerciseSummary,
 	};
+}
+
+function stateCommandEvidence(role, command, result, exerciseSummary, evidencePath) {
+	return {
+		role,
+		command,
+		exitCode: result.exitCode,
+		stdoutPath: evidencePath,
+		stderrPath: evidencePath,
+		stdoutPreview: statePreview(result.stdout || ""),
+		stderrPreview: statePreview(result.stderr || ""),
+		exerciseSummary,
+	};
+}
+
+function statePreview(text) {
+	const limit = 2000;
+	if (text.length <= limit) return text;
+	return `${text.slice(0, limit)}\n[see full stream in artifact; truncated ${text.length - limit} bytes]`;
 }
 
 function bounded(text) {
