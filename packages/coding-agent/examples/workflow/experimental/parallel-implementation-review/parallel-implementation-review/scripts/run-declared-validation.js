@@ -63,6 +63,13 @@ async function writeValidationArtifact({
 	const stdoutArtifact = `workflow-output/validation${suffix}.stdout`;
 	const stderrArtifact = `workflow-output/validation${suffix}.stderr`;
 	const artifactPath = `workflow-output/validation${suffix}.json`;
+	const stdoutStderrArtifact = await writeCombinedValidationOutput({
+		tupleId,
+		stdoutArtifact,
+		stderrArtifact,
+		stdout,
+		stderr,
+	});
 	await Bun.write(stdoutArtifact, stdout);
 	await Bun.write(stderrArtifact, stderr);
 	const artifact = {
@@ -79,6 +86,7 @@ async function writeValidationArtifact({
 			exitCode,
 			stdoutArtifact,
 			stderrArtifact,
+			stdoutStderrArtifact,
 		},
 		checked_at_ms: Date.now(),
 	};
@@ -89,6 +97,15 @@ async function writeValidationArtifact({
 async function writeReusedValidationArtifact({ tupleId, validationCommand, validationEnvironment, reusableValidation }) {
 	const suffix = tupleId ? `-${tupleId}` : "";
 	const artifactPath = `workflow-output/validation${suffix}.json`;
+	const stdout = await readOptionalText(reusableValidation.stdoutArtifact);
+	const stderr = await readOptionalText(reusableValidation.stderrArtifact);
+	const stdoutStderrArtifact = await writeCombinedValidationOutput({
+		tupleId,
+		stdoutArtifact: reusableValidation.stdoutArtifact,
+		stderrArtifact: reusableValidation.stderrArtifact,
+		stdout,
+		stderr,
+	});
 	const artifact = {
 		tuple_id: tupleId,
 		artifact: artifactPath,
@@ -104,6 +121,7 @@ async function writeReusedValidationArtifact({ tupleId, validationCommand, valid
 			stdoutArtifact: reusableValidation.stdoutArtifact,
 			stderrArtifact: reusableValidation.stderrArtifact,
 			exitCodeArtifact: reusableValidation.exitCodeArtifact,
+			stdoutStderrArtifact,
 			reusedFromTestLane: reusableValidation.artifact,
 			reusedArtifactHashes: reusableValidation.recordedHashes,
 			reusedCoverageProfiles: reusableValidation.coverageProfiles,
@@ -112,6 +130,30 @@ async function writeReusedValidationArtifact({ tupleId, validationCommand, valid
 	};
 	await Bun.write(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
 	return artifact;
+}
+
+async function writeCombinedValidationOutput({ tupleId, stdoutArtifact, stderrArtifact, stdout, stderr }) {
+	const suffix = tupleId ? `-${tupleId}` : "";
+	const combinedArtifact = `workflow-output/validation-stdout-stderr${suffix}.txt`;
+	await Bun.write(
+		combinedArtifact,
+		[
+			"# Declared Validation Stdout/Stderr",
+			"",
+			`stdout artifact: ${stdoutArtifact}`,
+			`stderr artifact: ${stderrArtifact}`,
+			"",
+			"## stdout",
+			"",
+			stdout || "(empty)",
+			"",
+			"## stderr",
+			"",
+			stderr || "(empty)",
+			"",
+		].join("\n"),
+	);
+	return combinedArtifact;
 }
 
 async function reusableExactTestLaneValidation({ tupleId, validationCommand, validationEnvironment }) {
@@ -174,6 +216,14 @@ async function readJson(filePath) {
 		return await Bun.file(filePath).json();
 	} catch {
 		return null;
+	}
+}
+
+async function readOptionalText(filePath) {
+	try {
+		return await Bun.file(filePath).text();
+	} catch {
+		return "";
 	}
 }
 

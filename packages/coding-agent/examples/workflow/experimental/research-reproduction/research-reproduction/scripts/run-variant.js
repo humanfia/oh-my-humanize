@@ -10,8 +10,8 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 const variant =
 	typeof variantCommand === "string" && variantCommand.trim() !== "" ? await runShell(variantCommand) : undefined;
 const validation = await runShell(validationCommand);
-const variantExerciseSummary = variant ? analyzeExercise(variant) : undefined;
-const validationExerciseSummary = analyzeExercise(validation);
+const variantExerciseSummary = variant ? analyzeExercise(variant, variantCommand) : undefined;
+const validationExerciseSummary = analyzeExercise(validation, validationCommand);
 const evidencePath = "workflow-output/reproduction-variant.json";
 await Bun.write(outputPath, evidenceMarkdown(variantCommand, variant, validationCommand, validation));
 await writeStructuredEvidence(evidencePath, {
@@ -42,8 +42,13 @@ return {
 			value: {
 				variantCommand,
 				variantExitCode: variant?.exitCode,
+				variantStdout: variant?.stdout ?? "",
+				variantStderr: variant?.stderr ?? "",
+				variantExerciseSummary,
 				validationCommand,
 				validationExitCode: validation.exitCode,
+				validationStdout: validation.stdout,
+				validationStderr: validation.stderr,
 				validationExercised,
 				exerciseSummary: validationExerciseSummary,
 				status: variantPass && validationPass ? "pass" : "fail",
@@ -100,12 +105,15 @@ function bounded(text) {
 function nonExercisingOutput(result) {
 	const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
 	if (hasExercisingSignal(text)) return false;
-	return !analyzeExercise(result).exercised;
+	return !analyzeExercise(result, "").exercised;
 }
 
-function analyzeExercise(result) {
+function analyzeExercise(result, command) {
 	const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
 	const positiveSignals = exerciseSignals(text);
+	if (result.exitCode === 0 && assertionBackedCommand(command) && text.trim().length > 0) {
+		positiveSignals.push("assertion-backed-command");
+	}
 	const negativeSignals = (
 		text.includes("[no test files]") ||
 		text.includes("no tests ran") ||
@@ -133,6 +141,10 @@ function exerciseSignals(text) {
 	if (/\b\d+\s+tests?\s+passed\b/u.test(text)) signals.push("tests-passed-count");
 	if (/\b\d+\s+examples?\b/u.test(text)) signals.push("examples-count");
 	return signals;
+}
+
+function assertionBackedCommand(command) {
+	return /\b(?:assert|assertRaises|pytest\.raises|unittest\.TestCase\(\)\.assert)\b/u.test(command);
 }
 
 function countMatches(text, pattern) {

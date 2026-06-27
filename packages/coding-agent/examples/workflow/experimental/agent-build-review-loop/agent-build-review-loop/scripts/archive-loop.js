@@ -438,7 +438,8 @@ function scopeMatchesPath(scope, filePath) {
 }
 
 function normalizeEvidencePath(filePath) {
-	return filePath.replace(/^\.\//u, "").replace(/\\/gu, "/").replace(/[),.;:]+$/u, "");
+	const normalized = filePath.replace(/^\.\//u, "").replace(/\\/gu, "/").replace(/[),.;:]+$/u, "");
+	return normalized === "/" ? normalized : normalized.replace(/\/+$/u, "");
 }
 
 async function loopEvidenceFiles() {

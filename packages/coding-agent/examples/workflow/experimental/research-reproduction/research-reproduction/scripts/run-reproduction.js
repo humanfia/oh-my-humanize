@@ -5,7 +5,7 @@ if (typeof command !== "string" || command.trim() === "") {
 }
 
 const result = await runShell(command);
-const exerciseSummary = analyzeExercise(result);
+const exerciseSummary = analyzeExercise(result, command);
 const outputPath = "workflow-output/reproduction-baseline.md";
 const evidencePath = "workflow-output/reproduction-baseline.json";
 await Bun.write(outputPath, evidenceMarkdown("Reproduction", command, result));
@@ -34,6 +34,8 @@ function stateValue(command, result, outputPath, evidencePath, exerciseSummary) 
 		exerciseSummary,
 		command,
 		exitCode: result.exitCode,
+		stdout: result.stdout,
+		stderr: result.stderr,
 		outputPath,
 		evidencePath,
 	};
@@ -65,12 +67,15 @@ function bounded(text) {
 function nonExercisingOutput(result) {
 	const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
 	if (hasExercisingSignal(text)) return false;
-	return !analyzeExercise(result).exercised;
+	return !analyzeExercise(result, "").exercised;
 }
 
-function analyzeExercise(result) {
+function analyzeExercise(result, command) {
 	const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
 	const positiveSignals = exerciseSignals(text);
+	if (result.exitCode === 0 && assertionBackedCommand(command) && text.trim().length > 0) {
+		positiveSignals.push("assertion-backed-command");
+	}
 	const negativeSignals = (
 		text.includes("[no test files]") ||
 		text.includes("no tests ran") ||
@@ -98,6 +103,10 @@ function exerciseSignals(text) {
 	if (/\b\d+\s+tests?\s+passed\b/u.test(text)) signals.push("tests-passed-count");
 	if (/\b\d+\s+examples?\b/u.test(text)) signals.push("examples-count");
 	return signals;
+}
+
+function assertionBackedCommand(command) {
+	return /\b(?:assert|assertRaises|pytest\.raises|unittest\.TestCase\(\)\.assert)\b/u.test(command);
 }
 
 function countMatches(text, pattern) {

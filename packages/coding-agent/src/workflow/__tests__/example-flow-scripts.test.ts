@@ -74,6 +74,40 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("counts assertion-backed research reproduction commands as exercised evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-assertion-command-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "reproduceBaseline",
+			scriptFileName: "run-reproduction.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/reproduction"],
+			initialState: {
+				task: {
+					reproductionCommand: `python -c "import unittest; unittest.TestCase().assertRaises(ValueError, int, 'x'); print('claim reproduced')"`,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.reproduction).toMatchObject({
+			status: "pass",
+			exercised: true,
+			exitCode: 0,
+			stdout: "claim reproduced\n",
+			stderr: "",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/reproduction-baseline.json`).json()).toMatchObject({
+			exerciseSummary: {
+				exercised: true,
+				positiveSignals: ["assertion-backed-command"],
+			},
+		});
+	});
+
 	it("rejects multi-line research reproduction commands before they can be truncated", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-multiline-command-");
 		const cwd = tempDir.path();
@@ -285,6 +319,35 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: rejected");
 	});
 
+	it("preserves research reproduction validation stdout and stderr in state for comparison", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-variant-output-state-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runVariant",
+			scriptFileName: "run-variant.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/variant"],
+			initialState: {
+				task: {
+					variantCommand: `python -c "assert 1 + 1 == 2; print('variant reproduced')"`,
+					validationCommand: `python -c "print('3 passed')"`,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.variant).toMatchObject({
+			status: "pass",
+			variantStdout: "variant reproduced\n",
+			variantStderr: "",
+			validationStdout: "3 passed\n",
+			validationStderr: "",
+		});
+	});
+
 	it("accepts markdown validation command sections in agent build review tasks", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-validation-section-");
 		const cwd = tempDir.path();
@@ -368,6 +431,49 @@ describe("example workflow scripts", () => {
 			terminal: true,
 			verdict: "reject",
 			final_artifact: "workflow-output/final-agent-loop-reject.md",
+		});
+	});
+
+	it("treats trailing slash allowed paths as recursive scope fences", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-trailing-slash-scope-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Verify scope fence matching.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Scope Fence:",
+				"Allowed paths: crates/ignore/, workflow-output/, progress.md.",
+			].join("\n"),
+		);
+		await runGit(cwd, ["add", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/crates/ignore/src/gitignore.rs`, "pub fn touched() {}\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "PASS",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/semantic-archive-guard.json`).json()).toMatchObject({
+			verdict: "PASS",
+			findings: [],
 		});
 	});
 
@@ -512,6 +618,9 @@ describe("example workflow scripts", () => {
 				reusedFromTestLane: `workflow-output/tests-lane-${tupleId}.json`,
 			},
 		});
+		expect(await Bun.file(`${cwd}/workflow-output/validation-stdout-stderr-${tupleId}.txt`).text()).toContain(
+			"validation stdout",
+		);
 	});
 
 	it("promotes validation command shell-prefix assignments into the declared environment", async () => {
@@ -593,6 +702,38 @@ describe("example workflow scripts", () => {
 				environment: validationEnvironment,
 			},
 		});
+	});
+
+	it("materializes changed-file inventory aliases for parallel strong review", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-changed-file-inventory-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "P46-T01-flask-parallel-cli-env";
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(`${cwd}/task.md`, "Validation Command:\necho validate\n");
+		await Bun.write(`${cwd}/tests/test_cli.py`, "def test_old():\n    pass\n");
+		await runGit(cwd, ["add", "task.md", "tests/test_cli.py"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(`${cwd}/tests/test_cli.py`, "def test_new():\n    pass\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizeRollbackCoverage",
+			scriptFileName: "finalize-rollback-coverage.js",
+			writes: ["/rollbackCoverage"],
+		});
+
+		expect(result.scheduler.state.rollbackCoverage).toMatchObject({
+			changed_file_inventory_artifact: `workflow-output/changed-file-inventory-${tupleId}.txt`,
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/changed-file-inventory-${tupleId}.txt`).text()).toContain(
+			"tests/test_cli.py",
+		);
 	});
 
 	it("does not require optional parallel lane archive references when canonical lane evidence exists", async () => {

@@ -30,7 +30,14 @@ async function runShell(command) {
 }
 
 function stateValue(command, result, outputPath) {
-	return { status: result.exitCode === 0 ? "pass" : "fail", command, exitCode: result.exitCode, outputPath };
+	return {
+		status: result.exitCode === 0 ? "pass" : "fail",
+		command,
+		exitCode: result.exitCode,
+		stdout: result.stdout,
+		stderr: result.stderr,
+		outputPath,
+	};
 }
 
 function evidenceMarkdown(label, command, result) {

@@ -4,7 +4,9 @@ const changedEntries = await changedProjectEntries();
 const changedFiles = changedEntries.map(entry => entry.path);
 const existingRollbackArtifacts = await rollbackArtifacts();
 const diffStat = await gitOutput(["git", "diff", "--stat"]);
-const artifact = `workflow-output/final-rollback-coverage${tupleId ? `-${tupleId}` : ""}.md`;
+const suffix = tupleId ? `-${tupleId}` : "";
+const artifact = `workflow-output/final-rollback-coverage${suffix}.md`;
+const changedFileInventoryArtifact = `workflow-output/changed-file-inventory${suffix}.txt`;
 const artifactText = rollbackCoverageText({
 	tupleId,
 	changedEntries,
@@ -19,10 +21,12 @@ const payload = {
 	changed_files: changedFiles,
 	existing_rollback_artifacts: existingRollbackArtifacts,
 	diff_stat: diffStat,
+	changed_file_inventory_artifact: changedFileInventoryArtifact,
 	checked_at_ms: Date.now(),
 };
 
 await Bun.write(artifact, artifactText);
+await Bun.write(changedFileInventoryArtifact, changedFileInventoryText(changedEntries));
 
 return {
 	summary: `final rollback coverage materialized for ${changedFiles.length} changed project files`,
@@ -56,6 +60,17 @@ function rollbackCoverageText({ tupleId, changedEntries, existingRollbackArtifac
 		"## Diff Stat",
 		"",
 		diffStat || "(none)",
+		"",
+	].join("\n");
+}
+
+function changedFileInventoryText(changedEntries) {
+	return [
+		"# Changed File Inventory",
+		"",
+		...(changedEntries.length > 0
+			? changedEntries.map(entry => `${entry.status || "changed"} ${entry.path}`)
+			: ["(none)"]),
 		"",
 	].join("\n");
 }
