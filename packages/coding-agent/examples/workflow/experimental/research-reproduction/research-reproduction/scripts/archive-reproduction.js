@@ -119,9 +119,12 @@ function normalizeExerciseSummary(summary) {
 }
 
 function acceptedOutcome(reproductionState, variantState, comparisonState, evidence) {
-	if (comparisonRejects(comparisonState)) return false;
 	if (reproductionState.status !== "pass" || variantState.status !== "pass") return false;
 	if (hasVariantCommand(variantState) && evidence.variant.exercised !== true) return false;
+	const comparison = normalizedComparisonOutcome(comparisonState);
+	if (comparison === "rejected") return false;
+	if (comparison === "accepted") return true;
+	if (comparisonRejects(comparisonState)) return false;
 	return true;
 }
 
@@ -132,6 +135,16 @@ function hasVariantCommand(variantState) {
 function comparisonRejects(comparisonState) {
 	const text = structuredText(comparisonState);
 	return /\b(?:reject(?:ed|ion)?|inconclusive|non[-_ ]exercising)\b/iu.test(text);
+}
+
+function normalizedComparisonOutcome(comparisonState) {
+	const raw = String(comparisonState.status ?? comparisonState.overallOutcome ?? "").trim().toLowerCase();
+	if (!raw) return "unknown";
+	if (/^(?:accepted|accept|pass|passed|accepted_from_[a-z0-9_-]+)$/u.test(raw)) return "accepted";
+	if (/\b(?:reject|rejected|rejection|inconclusive|non[-_ ]exercising|failed?|fail_closed)\b/u.test(raw)) {
+		return "rejected";
+	}
+	return "unknown";
 }
 
 function comparisonOutcome(comparisonState) {

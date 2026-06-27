@@ -529,6 +529,83 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: rejected");
 	});
 
+	it("archives accepted research reproduction when negative-control text contains rejected", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-negative-control-accepted-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/reproduction-baseline.json`,
+			`${JSON.stringify(
+				{
+					exerciseSummary: {
+						exercised: true,
+						positiveSignals: ["assertion-backed-command"],
+						negativeSignals: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/reproduction-variant.json`,
+			`${JSON.stringify(
+				{
+					variantExerciseSummary: {
+						exercised: true,
+						positiveSignals: ["negative-control-output"],
+						negativeSignals: true,
+					},
+					validationExerciseSummary: {
+						exercised: true,
+						positiveSignals: ["passed-count"],
+						negativeSignals: false,
+						passedCounts: 25,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction-baseline.md`, "roundtrip passed\n");
+		await Bun.write(`${cwd}/workflow-output/reproduction-variant.md`, "tamper rejected\n25 passed\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveReproduction",
+			scriptFileName: "archive-reproduction.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				reproduction: {
+					status: "pass",
+					exercised: true,
+					evidencePath: "workflow-output/reproduction-baseline.json",
+				},
+				variant: {
+					status: "pass",
+					validationExercised: true,
+					variantCommand: "PYTHONPATH=src python workflow-output/scripts/tamper_reject.py",
+					evidencePath: "workflow-output/reproduction-variant.json",
+				},
+				comparison: {
+					status: "accepted_from_commands",
+					overallOutcome: "accepted",
+					summary: "The negative control printed tamper rejected, which is the expected proof signal.",
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			outcome: "accepted",
+			comparison: "accepted_from_commands",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: accepted");
+	});
+
 	it("keeps research reproduction command streams in artifacts instead of inline state", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-variant-output-state-");
 		const cwd = tempDir.path();
@@ -912,6 +989,119 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/semantic-archive-guard.json`).json()).toMatchObject({
 			verdict: "PASS",
 			findings: [],
+		});
+	});
+
+	it("does not require extra validation attempt logs for ambiguous cross-round rerun prose", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-validation-rerun-prose-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Verify validation evidence without forcing a bookkeeping round.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Allowed paths:",
+				"- workflow-output/",
+				"- progress.md",
+			].join("\n"),
+		);
+		await runGit(cwd, ["add", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			`${cwd}/progress.md`,
+			"ROUND 2: repaired prior review feedback; validation = passed; result = pass\n",
+		);
+		await Bun.write(`${cwd}/workflow-output/round-2/validation-stdout.txt`, "validation passed\n");
+		await Bun.write(`${cwd}/workflow-output/round-2/validation-stderr.txt`, "");
+		await Bun.write(
+			`${cwd}/workflow-output/round-2/summary.md`,
+			"Reran validation after prior review feedback in a new workflow round.\n",
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "PASS",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/semantic-archive-guard.json`).json()).toMatchObject({
+			verdict: "PASS",
+			findings: [],
+		});
+	});
+
+	it("requires durable logs when same-round validation attempt numbers are explicit", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-validation-attempt-retention-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Verify validation attempt retention.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Allowed paths:",
+				"- workflow-output/",
+				"- progress.md",
+			].join("\n"),
+		);
+		await runGit(cwd, ["add", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/progress.md`, "ROUND 1: repaired test evidence; validation = passed; result = pass\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-stdout.txt`, "validation passed\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-stderr.txt`, "");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-attempt-1-stdout.txt`, "failed before repair\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-attempt-1-stderr.txt`, "failure\n");
+		await Bun.write(
+			`${cwd}/workflow-output/round-1/summary.md`,
+			"Validation attempt 1 failed; validation attempt 2 passed after the same round repair.\n",
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "REPAIR",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/semantic-archive-guard.json`).json()).toMatchObject({
+			verdict: "REPAIR",
+			findings: [
+				expect.objectContaining({
+					reason: "validation rerun evidence is missing immutable attempt stdout/stderr logs",
+					missingFiles: expect.arrayContaining([
+						"workflow-output/round-1/validation-attempt-2-stdout.txt",
+						"workflow-output/round-1/validation-attempt-2-stderr.txt",
+					]),
+				}),
+			],
 		});
 	});
 

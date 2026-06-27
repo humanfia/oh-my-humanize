@@ -6,9 +6,8 @@ const PADDING_WORD_PATTERN = /\b(padding|dummy|placeholder|lorem|sleep|hold|no-o
 const VALIDATION_HARNESS_BOOTSTRAP_PATTERN =
 	/\b(?:(?:npm|pnpm|yarn|bun)(?:\s+\S+){0,5}\s+(?:install|add|ci|update|upgrade)|(?:pip|pip3)(?:\s+\S+){0,5}\s+install|python(?:3)?\s+-m\s+pip(?:\s+\S+){0,5}\s+install|uv\s+(?:sync|add|pip\s+install)|poetry\s+(?:install|add|update)|cargo\s+(?:install|update)|bundle\s+install|go\s+(?:install|get))\b/iu;
 const VALIDATION_RERUN_PATTERNS = [
-	/\b(?:reran|re-ran|rerun|re-run)\s+(?:the\s+)?validation\b/iu,
-	/\bvalidation\s+(?:was\s+)?(?:rerun|re-run|reran|re-ran)\b/iu,
-	/\b(?:first|second|previous|earlier|prior)\s+validation\s+(?:run|attempt|failure)\b/iu,
+	/\b(?:another|additional|later|subsequent)\s+validation\s+(?:run|attempt)\b/iu,
+	/\b(?:second|third|fourth|fifth)\s+validation\s+(?:run|attempt)\b/iu,
 	/\boverwrit(?:e|es|ten|ing)\s+validation[- /](?:stdout|stderr|logs?)\b/iu,
 ];
 
@@ -403,6 +402,9 @@ function requiredValidationAttempts(text) {
 function explicitValidationAttemptNumbers(text) {
 	const attempts = new Set();
 	for (const match of text.matchAll(/\battempt\s+#?(\d+)\s*:/giu)) {
+		addPositiveAttempt(attempts, match[1]);
+	}
+	for (const match of text.matchAll(/\bvalidation\s+(?:run|attempt)\s+#?(\d+)\b/giu)) {
 		addPositiveAttempt(attempts, match[1]);
 	}
 	for (const match of text.matchAll(/\bvalidation-attempt-(\d+)-(?:stdout|stderr)\.txt\b/giu)) {
