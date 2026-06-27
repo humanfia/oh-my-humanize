@@ -4,6 +4,11 @@ const benchmark = state.benchmark && typeof state.benchmark === "object" ? state
 const selection = state.selection && typeof state.selection === "object" ? state.selection : {};
 const selectionRepair = state.selectionRepair && typeof state.selectionRepair === "object" ? state.selectionRepair : {};
 const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
+const reviewGate = reviewFinishGate(state.review);
+
+if (!reviewGate.passed) {
+	throw new Error(`cannot archive performance search before reviewer finish: ${reviewGate.reason}`);
+}
 
 if (!benchmarkCommandPassed(benchmark, selectionRepair, selectionRepairText)) {
 	throw new Error("cannot archive performance search before the benchmark command passes");
@@ -176,6 +181,39 @@ function commandPassedFromRepairReport(text, commandName) {
 
 function isNoWinTerminalState(terminalState) {
 	return terminalState === "no-win" || terminalState === "no-win-validation-blocked";
+}
+
+function reviewFinishGate(review) {
+	if (review === undefined || review === null) return { passed: true, reason: "no reviewer output recorded yet" };
+	const text = reviewText(review);
+	const normalized = text.toLowerCase();
+	const correctness = reviewCorrectness(review, normalized);
+	if (correctness && !positiveCorrectness(correctness)) {
+		return { passed: false, reason: `review correctness is ${correctness}` };
+	}
+	if (/\b(verdict|decision|gate)\s*:\s*continue\b/iu.test(text)) {
+		return { passed: false, reason: "review verdict is continue" };
+	}
+	if (/\bshould\s+continue\s+rather\s+than\s+finish\b/iu.test(text)) {
+		return { passed: false, reason: "review requested continue rather than finish" };
+	}
+	return { passed: true, reason: "review allows archive" };
+}
+
+function reviewText(review) {
+	return typeof review === "string" ? review : JSON.stringify(review, null, 2);
+}
+
+function reviewCorrectness(review, normalized) {
+	if (review && typeof review === "object" && typeof review.overall_correctness === "string") {
+		return review.overall_correctness.toLowerCase().trim();
+	}
+	const match = /["']?overall_correctness["']?\s*[:=]\s*["']?([a-z_-]+)/iu.exec(normalized);
+	return match?.[1]?.toLowerCase().trim();
+}
+
+function positiveCorrectness(value) {
+	return ["correct", "complete", "pass", "passed", "finish", "finished"].includes(value);
 }
 
 async function readOptionalText(filePath) {

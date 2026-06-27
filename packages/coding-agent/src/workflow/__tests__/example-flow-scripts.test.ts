@@ -3676,6 +3676,125 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("blocks positive performance selection when the reviewer found a semantic regression", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-negative-review-gate-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance review-gated canary",
+			"",
+			"Benchmark Command:",
+			"python -m timeit '1 + 1'",
+			"",
+			"Validation Command:",
+			"python -c 'print(\"ok\")'",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/click/testing.py`, "def make_env(env):\n    return env\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/click/testing.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/click/testing.py`, "def make_env(env):\n    return env or {}\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			[
+				"# IO",
+				"",
+				"final-selection: yes",
+				"rollback evidence: revert src/click/testing.py if the optimization changes behavior",
+			].join("\n"),
+		);
+		for (const name of ["algorithmic", "caching"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				["# Branch", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+			);
+		}
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				review: {
+					overall_correctness: "incorrect",
+					explanation:
+						"The selected patch changes observable subclass behavior, so this should continue rather than finish.",
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "finalizePerformanceSelection")?.status,
+		).toBe("failed");
+	});
+
+	it("blocks performance archive when a restored selection still has a negative review", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-negative-review-archive-gate-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, "Benchmark Command:\necho benchmark\n\nValidation Command:\necho validation\n");
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "selected candidate\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# IO", "", "final-selection: yes", "rollback evidence: revert src.txt"].join("\n"),
+		);
+		for (const name of ["algorithmic", "caching"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				["# Branch", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+			);
+		}
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archivePerformance",
+			scriptFileName: "archive-performance.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selection: {
+					status: "pass",
+					terminalState: "positive",
+					selectedBranches: ["io"],
+					noWinBranches: [],
+				},
+				review: "overall_correctness: incorrect\nverdict: continue\nThe selected candidate changes behavior.",
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "archivePerformance")?.status).toBe(
+			"failed",
+		);
+	});
+
 	it("archives performance no-win evidence when validation is blocked without retained project changes", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-no-win-validation-blocked-");
 		const cwd = tempDir.path();
@@ -4236,6 +4355,24 @@ describe("example workflow scripts", () => {
 		expect(cleanupPrompt).toMatch(/request a `continue` review so the\s+program validation node can rerun/u);
 	});
 
+	it("binds refactor migration review context before reviewer decisions", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/refactor-migration-plan/refactor-migration-plan.omhflow`,
+		);
+		const nodes = new Map(artifact.definition.nodes.map(node => [node.id, node]));
+		const reviewNode = nodes.get("migrationReview");
+
+		expect(nodes.get("prepareMigrationReviewContext")?.writes).toEqual(["/reviewContext"]);
+		expect(reviewNode?.reads).toContain("/reviewContext");
+		if (reviewNode?.promptSource?.kind !== "template") {
+			throw new Error("migrationReview must use a template prompt");
+		}
+		expect(reviewNode.promptSource.bindings.reviewContext).toEqual({
+			kind: "state",
+			path: "/reviewContext",
+		});
+	});
+
 	it("archives refactor migrations as rejected when only whitespace churn remains", async () => {
 		using tempDir = TempDir.createSync("@omh-refactor-migration-whitespace-reject-");
 		const cwd = tempDir.path();
@@ -4460,6 +4597,76 @@ describe("example workflow scripts", () => {
 		expect(result.scheduler.activations.find(activation => activation.nodeId === "archiveMigration")?.status).toBe(
 			"failed",
 		);
+	});
+
+	it("materializes refactor migration review context with workspace blockers and compatibility highlights", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-migration-review-context-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/httpx/_config.py`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Refactor SSL deprecation warning construction.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Scope Fence:",
+				"Allowed paths: httpx/_config.py, tests/test_config.py, workflow-output/, progress.md, task.md, manifest-entry.json, monitor-assignment.json.",
+			].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "httpx/_config.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/httpx/_config.py`, "material migration\n");
+		await Bun.write(`${cwd}/test`, "# TLS secrets log file, generated by OpenSSL / Python\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "prepareMigrationReviewContext",
+			scriptFileName: "prepare-review-context.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/reviewContext"],
+			initialState: {
+				task: {
+					text: await Bun.file(`${cwd}/task.md`).text(),
+				},
+				compatibility: {
+					status: "ready",
+					notes: [
+						"Behavior: lazily import warnings and call warnings.warn(message, DeprecationWarning, stacklevel=2).",
+						"Rationale: stacklevel=2 keeps warnings attributed to the public caller.",
+					],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.reviewContext).toMatchObject({
+			workspace: {
+				status: "blocked",
+				blockers: ["test is an untracked project file"],
+			},
+		});
+		const reviewContext = result.scheduler.state.reviewContext;
+		if (!reviewContext || typeof reviewContext !== "object" || !("compatibilityHighlights" in reviewContext)) {
+			throw new Error("reviewContext must contain compatibilityHighlights");
+		}
+		const compatibilityHighlights = reviewContext.compatibilityHighlights;
+		if (!Array.isArray(compatibilityHighlights)) {
+			throw new Error("reviewContext.compatibilityHighlights must be an array");
+		}
+		expect(compatibilityHighlights).toContain(
+			"Behavior: lazily import warnings and call warnings.warn(message, DeprecationWarning, stacklevel=2).",
+		);
+		const context = await Bun.file(`${cwd}/workflow-output/refactor-migration-review-context.md`).text();
+		expect(context).toContain("test is an untracked project file");
+		expect(context).toContain("stacklevel=2 keeps warnings attributed");
 	});
 
 	it("archives accepted refactor migrations with runtime activation rollback evidence", async () => {

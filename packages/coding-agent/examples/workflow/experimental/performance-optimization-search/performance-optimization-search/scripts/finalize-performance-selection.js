@@ -3,6 +3,11 @@ const task = state.task && typeof state.task === "object" ? state.task : {};
 const benchmark = state.benchmark && typeof state.benchmark === "object" ? state.benchmark : {};
 const selectionRepair = state.selectionRepair && typeof state.selectionRepair === "object" ? state.selectionRepair : {};
 const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
+const reviewGate = reviewFinishGate(state.review);
+
+if (!reviewGate.passed) {
+	throw new Error(`cannot finalize performance selection before reviewer finish: ${reviewGate.reason}`);
+}
 
 if (!benchmarkCommandPassed(benchmark, selectionRepair, selectionRepairText)) {
 	throw new Error("cannot finalize performance selection before the benchmark command passes");
@@ -179,6 +184,39 @@ function commandStatusFromRepairReportLine(line, commandName) {
 	if (/\b(?:status|result)\s*:\s*(?:fail|failed|failure|blocked|error)\b/iu.test(line)) return false;
 	if (commandName === "validation" && /\b\d+\s+passed\b/iu.test(line) && !/\bfailed\b/iu.test(line)) return true;
 	return undefined;
+}
+
+function reviewFinishGate(review) {
+	if (review === undefined || review === null) return { passed: true, reason: "no reviewer output recorded yet" };
+	const text = reviewText(review);
+	const normalized = text.toLowerCase();
+	const correctness = reviewCorrectness(review, normalized);
+	if (correctness && !positiveCorrectness(correctness)) {
+		return { passed: false, reason: `review correctness is ${correctness}` };
+	}
+	if (/\b(verdict|decision|gate)\s*:\s*continue\b/iu.test(text)) {
+		return { passed: false, reason: "review verdict is continue" };
+	}
+	if (/\bshould\s+continue\s+rather\s+than\s+finish\b/iu.test(text)) {
+		return { passed: false, reason: "review requested continue rather than finish" };
+	}
+	return { passed: true, reason: "review allows finalize" };
+}
+
+function reviewText(review) {
+	return typeof review === "string" ? review : JSON.stringify(review, null, 2);
+}
+
+function reviewCorrectness(review, normalized) {
+	if (review && typeof review === "object" && typeof review.overall_correctness === "string") {
+		return review.overall_correctness.toLowerCase().trim();
+	}
+	const match = /["']?overall_correctness["']?\s*[:=]\s*["']?([a-z_-]+)/iu.exec(normalized);
+	return match?.[1]?.toLowerCase().trim();
+}
+
+function positiveCorrectness(value) {
+	return ["correct", "complete", "pass", "passed", "finish", "finished"].includes(value);
 }
 
 async function readOptionalText(filePath) {

@@ -30,6 +30,7 @@ stateSchema:
     migration: object
     cleanup: object
     validation: object
+    reviewContext: object
     review: string
     runtime: object
     archive: object
@@ -39,6 +40,8 @@ resources:
   - path: scripts/enforce-compatibility-gate.js
     kind: script
   - path: scripts/run-migration-validation.js
+    kind: script
+  - path: scripts/prepare-review-context.js
     kind: script
   - path: scripts/archive-migration.js
     kind: script
@@ -191,6 +194,21 @@ sequence:
                       state: /review
               writes:
                 - /cleanup
+          - node:
+              id: prepareMigrationReviewContext
+              type: script
+              reads:
+                - /task
+                - /dependencyMap
+                - /compatibility
+                - /migration
+                - /cleanup
+                - /validation
+              script:
+                language: js
+                file: scripts/prepare-review-context.js
+              writes:
+                - /reviewContext
       review:
         id: migrationReview
         type: review
@@ -204,6 +222,7 @@ sequence:
           - /migration
           - /cleanup
           - /validation
+          - /reviewContext
         prompt:
           template:
             file: prompts/review.md
@@ -220,6 +239,8 @@ sequence:
                 state: /cleanup
               validation:
                 state: /validation
+              reviewContext:
+                state: /reviewContext
         gates:
           - continue
           - finish
