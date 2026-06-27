@@ -1759,6 +1759,41 @@ describe("example workflow scripts", () => {
 		expect(evidence).toContain("missing dependency");
 	});
 
+	it("materializes performance scratch root into task state before branch agents run", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-scratch-root-precheck-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		process.env.OMH_RUN_TMP = `${cwd}/run-tmp`;
+
+		try {
+			await Bun.write(
+				`${cwd}/task.md`,
+				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "precheckTaskContract",
+				scriptFileName: "precheck-task-contract.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/task", "/runtime", "/review"],
+			});
+
+			expect(result.scheduler.state.task).toMatchObject({
+				scratchRoot: `${cwd}/run-tmp`,
+			});
+			expect(await Bun.file(`${cwd}/workflow-output/performance-precheck.md`).text()).toContain(`${cwd}/run-tmp`);
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
 	it("routes performance optimization through selection repair before reviewer loops", async () => {
 		const flow = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search.omhflow`,
@@ -1807,7 +1842,7 @@ describe("example workflow scripts", () => {
 		expect(optimizationPrompt).toContain("candidate patch");
 		expect(optimizationPrompt).toContain("git apply --check");
 		expect(optimizationPrompt).toContain("outside the project tree");
-		expect(optimizationPrompt).toContain("$OMH_RUN_TMP/{{strategy}}-*");
+		expect(optimizationPrompt).toContain("task.scratchRoot");
 		expect(optimizationPrompt).toContain("Never use bare `/tmp`");
 		expect(optimizationPrompt).not.toContain("workflow-output/tmp/{{strategy}}-*");
 		expect(optimizationPrompt).not.toContain("../workflow-scratch/{{strategy}}-*");
@@ -1816,10 +1851,12 @@ describe("example workflow scripts", () => {
 		expect(repairPrompt).toContain("project-local scratch");
 		expect(repairPrompt).toContain("shared sibling scratch");
 		expect(repairPrompt).toContain("bare `/tmp` scratch");
+		expect(repairPrompt).toContain("task.scratchRoot");
 		expect(reviewPrompt).toContain("branch left no project-file edits in the shared workspace");
 		expect(reviewPrompt).toContain("outside the project tree");
 		expect(reviewPrompt).toContain("shared sibling scratch");
 		expect(reviewPrompt).toContain("bare `/tmp` scratch");
+		expect(reviewPrompt).toContain("task.scratchRoot");
 	});
 
 	it("blocks performance benchmark joins when parallel lanes leave shared project edits", async () => {

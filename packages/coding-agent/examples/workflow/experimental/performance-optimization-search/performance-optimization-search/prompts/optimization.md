@@ -17,10 +17,11 @@ Previous review, if any:
 Work from the current project directory, but keep the shared workspace clean.
 Do not leave project-file edits in the shared workspace. For any code
 candidate, create a lane-local scratch copy or git worktree outside the project tree
-and scoped to this workflow run. Prefer `$OMH_RUN_TMP/{{strategy}}-*` when
-`OMH_RUN_TMP` is set; otherwise use the task-declared scratch directory. Never use bare `/tmp`,
-shared sibling scratch such as `../workflow-scratch`, or any scratch root
-outside `$OMH_RUN_TMP` or the task-declared scratch directory.
+and scoped to this workflow run. Use the absolute `task.scratchRoot` value from
+the task contract JSON, for example `<task.scratchRoot>/{{strategy}}-*`. Do not
+try to rediscover this from the shell environment. Never use bare `/tmp`, shared
+sibling scratch such as `../workflow-scratch`, or any scratch root outside
+`task.scratchRoot`.
 Never place lane-local execution scratch, benchmark fixtures, or worktrees
 under `workflow-output/tmp` or another project-scanned path. Apply the candidate
 only in that external scratch
@@ -38,8 +39,7 @@ When you create a candidate patch, preserve enough evidence for selection:
 - the exact command used to apply-check the patch in a clean checkout, including
   `git apply --check <candidate patch>`;
 - benchmark or validation logs from the project-external lane-local scratch
-  workspace, with scratch paths scoped to `$OMH_RUN_TMP` or the task-declared
-  scratch directory;
+  workspace, with scratch paths scoped to `task.scratchRoot`;
 - stdout/stderr equivalence evidence when the benchmark observes program output.
 
 If the previous review or shared hypotheses ask for selection/rollback repair,
@@ -54,8 +54,7 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 - candidate patch path, or an explicit statement that no candidate patch was
   produced;
 - project-external run-local scratch path and the `git apply --check` result
-  when a candidate patch exists; the scratch path must be under `$OMH_RUN_TMP`
-  or the task-declared scratch directory;
+  when a candidate patch exists; the scratch path must be under `task.scratchRoot`;
 - rollback instructions for this branch;
 - `final-selection: yes` only if this branch is the single retained candidate
   after the selection/repair node applies it in the shared workspace;

@@ -32,7 +32,7 @@ Return `finish` only when:
   must not live under `workflow-output/tmp` or shared sibling scratch such as
   `../workflow-scratch`; bare `/tmp` scratch is accepted only when the task
   explicitly declares it as the scratch directory; otherwise branch evidence
-  must point under `$OMH_RUN_TMP` or the task-declared scratch directory;
+  must point under `task.scratchRoot`;
 - there is a clearly selected positive optimization or a documented no-win
   result with rollback evidence;
 - losing or negative branches are reverted or explicitly isolated;

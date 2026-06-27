@@ -2,6 +2,7 @@ const taskText = await readRequiredTaskText();
 const benchmarkCommand = requiredCommand(taskText, "Benchmark Command");
 const validationCommand = requiredCommand(taskText, "Validation Command");
 const baselineCommand = optionalCommand(taskText, "Baseline Command") || benchmarkCommand;
+const scratchRoot = requiredScratchRoot(taskText);
 const runtime = runtimeFromTaskContract(taskText);
 
 await Bun.write(
@@ -27,6 +28,10 @@ await Bun.write(
 		baselineCommand,
 		"```",
 		"",
+		"## Scratch Root",
+		"",
+		scratchRoot,
+		"",
 	].join("\n"),
 );
 
@@ -42,6 +47,7 @@ return {
 				benchmarkCommand,
 				validationCommand,
 				baselineCommand,
+				scratchRoot,
 			},
 		},
 		{ op: "set", path: "/runtime", value: runtime },
@@ -67,6 +73,21 @@ function requiredCommand(taskContract, label) {
 	const command = optionalCommand(taskContract, label);
 	if (!command) throw new Error(`performance-optimization-search task.md must declare ${label}`);
 	return command;
+}
+
+function requiredScratchRoot(taskContract) {
+	const scratchRoot =
+		optionalCommand(taskContract, "Scratch Directory") ||
+		optionalCommand(taskContract, "Scratch Root") ||
+		process.env.OMH_RUN_TMP ||
+		"";
+	const normalized = normalizeAbsolutePath(scratchRoot.trim());
+	if (!normalized) {
+		throw new Error(
+			"performance-optimization-search requires OMH_RUN_TMP or an absolute Scratch Directory / Scratch Root in task.md",
+		);
+	}
+	return normalized;
 }
 
 function optionalCommand(taskContract, label) {
@@ -101,4 +122,19 @@ function runtimeFromTaskContract() {
 	return {
 		startedAtMs: Date.now(),
 	};
+}
+
+function normalizeAbsolutePath(path) {
+	const replaced = path.replace(/\\/gu, "/").replace(/\/+$/u, "");
+	if (!replaced.startsWith("/")) return "";
+	const segments = [];
+	for (const segment of replaced.split("/")) {
+		if (!segment || segment === ".") continue;
+		if (segment === "..") {
+			segments.pop();
+			continue;
+		}
+		segments.push(segment);
+	}
+	return `/${segments.join("/")}`;
 }

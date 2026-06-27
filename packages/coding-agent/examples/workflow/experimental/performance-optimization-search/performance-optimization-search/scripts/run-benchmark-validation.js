@@ -215,7 +215,12 @@ async function branchEvidenceWithDisallowedScratchRoots(task) {
 
 function allowedScratchRoots(task) {
 	const taskText = typeof task?.text === "string" ? task.text : "";
-	return [process.env.OMH_RUN_TMP, optionalTaskField(taskText, "Scratch Directory"), optionalTaskField(taskText, "Scratch Root")]
+	return [
+		task?.scratchRoot,
+		process.env.OMH_RUN_TMP,
+		optionalTaskField(taskText, "Scratch Directory"),
+		optionalTaskField(taskText, "Scratch Root"),
+	]
 		.filter(path => typeof path === "string" && path.trim() !== "")
 		.map(path => normalizeAbsolutePath(path.trim()))
 		.filter(path => path !== "");
