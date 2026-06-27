@@ -18,11 +18,12 @@ Work from the current project directory, but keep the shared workspace clean.
 Do not leave project-file edits in the shared workspace. For any code
 candidate, create a lane-local scratch copy or git worktree outside the project tree
 and scoped to this workflow run. Prefer `$OMH_RUN_TMP/{{strategy}}-*` when
-`OMH_RUN_TMP` is set; otherwise use the task-declared scratch directory. Never
-use shared sibling scratch such as `../workflow-scratch`, and never place
-lane-local execution scratch, benchmark fixtures, or worktrees under
-`workflow-output/tmp` or another project-scanned path. Apply the candidate only
-in that external scratch
+`OMH_RUN_TMP` is set; otherwise use the task-declared scratch directory. Never use bare `/tmp`,
+shared sibling scratch such as `../workflow-scratch`, or any scratch root
+outside `$OMH_RUN_TMP` or the task-declared scratch directory.
+Never place lane-local execution scratch, benchmark fixtures, or worktrees
+under `workflow-output/tmp` or another project-scanned path. Apply the candidate
+only in that external scratch
 workspace, and export the durable candidate patch plus measurements into
 `workflow-output/`. Before yielding, verify the shared workspace has no
 project-file diff with `git diff HEAD --name-only` except `workflow-output/`
@@ -53,7 +54,8 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 - candidate patch path, or an explicit statement that no candidate patch was
   produced;
 - project-external run-local scratch path and the `git apply --check` result
-  when a candidate patch exists;
+  when a candidate patch exists; the scratch path must be under `$OMH_RUN_TMP`
+  or the task-declared scratch directory;
 - rollback instructions for this branch;
 - `final-selection: yes` only if this branch is the single retained candidate
   after the selection/repair node applies it in the shared workspace;

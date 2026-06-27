@@ -1808,15 +1808,18 @@ describe("example workflow scripts", () => {
 		expect(optimizationPrompt).toContain("git apply --check");
 		expect(optimizationPrompt).toContain("outside the project tree");
 		expect(optimizationPrompt).toContain("$OMH_RUN_TMP/{{strategy}}-*");
+		expect(optimizationPrompt).toContain("Never use bare `/tmp`");
 		expect(optimizationPrompt).not.toContain("workflow-output/tmp/{{strategy}}-*");
 		expect(optimizationPrompt).not.toContain("../workflow-scratch/{{strategy}}-*");
 		expect(repairPrompt).toContain("apply at most one selected candidate patch");
 		expect(repairPrompt).toContain("clean shared workspace");
 		expect(repairPrompt).toContain("project-local scratch");
 		expect(repairPrompt).toContain("shared sibling scratch");
+		expect(repairPrompt).toContain("bare `/tmp` scratch");
 		expect(reviewPrompt).toContain("branch left no project-file edits in the shared workspace");
 		expect(reviewPrompt).toContain("outside the project tree");
 		expect(reviewPrompt).toContain("shared sibling scratch");
+		expect(reviewPrompt).toContain("bare `/tmp` scratch");
 	});
 
 	it("blocks performance benchmark joins when parallel lanes leave shared project edits", async () => {
@@ -2041,6 +2044,74 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain(
 			"Shared Scratch Isolation Violation",
 		);
+	});
+
+	it("blocks performance benchmark joins when branch evidence uses scratch outside the allowed run root", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-run-root-scratch-guard-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		process.env.OMH_RUN_TMP = `${cwd}/.omh-run-tmp`;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			await Bun.write(
+				`${cwd}/task.md`,
+				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+			await Bun.write(
+				`${cwd}/workflow-output/perf-caching.md`,
+				[
+					"# Caching candidate",
+					"",
+					"project-external run-local scratch path: /tmp/P31-T03-41a9b66ed-fd-performance-scratch-recanary-b-caching",
+					"git apply --check workflow-output/perf-caching-candidate.diff",
+				].join("\n"),
+			);
+			await Bun.write(
+				`${cwd}/workflow-output/perf-caching-candidate-cargo-test-no-run.md`,
+				"benchmark cwd: /tmp/P31-T03-41a9b66ed-fd-performance-scratch-recanary-b-caching-applycheck\n",
+			);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "benchmarkCandidates",
+				scriptFileName: "run-benchmark-validation.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/benchmark"],
+				initialState: {
+					task: {
+						text: await Bun.file(`${cwd}/task.md`).text(),
+						benchmarkCommand: "echo benchmark",
+						validationCommand: "echo validation",
+					},
+				},
+			});
+
+			expect(result.scheduler.state.benchmark).toMatchObject({
+				status: "fail",
+				isolationViolation: true,
+				disallowedScratchReferences: [
+					"workflow-output/perf-caching-candidate-cargo-test-no-run.md",
+					"workflow-output/perf-caching.md",
+				],
+			});
+			expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain(
+				"Disallowed Scratch Root Violation",
+			);
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
 	});
 
 	it("archives performance no-win evidence when validation is blocked without retained project changes", async () => {

@@ -30,6 +30,9 @@ that the reviewer can evaluate:
   candidate patches and reports belong in `workflow-output/`;
 - reject shared sibling scratch such as `../workflow-scratch`; it can reuse
   stale work from another tuple and does not prove lane isolation;
+- reject bare `/tmp` scratch unless the task explicitly declares it as the
+  scratch directory; lane evidence must point under `$OMH_RUN_TMP` or the
+  task-declared scratch directory;
 - if validation or benchmark failed, preserve the failure evidence and explain
   the minimal next repair needed;
 - if one branch has a measured positive result, apply at most one selected candidate patch
@@ -55,7 +58,8 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 - project files retained, reverted, or intentionally left unchanged, including
   whether the shared workspace was clean before selection;
 - whether project-local scratch and shared sibling scratch were absent before
-  selection;
+  selection, and whether all branch scratch paths were under `$OMH_RUN_TMP` or
+  the task-declared scratch directory;
 - exact rollback/no-change evidence;
 - the branch report files you updated.
 

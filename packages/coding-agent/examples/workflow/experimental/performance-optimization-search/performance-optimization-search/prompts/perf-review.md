@@ -30,7 +30,9 @@ Return `finish` only when:
   and were scoped to this workflow run; durable candidate
   patches and reports may live under `workflow-output/`, but execution scratch
   must not live under `workflow-output/tmp` or shared sibling scratch such as
-  `../workflow-scratch`;
+  `../workflow-scratch`; bare `/tmp` scratch is accepted only when the task
+  explicitly declares it as the scratch directory; otherwise branch evidence
+  must point under `$OMH_RUN_TMP` or the task-declared scratch directory;
 - there is a clearly selected positive optimization or a documented no-win
   result with rollback evidence;
 - losing or negative branches are reverted or explicitly isolated;
