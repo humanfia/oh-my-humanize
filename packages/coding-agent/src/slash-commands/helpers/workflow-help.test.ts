@@ -57,7 +57,7 @@ describe("/workflow help", () => {
 		await handleWorkflowAcp({ name: "workflow", args: "help lifecycle", text: "/workflow help lifecycle" }, runtime);
 
 		const text = output.join("\n");
-		expect(text).toContain("Checkpoint for commands");
+		expect(text).toContain("Checkpoint for /workflow commands");
 		expect(text).toContain("/workflow restart");
 	});
 

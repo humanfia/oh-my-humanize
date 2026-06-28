@@ -24,7 +24,7 @@ describe("createAskToolHumanInputRunner", () => {
 			toolContext({
 				select: async (_title, options) => {
 					selectedOptions.push(options);
-					return "Checkpoint for commands";
+					return "Checkpoint for /workflow commands";
 				},
 			}),
 		);
@@ -43,8 +43,8 @@ describe("createAskToolHumanInputRunner", () => {
 				nodeId: "operatorGate",
 				question: "Inspect the adaptive proposal before deciding.",
 			}),
-		).rejects.toThrow('workflow human node "operatorGate" checkpointed for operator commands');
-		expect(selectedOptions[0]?.map(labelOf)).toContain("Checkpoint for commands");
+		).rejects.toThrow('workflow human node "operatorGate" checkpointed for /workflow commands');
+		expect(selectedOptions[0]?.map(labelOf)).toContain("Checkpoint for /workflow commands");
 	});
 });
 

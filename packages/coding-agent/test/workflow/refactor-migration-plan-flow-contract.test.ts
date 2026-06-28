@@ -11,6 +11,8 @@ interface WorkflowContext {
 	state?: {
 		task?: {
 			text?: string;
+			validationCommand?: string;
+			compatibilityCommand?: string;
 		};
 		compatibility?: object;
 		migration?: object;
@@ -34,6 +36,15 @@ interface ReviewContextResult {
 	}>;
 }
 
+interface ScriptResult {
+	summary: string;
+	statePatch?: Array<{
+		op: "set";
+		path: string;
+		value: unknown;
+	}>;
+}
+
 const ScriptFunctionConstructor = Object.getPrototypeOf(async () => {}).constructor as new (
 	workflowContextName: string,
 	code: string,
@@ -46,6 +57,54 @@ afterEach(async () => {
 });
 
 describe("refactor-migration-plan flow contract", () => {
+	it("rejects multiline compatibility command contracts before shell execution", async () => {
+		const cwd = await createGitRepo();
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Objective:",
+				"Reject fragile multiline compatibility commands.",
+				"",
+				"Compatibility Command:",
+				"```sh",
+				"PYTHONPATH=. python - <<'PY'",
+				"print('compat')",
+				"PY",
+				"```",
+				"",
+				"Validation Command:",
+				"python -c \"print('validation')\"",
+				"",
+			].join("\n"),
+		);
+
+		await expect(runScriptFile(cwd, "precheck-task-contract.js", {})).rejects.toThrow(
+			"Compatibility Command must be a single-line command",
+		);
+	});
+
+	it("rejects validation commands that fail preflight before migration agents edit", async () => {
+		const cwd = await createGitRepo();
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Objective:",
+				"Reject validation commands that cannot run before migration.",
+				"",
+				"Validation Command:",
+				"python -m definitely_missing_omh_refactor_validation_module -q",
+				"",
+			].join("\n"),
+		);
+
+		await expect(runScriptFile(cwd, "precheck-task-contract.js", {})).rejects.toThrow(
+			"validation command failed preflight",
+		);
+		const precheck = await Bun.file(path.join(cwd, "workflow-output", "refactor-migration-precheck.md")).text();
+		expect(precheck).toContain("## Validation Preflight");
+		expect(precheck).toContain("definitely_missing_omh_refactor_validation_module");
+	});
+
 	it("exposes continuation lines from multiline allowed paths in the review context", async () => {
 		const cwd = await createGitRepo();
 		const taskText = [
@@ -97,9 +156,18 @@ describe("refactor-migration-plan flow contract", () => {
 });
 
 async function runScript(cwd: string, state: WorkflowContext["state"]): Promise<ReviewContextResult> {
+	return (await runScriptFile(cwd, "prepare-review-context.js", state)) as ReviewContextResult;
+}
+
+async function runScriptFile(
+	cwd: string,
+	scriptFileName: string,
+	state: WorkflowContext["state"],
+): Promise<ScriptResult> {
 	const scriptPath = path.resolve(
 		import.meta.dir,
-		"../../examples/workflow/experimental/refactor-migration-plan/refactor-migration-plan/scripts/prepare-review-context.js",
+		"../../examples/workflow/experimental/refactor-migration-plan/refactor-migration-plan/scripts",
+		scriptFileName,
 	);
 	const script = await Bun.file(scriptPath).text();
 	const execute = new ScriptFunctionConstructor("workflowContext", script);

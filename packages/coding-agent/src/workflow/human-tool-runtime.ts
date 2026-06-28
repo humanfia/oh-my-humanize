@@ -5,7 +5,10 @@ import { ToolAbortError } from "../tools/tool-errors";
 import { WorkflowNodeAbortedError } from "./node-runtime";
 import type { WorkflowHumanInputResult, WorkflowHumanInputRunner } from "./session-runtime";
 
-const WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION = "Checkpoint for commands";
+const WORKFLOW_HUMAN_STOP_OPTION = "Decision: stop";
+const WORKFLOW_HUMAN_PROCEED_OPTION = "Decision: proceed";
+const WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION = "Checkpoint for /workflow commands";
+const LEGACY_WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION = "Checkpoint for commands";
 
 export function createAskToolHumanInputRunner(
 	toolSession: ToolSession,
@@ -27,16 +30,16 @@ export function createAskToolHumanInputRunner(
 							question: request.question,
 							options: [
 								{
-									label: "Reject",
-									description: "Decline approval and let the workflow follow its rejection path.",
+									label: WORKFLOW_HUMAN_STOP_OPTION,
+									description: "Decline approval and let the workflow follow its stop or rejection path.",
 								},
 								{
-									label: "Approve",
-									description: "Proceed only after reading the prompt and evidence.",
+									label: WORKFLOW_HUMAN_PROCEED_OPTION,
+									description: "Continue the workflow after reading the prompt and evidence.",
 								},
 								{
 									label: WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION,
-									description: "Stop safely, create a checkpoint, then use /workflow lifecycle commands.",
+									description: "Stop safely, create a checkpoint, then resume with /workflow restart.",
 								},
 							],
 							recommended: 0,
@@ -55,7 +58,7 @@ export function createAskToolHumanInputRunner(
 		const details = result.details;
 		if (workflowHumanCheckpointForCommandsRequested(details)) {
 			throw new WorkflowNodeAbortedError(
-				`workflow human node "${request.nodeId}" checkpointed for operator commands`,
+				`workflow human node "${request.nodeId}" checkpointed for /workflow commands`,
 			);
 		}
 		const response = responseFromAskDetails(details);
@@ -69,7 +72,10 @@ export function createAskToolHumanInputRunner(
 }
 
 function workflowHumanCheckpointForCommandsRequested(details: WorkflowAskDetails | undefined): boolean {
-	return details?.selectedOptions?.includes(WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION) === true;
+	return (
+		details?.selectedOptions?.includes(WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION) === true ||
+		details?.selectedOptions?.includes(LEGACY_WORKFLOW_HUMAN_COMMAND_CHECKPOINT_OPTION) === true
+	);
 }
 
 function responseFromAskDetails(details: WorkflowAskDetails | undefined): string {

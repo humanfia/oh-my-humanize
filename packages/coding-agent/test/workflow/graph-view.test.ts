@@ -1195,8 +1195,8 @@ describe("workflow graph view rendering", () => {
 		expect(view.focus?.nodeId).toBe("planUnderstandingQuiz");
 		expect(text).toContain("Human checkpoint");
 		expect(text).toContain("human prompt: Verify the operator understands scope and evidence before proceeding.");
-		expect(text).toContain("human input: default Reject");
-		expect(text).toContain("choose Approve only after reading the prompt");
+		expect(text).toContain("human input: default Decision: stop");
+		expect(text).toContain("choose Decision: proceed only after reading evidence");
 	});
 
 	it("renders edge annotations with directed connectors but without composed arrow fragments", () => {

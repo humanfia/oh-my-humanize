@@ -214,7 +214,7 @@ describe("HookSelectorComponent", () => {
 		let slashHandoffCount = 0;
 		const component = new HookSelectorComponent(
 			"Approve this workflow mutation?",
-			["Reject", "Approve", "Checkpoint for commands"],
+			["Decision: stop", "Decision: proceed", "Checkpoint for /workflow commands"],
 			option => {
 				selected = option;
 			},

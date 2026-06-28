@@ -40,7 +40,7 @@ describe("workflow human input ask tool runtime adapter", () => {
 			select: async (title: string, options: ExtensionUISelectItem[]) => {
 				capturedTitle = title;
 				capturedOptions = options;
-				return "Approve";
+				return "Decision: proceed";
 			},
 			editor: async () => undefined,
 		} as unknown as ExtensionUIContext;
@@ -54,20 +54,39 @@ describe("workflow human input ask tool runtime adapter", () => {
 
 		expect(capturedTitle).toBe("Approve this workflow result?");
 		expect(capturedOptions?.map(option => (typeof option === "string" ? option : option.label))).toEqual([
-			"Reject (Recommended)",
-			"Approve",
-			"Checkpoint for commands",
+			"Decision: stop (Recommended)",
+			"Decision: proceed",
+			"Checkpoint for /workflow commands",
 			"Other (type your own)",
 		]);
 		expect(result).toEqual({
-			response: "Approve",
-			selectedOptions: ["Approve"],
+			response: "Decision: proceed",
+			selectedOptions: ["Decision: proceed"],
+		});
+	});
+
+	it("maps the visible stop option to a durable stop decision", async () => {
+		const ui = {
+			select: async () => "Decision: stop",
+			editor: async () => undefined,
+		} as unknown as ExtensionUIContext;
+		const runner = createAskToolHumanInputRunner(createToolSession(), () => createToolContext(ui));
+
+		const result = await runner({
+			activationId: "activation-stop",
+			nodeId: "approve",
+			question: "Approve this workflow result?",
+		});
+
+		expect(result).toEqual({
+			response: "Decision: stop",
+			selectedOptions: ["Decision: stop"],
 		});
 	});
 
 	it("turns the checkpoint option into a workflow abort for lifecycle commands", async () => {
 		const ui = {
-			select: async () => "Checkpoint for commands",
+			select: async () => "Checkpoint for /workflow commands",
 			editor: async () => undefined,
 		} as unknown as ExtensionUIContext;
 		const runner = createAskToolHumanInputRunner(createToolSession(), () => createToolContext(ui));
@@ -78,7 +97,7 @@ describe("workflow human input ask tool runtime adapter", () => {
 				nodeId: "operatorGate",
 				question: "Approve this workflow mutation?",
 			}),
-		).rejects.toThrow('workflow human node "operatorGate" checkpointed for operator commands');
+		).rejects.toThrow('workflow human node "operatorGate" checkpointed for /workflow commands');
 	});
 
 	it("maps user cancellation to a workflow node abort instead of a failed checkpoint", async () => {
