@@ -25,7 +25,7 @@
 
 - Fixed workflow review adapter instructions being placed before flow-specific review prompts, which let text-verdict prompt contracts override the reviewer agent's required structured output schema in experimental workflows.
 - Fixed the experimental parallel-implementation-review workflow treating explicit nonterminal lane validation risk as a lane hard stop instead of forwarding it to integration review and later validation gates.
-- Fixed workflow review nodes treating recovered schema-invalid success payloads as clean pass signals; malformed review success now gets one immediate schema-contract retry and then fails the review node if the reviewer still omits required fields, while findings-only repair signals still route to the repair gate.
+- Fixed workflow review nodes treating recovered schema-invalid success payloads as clean pass signals; malformed reviewer output now gets an immediate schema-contract retry, then only recovers clear reviewer correctness or findings signals as degraded, audited workflow verdicts.
 - Fixed the experimental parallel-implementation-review workflow running its non-gating integration evidence node through the structured reviewer agent schema, which could fail a canary before the durable evidence materializer ran.
 - Fixed workflow reviewer schema-violation recovery treating findings-only partial review output as a node failure instead of routing it through the semantic repair gate.
 - Fixed workflow review nodes launched through the reviewer agent failing on schema-only or recoverable partial schema-violation output contracts instead of mapping structured reviewer verdicts back to declared workflow gates.

@@ -25,7 +25,8 @@ Use incremental `yield` sections:
 All three sections are required. If the final result only contains
 `overall_correctness` or omits `explanation` / `confidence`, OMH will treat it
 as a schema contract failure: the review may be retried, and an exhausted
-malformed success signal cannot take the successful workflow gate.
+payload with a clear reviewer correctness signal is recovered as a degraded,
+audited workflow verdict instead of a clean review.
 
 Declared workflow gates: {{declaredGates}}
 Fallback verdict: {{fallbackVerdict}}
