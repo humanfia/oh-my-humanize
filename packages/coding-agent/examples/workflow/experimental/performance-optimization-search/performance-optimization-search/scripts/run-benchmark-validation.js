@@ -8,6 +8,8 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 	throw new Error("performance-optimization-search requires /task.validationCommand before benchmarkCandidates");
 }
 
+await materializeBranchStateReports(workflowContext.state);
+
 const projectChangedFiles = await changedProjectFiles();
 if (projectChangedFiles.length > 0) {
 	const outputPath = "workflow-output/performance-benchmark.md";
@@ -202,6 +204,56 @@ return {
 		},
 	],
 };
+
+async function materializeBranchStateReports(state) {
+	for (const strategy of ["algorithmic", "caching", "io"]) {
+		const filePath = `workflow-output/perf-${strategy}.md`;
+		if (await Bun.file(filePath).exists()) continue;
+		const report = branchStateReportMarkdown(strategy, state?.[strategy]);
+		if (!report) continue;
+		await Bun.write(filePath, report);
+	}
+}
+
+function branchStateReportMarkdown(strategy, value) {
+	const text = branchStateText(value);
+	if (!text.trim()) return "";
+	const parsed = parseJsonObject(text);
+	const lines = [`# Performance ${strategy} Branch`, ""];
+	if (parsed) {
+		lines.push("## Structured Branch State", "", "```json", JSON.stringify(parsed, null, 2), "```", "");
+		appendBranchSelectionMarker(lines, "final-selection", parsed.finalSelection);
+		appendBranchSelectionMarker(lines, "no-win-result", parsed.noWinResult);
+		return `${lines.join("\n")}\n`;
+	}
+	lines.push("## Branch State", "", text.trim(), "");
+	return `${lines.join("\n")}\n`;
+}
+
+function branchStateText(value) {
+	if (typeof value === "string") return value;
+	if (!value || typeof value !== "object") return "";
+	if (typeof value.summary === "string") return value.summary;
+	if (typeof value.output === "string") return value.output;
+	if (typeof value.data === "object" && value.data !== null) return JSON.stringify(value.data, null, 2);
+	return JSON.stringify(value, null, 2);
+}
+
+function parseJsonObject(text) {
+	try {
+		const parsed = JSON.parse(text);
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function appendBranchSelectionMarker(lines, marker, value) {
+	if (typeof value !== "string" && typeof value !== "boolean") return;
+	const normalized = typeof value === "boolean" ? (value ? "yes" : "no") : value.trim().toLowerCase();
+	if (normalized !== "yes" && normalized !== "no") return;
+	lines.push(`${marker}: ${normalized}`, "");
+}
 
 async function changedProjectFiles() {
 	const proc = Bun.spawn(["git", "status", "--porcelain=v1", "--untracked-files=all"], {

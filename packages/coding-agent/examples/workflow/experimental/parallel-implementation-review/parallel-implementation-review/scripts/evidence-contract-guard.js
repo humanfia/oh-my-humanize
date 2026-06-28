@@ -686,6 +686,7 @@ function normalizeReferencedWorkflowArtifact(value) {
 	if (normalized.includes("...[truncated")) return "";
 	if (normalized.includes("{") || normalized.includes("}")) return "";
 	if (normalized.includes("<") || normalized.includes(">")) return "";
+	if (/[*?[\]]/u.test(normalized)) return "";
 	if (!normalized.startsWith("workflow-output/")) return "";
 	return normalized;
 }

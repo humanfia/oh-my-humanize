@@ -1872,6 +1872,93 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("does not require glob-shaped workflow-output handoff hints as concrete artifacts", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-glob-handoff-hint-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "C222-T01-2f878a117-ripgrep-ignore-parallel-review-replacement";
+		const validationCommand = "echo validate";
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Guard concrete lane evidence while allowing wildcard hints for operator discovery.",
+				"",
+				"Validation Command:",
+				validationCommand,
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(
+			`${cwd}/workflow-output/core-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementCore", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/tests-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementTests", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/docs-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementDocs", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/integration-review-materialized-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "materializeIntegrationReview" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/validation-${tupleId}.json`,
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "runDeclaredValidation",
+					producer_kind: "workflow-script",
+					validation: {
+						command: validationCommand,
+						environment: {},
+						result: "passed",
+						status: "passed",
+						exitCode: 0,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "evidenceContractGuard",
+			scriptFileName: "evidence-contract-guard.js",
+			writes: ["/evidenceContract"],
+			initialState: {
+				laneHardStopGuard: {
+					status: "continue",
+				},
+				planHandoff: [
+					`canonical core evidence workflow-output/core-lane-${tupleId}.json`,
+					`operator discovery hint workflow-output/*${tupleId}*`,
+					`canonical tests evidence workflow-output/tests-lane-${tupleId}.json`,
+				].join("\n"),
+				reviewHandoff: {
+					artifacts: [
+						`workflow-output/docs-lane-${tupleId}.json`,
+						`workflow-output/integration-review-materialized-${tupleId}.json`,
+					],
+					notes: `reviewers may inspect workflow-output/*${tupleId}* when comparing all artifacts`,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.evidenceContract).toMatchObject({
+			verdict: "READY",
+			checked_inputs: {
+				missing_referenced_artifacts: [],
+			},
+		});
+	});
+
 	it("accepts canonical parallel lane artifacts for legacy handoff aliases", async () => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-legacy-lane-aliases-");
 		const cwd = tempDir.path();
@@ -3656,6 +3743,72 @@ describe("example workflow scripts", () => {
 		});
 		expect(result.scheduler.state.benchmark).not.toHaveProperty("isolationViolation");
 		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain("echo benchmark");
+	});
+
+	it("materializes performance branch state into canonical reports before benchmark joins", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-branch-state-reports-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+				},
+				algorithmic: {
+					summary: JSON.stringify({
+						status: "candidate-produced",
+						strategy: "algorithmic",
+						candidatePatchPath: "workflow-output/perf-algorithmic-candidate.diff",
+						finalSelection: "no",
+						noWinResult: "no",
+					}),
+				},
+				caching: {
+					summary: "Cached lookup candidate completed. final-selection: no. no-win-result: no.",
+				},
+				io: {
+					summary: JSON.stringify({
+						status: "candidate-produced",
+						strategy: "io",
+						branchNotePath: "workflow-output/perf-io.md",
+						finalSelection: "no",
+						noWinResult: "no",
+					}),
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "pass",
+			benchmarkExitCode: 0,
+			validationExitCode: 0,
+		});
+		const algorithmicReport = await Bun.file(`${cwd}/workflow-output/perf-algorithmic.md`).text();
+		const cachingReport = await Bun.file(`${cwd}/workflow-output/perf-caching.md`).text();
+		const ioReport = await Bun.file(`${cwd}/workflow-output/perf-io.md`).text();
+		expect(algorithmicReport).toContain("candidatePatchPath");
+		expect(algorithmicReport).toContain("final-selection: no");
+		expect(cachingReport).toContain("Cached lookup candidate completed");
+		expect(ioReport).toContain("branchNotePath");
 	});
 
 	it("blocks performance benchmark joins when lane scratch lives inside the project tree", async () => {
