@@ -361,6 +361,7 @@ function isNonterminalValidationRisk(data, status) {
 function isNonterminalRiskStatus(value) {
 	return (
 		value === "source_change_applied" ||
+		value === "source_change_with_validation_risk" ||
 		value === "patch_applied" ||
 		value.startsWith("completed_with_") ||
 		value.startsWith("complete_with_")

@@ -2357,6 +2357,7 @@ describe("example workflow scripts", () => {
 	it.each([
 		"completed_with_unresolved_integration_risk",
 		"complete_with_unresolved_integration_risk",
+		"source_change_with_validation_risk",
 	])("lets unresolved nonterminal lane validation risk reach integration review for %s", async status => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-nonterminal-validation-risk-");
 		const cwd = tempDir.path();
