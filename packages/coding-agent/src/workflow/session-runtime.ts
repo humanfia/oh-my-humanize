@@ -725,6 +725,8 @@ function reviewOutputFromTaskResult(
 	fallbackVerdict: string | undefined,
 ): WorkflowReviewNodeOutput {
 	if (result.exitCode !== 0) {
+		const recovered = recoverReviewOutputFromSchemaViolation(nodeId, result, gates, fallbackVerdict);
+		if (recovered !== undefined) return recovered;
 		const reason = result.error || result.stderr || `exit code ${result.exitCode}`;
 		throw new WorkflowNodeRuntimeError(`workflow review node "${nodeId}" failed: ${reason}`);
 	}
@@ -742,6 +744,99 @@ function reviewOutputFromTaskResult(
 		output.artifacts = artifacts;
 	}
 	return output;
+}
+
+function recoverReviewOutputFromSchemaViolation(
+	nodeId: string,
+	result: WorkflowAgentTaskResult,
+	gates: string[] | undefined,
+	fallbackVerdict: string | undefined,
+): WorkflowReviewNodeOutput | undefined {
+	const recoverySource = schemaViolationReviewRecoverySource(result, gates);
+	if (recoverySource === undefined) return undefined;
+
+	let parsed: { verdict: string; summary: string };
+	try {
+		parsed = parseReviewTaskOutput(nodeId, recoverySource, gates, fallbackVerdict);
+	} catch {
+		return undefined;
+	}
+
+	const reason = result.error || result.stderr || "schema_violation";
+	const boundedSummary = boundWorkflowSummary(
+		`recovered schema_violation: ${reason}\n${parsed.summary}`,
+		parsed.verdict,
+	);
+	const output: WorkflowReviewNodeOutput = {
+		summary: boundedSummary.summary,
+		verdict: parsed.verdict,
+	};
+	if (result.retryHistory !== undefined && result.retryHistory.length > 0) {
+		output.retryHistory = result.retryHistory.map(entry => ({ ...entry }));
+	}
+	const artifacts = taskResultArtifactReferences(result);
+	if (artifacts.length > 0) {
+		output.artifacts = artifacts;
+	}
+	return output;
+}
+
+function schemaViolationReviewRecoverySource(
+	result: WorkflowAgentTaskResult,
+	gates: string[] | undefined,
+): string | undefined {
+	const payload = parseJsonObject(result.output.trim());
+	const isSchemaViolation =
+		payload?.error === "schema_violation" || /\bschema_violation\b/iu.test(result.stderr ?? result.error ?? "");
+	if (!isSchemaViolation || payload === undefined) return undefined;
+
+	const data = schemaViolationData(payload.data);
+	if (data === undefined || !reviewRecoveryDataHasSignal(data, gates)) return undefined;
+	if (typeof data === "string") return data;
+	try {
+		return JSON.stringify(data);
+	} catch {
+		return undefined;
+	}
+}
+
+function schemaViolationData(data: unknown): unknown {
+	if (typeof data !== "string") return data;
+	const trimmed = data.trim();
+	if (!trimmed) return undefined;
+	const parsed = parseJsonObject(trimmed);
+	return parsed ?? trimmed;
+}
+
+function reviewRecoveryDataHasSignal(data: unknown, gates: string[] | undefined): boolean {
+	if (typeof data === "string") {
+		const parsed = parseJsonObject(data.trim());
+		if (parsed !== undefined) return reviewRecoveryDataHasSignal(parsed, gates);
+		return reviewerCorrectnessFromText(data) !== undefined || reviewTextHasDeclaredGate(data, gates);
+	}
+	if (data === null || typeof data !== "object" || Array.isArray(data)) return false;
+	const record = data as Record<string, unknown>;
+	if (record.overall_correctness === "correct" || record.overall_correctness === "incorrect") return true;
+	if (
+		typeof record.verdict === "string" &&
+		(gates === undefined || declaredGateFor(record.verdict, gates) !== undefined)
+	) {
+		return true;
+	}
+	for (const source of [record.summary, record.explanation]) {
+		if (typeof source === "string" && reviewTextHasDeclaredGate(source, gates)) return true;
+	}
+	return false;
+}
+
+function reviewTextHasDeclaredGate(text: string, gates: string[] | undefined): boolean {
+	if (!gates?.length) return false;
+	for (const line of nonEmptyLines(text)) {
+		if (declaredGateFor(line, gates) !== undefined) return true;
+		if (gatePrefixFromLine(line, gates) !== undefined) return true;
+		if (gateSuffixFromLine(line, gates) !== undefined) return true;
+	}
+	return false;
 }
 
 function taskResultArtifactReferences(result: WorkflowAgentTaskResult): string[] {
