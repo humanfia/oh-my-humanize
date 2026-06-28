@@ -86,9 +86,7 @@ function assessDecision(token, text) {
 }
 
 function hasComponentAcknowledgement(text) {
-	return /\b(component|surface|file|crate|package|module|path|scope|change|changes|touch|touches|routing|extractor|service|test|tests)\b/u.test(
-		text,
-	);
+	return /\b(components?|surfaces?|files?|crates?|packages?|modules?|paths?|scopes?|changes?|touch(?:es|ed|ing)?|routing|extractors?|services?|tests?|serializers?|signers?|timestamps?|boundar(?:y|ies))\b/u.test(text);
 }
 
 function hasConnectionAcknowledgement(text) {

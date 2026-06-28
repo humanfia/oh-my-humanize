@@ -142,6 +142,24 @@ describe("humanize-rlcr flow contract", () => {
 		});
 	});
 
+	it("accepts natural component-list wording in the operator proceed gate", async () => {
+		const result = await runRecordOperatorGate(
+			[
+				"Proceed. Components to watch: serializer payload/loads error boundary, signer verification, timestamp max_age/SignatureExpired, and BadSignature propagation.",
+				"They connect through Serializer/TimedSerializer delegating signing/unsigning and surfacing bad payload/signature semantics.",
+				"This is not long-running validation; continue only while transcript shows semantic progress, and stop on padding, repeated no-op failures, or validation not startable.",
+			].join(" "),
+		);
+
+		const gate = result.statePatch.find(patch => patch.path === "/humanize/operatorGate")?.value;
+
+		expect(gate).toMatchObject({
+			decision: "proceed",
+			strength: "explicit",
+			reasons: [],
+		});
+	});
+
 	it("accepts the default OMH human approval button as an explicit proceed gate", async () => {
 		const result = await runRecordOperatorGate("Approve.");
 
