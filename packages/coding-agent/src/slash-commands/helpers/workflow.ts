@@ -637,8 +637,13 @@ async function handleRequestChangeCommand(rest: string, runtime: SlashCommandRun
 	if (!family) return usage(`Workflow family not found for change request: ${request.familyId}`, runtime);
 	const denial = workflowChangeProposalDenial(family, request);
 	if (denial !== undefined) return usage(denial, runtime);
-	proposeWorkflowChangeRequest(runtime.sessionManager, request);
-	await runtime.output(`Workflow change request: ${request.changeRequestId}\nStatus: proposed`);
+	let proposed: WorkflowChangeRequestRecord;
+	try {
+		proposed = proposeWorkflowChangeRequest(runtime.sessionManager, request);
+	} catch (error) {
+		return usage(errorMessage(error), runtime);
+	}
+	await runtime.output(`Workflow change request: ${proposed.id}\nStatus: ${proposed.status}`);
 	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
 		candidate => candidate.id === request.familyId,
 	);

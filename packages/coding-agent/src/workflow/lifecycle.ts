@@ -539,6 +539,11 @@ export function proposeWorkflowChangeRequest(
 	options: ProposeWorkflowChangeRequestOptions,
 ): WorkflowChangeRequestRecord {
 	const family = expectWorkflowFamily(host, options.familyId);
+	const existing = family.changeRequests.find(request => request.id === options.changeRequestId);
+	if (existing !== undefined) {
+		if (workflowChangeRequestProposalMatches(existing, options)) return existing;
+		throw new WorkflowLifecycleError(`Workflow change request id already exists: ${options.changeRequestId}`);
+	}
 	const proposalDenial = workflowChangeProposalDenial(family, options);
 	if (proposalDenial !== undefined) throw new WorkflowLifecycleError(proposalDenial);
 	const request: WorkflowChangeRequestRecord = {
@@ -1168,6 +1173,26 @@ function isSupervisorWorkflowActor(actor: string): boolean {
 	return actor === "supervisor" || actor.startsWith("supervisor:");
 }
 
+function workflowChangeRequestProposalMatches(
+	record: WorkflowChangeRequestRecord,
+	proposal: WorkflowChangeRequestRecord | ProposeWorkflowChangeRequestOptions,
+): boolean {
+	const proposalId = "changeRequestId" in proposal ? proposal.changeRequestId : proposal.id;
+	const proposalFrontierMapping =
+		"changeRequestId" in proposal ? (proposal.frontierMapping ?? {}) : proposal.frontierMapping;
+	return (
+		record.id === proposalId &&
+		record.familyId === proposal.familyId &&
+		record.attemptId === proposal.attemptId &&
+		record.checkpointId === proposal.checkpointId &&
+		record.actor === proposal.actor &&
+		record.origin === proposal.origin &&
+		record.reason === proposal.reason &&
+		workflowJsonEqual(record.operations, proposal.operations) &&
+		workflowJsonEqual(record.frontierMapping, proposalFrontierMapping)
+	);
+}
+
 function workflowDefinitionHasEdge(edges: WorkflowDefinition["edges"], from: string, to: string): boolean {
 	return edges.some(edge => edge.from === from && edge.to === to);
 }
@@ -1286,6 +1311,11 @@ export function reconstructWorkflowFamilies(entries: WorkflowLifecycleBranchEntr
 			const family = families.get(event.request.familyId);
 			if (!family) continue;
 			const request = clone(event.request);
+			const existing = changeRequests.get(request.id);
+			if (existing !== undefined && workflowChangeRequestProposalMatches(existing, request)) {
+				currentFamilyId = event.request.familyId;
+				continue;
+			}
 			changeRequests.set(request.id, request);
 			family.changeRequests.push(request);
 			currentFamilyId = event.request.familyId;
