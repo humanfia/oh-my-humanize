@@ -69,8 +69,18 @@ that the reviewer can evaluate:
   selected branch report or in `performance-selection-repair.md`. If you cannot
   produce such evidence, revert the candidate and record a no-win or blocker
   instead of marking `final-selection: yes`;
+- a positive retained candidate must also prove that the task-declared
+  Benchmark Command covers the retained optimization. Record
+  `benchmark-relevance: yes` in the selected branch report, with a short
+  explanation of the benchmark path. Do not retain a candidate whose positive
+  measurement is outside the task benchmark;
 - mark every losing, reverted, conflict-only, or unselected branch with
   `final-selection: no` and rollback evidence;
+- when a losing or unselected branch reported a positive benchmark-like result,
+  record an explicit rejection reason such as `benchmark-relevance: no` or
+  `off-benchmark: yes`, explaining why that result is not covered by the
+  task-declared Benchmark Command or why it is weaker than the retained
+  benchmark-covered candidate;
 - if no safe positive optimization remains and the task explicitly allows it,
   revert all project changes and record `no-win-result: yes` plus no-change or
   rollback evidence in one branch note;
@@ -98,6 +108,9 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 - exact rollback/no-change evidence;
 - exact semantic probe evidence for the retained candidate, or why no candidate
   could be safely retained;
+- exact benchmark relevance evidence for the retained candidate, and explicit
+  off-benchmark rejection evidence for any unselected branch that reported a
+  positive benchmark-like result;
 - the branch report files you updated.
 
 Also ensure the relevant `workflow-output/perf-*.md` files contain the final

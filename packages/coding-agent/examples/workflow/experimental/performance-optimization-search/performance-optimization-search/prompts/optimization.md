@@ -56,6 +56,11 @@ When you create a candidate patch, preserve enough evidence for selection:
   project-external lane-local scratch workspace, with command cwd/worktree paths
   scoped to the OMH-managed isolation root or `task.scratchRoot`;
 - stdout/stderr equivalence evidence when the benchmark observes program output.
+- whether the task-declared Benchmark Command actually covers this candidate's
+  mechanism. Record `benchmark-relevance: yes` only when the measured benchmark
+  exercises the code path or behavior changed by the candidate. Record
+  `benchmark-relevance: no` when the candidate may be useful but is outside the
+  task benchmark.
 
 If the previous review or shared hypotheses ask for selection/rollback repair,
 do not start a fresh broad optimization attempt. Limit this branch to the
@@ -75,6 +80,8 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
   the OMH-managed isolated lane worktree or `task.scratchRoot` when those
   commands were run;
 - rollback instructions for this branch;
+- `benchmark-relevance: yes` or `benchmark-relevance: no`, plus one sentence
+  explaining what benchmark path is or is not covered;
 - `final-selection: yes` only if this branch is the single retained candidate
   after the selection/repair node applies it in the shared workspace;
 - `final-selection: no` for losing, reverted, conflict-only, or no-win

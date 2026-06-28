@@ -10,7 +10,27 @@ const projectChangedFiles = changedFiles.filter((file) => !file.startsWith("work
 const branchReports = await readBranchReports();
 const joinedText = branchReports.map((report) => report.text).join("\n");
 const selectedBranches = branchReports.filter((report) => /\bfinal-selection\s*:\s*yes\b/iu.test(report.text));
+const selectedBranchNames = new Set(selectedBranches.map((report) => report.name));
 const noWinBranches = branchReports.filter((report) => /\bno-win-result\s*:\s*yes\b/iu.test(report.text));
+const benchmarkRelevantBranches = selectedBranches.filter((report) =>
+	benchmarkRelevanceConfirmed(reportEvidenceText(report, selectionRepairText)),
+);
+const positiveUnselectedBranches = branchReports.filter((report) => {
+	if (selectedBranchNames.has(report.name)) return false;
+	const evidenceText = reportEvidenceText(report, selectionRepairText);
+	return hasPositiveBenchmarkEvidence(evidenceText);
+});
+const offBenchmarkRejectedBranches = positiveUnselectedBranches.filter((report) =>
+	benchmarkRelevanceRejected(reportEvidenceText(report, selectionRepairText)),
+);
+const benchmarkRelevanceBlockers = [
+	...selectedBranches
+		.filter((report) => !benchmarkRelevantBranches.some((matched) => matched.name === report.name))
+		.map((report) => `${report.name} selected without benchmark relevance evidence`),
+	...positiveUnselectedBranches
+		.filter((report) => !offBenchmarkRejectedBranches.some((matched) => matched.name === report.name))
+		.map((report) => `${report.name} reported positive benchmark evidence without off-benchmark rejection`),
+];
 const validationPassed = validationCommandPassed(benchmark, selectionRepair, selectionRepairText);
 const benchmarkPassed = benchmarkCommandPassed(benchmark, selectionRepair, selectionRepairText);
 const outputPath = "workflow-output/performance-selection-guard.md";
@@ -25,6 +45,10 @@ await Bun.write(
 		`projectChangedFiles: ${projectChangedFiles.length}`,
 		`selectedBranches: ${selectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`noWinBranches: ${noWinBranches.map((report) => report.name).join(", ") || "none"}`,
+		`benchmarkRelevantBranches: ${benchmarkRelevantBranches.map((report) => report.name).join(", ") || "none"}`,
+		`positiveUnselectedBranches: ${positiveUnselectedBranches.map((report) => report.name).join(", ") || "none"}`,
+		`offBenchmarkRejectedBranches: ${offBenchmarkRejectedBranches.map((report) => report.name).join(", ") || "none"}`,
+		`benchmarkRelevanceBlockers: ${benchmarkRelevanceBlockers.join("; ") || "none"}`,
 		`terminalArtifacts: ${terminalArtifacts.join(", ") || "none"}`,
 		`selectionRepairStatus: ${String(selectionRepair.status ?? "unknown")}`,
 		"",
@@ -39,6 +63,10 @@ if (terminalArtifacts.length > 0) {
 	throw new Error(
 		`selection repair nodes must not write terminal performance artifacts before finalize/archive nodes: ${terminalArtifacts.join(", ")}`,
 	);
+}
+
+if (benchmarkRelevanceBlockers.length > 0) {
+	throw new Error(`performance selection benchmark relevance contract failed: ${benchmarkRelevanceBlockers.join("; ")}`);
 }
 
 if (benchmarkPassed && !validationPassed && projectChangedFiles.length > 0) {
@@ -65,6 +93,10 @@ return {
 				projectChangedFiles,
 				selectedBranches: selectedBranches.map((report) => report.name),
 				noWinBranches: noWinBranches.map((report) => report.name),
+				benchmarkRelevantBranches: benchmarkRelevantBranches.map((report) => report.name),
+				positiveUnselectedBranches: positiveUnselectedBranches.map((report) => report.name),
+				offBenchmarkRejectedBranches: offBenchmarkRejectedBranches.map((report) => report.name),
+				benchmarkRelevanceBlockers,
 				hasRollbackEvidence: /\brollback\b/iu.test(joinedText),
 			},
 		},
@@ -124,6 +156,54 @@ async function readBranchReports() {
 		reports.push({ name, file, text: await readOptionalText(file) });
 	}
 	return reports;
+}
+
+function reportEvidenceText(report, repairText) {
+	if (typeof repairText !== "string" || repairText.trim() === "") return report.text;
+	const namePattern = new RegExp(String.raw`\b${escapeRegExp(report.name)}\b`, "iu");
+	const repairLines = repairText
+		.split(/\r?\n/u)
+		.filter((line) => namePattern.test(line) || line.includes(report.file))
+		.join("\n");
+	return `${report.text}\n${repairLines}`;
+}
+
+function benchmarkRelevanceConfirmed(text) {
+	return (
+		/\bbenchmark[- ]relevance\s*:\s*(?:yes|true|covered)\b/iu.test(text) ||
+		/\bcovered\s+by\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text) ||
+		/\b(?:task[- ]declared\s+)?benchmark(?: command)?\s+covers\b/iu.test(text)
+	);
+}
+
+function benchmarkRelevanceRejected(text) {
+	return (
+		/\bbenchmark[- ]relevance\s*:\s*(?:no|false|off[- ]benchmark|not[- ]covered|not\s+covered)\b/iu.test(text) ||
+		/\boff[- ]benchmark\s*:\s*(?:yes|true)\b/iu.test(text) ||
+		/\bnot\s+covered\s+by\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text) ||
+		/\b(?:task[- ]declared\s+)?benchmark(?: command)?\s+does\s+not\s+cover\b/iu.test(text) ||
+		/\boutside\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text)
+	);
+}
+
+function hasPositiveBenchmarkEvidence(text) {
+	if (
+		/\bno\s+(?:measured\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text) ||
+		/\bno\s+stable\s+positive\s+result\b/iu.test(text) ||
+		/\bwithout\s+(?:a\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text)
+	) {
+		return false;
+	}
+	return (
+		/\bpositive\s+benchmark\b/iu.test(text) ||
+		/\bbenchmark\s+(?:improvement|speedup|win)\b/iu.test(text) ||
+		/\b(?:improved|faster|speedup|reduced|lower)\b.{0,100}\bbenchmark\b/iu.test(text) ||
+		/\bbenchmark\b.{0,100}\b(?:improved|faster|speedup|reduced|lower|win)\b/iu.test(text)
+	);
+}
+
+function escapeRegExp(value) {
+	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function benchmarkCommandPassed(benchmarkValue, selectionRepairValue, repairText) {

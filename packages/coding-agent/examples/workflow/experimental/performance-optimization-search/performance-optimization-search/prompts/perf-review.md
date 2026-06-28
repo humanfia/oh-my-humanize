@@ -53,6 +53,14 @@ Return `finish` only when:
 - any retained positive candidate records `semantic-probe: yes` plus concrete
   semantic probe evidence that exercises the public behavior at risk and
   resolves previous reviewer feedback. Benchmarks alone are insufficient;
+- any retained positive candidate records `benchmark-relevance: yes` plus a
+  concrete explanation that the task-declared Benchmark Command covers the
+  changed code path or public behavior. A positive number from an off-benchmark
+  probe is not enough;
+- any unselected branch that reported a positive benchmark-like result records
+  `benchmark-relevance: no`, `off-benchmark: yes`, or equivalent explicit
+  rejection evidence explaining why the result is outside the task benchmark or
+  weaker than the retained benchmark-covered candidate;
 - a positive optimization is accepted only when the task-declared Validation
   Command passed;
 - a documented no-win result is accepted only when the task contract explicitly
@@ -73,12 +81,12 @@ Return `finish` only when:
   validation blocker.
 - the result is generic project work, not a demo-only benchmark.
 
-Return `continue` when measurements are missing, validation failed, branches
-conflict, rollback evidence is incomplete, a no-win result lacks explicit task
-authorization, or the optimization is speculative. Exception: a no-win result
-with no retained project changes, explicit no-win authorization,
-rollback/no-change evidence, and preserved validation-blocked evidence should
-`finish` instead of looping.
+Return `continue` when measurements are missing, benchmark relevance evidence is
+missing, validation failed, branches conflict, rollback evidence is incomplete,
+a no-win result lacks explicit task authorization, or the optimization is
+speculative. Exception: a no-win result with no retained project changes,
+explicit no-win authorization, rollback/no-change evidence, and preserved
+validation-blocked evidence should `finish` instead of looping.
 
 Write a concise review first, then put exactly one token on the final non-empty
 line: `continue` or `finish`.

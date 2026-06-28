@@ -28,7 +28,10 @@ function isBlocked(gaps) {
 	if (gaps.status === "blocked") return true;
 	const validation = gaps.validation;
 	if (!validation || typeof validation !== "object") return false;
-	return validation.startable === false || validation.status === "blocked";
+	if (validation.startable === false) return true;
+	if (typeof validation.exitCode === "number" && validation.exitCode !== 0) return true;
+	if (typeof validation.status !== "string") return false;
+	return /\b(?:blocked|fail|failed|failure|cannot|unclean)\b/iu.test(validation.status);
 }
 
 function gapReportMarkdown(gaps) {

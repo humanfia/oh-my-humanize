@@ -4833,6 +4833,7 @@ describe("example workflow scripts", () => {
 				"# Algorithmic",
 				"",
 				"final-selection: yes",
+				"benchmark-relevance: yes",
 				"semantic-probe: yes",
 				"semantic probe evidence: focused parser verification preserves normalize behavior",
 				"rollback evidence: rejected branches were reverted before retaining this candidate",
@@ -4917,6 +4918,159 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("blocks positive performance repair without benchmark relevance evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-benchmark-relevance-selected-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance benchmark relevance guard",
+			"",
+			"Benchmark Command:",
+			"python -m timeit -s 'from src.click.parser import normalize' 'normalize(\"--help\")'",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_parser.py -q",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/click/parser.py`, "def normalize(value):\n    return value\n");
+		await Bun.write(`${cwd}/tests/test_parser.py`, "def test_normalize():\n    assert True\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/click/parser.py", "tests/test_parser.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/click/parser.py`, "def normalize(value):\n    return value.lstrip('-')\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching",
+				"",
+				"final-selection: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: focused parser verification preserves normalize behavior",
+				"rollback evidence: rejected branches were reverted before retaining this candidate",
+			].join("\n"),
+		);
+		for (const name of ["algorithmic", "io"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				["# Branch", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+			);
+		}
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			["# Performance Selection Repair", "", "- Benchmark status: pass.", "- Validation status: pass."].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+			},
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "guardSelectionRepair");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("benchmark relevance");
+	});
+
+	it("blocks unselected positive performance branches without off-benchmark rejection evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-off-benchmark-rejection-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance off-benchmark rejection guard",
+			"",
+			"Benchmark Command:",
+			"python -m timeit -s 'from src.click.parser import normalize' 'normalize(\"--help\")'",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_parser.py -q",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/click/parser.py`, "def normalize(value):\n    return value\n");
+		await Bun.write(`${cwd}/tests/test_parser.py`, "def test_normalize():\n    assert True\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/click/parser.py", "tests/test_parser.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/click/parser.py`, "def normalize(value):\n    return value.lstrip('-')\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching",
+				"",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: focused parser verification preserves normalize behavior",
+				"rollback evidence: rejected branches were reverted before retaining this candidate",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Algorithmic",
+				"",
+				"final-selection: no",
+				"reported a positive benchmark on Command.get_params cache construction",
+				"rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# IO", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			["# Performance Selection Repair", "", "- Benchmark status: pass.", "- Validation status: pass."].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+			},
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "guardSelectionRepair");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("off-benchmark rejection");
+	});
+
 	it("blocks positive performance selection without semantic probe evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-positive-semantic-probe-");
 		const cwd = tempDir.path();
@@ -4941,7 +5095,9 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "selected candidate\n");
 		await Bun.write(
 			`${cwd}/workflow-output/perf-io.md`,
-			["# IO", "", "final-selection: yes", "rollback evidence: revert src.txt"].join("\n"),
+			["# IO", "", "final-selection: yes", "benchmark-relevance: yes", "rollback evidence: revert src.txt"].join(
+				"\n",
+			),
 		);
 		for (const name of ["algorithmic", "caching"]) {
 			await Bun.write(
@@ -4975,6 +5131,71 @@ describe("example workflow scripts", () => {
 		expect(activation?.error).toContain("semantic probe evidence");
 	});
 
+	it("blocks positive performance selection without benchmark relevance evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-positive-benchmark-relevance-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance terminal relevance guard",
+			"",
+			"Benchmark Command:",
+			"python -m timeit '1 + 1'",
+			"",
+			"Validation Command:",
+			"python -c 'print(\"ok\")'",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "selected candidate\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			[
+				"# IO",
+				"",
+				"final-selection: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: focused behavior probe passed",
+				"rollback evidence: revert src.txt",
+			].join("\n"),
+		);
+		for (const name of ["algorithmic", "caching"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				["# Branch", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+			);
+		}
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				review: "finish",
+			},
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "finalizePerformanceSelection");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("benchmark relevance");
+	});
+
 	it("blocks positive performance selection when the reviewer found a semantic regression", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-negative-review-gate-");
 		const cwd = tempDir.path();
@@ -5003,6 +5224,7 @@ describe("example workflow scripts", () => {
 				"# IO",
 				"",
 				"final-selection: yes",
+				"benchmark-relevance: yes",
 				"rollback evidence: revert src/click/testing.py if the optimization changes behavior",
 			].join("\n"),
 		);

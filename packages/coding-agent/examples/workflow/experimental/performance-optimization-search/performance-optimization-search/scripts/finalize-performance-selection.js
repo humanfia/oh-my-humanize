@@ -22,7 +22,19 @@ const projectChangedFiles = changedFiles.filter((file) => !file.startsWith("work
 const branchReports = await readBranchReports();
 const joinedText = branchReports.map((report) => report.text).join("\n");
 const selectedBranches = branchReports.filter((report) => /\bfinal-selection\s*:\s*yes\b/iu.test(report.text));
+const selectedBranchNames = new Set(selectedBranches.map((report) => report.name));
 const noWinBranches = branchReports.filter((report) => /\bno-win-result\s*:\s*yes\b/iu.test(report.text));
+const benchmarkRelevantBranches = selectedBranches.filter((report) =>
+	benchmarkRelevanceConfirmed(reportEvidenceText(report, selectionRepairText)),
+);
+const positiveUnselectedBranches = branchReports.filter((report) => {
+	if (selectedBranchNames.has(report.name)) return false;
+	const evidenceText = reportEvidenceText(report, selectionRepairText);
+	return hasPositiveBenchmarkEvidence(evidenceText);
+});
+const offBenchmarkRejectedBranches = positiveUnselectedBranches.filter((report) =>
+	benchmarkRelevanceRejected(reportEvidenceText(report, selectionRepairText)),
+);
 const hasRollbackEvidence = /\brollback\b/iu.test(joinedText);
 const hasSemanticProbeEvidence = semanticProbeEvidencePresent(joinedText, selectionRepairText);
 const noWinAllowed = allowsNoWinArchive(task);
@@ -64,6 +76,14 @@ if (projectChangedFiles.length === 0) {
 			"positive performance selection requires semantic probe evidence for the retained candidate",
 		);
 	}
+	if (benchmarkRelevantBranches.length !== selectedBranches.length) {
+		throw new Error("positive performance selection requires benchmark relevance evidence for the retained candidate");
+	}
+	if (positiveUnselectedBranches.length !== offBenchmarkRejectedBranches.length) {
+		throw new Error(
+			"positive performance selection requires off-benchmark rejection evidence for unselected positive benchmark candidates",
+		);
+	}
 	if (!hasRollbackEvidence) {
 		throw new Error("positive performance selection requires rollback evidence for the retained/rejected branches");
 	}
@@ -80,6 +100,9 @@ await Bun.write(
 		`projectChangedFiles: ${projectChangedFiles.length}`,
 		`selectedBranches: ${selectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`noWinBranches: ${noWinBranches.map((report) => report.name).join(", ") || "none"}`,
+		`benchmarkRelevantBranches: ${benchmarkRelevantBranches.map((report) => report.name).join(", ") || "none"}`,
+		`positiveUnselectedBranches: ${positiveUnselectedBranches.map((report) => report.name).join(", ") || "none"}`,
+		`offBenchmarkRejectedBranches: ${offBenchmarkRejectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`validationPassed: ${validationPassed ? "yes" : "no"}`,
 		`rollbackEvidence: ${hasRollbackEvidence ? "yes" : "no"}`,
 		"",
@@ -103,6 +126,9 @@ return {
 				projectChangedFiles,
 				selectedBranches: selectedBranches.map((report) => report.name),
 				noWinBranches: noWinBranches.map((report) => report.name),
+				benchmarkRelevantBranches: benchmarkRelevantBranches.map((report) => report.name),
+				positiveUnselectedBranches: positiveUnselectedBranches.map((report) => report.name),
+				offBenchmarkRejectedBranches: offBenchmarkRejectedBranches.map((report) => report.name),
 				validationPassed,
 				rollbackEvidence: hasRollbackEvidence,
 				semanticProbeEvidence: hasSemanticProbeEvidence,
@@ -136,6 +162,54 @@ async function readBranchReports() {
 		reports.push({ name, file, text: await readOptionalText(file) });
 	}
 	return reports;
+}
+
+function reportEvidenceText(report, repairText) {
+	if (typeof repairText !== "string" || repairText.trim() === "") return report.text;
+	const namePattern = new RegExp(String.raw`\b${escapeRegExp(report.name)}\b`, "iu");
+	const repairLines = repairText
+		.split(/\r?\n/u)
+		.filter((line) => namePattern.test(line) || line.includes(report.file))
+		.join("\n");
+	return `${report.text}\n${repairLines}`;
+}
+
+function benchmarkRelevanceConfirmed(text) {
+	return (
+		/\bbenchmark[- ]relevance\s*:\s*(?:yes|true|covered)\b/iu.test(text) ||
+		/\bcovered\s+by\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text) ||
+		/\b(?:task[- ]declared\s+)?benchmark(?: command)?\s+covers\b/iu.test(text)
+	);
+}
+
+function benchmarkRelevanceRejected(text) {
+	return (
+		/\bbenchmark[- ]relevance\s*:\s*(?:no|false|off[- ]benchmark|not[- ]covered|not\s+covered)\b/iu.test(text) ||
+		/\boff[- ]benchmark\s*:\s*(?:yes|true)\b/iu.test(text) ||
+		/\bnot\s+covered\s+by\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text) ||
+		/\b(?:task[- ]declared\s+)?benchmark(?: command)?\s+does\s+not\s+cover\b/iu.test(text) ||
+		/\boutside\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text)
+	);
+}
+
+function hasPositiveBenchmarkEvidence(text) {
+	if (
+		/\bno\s+(?:measured\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text) ||
+		/\bno\s+stable\s+positive\s+result\b/iu.test(text) ||
+		/\bwithout\s+(?:a\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text)
+	) {
+		return false;
+	}
+	return (
+		/\bpositive\s+benchmark\b/iu.test(text) ||
+		/\bbenchmark\s+(?:improvement|speedup|win)\b/iu.test(text) ||
+		/\b(?:improved|faster|speedup|reduced|lower)\b.{0,100}\bbenchmark\b/iu.test(text) ||
+		/\bbenchmark\b.{0,100}\b(?:improved|faster|speedup|reduced|lower|win)\b/iu.test(text)
+	);
+}
+
+function escapeRegExp(value) {
+	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function allowsNoWinArchive(taskValue) {
