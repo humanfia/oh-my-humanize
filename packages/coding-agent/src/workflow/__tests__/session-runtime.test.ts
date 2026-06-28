@@ -601,6 +601,58 @@ edges: []
 		expect(output.verdict).toBe("COMPLETE");
 	});
 
+	it("retries review schema violations before accepting a valid review", async () => {
+		let calls = 0;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0 },
+			runAgentTask: async () => {
+				calls += 1;
+				if (calls === 1) {
+					return {
+						exitCode: 1,
+						output: JSON.stringify({
+							error: "schema_violation",
+							message: "explanation: is required",
+							missingRequired: ["explanation", "confidence"],
+							data: JSON.stringify({ overall_correctness: "correct" }),
+						}),
+						stderr: "schema_violation: missing required fields: explanation, confidence",
+					};
+				}
+				return {
+					exitCode: 0,
+					output: JSON.stringify({
+						overall_correctness: "correct",
+						explanation: "verdict finish\nValidation evidence is complete.",
+						confidence: 0.92,
+					}),
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "review",
+			type: "review",
+			prompt: "Review the thing.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(calls).toBe(2);
+		expect(output.verdict).toBe("finish");
+		expect(output.retryHistory).toHaveLength(1);
+		expect(output.retryHistory?.[0]?.reason).toContain("schema_violation");
+	});
+
 	it("uses the first non-empty line as the verdict before falling back", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
@@ -680,6 +732,7 @@ edges: []
 	it("recovers workflow review verdicts from partial schema violation payloads", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
 			runAgentTask: async () => ({
 				exitCode: 1,
 				output: JSON.stringify(
@@ -715,13 +768,15 @@ edges: []
 			fallbackVerdict: node.fallbackVerdict,
 		});
 
-		expect(output.verdict).toBe("finish");
+		expect(output.verdict).toBe("continue");
+		expect(output.summary).toContain("downgraded schema_violation");
 		expect(output.artifacts).toEqual(["/tmp/reportReview.md", "/tmp/reportReview.jsonl"]);
 	});
 
-	it("recovers declared gates placed in partial reviewer correctness fields", async () => {
+	it("downgrades declared success gates placed in partial reviewer correctness fields", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
 			runAgentTask: async () => ({
 				exitCode: 1,
 				output: JSON.stringify({
@@ -751,12 +806,14 @@ edges: []
 			fallbackVerdict: node.fallbackVerdict,
 		});
 
-		expect(output.verdict).toBe("finish");
+		expect(output.verdict).toBe("continue");
+		expect(output.summary).toContain("downgraded schema_violation");
 	});
 
-	it("recovers correct reviewer schema violations to a semantic success gate before fallback", async () => {
+	it("downgrades correct reviewer schema violations to a semantic repair gate", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
 			runAgentTask: async () => ({
 				exitCode: 1,
 				output: JSON.stringify({
@@ -786,13 +843,14 @@ edges: []
 			fallbackVerdict: node.fallbackVerdict,
 		});
 
-		expect(output.verdict).toBe("complete");
-		expect(output.summary).toContain("recovered schema_violation");
+		expect(output.verdict).toBe("continue");
+		expect(output.summary).toContain("downgraded schema_violation");
 	});
 
 	it("recovers findings-only reviewer schema violations to a semantic repair gate", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
 			runAgentTask: async () => ({
 				exitCode: 1,
 				output: JSON.stringify({

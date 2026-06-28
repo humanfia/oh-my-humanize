@@ -230,7 +230,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			if (input.signal !== undefined) {
 				request.signal = input.signal;
 			}
-			const result = await runAgentTaskWithTransientRetry(options, request);
+			const result = await runAgentTaskWithTransientRetry(options, request, workflowReviewTaskReasonIsRetryable);
 			const output = reviewOutputFromTaskResult(input.node.id, result, input.gates, input.fallbackVerdict);
 			await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
 			return output;
@@ -278,6 +278,7 @@ const DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY: NormalizedWorkflowAgentTaskRetry
 async function runAgentTaskWithTransientRetry(
 	options: WorkflowSessionRuntimeOptions,
 	request: WorkflowAgentTaskRequest,
+	reasonIsRetryable: WorkflowAgentTaskRetryableReason = workflowAgentTaskReasonIsTransient,
 ): Promise<WorkflowAgentTaskResult> {
 	if (options.runAgentTask === undefined) {
 		throw new WorkflowNodeRuntimeError(`workflow agent node "${request.nodeId}" requires a subagent runtime adapter`);
@@ -291,7 +292,7 @@ async function runAgentTaskWithTransientRetry(
 		try {
 			const result = await options.runAgentTask(request);
 			transientReason = workflowAgentTaskFailureReason(result);
-			if (result.exitCode === 0 || !workflowAgentTaskReasonIsTransient(transientReason)) {
+			if (result.exitCode === 0 || !reasonIsRetryable(transientReason)) {
 				return attachWorkflowAgentTaskRetryHistory(result, retryHistory);
 			}
 			lastTransientResult = result;
@@ -299,7 +300,7 @@ async function runAgentTaskWithTransientRetry(
 		} catch (error) {
 			if (workflowErrorWasAborted(error)) throw error;
 			transientReason = formatWorkflowErrorReason(error);
-			if (!workflowAgentTaskReasonIsTransient(transientReason) || attempt >= policy.maxAttempts) throw error;
+			if (!reasonIsRetryable(transientReason) || attempt >= policy.maxAttempts) throw error;
 		}
 		const retryEntry = workflowAgentTaskRetryHistoryEntry(
 			policy,
@@ -320,6 +321,8 @@ async function runAgentTaskWithTransientRetry(
 		retryHistory,
 	);
 }
+
+type WorkflowAgentTaskRetryableReason = (reason: string) => boolean;
 
 function attachWorkflowAgentTaskRetryHistory(
 	result: WorkflowAgentTaskResult,
@@ -377,6 +380,14 @@ function workflowAgentTaskFailureReason(result: WorkflowAgentTaskResult): string
 
 function workflowAgentTaskReasonIsTransient(reason: string): boolean {
 	return WORKFLOW_AGENT_TRANSIENT_PROVIDER_ERROR_PATTERN.test(reason);
+}
+
+function workflowReviewTaskReasonIsRetryable(reason: string): boolean {
+	return workflowAgentTaskReasonIsTransient(reason) || workflowReviewTaskReasonIsSchemaContractFailure(reason);
+}
+
+function workflowReviewTaskReasonIsSchemaContractFailure(reason: string): boolean {
+	return /\bschema_violation\b/iu.test(reason);
 }
 
 const WORKFLOW_AGENT_TRANSIENT_PROVIDER_ERROR_PATTERN =
@@ -763,13 +774,16 @@ function recoverReviewOutputFromSchemaViolation(
 	}
 
 	const reason = result.error || result.stderr || "schema_violation";
-	const boundedSummary = boundWorkflowSummary(
-		`recovered schema_violation as verdict ${parsed.verdict}: ${reason}\n${parsed.summary}`,
-		parsed.verdict,
-	);
+	const repairVerdict = verdictFromReviewerCorrectness("incorrect", gates, fallbackVerdict);
+	const acceptedVerdict = parsed.verdict === repairVerdict ? parsed.verdict : repairVerdict;
+	const summary =
+		parsed.verdict === acceptedVerdict
+			? `recovered schema_violation as verdict ${parsed.verdict}: ${reason}\n${parsed.summary}`
+			: `downgraded schema_violation from verdict ${parsed.verdict} to verdict ${acceptedVerdict}: ${reason}\n${parsed.summary}`;
+	const boundedSummary = boundWorkflowSummary(summary, acceptedVerdict);
 	const output: WorkflowReviewNodeOutput = {
 		summary: boundedSummary.summary,
-		verdict: parsed.verdict,
+		verdict: acceptedVerdict,
 	};
 	if (result.retryHistory !== undefined && result.retryHistory.length > 0) {
 		output.retryHistory = result.retryHistory.map(entry => ({ ...entry }));

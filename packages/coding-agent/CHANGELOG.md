@@ -23,9 +23,9 @@
 
 ### Fixed
 
+- Fixed workflow review nodes treating recovered schema-invalid success payloads as clean pass signals; malformed review success is now retried and then fails closed to the repair/fallback gate if the reviewer still omits required fields.
 - Fixed the experimental parallel-implementation-review workflow running its non-gating integration evidence node through the structured reviewer agent schema, which could fail a canary before the durable evidence materializer ran.
 - Fixed workflow reviewer schema-violation recovery treating findings-only partial review output as a node failure instead of routing it through the semantic repair gate.
-- Fixed recovered workflow reviewer `overall_correctness: "correct"` schema violations preferring a `continue` fallback over an available semantic success gate, which could keep accepted build/review loops running.
 - Fixed workflow review nodes launched through the reviewer agent failing on schema-only or recoverable partial schema-violation output contracts instead of mapping structured reviewer verdicts back to declared workflow gates.
 - Fixed workflow review recovery when a reviewer placed a declared workflow gate in `overall_correctness`, and fixed the experimental research-reproduction claim guard rejecting source-backed claims before script evidence nodes had run.
 - Fixed the experimental performance-optimization-search workflow rejecting measured no-win outcomes when the task contract authorized no-win archival in explicit prose instead of a fixed `No-Win Result: allowed` marker.

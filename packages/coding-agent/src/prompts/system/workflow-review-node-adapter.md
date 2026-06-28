@@ -15,6 +15,11 @@ Use incremental `yield` sections:
   `verdict <gate>`, where `<gate>` is one of the declared workflow gates.
 - `type: ["confidence"]` with a number from `0.0` to `1.0`.
 
+All three sections are required. If the final result only contains
+`overall_correctness` or omits `explanation` / `confidence`, OMH will treat it
+as a schema contract failure: the review may be retried, and an exhausted
+malformed success signal cannot take the successful workflow gate.
+
 Declared workflow gates: {{declaredGates}}
 Fallback verdict: {{fallbackVerdict}}
 
