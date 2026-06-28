@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- Fixed auto-retry lifecycle cleanup so retry continuations that are skipped, abort, or end in a terminal provider error emit `auto_retry_end` and clear retry state instead of leaving workflow observability with a start-only retry record.
 - Fixed workflow review adapter instructions being placed before flow-specific review prompts, which let text-verdict prompt contracts override the reviewer agent's required structured output schema in experimental workflows.
 - Fixed the experimental parallel-implementation-review workflow treating explicit nonterminal lane validation risk as a lane hard stop instead of forwarding it to integration review and later validation gates.
 - Fixed workflow review nodes treating recovered schema-invalid success payloads as clean pass signals; malformed reviewer output now gets an immediate schema-contract retry, then only recovers clear reviewer correctness or findings signals as degraded, audited workflow verdicts.

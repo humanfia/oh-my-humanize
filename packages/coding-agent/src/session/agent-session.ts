@@ -3289,6 +3289,7 @@ export class AgentSession {
 						attempt: this.#retryAttempt,
 					});
 					this.#retryAttempt = 0;
+					this.#resolveRetry();
 				}
 				if (assistantMsg.provider === "opencode-go") {
 					this.#modelRegistry.authStorage.recordUsageCost(assistantMsg.provider, assistantMsg.usage.cost.total, {
@@ -3509,7 +3510,7 @@ export class AgentSession {
 
 			// A deliberate abort should settle the current turn, not trigger queued continuations.
 			if (msg.stopReason === "aborted") {
-				this.#resolveRetry();
+				await this.#finishTerminalRetryFailure(msg.errorMessage ?? "Retry continuation aborted");
 				this.#resetSessionStopContinuationState();
 				await emitAgentEndNotification();
 				return;
@@ -3539,7 +3540,7 @@ export class AgentSession {
 			if (this.#isClassifierRefusal(msg)) {
 				this.#removeAssistantMessageFromActiveContext(msg);
 			}
-			this.#resolveRetry();
+			await this.#finishTerminalRetryFailure(msg.errorMessage);
 
 			if (!checkedCompaction) {
 				maintenanceRoute("bottom-checkCompaction");
@@ -3588,6 +3589,41 @@ export class AgentSession {
 			this.#retryResolve = undefined;
 			this.#retryPromise = undefined;
 		}
+	}
+
+	#finishRetryContinuationFailure(finalError: string): void {
+		const attempt = this.#retryAttempt;
+		this.#retryAttempt = 0;
+		this.#retryAbortController = undefined;
+		if (attempt <= 0) {
+			this.#resolveRetry();
+			return;
+		}
+		void this.#emitSessionEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt,
+			finalError,
+		}).finally(() => {
+			this.#resolveRetry();
+		});
+	}
+
+	async #finishTerminalRetryFailure(finalError: string | undefined): Promise<void> {
+		const attempt = this.#retryAttempt;
+		this.#retryAttempt = 0;
+		this.#retryAbortController = undefined;
+		if (attempt <= 0) {
+			this.#resolveRetry();
+			return;
+		}
+		await this.#emitSessionEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt,
+			finalError: finalError ?? "Retry ended without a successful assistant turn",
+		});
+		this.#resolveRetry();
 	}
 
 	/** Create the TTSR resume gate promise if one doesn't already exist. */
@@ -12405,7 +12441,12 @@ export class AgentSession {
 		}
 
 		// Retry via continue() outside the agent_end event callback chain.
-		this.#scheduleAgentContinue({ delayMs: 1, generation });
+		this.#scheduleAgentContinue({
+			delayMs: 1,
+			generation,
+			onSkip: () => this.#finishRetryContinuationFailure("Retry continuation skipped before provider request"),
+			onError: () => this.#finishRetryContinuationFailure("Retry continuation failed before completion"),
+		});
 
 		return true;
 	}

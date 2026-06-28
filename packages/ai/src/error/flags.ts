@@ -288,6 +288,9 @@ function classifyText(errorMessage: string | undefined, errorStatus: number | un
 		const isOpaque = isOpaqueStatusBody(cleanMessage);
 
 		const isLimitStatus = statusClean === 429;
+		if (statusClean === 408 || statusClean === 429 || (statusClean !== undefined && statusClean >= 500)) {
+			kinds |= Flag.Transient;
+		}
 		if (
 			matchesUsageLimitText(cleanMessage) ||
 			(isLimitStatus && (isOpaque || parseRateLimitReason(cleanMessage) === "QUOTA_EXHAUSTED"))

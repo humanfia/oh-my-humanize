@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed retry classification for numeric HTTP 408/429/5xx statuses that were parsed from provider error text but not mapped to transient errors, including OpenAI-compatible 520 gateway pages.
 - Enabled freeform tool patch support for Azure OpenAI and Codex models.
 - Fixed an issue where the `/usage show` command returned "No usage data available" when using a custom proxy base URL for Codex.
 
