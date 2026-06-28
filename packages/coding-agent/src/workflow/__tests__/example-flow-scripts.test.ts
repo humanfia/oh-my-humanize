@@ -901,6 +901,63 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("routes review protocol drift to archive when the review says the route should complete", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-review-protocol-drift-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const classifyRouteScript = await Bun.file(
+			`${AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR}/classify-review-route.js`,
+		).text();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Objective:", "Route a completed review to archive.", "", "Validation Command:", "echo validate"].join("\n"),
+		);
+		await Bun.write(`${cwd}/progress.md`, "ROUND 1: added focused test evidence and validation passed.\n");
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "agent-loop-review-protocol-drift-route",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "reviewRound",
+						type: "script",
+						script: {
+							language: "js",
+							code: [
+								"return {",
+								"  summary: 'The build/review route should return complete: task.md declares no minimum round count, progress.md has one real ROUND line, and the declared validation command has latest passing evidence with durable stdout/stderr artifacts. No applicable local instruction violation or task-specific byproduct blocker was found.',",
+								"  data: { verdict: 'continue', overall_correctness: 'correct', findings: [] },",
+								"};",
+							].join("\n"),
+						},
+						writes: ["/review"],
+					},
+					{
+						id: "classifyReviewRoute",
+						type: "script",
+						script: {
+							language: "js",
+							code: classifyRouteScript,
+						},
+						writes: ["/reviewRoute"],
+					},
+				],
+				edges: [{ from: "reviewRound", to: "classifyReviewRoute" }],
+			},
+		});
+
+		expect(result.scheduler.state.reviewRoute).toMatchObject({
+			decision: "complete",
+			reviewVerdict: "continue",
+			completionSatisfiedButContinued: true,
+		});
+	});
+
 	it("treats trailing slash allowed paths as recursive scope fences", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-trailing-slash-scope-");
 		const cwd = tempDir.path();
@@ -2611,6 +2668,70 @@ describe("example workflow scripts", () => {
 		const gate = await Bun.file(`${cwd}/workflow-output/release-gate.md`).text();
 		expect(gate).toContain("status: pass");
 		expect(gate).toContain("audit_blockers: 1");
+	});
+
+	it("does not treat release hold criteria checklists as unresolved audit blockers", async () => {
+		using tempDir = TempDir.createSync("@omh-release-gate-hold-criteria-checklist-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/release-audit.md`,
+			[
+				"# Release-Facing Audit Evidence",
+				"",
+				"Resolved Documentation/API compatibility risk in docs/api.md stale URL reference and docs/compatibility.md duplicate params wording.",
+				"Resolved untracked root test artifact outside the allowed scope fence by moving keylog output under tmp_path.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/release-rollback.md`,
+			[
+				"# Release Rollback Notes",
+				"",
+				"- Revert docs/api.md, docs/compatibility.md, and tests/test_config.py.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "enforceReleaseGate",
+			scriptFileName: "enforce-release-gate.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/releaseGate"],
+			initialState: {
+				compatibility: {
+					current_diff_findings: {
+						status: "untracked root test is outside the allowed fence and should hold the gate",
+					},
+					compatibility_risks: [
+						{
+							area: "Documentation/API compatibility",
+							risk: "docs/api.md stale URL members and docs/compatibility.md duplicate params wording should hold release until repaired",
+						},
+					],
+					rollback_or_hold_criteria: [
+						"Hold if the declared validation command or security command fails, times out on rerun, or lacks archived stdout/stderr from the runReleaseChecks node.",
+						"Hold if broad churn exceeds the diff gate or touches paths outside the allowed fence.",
+					],
+				},
+				checks: {
+					status: "pass",
+					validationExitCode: 0,
+					outputPath: "workflow-output/release-checks.md",
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.releaseGate).toMatchObject({
+			status: "pass",
+			unresolvedBlockers: [],
+		});
+		const gate = await Bun.file(`${cwd}/workflow-output/release-gate.md`).text();
+		expect(gate).toContain("status: pass");
+		expect(gate).not.toContain("rollback_or_hold_criteria");
 	});
 
 	it("archives release hardening holds when frozen task checks require a fresh contract", async () => {
@@ -4400,6 +4521,93 @@ describe("example workflow scripts", () => {
 		expect(result.scheduler.activations.find(activation => activation.nodeId === "archivePerformance")?.status).toBe(
 			"failed",
 		);
+	});
+
+	it("archives retained performance repair benchmarks instead of stale shared benchmark output", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-retained-repair-benchmark-archive-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, "Benchmark Command:\necho benchmark\n\nValidation Command:\necho validation\n");
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.txt`, "selected candidate\n");
+		await Bun.write(`${cwd}/workflow-output/performance-baseline.md`, "# Baseline\n\nbench 0.0109\n");
+		await Bun.write(`${cwd}/workflow-output/performance-benchmark.md`, "# Benchmark\n\nbench 0.0113\n");
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"## Current benchmark and validation status",
+				"- benchmark status: pass, exit code 0",
+				"- benchmark stdout:",
+				"",
+				"```text",
+				"bench 0.0089",
+				"```",
+				"- validation status: pass, exit code 0",
+				"",
+				"## Semantic behavior probe for retained candidate",
+				"- semantic-probe: yes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Algorithmic",
+				"",
+				"final-selection: yes",
+				"semantic-probe: yes",
+				"rollback evidence: git apply -R workflow-output/perf-algorithmic-candidate.diff",
+			].join("\n"),
+		);
+		for (const name of ["caching", "io"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				["# Branch", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+			);
+		}
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archivePerformance",
+			scriptFileName: "archive-performance.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: {
+					benchmark: { status: "pass", exit_code: 0 },
+					validation: { status: "pass", exit_code: 0 },
+				},
+				selection: {
+					status: "pass",
+					terminalState: "positive",
+					selectedBranches: ["algorithmic"],
+					noWinBranches: [],
+				},
+				review: { overall_correctness: "correct" },
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			status: "accepted",
+			benchmarkEvidence: "workflow-output/performance-selection-repair.md",
+		});
+		const archive = await Bun.file(`${cwd}/workflow-output/performance-archive.md`).text();
+		const benchmarkSection = archive.split("## Branch Notes")[0] ?? archive;
+		expect(benchmarkSection).toContain("bench 0.0089");
+		expect(benchmarkSection).not.toContain("bench 0.0113");
 	});
 
 	it("archives performance no-win evidence when validation is blocked without retained project changes", async () => {

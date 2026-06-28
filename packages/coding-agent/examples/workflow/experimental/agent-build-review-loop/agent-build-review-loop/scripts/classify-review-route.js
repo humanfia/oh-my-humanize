@@ -181,6 +181,7 @@ function mentionsCompletionSatisfied(text) {
 		/\bno\s+merge-blocking\s+project\s+issue\s+was\s+found\b/iu.test(text) ||
 		/\b(?:task|work|implementation|result)\s+is\s+complete\b/iu.test(text) ||
 		/\b(?:review\s+route|route)\s+is\s+complete\b/iu.test(text) ||
+		/\b(?:build\/review\s+route|review\s+route|route)\s+should\s+return\s+complete\b/iu.test(text) ||
 		/\b(?:acceptance criteria|acceptance|task-specific acceptance)\b.{0,120}\b(?:satisfied|met|complete)\b/ius.test(
 			text,
 		) ||

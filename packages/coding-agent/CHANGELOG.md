@@ -19,6 +19,9 @@
 
 - Fixed workflow read-only workspace guards treating external monitor assignment metadata updates as project mutations; `monitor-assignment.json` is now treated as operator/runtime metadata while task inputs and project files remain guarded.
 - Fixed the experimental performance-optimization workflow treating OMH-managed isolated lane worktrees as disallowed scratch evidence; branch reports may now cite the runtime isolation worktree while extra scratch remains constrained to the task-declared run root.
+- Fixed the experimental agent-build-review-loop workflow routing reviewer protocol drift into unnecessary extra build rounds when the review summary already established completion.
+- Fixed the experimental performance-optimization workflow archiving stale shared benchmark output after selection repair reran and retained a faster candidate benchmark.
+- Fixed the experimental release-hardening workflow treating audit policy checklists such as rollback/hold criteria as unresolved release blockers after the actual findings were repaired or waived.
 - Fixed JS workflow scripts passing the full serialized workflow context to every spawned child process, which could make late-stage workflow finalizers fail with `E2BIG` once review transcripts grew large; JS scripts still receive `workflowContext` in-process, while child processes inherit only lightweight workflow env.
 - Fixed the experimental research-reproduction workflow accepting broad command-only tasks without an auditable `Claim Source`; reproduction tasks now fail closed before running commands when no source/test/docs-derived claim is provided.
 - Fixed the experimental performance-optimization workflow accepting benchmark-positive candidates without semantic behavior probe evidence; positive selections now fail closed unless the retained branch or repair report records a project-specific `semantic-probe` for the public behavior at risk.

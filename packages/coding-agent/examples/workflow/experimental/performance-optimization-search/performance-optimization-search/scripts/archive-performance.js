@@ -26,7 +26,7 @@ const projectChangedFiles = changedFiles.filter((file) => !file.startsWith("work
 
 const outputPath = "workflow-output/performance-archive.md";
 const baselineText = await readOptionalText("workflow-output/performance-baseline.md");
-const benchmarkText = await readOptionalText("workflow-output/performance-benchmark.md");
+const benchmarkEvidence = await finalBenchmarkEvidence(benchmark, selectionRepair, selectionRepairText);
 const algorithmicText = await readOptionalText("workflow-output/perf-algorithmic.md");
 const cachingText = await readOptionalText("workflow-output/perf-caching.md");
 const ioText = await readOptionalText("workflow-output/perf-io.md");
@@ -78,7 +78,9 @@ await Bun.write(
 		"",
 		"## Benchmark",
 		"",
-		boundedLines(benchmarkText, 160),
+		`Evidence: ${benchmarkEvidence.file}`,
+		"",
+		boundedLines(benchmarkEvidence.text, 160),
 		"",
 		"## Branch Notes",
 		"",
@@ -123,6 +125,7 @@ return {
 				file: outputPath,
 				status: selection.status === "rejected" ? "rejected" : "accepted",
 				benchmark: "pass",
+				benchmarkEvidence: benchmarkEvidence.file,
 				validation: selection.terminalState === "no-win-validation-blocked" ? "blocked" : "pass",
 				projectChangedFiles,
 				noWin: projectChangedFiles.length === 0,
@@ -147,6 +150,24 @@ async function gitDiffHeadChangedFiles() {
 		.split(/\r?\n/u)
 		.map((line) => line.trim())
 		.filter(Boolean);
+}
+
+async function finalBenchmarkEvidence(benchmarkValue, selectionRepairValue, repairText) {
+	const repairBenchmark = commandPassedFromRepairEvidence(selectionRepairValue?.benchmark);
+	const repairReportBenchmark = commandPassedFromRepairReport(repairText, "benchmark");
+	if (repairText.trim() && (repairBenchmark === true || repairReportBenchmark === true)) {
+		return {
+			file: "workflow-output/performance-selection-repair.md",
+			text: repairText,
+		};
+	}
+	return {
+		file:
+			typeof benchmarkValue.outputPath === "string" && benchmarkValue.outputPath.trim()
+				? benchmarkValue.outputPath.trim()
+				: "workflow-output/performance-benchmark.md",
+		text: await readOptionalText("workflow-output/performance-benchmark.md"),
+	};
 }
 
 function allowsNoWinArchive(taskValue) {
