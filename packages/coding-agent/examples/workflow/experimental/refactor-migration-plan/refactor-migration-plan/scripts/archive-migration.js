@@ -95,6 +95,7 @@ async function rollbackEvidenceSources() {
 	const entries = [];
 	const paths = [
 		"workflow-output/refactor-migration-rollback.md",
+		"workflow-output/refactor-migration-implementation.md",
 		"workflow-output/compatibility-design.md",
 		"workflow-output/compatibility-design.json",
 		"workflow-output/caller-migration.md",
@@ -211,11 +212,28 @@ function hasActionableRollbackValue(value) {
 }
 
 function hasMarkdownRollbackEvidence(text) {
-	return text.split(/\r?\n/u).some(line =>
-		/^\s*(?:[-*]\s*)?(?:#{1,6}\s*)?(?:rollback(?:[_ -]?notes?)?|rollback[_ -]?path)\s*[:=-]\s*\S/iu.test(
-			line,
-		),
-	);
+	const lines = text.split(/\r?\n/u);
+	return lines.some((line, index) => {
+		if (
+			/^\s*(?:[-*]\s*)?(?:#{1,6}\s*)?(?:rollback(?:[_ -]?notes?)?|rollback[_ -]?path)\s*[:=-]\s*\S/iu.test(
+				line,
+			)
+		) {
+			return true;
+		}
+		if (!/^\s*#{1,6}\s*rollback(?:[_ -]?notes?)?\s*$/iu.test(line)) return false;
+		return followingRollbackSectionText(lines, index + 1).some(sectionLine => /\S/u.test(sectionLine));
+	});
+}
+
+function followingRollbackSectionText(lines, startIndex) {
+	const section = [];
+	for (const line of lines.slice(startIndex)) {
+		if (/^\s*#{1,6}\s+\S/u.test(line)) break;
+		if (!line.trim()) continue;
+		section.push(line);
+	}
+	return section;
 }
 
 async function projectMaterialDiff() {
@@ -360,6 +378,10 @@ function shouldReadScopeContinuation(previousLine, nextLine, scopeText) {
 	if (/^[-*]\s+/u.test(next)) return true;
 	if (!/[,;]\s*$/u.test(previousLine.trim())) return false;
 	return true;
+}
+
+function isTaskSectionHeading(line) {
+	return line.startsWith("#") || /^[A-Z][A-Za-z /-]{0,80}:\s*$/u.test(line);
 }
 
 function scopeListFromText(text) {

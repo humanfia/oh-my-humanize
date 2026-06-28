@@ -14,6 +14,12 @@ Choose the right test level for the project:
 Rules:
 
 - Keep changes narrow and reviewable.
+- Do not modify production/source code unless the frozen task explicitly says
+  `Production Fix Allowed: yes`, `Source Edits Allowed: yes`, or
+  `Implementation Changes Allowed: yes`. A test-generation run must otherwise
+  produce tests, docs, and workflow evidence only. If the new test exposes a
+  source bug, record the bug and ask for a repair-oriented flow instead of
+  patching production code here.
 - Prefer existing test style, fixtures, and helper APIs.
 - Avoid brittle sleeps, environment-specific assumptions, fake assertions, and
   broad refactors.

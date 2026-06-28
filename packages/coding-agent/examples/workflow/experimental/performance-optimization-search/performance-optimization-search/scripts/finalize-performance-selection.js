@@ -35,6 +35,9 @@ const positiveUnselectedBranches = branchReports.filter((report) => {
 const offBenchmarkRejectedBranches = positiveUnselectedBranches.filter((report) =>
 	benchmarkRelevanceRejected(reportEvidenceText(report, selectionRepairText)),
 );
+const benchmarkCoveredRejectedBranches = positiveUnselectedBranches.filter((report) =>
+	benchmarkCoveredLosingRejected(reportEvidenceText(report, selectionRepairText)),
+);
 const hasRollbackEvidence = /\brollback\b/iu.test(joinedText);
 const hasSemanticProbeEvidence = semanticProbeEvidencePresent(joinedText, selectionRepairText);
 const noWinAllowed = allowsNoWinArchive(task);
@@ -79,9 +82,13 @@ if (projectChangedFiles.length === 0) {
 	if (benchmarkRelevantBranches.length !== selectedBranches.length) {
 		throw new Error("positive performance selection requires benchmark relevance evidence for the retained candidate");
 	}
-	if (positiveUnselectedBranches.length !== offBenchmarkRejectedBranches.length) {
+	const rejectedPositiveUnselectedBranches = uniqueReports([
+		...offBenchmarkRejectedBranches,
+		...benchmarkCoveredRejectedBranches,
+	]);
+	if (positiveUnselectedBranches.length !== rejectedPositiveUnselectedBranches.length) {
 		throw new Error(
-			"positive performance selection requires off-benchmark rejection evidence for unselected positive benchmark candidates",
+			"positive performance selection requires off-benchmark rejection or comparative rejection evidence for unselected positive benchmark candidates",
 		);
 	}
 	if (!hasRollbackEvidence) {
@@ -103,6 +110,7 @@ await Bun.write(
 		`benchmarkRelevantBranches: ${benchmarkRelevantBranches.map((report) => report.name).join(", ") || "none"}`,
 		`positiveUnselectedBranches: ${positiveUnselectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`offBenchmarkRejectedBranches: ${offBenchmarkRejectedBranches.map((report) => report.name).join(", ") || "none"}`,
+		`benchmarkCoveredRejectedBranches: ${benchmarkCoveredRejectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`validationPassed: ${validationPassed ? "yes" : "no"}`,
 		`rollbackEvidence: ${hasRollbackEvidence ? "yes" : "no"}`,
 		"",
@@ -129,6 +137,7 @@ return {
 				benchmarkRelevantBranches: benchmarkRelevantBranches.map((report) => report.name),
 				positiveUnselectedBranches: positiveUnselectedBranches.map((report) => report.name),
 				offBenchmarkRejectedBranches: offBenchmarkRejectedBranches.map((report) => report.name),
+				benchmarkCoveredRejectedBranches: benchmarkCoveredRejectedBranches.map((report) => report.name),
 				validationPassed,
 				rollbackEvidence: hasRollbackEvidence,
 				semanticProbeEvidence: hasSemanticProbeEvidence,
@@ -190,6 +199,29 @@ function benchmarkRelevanceRejected(text) {
 		/\b(?:task[- ]declared\s+)?benchmark(?: command)?\s+does\s+not\s+cover\b/iu.test(text) ||
 		/\boutside\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text)
 	);
+}
+
+function benchmarkCoveredLosingRejected(text) {
+	if (!benchmarkRelevanceConfirmed(text)) return false;
+	if (
+		/\b(?:weaker|slower|worse|noisier|regressed|regression|less\s+stable)\b/iu.test(text) ||
+		/\b(?:not|no\s+longer)\s+(?:the\s+)?(?:best|selected|retained)\b/iu.test(text) ||
+		/\brejected\s+(?:because|after|as)\b/iu.test(text)
+	) {
+		return true;
+	}
+	return /\b(?:selected|retained)\s+candidate\b.{0,160}\b(?:better|faster|more\s+stable|lower|wins?)\b/iu.test(text);
+}
+
+function uniqueReports(reports) {
+	const seen = new Set();
+	const unique = [];
+	for (const report of reports) {
+		if (seen.has(report.name)) continue;
+		seen.add(report.name);
+		unique.push(report);
+	}
+	return unique;
 }
 
 function hasPositiveBenchmarkEvidence(text) {

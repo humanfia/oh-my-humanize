@@ -9,6 +9,13 @@ task section as the operator-owned contract. Repair only the issues named by
 the reviewer. Preserve the existing task scope, project test style, and
 rollback notes in `workflow-output/test-hardening-rollback.md`.
 
+Do not modify production/source code unless the frozen task explicitly says
+`Production Fix Allowed: yes`, `Source Edits Allowed: yes`, or
+`Implementation Changes Allowed: yes`. If a generated regression test exposes a
+production bug but source edits are not explicitly allowed, leave source code
+unchanged, record the finding in `workflow-output/test-hardening-repair-evidence.md`,
+and ask the reviewer to route this to a repair-oriented flow.
+
 Update `workflow-output/test-hardening-repair-evidence.md` with the specific
 review issue you addressed, the test files changed, the coverage gap now
 covered, and any residual risk. Keep this artifact concise and cumulative

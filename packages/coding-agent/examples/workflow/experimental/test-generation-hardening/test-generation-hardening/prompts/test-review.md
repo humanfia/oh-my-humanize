@@ -10,6 +10,9 @@ Return `continue` when any of these are true:
 
 - generated tests do not address the task contract;
 - validation failed or did not use the task-declared Validation Command;
+- the current diff modifies production/source code without explicit
+  `Production Fix Allowed: yes`, `Source Edits Allowed: yes`, or
+  `Implementation Changes Allowed: yes` in the frozen task contract;
 - tests are brittle, fake, overbroad, or duplicate existing coverage;
 - `workflow-output/test-hardening-repair-evidence.md` is missing or does not
   explain the coverage gap addressed by the current diff;
