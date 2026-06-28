@@ -995,6 +995,83 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("routes accepted code-review shaped agent build reviews to archive", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-code-review-accepted-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const classifyRouteScript = await Bun.file(
+			`${AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR}/classify-review-route.js`,
+		).text();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Route a completed review to archive.",
+				"",
+				"Requires at least three meaningful build/review cycles.",
+				"",
+				"Validation Command:",
+				"echo validate",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/progress.md`,
+			[
+				"ROUND 1: added focused implementation evidence and validation passed.",
+				"ROUND 2: repaired review feedback and validation passed.",
+				"ROUND 3: repaired final style issue and validation passed.",
+			].join("\n"),
+		);
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "agent-loop-code-review-accepted-route",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "reviewRound",
+						type: "script",
+						script: {
+							language: "js",
+							code: [
+								"return {",
+								"  summary: 'The task contract is satisfied: progress.md has 3 ROUND entries and no further build round is required.',",
+								"  data: {",
+								"    verdict: 'continue',",
+								"    overall_correctness: 'correct',",
+								"    explanation: 'The task contract is satisfied: progress.md has 3 ROUND entries against the required minimum of 3, validation passed, and I found no applicable local instruction violation or task-specific byproduct requiring another build round.',",
+								"    findings: [],",
+								"  },",
+								"};",
+							].join("\n"),
+						},
+						writes: ["/review"],
+					},
+					{
+						id: "classifyReviewRoute",
+						type: "script",
+						script: {
+							language: "js",
+							code: classifyRouteScript,
+						},
+						writes: ["/reviewRoute"],
+					},
+				],
+				edges: [{ from: "reviewRound", to: "classifyReviewRoute" }],
+			},
+		});
+
+		expect(result.scheduler.state.reviewRoute).toMatchObject({
+			decision: "complete",
+			reviewVerdict: "continue",
+			completionSatisfiedButContinued: true,
+		});
+	});
+
 	it("treats trailing slash allowed paths as recursive scope fences", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-trailing-slash-scope-");
 		const cwd = tempDir.path();
