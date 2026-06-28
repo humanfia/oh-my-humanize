@@ -215,9 +215,7 @@ describe("example workflow scripts", () => {
 		expect(
 			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
 		).toBe("failed");
-		expect(
-			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.error,
-		).toContain("Setup Command must be a single-line command");
+		expect(await Bun.file(`${cwd}/workflow-output/reproduction-precheck.md`).exists()).toBe(false);
 	});
 
 	it("rejects escaped-newline research reproduction commands before shell execution", async () => {
@@ -254,9 +252,7 @@ describe("example workflow scripts", () => {
 		expect(
 			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
 		).toBe("failed");
-		expect(
-			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.error,
-		).toContain("Reproduction Command must not contain escaped newline sequences");
+		expect(await Bun.file(`${cwd}/workflow-output/reproduction-precheck.md`).exists()).toBe(false);
 	});
 
 	it("requires research reproduction tasks to provide an auditable claim source", async () => {
@@ -324,6 +320,67 @@ describe("example workflow scripts", () => {
 			claimSource:
 				"tests/test_json.py asserts that model JSON serialization preserves decimal string output for the selected fixture.",
 		});
+	});
+
+	it("fails research reproduction claims without concrete project evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-claim-evidence-guard-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const missingEvidence = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardClaimEvidence",
+			scriptFileName: "guard-claim-evidence.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/claimEvidence"],
+			initialState: {
+				task: {
+					claimSource: "Project tests and source define timed signature behavior.",
+				},
+				claim: {
+					summary:
+						"Timed signatures should remain coherent. Concrete source paths and excerpts were not provided under this node boundary.",
+				},
+			},
+		});
+
+		expect(
+			missingEvidence.scheduler.activations.find(activation => activation.nodeId === "guardClaimEvidence")?.status,
+		).toBe("failed");
+		expect(
+			missingEvidence.scheduler.activations.find(activation => activation.nodeId === "guardClaimEvidence")?.error,
+		).toContain("concrete source/test evidence");
+
+		const accepted = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardClaimEvidence",
+			scriptFileName: "guard-claim-evidence.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/claimEvidence"],
+			initialState: {
+				task: {
+					claimSource: "tests/test_timed.py::test_loads_max_age line 42 asserts timed max-age rejection.",
+				},
+				claim: {
+					summary: "tests/test_timed.py::test_loads_max_age line 42 asserts max-age rejection.",
+					evidence: [
+						{
+							path: "tests/test_timed.py",
+							symbol: "test_loads_max_age",
+							excerpt: "with pytest.raises(SignatureExpired)",
+						},
+					],
+				},
+			},
+		});
+
+		expect(accepted.scheduler.state.claimEvidence).toMatchObject({
+			status: "pass",
+			sourceRefs: expect.arrayContaining(["tests/test_timed.py"]),
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/claim-evidence-guard.md`).text()).toContain("tests/test_timed.py");
 	});
 
 	it("keeps non-exercising research reproduction evidence on the refinement route", async () => {

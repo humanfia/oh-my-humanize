@@ -6,6 +6,9 @@ Task contract:
 Claim:
 {{jsonStringify claim}}
 
+Claim evidence guard:
+{{jsonStringify claimEvidence}}
+
 Setup evidence:
 {{jsonStringify setup}}
 
@@ -32,6 +35,8 @@ criteria in this environment.
 
 Accepted evidence requires:
 
+- the extracted claim cites concrete project source/test evidence and
+  `claimEvidence.status` is `pass`;
 - the Reproduction Command produced real evidence;
 - `reproduction.exercised` is true;
 - the Validation Command passed;

@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed the experimental research-reproduction workflow accepting extracted claims that only named broad source areas; a claim evidence guard now requires concrete project source/test references before command reproduction can proceed.
 - Fixed workflow manager change controls suggesting `apply-change --freeze-id` before a draft workflow existed; approved changes now guide operators through draft generation and draft freezing before restart.
 - Fixed workflow manager restart controls preferring the source checkpoint for a restarted stopped attempt instead of the latest checkpoint produced by that attempt, which could send operators back into an already-resolved human gate.
 - Fixed duplicate workflow change request submissions with the same id creating conflicting proposed/approved records; identical repeats are now idempotent and conflicting repeats fail before they can poison apply/restart lifecycle state.

@@ -26,6 +26,7 @@ stateSchema:
     runtime: object
     claim: object
     setup: object
+    claimEvidence: object
     reproduction: object
     /reproduction/exercised: boolean
     variant: object
@@ -37,6 +38,8 @@ resources:
   - path: scripts/precheck-task-contract.js
     kind: script
   - path: scripts/run-setup.js
+    kind: script
+  - path: scripts/guard-claim-evidence.js
     kind: script
   - path: scripts/run-reproduction.js
     kind: script
@@ -82,6 +85,16 @@ nodes:
             state: /task
     writes:
       - /claim
+  - id: guardClaimEvidence
+    type: script
+    script:
+      language: js
+      file: scripts/guard-claim-evidence.js
+    reads:
+      - /task
+      - /claim
+    writes:
+      - /claimEvidence
   - id: setupExperiment
     type: script
     script:
@@ -90,6 +103,7 @@ nodes:
     reads:
       - /task
       - /claim
+      - /claimEvidence
     writes:
       - /setup
   - id: reproduceBaseline
@@ -109,6 +123,7 @@ nodes:
       file: scripts/run-variant.js
     reads:
       - /task
+      - /claimEvidence
       - /reproduction
     writes:
       - /variant
@@ -120,6 +135,7 @@ nodes:
     reads:
       - /task
       - /claim
+      - /claimEvidence
       - /setup
       - /reproduction
       - /variant
@@ -134,6 +150,8 @@ nodes:
             state: /task
           claim:
             state: /claim
+          claimEvidence:
+            state: /claimEvidence
           setup:
             state: /setup
           reproduction:
@@ -156,6 +174,7 @@ nodes:
     reads:
       - /task
       - /claim
+      - /claimEvidence
       - /setup
       - /reproduction
       - /variant
@@ -168,6 +187,8 @@ nodes:
             state: /task
           claim:
             state: /claim
+          claimEvidence:
+            state: /claimEvidence
           setup:
             state: /setup
           reproduction:
@@ -195,6 +216,8 @@ nodes:
       file: scripts/archive-reproduction.js
     reads:
       - /task
+      - /claim
+      - /claimEvidence
       - /reproduction
       - /variant
       - /comparison
@@ -205,6 +228,8 @@ edges:
   - from: precheckTaskContract
     to: extractClaim
   - from: extractClaim
+    to: guardClaimEvidence
+  - from: guardClaimEvidence
     to: setupExperiment
   - from: setupExperiment
     to: reproduceBaseline
