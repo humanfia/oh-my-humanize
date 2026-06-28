@@ -99,13 +99,28 @@ function allowedGeneratedPath(filePath) {
 
 function allowedPathsFromTask(text) {
 	const scopes = [];
-	for (const line of text.split(/\r?\n/u)) {
-		const trimmed = line.trim();
+	const lines = text.split(/\r?\n/u);
+	for (let index = 0; index < lines.length; index += 1) {
+		const trimmed = lines[index]?.trim() ?? "";
 		const match = /^(?:[-*]\s*)?(?:allowed paths?|scope fence)\s*:\s*(.+)$/iu.exec(trimmed);
 		if (!match) continue;
-		scopes.push(...scopeListFromText(match[1] ?? ""));
+		const scopeText = [match[1] ?? ""];
+		for (let nextIndex = index + 1; shouldReadScopeContinuation(scopeText.at(-1) ?? "", lines[nextIndex]); nextIndex += 1) {
+			scopeText.push(lines[nextIndex]?.trim() ?? "");
+		}
+		scopes.push(...scopeListFromText(scopeText.join(" ")));
 	}
 	return uniqueStrings(scopes.map(normalizeScope).filter(Boolean));
+}
+
+function shouldReadScopeContinuation(previousLine, nextLine) {
+	const next = nextLine?.trim() ?? "";
+	if (!next) return false;
+	if (!/[,;]\s*$/u.test(previousLine.trim())) return false;
+	if (next.startsWith("```")) return false;
+	if (isTaskSectionHeading(next)) return false;
+	if (/^(?:[-*]\s*)?(?:allowed paths?|scope fence)\s*:/iu.test(next)) return false;
+	return true;
 }
 
 function scopeListFromText(text) {
@@ -115,8 +130,16 @@ function scopeListFromText(text) {
 		.filter(Boolean);
 }
 
+function isTaskSectionHeading(line) {
+	return line.startsWith("#") || /^[A-Z][A-Za-z /-]{0,80}:\s*$/u.test(line);
+}
+
 function normalizeScope(scope) {
-	return scope.replace(/^`|`$/gu, "").replace(/^\.\//u, "").trim();
+	return scope
+		.replace(/^`|`$/gu, "")
+		.replace(/[.。]$/u, "")
+		.replace(/^\.\//u, "")
+		.trim();
 }
 
 function scopeMatchesPath(scope, filePath) {
