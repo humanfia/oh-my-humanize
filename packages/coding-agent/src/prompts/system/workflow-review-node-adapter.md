@@ -13,7 +13,8 @@ The original assignment may ask for a plain-text gate such as `continue`,
 not as the final transport format. Do not submit raw gate text as the final
 result.
 
-Submit one terminal `yield` tool call. Put exactly this object in `result.data`:
+Submit one terminal `yield` tool call. Use `result: { data: ... }` and put
+exactly this object in `data`:
 
 ```json
 {
@@ -25,7 +26,8 @@ Submit one terminal `yield` tool call. Put exactly this object in `result.data`:
 
 Do not submit separate section yields. Do not use `type:
 ["overall_correctness"]`, `type: ["explanation"]`, or `type: ["confidence"]`
-for this review node. Do not wrap this object in another `result` object. The
+for this review node. You may omit `type` or set `type: "result"` for the
+terminal submission. Do not put a second nested `result` key inside `data`. The
 three reviewer fields must be the top-level data fields of the terminal result.
 
 Use `"correct"` when the workflow should take the successful/terminal gate, or

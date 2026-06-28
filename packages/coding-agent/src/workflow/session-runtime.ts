@@ -864,6 +864,7 @@ function reviewRecoveryDataHasSignal(data: unknown, gates: string[] | undefined)
 	if (data === null || typeof data !== "object" || Array.isArray(data)) return false;
 	const record = data as Record<string, unknown>;
 	if (reviewRecoveryDataHasSignal(record.result, gates)) return true;
+	if (reviewRecoveryDataHasSignal(record.data, gates)) return true;
 	if (record.overall_correctness === "correct" || record.overall_correctness === "incorrect") return true;
 	if (
 		typeof record.overall_correctness === "string" &&
@@ -885,7 +886,10 @@ function reviewRecoveryDataHasSignal(data: unknown, gates: string[] | undefined)
 
 function reviewFindingsRecoverySource(data: unknown, gates: string[] | undefined): string | undefined {
 	const record = schemaViolationRecord(data);
-	const findings = record?.findings ?? schemaViolationRecord(record?.result)?.findings;
+	const resultRecord = schemaViolationRecord(record?.result);
+	const resultDataRecord = schemaViolationRecord(resultRecord?.data);
+	const dataRecord = schemaViolationRecord(record?.data);
+	const findings = record?.findings ?? resultRecord?.findings ?? resultDataRecord?.findings ?? dataRecord?.findings;
 	if (!Array.isArray(findings) || findings.length === 0) return undefined;
 	const summary = reviewFindingsSummary(findings);
 	if (summary === undefined) return undefined;
@@ -1151,10 +1155,9 @@ function tryParseReviewObject(
 }
 
 function reviewResultObject(parsed: Record<string, unknown>): Record<string, unknown> | undefined {
-	const result = parsed.result;
-	if (typeof result === "string") return parseJsonObject(result.trim());
-	if (result === null || typeof result !== "object" || Array.isArray(result)) return undefined;
-	return result as Record<string, unknown>;
+	const result = schemaViolationRecord(parsed.result);
+	if (result !== undefined) return schemaViolationRecord(result.data) ?? result;
+	return schemaViolationRecord(parsed.data);
 }
 
 function reviewVerdictFromObject(

@@ -776,7 +776,8 @@ edges: []
 		expect(assignment).toContain("Workflow review adapter:");
 		expect(assignment).toContain("one terminal `yield` tool call");
 		expect(assignment).toContain('"overall_correctness": "correct" | "incorrect"');
-		expect(assignment).toContain("Do not wrap this object in another `result` object");
+		expect(assignment).toContain('set `type: "result"`');
+		expect(assignment).toContain("Do not put a second nested `result` key inside `data`");
 		expect(assignment).not.toContain("Use incremental `yield` sections");
 		expect(assignment).not.toContain('type: ["overall_correctness"]');
 		expect(assignment).toContain("Declared workflow gates: continue, finish");
@@ -892,9 +893,11 @@ edges: []
 					missingRequired: ["overall_correctness", "explanation", "confidence"],
 					data: JSON.stringify({
 						result: {
-							overall_correctness: "correct",
-							explanation: "verdict finish\nReproduction and validation evidence are accepted.",
-							confidence: 0.86,
+							data: {
+								overall_correctness: "correct",
+								explanation: "verdict finish\nReproduction and validation evidence are accepted.",
+								confidence: 0.86,
+							},
 						},
 					}),
 				}),

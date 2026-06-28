@@ -560,6 +560,10 @@ function isIncrementalYieldType(type: YieldItem["type"]): type is string[] {
 	return Array.isArray(type) && type.length > 0;
 }
 
+function isTerminalResultYieldType(type: YieldItem["type"]): boolean {
+	return typeof type === "string" && type.trim().toLowerCase() === "result";
+}
+
 function getYieldLabels(type: YieldItem["type"]): string[] {
 	if (typeof type === "string") {
 		const label = type.trim();
@@ -656,10 +660,12 @@ function arrayValuedLabels(outputSchema: unknown): ReadonlySet<string> {
  *
  * A non-empty array `type` contributes an incremental section and never decides
  * termination by itself. A string `type` with omitted `data` makes the last
- * assistant turn the raw terminal result. Other string-typed yields contribute
- * the terminal labelled section. Untyped terminal yields keep the historical
- * "last yield wins" behavior unless no terminal yield exists, in which case
- * accumulated typed sections finalize on idle.
+ * assistant turn the raw terminal result. `type: "result"` is the explicit
+ * terminal result transport and contributes its payload directly. Other
+ * string-typed yields contribute the terminal labelled section. Untyped
+ * terminal yields keep the historical "last yield wins" behavior unless no
+ * terminal yield exists, in which case accumulated typed sections finalize on
+ * idle.
  */
 export function assembleYieldResult(
 	yieldItems: YieldItem[],
@@ -682,6 +688,15 @@ export function assembleYieldResult(
 			hasTypedSections = true;
 			break;
 		}
+	}
+	if (terminalItem && isTerminalResultYieldType(terminalItem.type)) {
+		const resolved = resolveYieldPayload(terminalItem, lastAssistantText, []);
+		return {
+			data: resolved.value,
+			schemaOverridden: terminalItem.schemaOverridden === true,
+			rawText: resolved.fromLastAssistantText && typeof resolved.value === "string",
+			missingData: resolved.missingData,
+		};
 	}
 	if (terminalItem && typeof terminalItem.type === "string" && terminalItem.data === undefined) {
 		const resolved = resolveYieldPayload(terminalItem, lastAssistantText, getYieldLabels(terminalItem.type));
