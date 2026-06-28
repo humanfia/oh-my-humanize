@@ -2354,6 +2354,74 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("lets unresolved nonterminal lane validation risk reach integration review", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-nonterminal-validation-risk-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "C429-T01-8cb001109-ripgrep-json-output-parallel-canary";
+
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(
+			`${cwd}/workflow-output/core-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementCore", status: "source_change_applied" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/tests-lane-${tupleId}.json`,
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementTests",
+					status: "completed_with_unresolved_integration_risk",
+					validation: {
+						result: "fail",
+					},
+					unresolved_integration_risks: [
+						"Declared validation failed in unrelated ripgrep integration tests outside this lane's JSON printer change.",
+					],
+					hard_stop: false,
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/docs-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementDocs", status: "complete" }, null, 2)}\n`,
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "laneHardStopGuard",
+			scriptFileName: "lane-hard-stop-guard.js",
+			writes: ["/laneHardStopGuard"],
+		});
+
+		expect(result.scheduler.state.laneHardStopGuard).toMatchObject({
+			status: "continue",
+			blocking_lane_artifacts: [],
+			lane_artifacts: [
+				{
+					lane: "implementCore",
+					status: "source_change_applied",
+				},
+				{
+					lane: "implementDocs",
+					status: "complete",
+				},
+				{
+					lane: "implementTests",
+					status: "completed_with_unresolved_integration_risk",
+					validation_status: "fail",
+				},
+			],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/lane-hard-stop-guard-${tupleId}.json`).json()).toMatchObject({
+			status: "continue",
+			blocking_lane_artifacts: [],
+		});
+	});
+
 	it("bounds documentation audit fan-in before consolidation", async () => {
 		using tempDir = TempDir.createSync("@omh-documentation-audit-compact-");
 		const cwd = tempDir.path();

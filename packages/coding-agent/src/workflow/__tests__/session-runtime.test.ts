@@ -754,10 +754,11 @@ edges: []
 		});
 		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
 
+		const reviewPrompt = "Return finish only when generated tests are coherent and validation passed.";
 		const node: WorkflowNode = {
 			id: "testReview",
 			type: "review",
-			prompt: "Return finish only when generated tests are coherent and validation passed.",
+			prompt: reviewPrompt,
 			gates: ["continue", "finish"],
 			fallbackVerdict: "continue",
 		};
@@ -769,10 +770,62 @@ edges: []
 			fallbackVerdict: node.fallbackVerdict,
 		});
 
-		expect(capturedRequest?.task.assignment).toContain("Workflow review adapter:");
-		expect(capturedRequest?.task.assignment).toContain('type: ["overall_correctness"]');
-		expect(capturedRequest?.task.assignment).toContain("Declared workflow gates: continue, finish");
-		expect(capturedRequest?.task.assignment).toContain(node.prompt);
+		const assignment = capturedRequest?.task.assignment;
+		if (assignment === undefined) throw new Error("review assignment missing");
+		expect(assignment).toContain("Workflow review adapter:");
+		expect(assignment).toContain('type: ["overall_correctness"]');
+		expect(assignment).toContain("Declared workflow gates: continue, finish");
+		expect(assignment).toContain(reviewPrompt);
+		expect(assignment.lastIndexOf("Workflow review adapter:")).toBeGreaterThan(assignment.indexOf(reviewPrompt));
+		expect(output.verdict).toBe("finish");
+	});
+
+	it("keeps reviewer schema instructions after text-verdict workflow prompts", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: JSON.stringify({
+						overall_correctness: "correct",
+						explanation: "verdict finish\nValidation passed with durable evidence.",
+						confidence: 0.89,
+					}),
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const prompt = [
+			"You are the workflow reviewer.",
+			"",
+			"Output contract:",
+			"- First line must be exactly `continue` or `finish`.",
+			"- After the first line, include concise review evidence.",
+		].join("\n");
+		const node: WorkflowNode = {
+			id: "fixReview",
+			type: "review",
+			prompt,
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		const assignment = capturedRequest?.task.assignment;
+		if (assignment === undefined) throw new Error("review assignment missing");
+		expect(assignment).toContain("First line must be exactly");
+		expect(assignment.lastIndexOf('type: ["confidence"]')).toBeGreaterThan(
+			assignment.lastIndexOf("First line must be exactly"),
+		);
 		expect(output.verdict).toBe("finish");
 	});
 

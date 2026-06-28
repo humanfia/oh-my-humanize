@@ -166,6 +166,7 @@ async function laneArtifactClassification(filePath) {
 			stringField(validation, "status") || stringField(validation, "result") || stringField(validation, "verdict"),
 		);
 		const validationExitCode = numberField(validation, "exitCode") ?? numberField(validation, "exit_code");
+		const validationRiskIsNonterminal = data?.hard_stop === false && status.startsWith("completed_with_");
 		if (isBlockingStatus(status)) {
 			return {
 				status,
@@ -174,7 +175,7 @@ async function laneArtifactClassification(filePath) {
 				blockingReason: "lane artifact reports a blocking status",
 			};
 		}
-		if (isBlockingStatus(validationStatus)) {
+		if (isBlockingStatus(validationStatus) && !validationRiskIsNonterminal) {
 			return {
 				status,
 				validationStatus,
@@ -182,7 +183,7 @@ async function laneArtifactClassification(filePath) {
 				blockingReason: "lane validation reports a blocking status",
 			};
 		}
-		if (validationExitCode !== null && validationExitCode !== 0 && !isPassingStatus(validationStatus)) {
+		if (validationExitCode !== null && validationExitCode !== 0 && !isPassingStatus(validationStatus) && !validationRiskIsNonterminal) {
 			return {
 				status,
 				validationStatus,

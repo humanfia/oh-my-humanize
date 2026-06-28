@@ -1,10 +1,17 @@
+Original workflow review assignment:
+
+{{assignment}}
+
 Workflow review adapter:
 
 You are executing an OMH workflow `review` node through the standard reviewer
 agent. The workflow uses declared gates, but the reviewer agent final output
 schema is `overall_correctness`, `explanation`, and `confidence`.
 
-Do not submit raw gate text as the final result.
+The original assignment may ask for a plain-text gate such as `continue`,
+`finish`, `PASS`, or `COMPLETE`. Treat that as the workflow verdict content,
+not as the final transport format. Do not submit raw gate text as the final
+result.
 
 Use incremental `yield` sections:
 
@@ -22,7 +29,3 @@ malformed success signal cannot take the successful workflow gate.
 
 Declared workflow gates: {{declaredGates}}
 Fallback verdict: {{fallbackVerdict}}
-
-Original workflow review assignment:
-
-{{assignment}}
