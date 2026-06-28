@@ -46,12 +46,12 @@ function operatorDecision(text) {
 		.map(line => line.trim())
 		.filter(Boolean);
 	for (const line of lines) {
-		const match = /^(?:[-*]\s*)?(?:decision\s*[:=-]\s*)?(proceed|approve|approved|hold|stop|reject|rejected)\b/u.exec(line);
-		if (match) return assessDecision(match[1], text);
+		const match = /^(?:[-*]\s*)?(?:(decision)\s*[:=-]\s*)?(proceed|approve|approved|hold|stop|reject|rejected)\b/u.exec(line);
+		if (match) return assessDecision(match[2], text, match[1] === "decision");
 	}
 	const match = /\b(proceed|approve|approved|hold|stop|reject|rejected)\b/u.exec(text);
 	return match
-		? assessDecision(match[1], text)
+		? assessDecision(match[1], text, false)
 		: {
 				decision: "hold",
 				strength: "missing",
@@ -59,14 +59,14 @@ function operatorDecision(text) {
 			};
 }
 
-function assessDecision(token, text) {
+function assessDecision(token, text, isFormalDecision) {
 	if (token === "hold") {
 		return { decision: "hold", strength: "explicit", reasons: [] };
 	}
 	if (token === "stop" || token === "reject" || token === "rejected") {
 		return { decision: "stop", strength: "explicit", reasons: [] };
 	}
-	if (token === "approve" || token === "approved") {
+	if (token === "approve" || token === "approved" || isFormalDecision) {
 		return { decision: "proceed", strength: "explicit", reasons: [] };
 	}
 

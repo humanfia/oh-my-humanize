@@ -20,8 +20,10 @@ stop. Prefer this first line exactly:
 
 `Decision: proceed`
 
-Use `Decision: hold` or `Decision: stop` when the checks are not satisfied. In
-the OMH TUI, the default Approve action means proceed only after the operator
-has read these checks. Do not treat silence, ambiguity, or a weak answer as
-implicit approval. If the answer is weak, explain the plan and ask whether to
-proceed, hold, or stop.
+Use `Decision: hold` or `Decision: stop` when the checks are not satisfied.
+When adding context in the OMH TUI, keep it on the same line after the decision
+because custom gate input is line-oriented, for example
+`Decision: proceed; components=...; connections=...; evidence=canary`.
+The default Approve action means proceed only after the operator has read these
+checks. Do not treat silence or ambiguity as implicit approval. If the answer is
+weak, explain the plan and ask whether to proceed, hold, or stop.
