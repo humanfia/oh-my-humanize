@@ -764,7 +764,7 @@ function recoverReviewOutputFromSchemaViolation(
 
 	const reason = result.error || result.stderr || "schema_violation";
 	const boundedSummary = boundWorkflowSummary(
-		`recovered schema_violation: ${reason}\n${parsed.summary}`,
+		`recovered schema_violation as verdict ${parsed.verdict}: ${reason}\n${parsed.summary}`,
 		parsed.verdict,
 	);
 	const output: WorkflowReviewNodeOutput = {
@@ -1141,10 +1141,12 @@ function verdictFromReviewerCorrectness(
 			? ["correct", "pass", "approve", "approved", "finish"]
 			: ["incorrect", "fail", "reject", "rejected", "retry", "continue"];
 	if (gates) {
-		const declared = candidates.find(candidate => gates.includes(candidate));
-		if (declared) return declared;
+		for (const candidate of candidates) {
+			const declared = declaredGateFor(candidate, gates);
+			if (declared !== undefined) return declared;
+		}
 		const semantic = semanticGateForReviewerCorrectness(correctness, gates);
-		if (semantic !== undefined && fallbackVerdict === undefined) return semantic;
+		if (semantic !== undefined) return semantic;
 	}
 	if (fallbackVerdict !== undefined) return fallbackVerdict;
 	return correctness === "correct" ? "pass" : "fail";
