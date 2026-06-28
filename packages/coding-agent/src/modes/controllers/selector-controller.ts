@@ -4,8 +4,15 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import type { Component, OverlayHandle } from "@oh-my-pi/pi-tui";
 import { Input, Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
-import { getAgentDbPath, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
-import { formatModelSelectorValue } from "../../config/model-resolver";
+import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import {
+	type AdvisorConfigScope,
+	discoverAdvisorConfigs,
+	loadWatchdogConfigFile,
+	resolveAdvisorConfigEditPath,
+	saveWatchdogConfigFile,
+} from "../../advisor";
+import { formatModelSelectorValue, resolveAdvisorRoleSelection } from "../../config/model-resolver";
 import { getRoleInfo } from "../../config/model-roles";
 import { settings } from "../../config/settings";
 import { disableProvider, enableProvider } from "../../discovery";
@@ -49,7 +56,9 @@ import {
 } from "../../tools";
 import { shortenPath } from "../../tools/render-utils";
 import { copyToClipboard } from "../../utils/clipboard";
+import { repo } from "../../utils/git";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../components/advisor-config";
 import { AgentDashboard } from "../components/agent-dashboard";
 import { AgentHubOverlayComponent } from "../components/agent-hub";
 import { AssistantMessageComponent } from "../components/assistant-message";
@@ -134,6 +143,9 @@ export class SelectorController {
 					availableThinkingLevels: [...this.ctx.session.getAvailableThinkingLevels()],
 					thinkingLevel: this.ctx.session.thinkingLevel,
 					availableThemes,
+					providers: [...new Set(this.ctx.session.getAvailableModels().map(model => model.provider))].sort(
+						(a, b) => a.localeCompare(b),
+					),
 					cwd: getProjectDir(),
 					model: this.ctx.session.model,
 					imageBudget: this.ctx.ui.imageBudget,
@@ -160,6 +172,7 @@ export class SelectorController {
 							showHookStatus: settings.get("statusLine.showHookStatus"),
 							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
+							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 							...previewSettings,
 						});
 						this.ctx.updateEditorTopBorder();
@@ -188,6 +201,7 @@ export class SelectorController {
 							showHookStatus: settings.get("statusLine.showHookStatus"),
 							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
+							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 						});
 						this.ctx.updateEditorTopBorder();
 						this.ctx.ui.requestRender();
@@ -204,6 +218,78 @@ export class SelectorController {
 			this.ctx.ui.setFocus(selector);
 			this.ctx.ui.requestRender();
 		});
+	}
+
+	showAdvisorConfigure(): void {
+		const cwd = this.ctx.sessionManager.getCwd();
+		const agentDir = getAgentDir() ?? getProjectDir();
+		const initialScope: AdvisorConfigScope = "project";
+		void (async () => {
+			// "Project" scope edits the repo-root WATCHDOG.yml (the project-level file
+			// discovery walks), not the launch subdir — `getProjectDir()` is only cwd.
+			let projectDir = cwd;
+			try {
+				projectDir = (await repo.root(cwd)) ?? cwd;
+			} catch {
+				projectDir = cwd;
+			}
+			const dirs = { projectDir, agentDir };
+			const initialDoc = await loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(initialScope, dirs));
+			// Fullscreen editor on the alternate screen (the /settings idiom): the
+			// overlay holds the alt buffer + mouse tracking; the transcript stays put.
+			let overlayHandle: OverlayHandle | undefined;
+			const done = () => {
+				overlayHandle?.hide();
+				this.focusActiveEditorArea();
+				this.ctx.ui.requestRender();
+			};
+			// Label the seeded implicit-default row with the actual advisor-role model
+			// (NOT the first live advisor, which may be a named advisor from another scope).
+			const advisorRoleSel = resolveAdvisorRoleSelection(
+				this.ctx.settings,
+				this.ctx.session.modelRegistry.getAvailable(),
+				this.ctx.session.modelRegistry,
+			);
+			const defaultAdvisorModel = advisorRoleSel?.model;
+			const deps: AdvisorConfigDeps = {
+				modelRegistry: this.ctx.session.modelRegistry,
+				settings: this.ctx.settings,
+				scopedModels: this.ctx.session.scopedModels,
+				availableToolNames: this.ctx.session.getAdvisorAvailableToolNames(),
+				defaultModelLabel: defaultAdvisorModel
+					? `${defaultAdvisorModel.provider}/${defaultAdvisorModel.id}`
+					: undefined,
+			};
+			const overlay = new AdvisorConfigOverlayComponent(this.ctx.ui, deps, initialScope, initialDoc, {
+				loadDoc: async scope => loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(scope, dirs)),
+				save: async (scope, doc) => {
+					await saveWatchdogConfigFile(await resolveAdvisorConfigEditPath(scope, dirs), doc);
+					// Re-discover the merged roster (project + user) so the live advisors
+					// reflect cross-level precedence, not just the edited file.
+					const discovered = await discoverAdvisorConfigs(cwd, agentDir);
+					const count = this.ctx.session.applyAdvisorConfigs(discovered.advisors, discovered.sharedInstructions);
+					this.ctx.statusLine.invalidate();
+					this.ctx.showStatus(
+						count > 0
+							? `Saved ${scope} WATCHDOG.yml — ${count} advisor${count === 1 ? "" : "s"} active.`
+							: `Saved ${scope} WATCHDOG.yml. Run /advisor on to activate the configured advisors.`,
+					);
+					this.ctx.ui.requestRender();
+				},
+				close: done,
+				requestRender: () => this.ctx.ui.requestRender(),
+				notify: message => this.ctx.showStatus(message),
+			});
+			overlayHandle = this.ctx.ui.showOverlay(overlay, {
+				anchor: "bottom-center",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+				fullscreen: true,
+			});
+			this.ctx.ui.setFocus(overlay);
+			this.ctx.ui.requestRender();
+		})();
 	}
 
 	showHistorySearch(): void {
@@ -448,6 +534,7 @@ export class SelectorController {
 			case "statusLine.showHookStatus":
 			case "statusLine.sessionAccent":
 			case "statusLine.transparent":
+			case "statusLine.compactThinkingLevel":
 			case "statusLineSegments":
 			case "statusLineModelThinking":
 			case "statusLinePathAbbreviate":
@@ -468,6 +555,7 @@ export class SelectorController {
 					sessionAccent: settings.get("statusLine.sessionAccent"),
 					transparent: settings.get("statusLine.transparent"),
 					segmentOptions: settings.get("statusLine.segmentOptions"),
+					compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 				};
 				this.ctx.statusLine.updateSettings(statusLineSettings);
 				this.ctx.updateEditorTopBorder();
@@ -533,19 +621,25 @@ export class SelectorController {
 							done();
 							this.ctx.ui.requestRender();
 						} else if (role === "default") {
-							// Default: update agent state and persist
-							await this.ctx.session.setModel(model, role, {
+							const { switched } = await this.ctx.session.setModel(model, role, {
 								selector,
 								thinkingLevel: concreteThinking,
 								persist: true,
+								currentContextTokens,
 							});
 							if (isAuto) {
-								this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
-							} else if (concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
+								if (switched) {
+									this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
+								} else {
+									this.ctx.settings.set("defaultThinkingLevel", AUTO_THINKING);
+								}
+							} else if (switched && concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
 								this.ctx.session.setThinkingLevel(concreteThinking);
 							}
-							this.ctx.statusLine.invalidate();
-							this.ctx.updateEditorBorderColor();
+							if (switched) {
+								this.ctx.statusLine.invalidate();
+								this.ctx.updateEditorBorderColor();
+							}
 							this.ctx.showStatus(`Default model: ${selector ?? model.id}`);
 							// Don't call done() - selector stays open for role assignment
 						} else {
@@ -930,7 +1024,7 @@ export class SelectorController {
 
 		this.ctx.clearTransientSessionUi();
 		this.ctx.statusLine.invalidate();
-		this.ctx.statusLine.setSessionStartTime(Date.now());
+		this.ctx.statusLine.resetActiveTime();
 		this.ctx.updateEditorTopBorder();
 		this.ctx.updateEditorBorderColor();
 		this.ctx.renderInitialMessages({ clearTerminalHistory: true });

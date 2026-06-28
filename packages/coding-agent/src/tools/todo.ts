@@ -19,6 +19,8 @@ import { formatErrorDetail, PREVIEW_LIMITS } from "./render-utils";
 // =============================================================================
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
+/** Operation names accepted by the todo tool and echoed in successful result details. */
+export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "append" | "view";
 
 export interface TodoItem {
 	content: string;
@@ -36,6 +38,8 @@ export interface TodoCompletionTransition {
 }
 
 export interface TodoToolDetails {
+	/** Operation that produced this snapshot; absent on legacy transcript entries. */
+	op?: TodoOperation;
 	phases: TodoPhase[];
 	storage: "session" | "memory";
 	completedTasks?: TodoCompletionTransition[];
@@ -134,6 +138,18 @@ function normalizeInProgressTask(phases: TodoPhase[]): void {
 	if (firstPendingTask) firstPendingTask.status = "in_progress";
 }
 
+/** Return the active todo task, preferring an in-progress item over the first pending item. */
+export function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | undefined {
+	let firstPending: TodoItem | undefined;
+	for (const phase of phases) {
+		for (const task of phase.tasks) {
+			if (task.status === "in_progress") return task;
+			if (!firstPending && task.status === "pending") firstPending = task;
+		}
+	}
+	return firstPending;
+}
+
 export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
@@ -157,31 +173,6 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 	}
 
 	return [];
-}
-
-/**
- * Pick the actionable window of tasks to display in the sticky todo panel.
- *
- * Returns up to `maxVisible` open (pending / in_progress) tasks in their
- * original phase order, plus the count of remaining open tasks not shown so
- * the caller can render a `+N more` hint. When every task in `tasks` is
- * closed (completed or abandoned), returns the trailing `maxVisible` tasks
- * with `hiddenOpenCount = 0`, so the panel keeps useful context until the
- * active-phase pointer advances on the next `todo`.
- *
- * Task identity and order are preserved — this is a slice, never a sort.
- */
-export function selectStickyTodoWindow(
-	tasks: TodoItem[],
-	maxVisible = 5,
-): { visible: TodoItem[]; hiddenOpenCount: number } {
-	const openTasks = tasks.filter(t => t.status === "pending" || t.status === "in_progress");
-	if (openTasks.length > 0) {
-		const visible = openTasks.slice(0, maxVisible);
-		return { visible, hiddenOpenCount: openTasks.length - visible.length };
-	}
-	const start = Math.max(0, tasks.length - maxVisible);
-	return { visible: tasks.slice(start), hiddenOpenCount: 0 };
 }
 
 /** Minimum overlap (after normalization) required for a substring match.
@@ -651,7 +642,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
-		const details: TodoToolDetails = { phases: effective, storage };
+		const details: TodoToolDetails = { op: params.op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {

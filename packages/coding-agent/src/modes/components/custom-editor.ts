@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { addKeyAliases, canonicalKeyId, Editor, type KeyId, parseKey, parseKittySequence } from "@oh-my-pi/pi-tui";
+import { BracketedPasteHandler } from "@oh-my-pi/pi-tui/bracketed-paste";
 import type { AppKeybinding } from "../../config/keybindings";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { imageReferenceHyperlink, PLACEHOLDER_REGEX, renderPlaceholders } from "../image-references";
@@ -229,6 +230,17 @@ export function extractBracketedImagePastePaths(data: string): string[] | undefi
 	return paths?.every(isImagePath) ? paths : undefined;
 }
 
+/**
+ * Same shape as {@link extractBracketedImagePastePaths} but operates on a
+ * payload that has already been stripped of the `\x1b[200~` / `\x1b[201~`
+ * markers — used by the assembled-paste router in {@link CustomEditor.handleInput}
+ * so split bracketed pastes get the same image-path detection as single-chunk ones.
+ */
+export function extractImagePastePathsFromText(text: string): string[] | undefined {
+	const paths = extractPastePathsFromText(text);
+	return paths?.every(isImagePath) ? paths : undefined;
+}
+
 export function extractBracketedImagePastePath(data: string): string | undefined {
 	const paths = extractBracketedImagePastePaths(data);
 	return paths?.length === 1 ? paths[0] : undefined;
@@ -422,6 +434,19 @@ export class CustomEditor extends Editor {
 	/** Custom key handlers from extensions and non-built-in app actions. */
 	#customKeyHandlers = new Map<KeyId, () => void>();
 	#customMatchKeys = new Map<string, () => void>();
+	/** Bracketed-paste assembler that runs ahead of the inherited handler so terminals which
+	 *  deliver `\x1b[200~` and `\x1b[201~` in separate stdin chunks still resolve to a single
+	 *  assembled payload here; the empty-paste / image-path branches must see the full content,
+	 *  not the raw single-chunk byte sequence. */
+	#pasteHandler = new BracketedPasteHandler();
+	/** Number of async pastes (clipboard-image reads / image-path attachments) currently in flight.
+	 *  While > 0, `handleInput` queues subsequent keystrokes into {@link #pendingInput} instead of
+	 *  dispatching them so a trailing `Enter` after `Cmd+V` can't submit before the image lands on
+	 *  `pendingImages` (Codex PR #3602 review). */
+	#pasteInFlight = 0;
+	/** Input chunks deferred behind an in-flight paste, drained in FIFO order once the paste
+	 *  count returns to zero. */
+	#pendingInput: string[] = [];
 	/** Spaces actually inserted in the current run; tracked back out when a hold is recognized. */
 	#spaceRunInserted = 0;
 	/** Consecutive "mechanical" deltas (fast + steady); a sustained run of these confirms a held bar. */
@@ -575,7 +600,34 @@ export class CustomEditor extends Editor {
 		this.onSpaceHoldEnd?.();
 	}
 
+	/** Decrement {@link #pasteInFlight} once an async paste settles and, when the count returns
+	 *  to zero, drain {@link #pendingInput} through `handleInput` so requeueing still works if a
+	 *  drained chunk triggers another async paste. Bound member so it can be passed straight to
+	 *  `Promise.then(callback, callback)`. */
+	#onPasteSettled = (): void => {
+		this.#pasteInFlight--;
+		if (this.#pasteInFlight > 0) return;
+		const drained = this.#pendingInput.splice(0);
+		for (const chunk of drained) this.handleInput(chunk);
+	};
+
+	/** Track `promise` as an in-flight paste so subsequent `handleInput` calls queue behind it,
+	 *  then drain the queue once it settles. Codex PR #3602 review: without this, a trailing
+	 *  keystroke (Enter most painfully) in the same stdin read processes synchronously while the
+	 *  clipboard read is still pending — submit fires with the text but `pendingImages` is still
+	 *  empty and the image lands on the *next* draft instead. */
+	#trackAsyncPaste(promise: Promise<unknown>): void {
+		this.#pasteInFlight++;
+		void promise.then(this.#onPasteSettled, this.#onPasteSettled);
+	}
+
 	handleInput(data: string): void {
+		// Serialize behind any in-flight async paste so a trailing Enter / follow-up key can't
+		// submit before the clipboard image reaches `pendingImages` (Codex PR #3602 review).
+		if (this.#pasteInFlight > 0) {
+			this.#pendingInput.push(data);
+			return;
+		}
 		const kittyParsed = parseKittySequence(data);
 		if (kittyParsed && (kittyParsed.modifier & 64) !== 0 && this.onCapsLock) {
 			// Caps Lock is modifier bit 64
@@ -583,11 +635,44 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		const pastedImagePaths = extractBracketedImagePastePaths(data);
-		if (pastedImagePaths && this.onPasteImagePath) {
-			void (async () => {
-				for (const path of pastedImagePaths) await this.onPasteImagePath?.(path);
-			})();
+		// Bracketed-paste assembly. Some terminals fragment the start marker,
+		// the payload, and the end marker across separate stdin chunks
+		// (Windows Terminal under heavy load, certain SSH muxes, …); the
+		// inherited handler then sees a zero-length payload and silently
+		// drops it through the normal text-insert path. Running our own
+		// `BracketedPasteHandler` ahead of `super.handleInput` lets us route
+		// the assembled content regardless of chunk boundaries:
+		//  - empty payload → `onPasteImage` (#3601: `Cmd+V`/`Ctrl+V` on an
+		//    image-only macOS pasteboard the terminal stripped to `""` first);
+		//  - explicit image-file paths → `onPasteImagePath` (#3506);
+		//  - anything else → the base editor's `pasteText` so `[Paste #N]`
+		//    markers, autocomplete, and undo state stay intact.
+		const paste = this.#pasteHandler.process(data);
+		if (paste.handled) {
+			if (paste.pasteContent === undefined) return; // still buffering — wait for end marker
+			const content = paste.pasteContent;
+			const remaining = paste.remaining;
+			// Queue any trailing bytes from the same read (typically a follow-up keystroke such as
+			// Enter that the user pressed right after Cmd+V) so they only fire *after* the paste
+			// completes — fixes the race where submit runs against an empty `pendingImages`.
+			if (remaining.length > 0) this.#pendingInput.push(remaining);
+			if (content.length === 0 && this.onPasteImage) {
+				this.#trackAsyncPaste(Promise.resolve(this.onPasteImage()));
+				return;
+			}
+			const imagePaths = extractImagePastePathsFromText(content);
+			if (imagePaths && this.onPasteImagePath) {
+				this.#trackAsyncPaste(
+					(async () => {
+						for (const p of imagePaths) await this.onPasteImagePath?.(p);
+					})(),
+				);
+				return;
+			}
+			this.pasteText(content);
+			// No async paste was started; drain the queued trailing bytes ourselves.
+			const drained = this.#pendingInput.splice(0);
+			for (const chunk of drained) this.handleInput(chunk);
 			return;
 		}
 

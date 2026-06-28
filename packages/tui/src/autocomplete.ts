@@ -68,6 +68,13 @@ export function findLeadingSlashCommandStart(text: string): number | null {
 	return text.length - trimmed.length;
 }
 
+export function findTrailingSlashCommandStart(text: string): number | null {
+	const match = /(?:^|\s)\/([^\s/]*)$/.exec(text);
+	if (!match || match.index === undefined) return null;
+	const slashOffset = match[0].indexOf("/");
+	return match.index + slashOffset;
+}
+
 function extractQuotedPrefix(text: string): string | null {
 	const quoteStart = findUnclosedQuoteStart(text);
 	if (quoteStart === null) {
@@ -223,6 +230,20 @@ export interface AutocompleteProvider {
 	 * buffer untouched.
 	 */
 	trySyncInlineReplace?(textBeforeCursor: string): { replaceLen: number; insert: string } | null;
+
+	/**
+	 * Force file-path completion (called on Tab). Returns matched items plus the
+	 * full prefix, or null when no path token sits before the cursor. Present on
+	 * file-aware providers; absent on slash-only ones.
+	 */
+	getForceFileSuggestions?(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+	): Promise<{ items: AutocompleteItem[]; prefix: string } | null>;
+
+	/** Whether a Tab press should attempt file completion at the cursor. */
+	shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
 }
 
 type CommandEntry = SlashCommand | AutocompleteItem;
@@ -324,6 +345,25 @@ function buildSlashCommandCompletions(commands: CommandEntry[], lowerPrefix: str
 		.map(({ score: _, ...rest }) => rest);
 }
 
+function hasPromptTextBeforeSlash(
+	lines: string[],
+	cursorLine: number,
+	textBeforeCursor: string,
+	slashStart: number,
+): boolean {
+	for (let i = 0; i < cursorLine; i += 1) {
+		if ((lines[i] || "").trim() !== "") return true;
+	}
+	return textBeforeCursor.slice(0, slashStart).trim() !== "";
+}
+
+function buildMidPromptSkillCompletions(commands: CommandEntry[], lowerPrefix: string): AutocompleteItem[] {
+	return buildSlashCommandCompletions(
+		commands.filter(cmd => getCommandName(cmd)?.startsWith("skill:")),
+		lowerPrefix,
+	);
+}
+
 // Combined provider that handles both slash commands and file paths.
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	#commands: CommandEntry[];
@@ -379,29 +419,40 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
-		const slashStart = findLeadingSlashCommandStart(textBeforeCursor);
+		const leadingSlashStart = findLeadingSlashCommandStart(textBeforeCursor);
+		const trailingSlashStart = findTrailingSlashCommandStart(textBeforeCursor);
+		const hasPromptTextBeforeTrailingSlash =
+			trailingSlashStart !== null &&
+			hasPromptTextBeforeSlash(lines, cursorLine, textBeforeCursor, trailingSlashStart);
+		const slashStart = hasPromptTextBeforeTrailingSlash ? trailingSlashStart : leadingSlashStart;
 		if (slashStart !== null) {
 			const commandText = textBeforeCursor.slice(slashStart);
 			const spaceIndex = commandText.indexOf(" ");
+			const isMidPromptSkillLookup = hasPromptTextBeforeTrailingSlash;
 
 			if (spaceIndex === -1) {
 				// No space yet - complete command names
 				const prefix = commandText.slice(1); // Remove the "/"
 				const lowerPrefix = prefix.toLowerCase();
 
-				const matches = buildSlashCommandCompletions(this.#commands, lowerPrefix);
+				const matches = isMidPromptSkillLookup
+					? buildMidPromptSkillCompletions(this.#commands, lowerPrefix)
+					: buildSlashCommandCompletions(this.#commands, lowerPrefix);
 
-				if (matches.length === 0) return null;
-
-				return {
-					items: matches,
-					// Preserve the full text-before-cursor (incl. leading
-					// whitespace) so the editor's Enter-staleness check
-					// (`autocompletePrefix !== currentTextBeforeCursor`)
-					// still applies the completion for `  /sk`.
-					prefix: textBeforeCursor,
-				};
-			} else {
+				if (matches.length > 0) {
+					return {
+						items: matches,
+						// Preserve the full text-before-cursor for submitted slash
+						// commands so the editor's Enter-staleness check still applies
+						// completion for `  /sk`. Mid-prompt skill lookup keeps only
+						// the slash token because accepting it replaces the whole draft.
+						prefix: isMidPromptSkillLookup ? commandText : textBeforeCursor,
+					};
+				}
+				if (!isMidPromptSkillLookup) return null;
+				// A mid-prompt slash token with no matching skill may still be an
+				// absolute path (`see /tmp`); fall through to file-path completion.
+			} else if (!isMidPromptSkillLookup) {
 				// Space found - complete command arguments
 				const commandName = commandText.slice(1, spaceIndex); // Command without "/"
 				const argumentText = commandText.slice(spaceIndex + 1); // Text after space
@@ -421,6 +472,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 					prefix: argumentText,
 				};
 			}
+			if (!isMidPromptSkillLookup) return null;
 		}
 
 		// Check for file paths - triggered by Tab or if we detect a path pattern
@@ -462,15 +514,30 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 		const afterCursor = currentLine.slice(cursorCol);
 
-		const slashStart = findLeadingSlashCommandStart(textBeforeCursor);
+		const leadingSlashStart = findLeadingSlashCommandStart(textBeforeCursor);
+		const trailingSlashStart = findTrailingSlashCommandStart(textBeforeCursor);
+		const isMidPromptSkillLookup =
+			item.value.startsWith("skill:") &&
+			trailingSlashStart !== null &&
+			hasPromptTextBeforeSlash(lines, cursorLine, textBeforeCursor, trailingSlashStart) &&
+			findTrailingSlashCommandStart(prefix) !== null;
+
+		if (isMidPromptSkillLookup) {
+			const newLine = `/${item.value}`;
+			return {
+				lines: [newLine],
+				cursorLine: 0,
+				cursorCol: newLine.length,
+			};
+		}
 
 		// Slash command suggestions can be accepted before the debounced refresh
 		// catches up to newly typed characters. Replace the live command token,
 		// not only the prefix captured when the suggestion list was rendered.
-		if (findLeadingSlashCommandStart(prefix) !== null && slashStart !== null) {
-			const slashPrefix = textBeforeCursor.slice(slashStart);
+		if (findLeadingSlashCommandStart(prefix) !== null && leadingSlashStart !== null) {
+			const slashPrefix = textBeforeCursor.slice(leadingSlashStart);
 			if (!slashPrefix.includes(" ") && !slashPrefix.slice(1).includes("/")) {
-				const beforeSlash = currentLine.slice(0, slashStart);
+				const beforeSlash = currentLine.slice(0, leadingSlashStart);
 				const newLine = `${beforeSlash}/${item.value} ${afterCursor}`;
 				const newLines = [...lines];
 				newLines[cursorLine] = newLine;

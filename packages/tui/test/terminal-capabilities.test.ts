@@ -4,6 +4,8 @@ import {
 	getTerminalInfo,
 	hyperlinksUserOverride,
 	ImageProtocol,
+	NotifyProtocol,
+	resolveWarpImageProtocol,
 	shouldEnableHyperlinksByDefault,
 	shouldEnableSynchronizedOutputByDefault,
 	synchronizedOutputUserOverride,
@@ -12,6 +14,12 @@ import {
 describe("detectTerminalId", () => {
 	it("recognizes Warp before the true-color fallback", () => {
 		expect(detectTerminalId({ TERM_PROGRAM: "WarpTerminal", COLORTERM: "truecolor" })).toBe("warp");
+	});
+
+	it("falls back to trueColor on VTE/Ptyxis environments — VTE OSC 9 is ConEmu progress, not a notification protocol", () => {
+		const env = { TERM: "xterm-256color", TERM_PROGRAM: "", COLORTERM: "truecolor", VTE_VERSION: "8400" };
+
+		expect(detectTerminalId(env)).toBe("trueColor");
 	});
 });
 
@@ -105,11 +113,71 @@ describe("shouldEnableSynchronizedOutputByDefault", () => {
 });
 
 describe("Warp terminal capabilities", () => {
+	it("recognizes TERM_PROGRAM=WarpTerminal before the true-color fallback", () => {
+		expect(detectTerminalId({ TERM_PROGRAM: "WarpTerminal", COLORTERM: "truecolor" })).toBe("warp");
+	});
+
+	it("resolves the process-wide Warp terminal id and image protocol from TERM_PROGRAM", async () => {
+		const env: Record<string, string | undefined> = {
+			...Bun.env,
+			TERM_PROGRAM: "WarpTerminal",
+			COLORTERM: "truecolor",
+		};
+		for (const key of [
+			"PI_FORCE_IMAGE_PROTOCOL",
+			"WSL_DISTRO_NAME",
+			"WSL_INTEROP",
+			"KITTY_WINDOW_ID",
+			"GHOSTTY_RESOURCES_DIR",
+			"WEZTERM_PANE",
+			"ITERM_SESSION_ID",
+			"VSCODE_PID",
+			"ALACRITTY_WINDOW_ID",
+		]) {
+			delete env[key];
+		}
+
+		const proc = Bun.spawn({
+			cmd: [
+				process.execPath,
+				"--eval",
+				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
+console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
+			],
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+
+		expect(stderr).toBe("");
+		expect(exitCode).toBe(0);
+		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string };
+		expect(resolved.id).toBe("warp");
+		expect(resolved.imageProtocol).toBe(resolved.expected);
+	});
+
+	it("is Kitty-capable with true color but no OSC 8 hyperlinks", () => {
+		const warp = getTerminalInfo("warp");
+		expect(warp.imageProtocol).toBe(ImageProtocol.Kitty);
+		expect(warp.trueColor).toBe(true);
+		expect(warp.hyperlinks).toBe(false);
+		expect(warp.notifyProtocol).toBe(NotifyProtocol.Osc9);
+		expect(warp.textSizing).toBe(false);
+	});
+
 	it("uses Kitty images on macOS/Linux and disables them on Windows", () => {
 		const mac = getTerminalInfo("warp", "darwin", {});
 		const linux = getTerminalInfo("warp", "linux", {});
 		const windows = getTerminalInfo("warp", "win32", {});
 
+		expect(resolveWarpImageProtocol("darwin")).toBe(ImageProtocol.Kitty);
+		expect(resolveWarpImageProtocol("linux")).toBe(ImageProtocol.Kitty);
+		expect(resolveWarpImageProtocol("win32")).toBeNull();
 		expect(mac.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(linux.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(windows.imageProtocol).toBeNull();
@@ -125,6 +193,8 @@ describe("Warp terminal capabilities", () => {
 		const wslDistro = getTerminalInfo("warp", "linux", { WSL_DISTRO_NAME: "Ubuntu" });
 		const wslInterop = getTerminalInfo("warp", "linux", { WSL_INTEROP: "/run/WSL/1_interop" });
 
+		expect(resolveWarpImageProtocol("linux", { WSL_DISTRO_NAME: "Ubuntu" })).toBeNull();
+		expect(resolveWarpImageProtocol("linux", { WSL_INTEROP: "/run/WSL/1_interop" })).toBeNull();
 		expect(wslDistro.imageProtocol).toBeNull();
 		expect(wslInterop.imageProtocol).toBeNull();
 	});

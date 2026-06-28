@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/omp-stats",
-	"version": "16.1.23",
+	"version": "16.2.2",
 	"description": "Local observability dashboard for pi AI usage statistics",
 	"homepage": "https://omh.sh",
 	"author": "Can Boluk",
@@ -28,6 +28,8 @@
 		"omp-stats": "./src/index.ts"
 	},
 	"scripts": {
+		"gen:stats": "bun scripts/generate-client-bundle.ts --generate",
+		"gen:stats:reset": "bun scripts/generate-client-bundle.ts --reset",
 		"build": "bun run build.ts",
 		"dev": "bun run src/index.ts",
 		"check": "biome check . && bun run check:types",

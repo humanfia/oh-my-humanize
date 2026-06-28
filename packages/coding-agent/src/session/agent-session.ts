@@ -36,6 +36,7 @@ import {
 	type CompactionSummaryMessage,
 	countTokens,
 	resolveTelemetry,
+	type StreamFn,
 	ThinkingLevel,
 	type ToolChoiceDirective,
 } from "@oh-my-pi/pi-agent-core";
@@ -80,6 +81,7 @@ import type { ProtectedToolMatcher } from "@oh-my-pi/pi-agent-core/compaction/to
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
+	Context,
 	ImageContent,
 	Message,
 	MessageAttribution,
@@ -102,18 +104,13 @@ import {
 	clearAnthropicFastModeFallback,
 	deriveClaudeDeviceId,
 	Effort,
-	isContextOverflow,
-	isUsageLimitError,
 	parseRateLimitReason,
 	resolveServiceTier,
 	streamSimple,
 } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import {
-	GeminiHeaderRunDetector,
-	isGeminiThinkingModel,
-	THINKING_LOOP_ERROR_MARKER,
-} from "@oh-my-pi/pi-ai/utils/thinking-loop";
+import { GeminiHeaderRunDetector, isGeminiThinkingModel } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -125,7 +122,6 @@ import {
 	getInstallId,
 	isBunTestRuntime,
 	isEnoent,
-	isUnexpectedSocketCloseMessage,
 	logger,
 	prompt,
 	relativePathWithinRoot,
@@ -134,18 +130,22 @@ import {
 } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import {
+	ADVISOR_DEFAULT_TOOL_NAMES,
 	AdviseTool,
 	type AdvisorAgent,
+	type AdvisorConfig,
 	AdvisorEmissionGuard,
 	type AdvisorMessageDetails,
 	type AdvisorNote,
 	AdvisorRuntime,
 	type AdvisorSeverity,
 	AdvisorTranscriptRecorder,
+	advisorTranscriptFilename,
 	formatAdvisorBatchContent,
 	isAdvisorInterruptImmuneTurnActive,
 	isInterruptingSeverity,
 	resolveAdvisorDeliveryChannel,
+	slugifyAdvisorName,
 } from "../advisor";
 import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import { classifyDifficulty } from "../auto-thinking/classifier";
@@ -162,15 +162,15 @@ import {
 	getModelMatchPreferences,
 	parseModelString,
 	type ResolvedModelRoleValue,
+	resolveAdvisorRoleSelection,
 	resolveModelOverride,
 	resolveModelRoleValue,
-	resolveRoleSelection,
 } from "../config/model-resolver";
 import { MODEL_ROLE_IDS, MODEL_ROLES } from "../config/model-roles";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { resolveServiceTierSetting } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
-import { getDefault, onAppendOnlyModeChanged } from "../config/settings";
+import { getDefault, onAppendOnlyModeChanged, validateProviderMaxInFlightRequests } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { loadCapability } from "../discovery";
 import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
@@ -236,6 +236,7 @@ import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
+import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
 import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
@@ -265,6 +266,7 @@ import {
 	shouldDisableReasoning,
 	toReasoningEffort,
 } from "../thinking";
+import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/text";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
 import { countToolsForAutoDiscovery, resolveEffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import {
@@ -292,6 +294,7 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
 import { describeAttachedImagesForTextModel } from "../utils/image-vision-fallback";
+import { generateSessionTitle } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
 import type {
 	WorkflowAgentTaskRunner,
@@ -313,7 +316,10 @@ import {
 	type BashExecutionMessage,
 	type CustomMessage,
 	convertToLlm,
-	GENERIC_ABORT_SENTINEL,
+	demoteInterruptedThinking,
+	INTERRUPTED_THINKING_MESSAGE_TYPE,
+	type InterruptedThinkingDetails,
+	isUserInterruptAbort,
 	type PythonExecutionMessage,
 	readQueueChipText,
 	SILENT_ABORT_MARKER,
@@ -327,9 +333,10 @@ import { formatSessionDumpText } from "./session-dump-format";
 import type { BranchSummaryEntry, CompactionEntry, NewSessionOptions } from "./session-entries";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
-import type { SessionManager } from "./session-manager";
+import { cleanupEmptyMoveSession, type SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
+import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
 import { YieldQueue } from "./yield-queue";
 
@@ -375,7 +382,14 @@ export type AgentSessionEvent =
 			/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 			skipped?: boolean;
 	  }
-	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
+	| {
+			type: "auto_retry_start";
+			attempt: number;
+			maxAttempts: number;
+			delayMs: number;
+			errorMessage: string;
+			errorId?: number;
+	  }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "retry_fallback_applied"; from: string; to: string; role: string }
 	| { type: "retry_fallback_succeeded"; model: string; role: string }
@@ -530,6 +544,21 @@ export interface AgentSessionConfig {
 	builtInToolNames?: Iterable<string>;
 	/** Current session pre-LLM message transform pipeline */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
+	/**
+	 * Per-request transform applied after `convertToLlm` and before the
+	 * provider call. Used for snapcompact, secret obfuscation, and image
+	 * clamping. When supplied via {@link createAgentSession}, the advisor agent
+	 * inherits this so its requests undergo the same shaping as the main turn.
+	 */
+	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
+	/**
+	 * Stream wrapper passed to the advisor agent so its requests apply the
+	 * session's `providers.openrouterVariant`, `providers.antigravityEndpoint`,
+	 * `providers.maxInFlightRequests`, and `model.loopGuard.*` settings —
+	 * keeping OpenRouter sticky-routing / response caching consistent with the
+	 * main agent. Defaults to plain `streamSimple` when omitted.
+	 */
+	advisorStreamFn?: StreamFn;
 	/** Provider payload hook used by the active session request path */
 	onPayload?: SimpleStreamOptions["onPayload"];
 	/** Provider response hook used by the active session request path */
@@ -607,14 +636,29 @@ export interface AgentSessionConfig {
 	/** Runtime adapter used by workflow human nodes to collect user input. */
 	workflowHumanInputRunner?: WorkflowHumanInputRunner;
 	/**
-	 * Hard-isolated read-only tools (read/search/find) for the advisor agent,
-	 * pre-built in `createAgentSession` against a distinct `ToolSession` so the
-	 * advisor's reads never share the primary's snapshot/seen-lines/conflict
-	 * caches. Undefined when the advisor is disabled.
+	 * Full advisor toolset, pre-built in `createAgentSession` against a distinct,
+	 * advisor-scoped `ToolSession` (its own `-advisor` session/agent id) so the
+	 * advisor's tool state stays isolated from the primary. The advisor is a full
+	 * agent; its config `tools` selects a subset (default read/grep/glob). Undefined
+	 * when the advisor is disabled.
 	 */
-	advisorReadOnlyTools?: AgentTool[];
+	advisorTools?: AgentTool[];
 	/** Preloaded watchdog prompt content for the advisor. */
 	advisorWatchdogPrompt?: string;
+	/** Preloaded YAML top-level `instructions` shared baseline, kept separate from
+	 *  `advisorWatchdogPrompt` so `/advisor configure` can swap it live. */
+	advisorSharedInstructions?: string;
+	/**
+	 * Preloaded project context files (AGENTS.md, etc.) rendered as a system-prompt
+	 * block for the advisor — the same standing instructions the primary agent
+	 * receives, so the reviewer holds the agent to them.
+	 */
+	advisorContextPrompt?: string;
+	/**
+	 * Advisors discovered from `WATCHDOG.yml`. Empty/undefined runs a single
+	 * legacy advisor on the `advisor` role (byte-for-byte the pre-config path).
+	 */
+	advisorConfigs?: AdvisorConfig[];
 	/**
 	 * Strip tool descriptions from provider-bound tool specs on side requests
 	 * (handoff). Must match the session-start value used to build the system
@@ -719,6 +763,7 @@ export interface SessionStats {
 	tokens: {
 		input: number;
 		output: number;
+		reasoning: number;
 		cacheRead: number;
 		cacheWrite: number;
 		total: number;
@@ -737,6 +782,7 @@ export interface AdvisorStats {
 	tokens: {
 		input: number;
 		output: number;
+		reasoning: number;
 		cacheRead: number;
 		cacheWrite: number;
 		total: number;
@@ -747,6 +793,43 @@ export interface AdvisorStats {
 		assistant: number;
 		total: number;
 	};
+	/** Per-advisor breakdown; one entry per active advisor (single-advisor sessions have one). */
+	advisors: PerAdvisorStat[];
+}
+
+/** One advisor's slice of {@link AdvisorStats}, surfaced for the multi-advisor status panel. */
+export interface PerAdvisorStat {
+	name: string;
+	model: Model;
+	contextWindow: number;
+	contextTokens: number;
+	tokens: AdvisorStats["tokens"];
+	cost: number;
+	messages: AdvisorStats["messages"];
+}
+
+/**
+ * One live advisor instance: its own agent/runtime/tools/recorder plus a
+ * per-advisor emission guard and identity. The session holds an array of these;
+ * primary-scoped state (turn counters, interrupt latches, the shared yield
+ * channel) stays on the session.
+ */
+interface ActiveAdvisor {
+	/** Display name from config ("default" for the legacy no-YAML advisor). */
+	name: string;
+	/** Slug for the transcript filename/session id; "" → `__advisor.jsonl`. */
+	slug: string;
+	agent: Agent;
+	runtime: AdvisorRuntime;
+	adviseTool: AdviseTool;
+	emissionGuard: AdvisorEmissionGuard;
+	recorder: AdvisorTranscriptRecorder;
+	/** Latest recorder close, awaited by dispose() so the final turn lands on disk. */
+	recorderClosed: Promise<void>;
+	/** Unsubscribe for the advisor agent's event stream feeding the recorder. */
+	agentUnsubscribe?: () => void;
+	model: Model;
+	thinkingLevel: ThinkingLevel;
 }
 
 export interface FreshSessionResult {
@@ -1191,6 +1274,60 @@ type MessageEndPersistenceSlot = {
 	release: () => void;
 };
 
+const REPLAN_TITLE_CONTEXT_TURN_LIMIT = 6;
+
+type SessionTitleSource = "auto" | "user";
+type SessionNameTrigger = "replan";
+type SetSessionNameWithTrigger = (
+	name: string,
+	source?: SessionTitleSource,
+	trigger?: SessionNameTrigger,
+) => Promise<boolean>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function textFromContent(content: unknown): string {
+	if (typeof content === "string") return content.trim();
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const block of content) {
+		if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") continue;
+		const text = block.text.trim();
+		if (text) parts.push(text);
+	}
+	return parts.join("\n\n");
+}
+
+function thinkingFromContent(content: unknown): string {
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const block of content) {
+		if (!isRecord(block) || block.type !== "thinking" || typeof block.thinking !== "string") continue;
+		const thinking = block.thinking.trim();
+		if (thinking) parts.push(thinking);
+	}
+	return parts.join("\n\n");
+}
+
+function toolCallOpFromMessage(message: AgentMessage, toolCallId: string): string | undefined {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return undefined;
+	for (const block of message.content) {
+		if (!isRecord(block) || block.type !== "toolCall" || block.id !== toolCallId) continue;
+		return isRecord(block.arguments) ? getStringProperty(block.arguments, "op") : undefined;
+	}
+	return undefined;
+}
+
+function titleConversationTurnFromMessage(message: AgentMessage): TitleConversationTurn | undefined {
+	if (message.role !== "user" && message.role !== "assistant") return undefined;
+	const text = textFromContent(message.content);
+	const thinking = message.role === "assistant" ? thinkingFromContent(message.content) : undefined;
+	if (!text && !thinking) return undefined;
+	return { role: message.role, ...(text ? { text } : {}), ...(thinking ? { thinking } : {}) };
+}
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
@@ -1231,28 +1368,21 @@ export class AgentSession {
 	#advisorAutoResumeSuppressed = false;
 	#advisorPrimaryTurnsCompleted = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
-	/** Dedupe + per-update rate-limit + content-free-phrase filter applied to
-	 *  every accepted advisor `advise()` call. Owned by the session because the
-	 *  session is what routes accepted notes back to the primary transcript.
-	 *  Reset on advisor reset (compaction, session switch, `/new`). */
-	readonly #advisorEmissionGuard = new AdvisorEmissionGuard();
 	#planModeState: PlanModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
-	#advisorRuntime?: AdvisorRuntime;
 	#advisorEnabled = false;
-	/** The advisor's own agent, retained so `/dump advisor` can serialize its transcript. Undefined when no advisor is active. */
-	#advisorAgent?: Agent;
-	#advisorAdviseTool?: AdviseTool;
-	#advisorReadOnlyTools?: AgentTool[];
+	#advisorTools?: AgentTool[];
 	#advisorWatchdogPrompt?: string;
+	#advisorSharedInstructions?: string;
+	#advisorContextPrompt?: string;
 	#advisorYieldQueueUnsubscribe?: () => void;
-	/** Persists the advisor agent's turns to `<session>/__advisor.jsonl` for stats
-	 *  attribution and Agent Hub observability. Undefined when no advisor is active. */
-	#advisorTranscriptRecorder?: AdvisorTranscriptRecorder;
-	/** Unsubscribe for the advisor agent's event stream feeding the recorder. */
-	#advisorAgentUnsubscribe?: () => void;
-	/** Latest advisor-recorder close, awaited by dispose() so the final turn lands on disk. */
+	/** Live advisors. Empty when no advisor is active. */
+	#advisors: ActiveAdvisor[] = [];
+	/** Configured advisor roster from WATCHDOG.yml; undefined/empty → single legacy advisor. */
+	#advisorConfigs?: AdvisorConfig[];
+	/** Aggregate of the most recent stop's recorder closes; awaited by dispose() and
+	 *  used as the open barrier for the next build so two writers never share a file. */
 	#advisorRecorderClosed: Promise<void> = Promise.resolve();
 	#goalTurnCounter = 0;
 	#planReferenceSent = false;
@@ -1261,6 +1391,8 @@ export class AgentSession {
 	#allowAcpAgentInitiatedTurns = false;
 	/** Per-session memory of allow_always / reject_always decisions for gated tools. */
 	#acpPermissionDecisions: Map<string, "allow_always" | "reject_always"> = new Map();
+	/** Session file created by this session's `/move`; removed on dispose if it stayed empty. */
+	#movedFromEmptySessionFile?: string;
 
 	// Compaction state
 	#compactionAbortController: AbortController | undefined = undefined;
@@ -1289,6 +1421,7 @@ export class AgentSession {
 	 */
 	#todoReminderAwaitingProgress = false;
 	#todoPhases: TodoPhase[] = [];
+	#replanTitleRefreshInFlight: Promise<void> | undefined = undefined;
 	#toolChoiceQueue = new ToolChoiceQueue();
 
 	// Bash execution state
@@ -1354,6 +1487,8 @@ export class AgentSession {
 	#workflowScriptEvalRunner: WorkflowScriptEvalRunner | undefined;
 	#workflowShellScriptRunner: WorkflowShellScriptRunner | undefined;
 	#workflowHumanInputRunner: WorkflowHumanInputRunner | undefined;
+	#transformProviderContext: ((context: Context, model: Model) => Context | Promise<Context>) | undefined;
+	#advisorStreamFn: StreamFn | undefined;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#rebuildSystemPrompt:
 		| ((toolNames: string[], tools: Map<string, AgentTool>) => Promise<{ systemPrompt: string[] }>)
@@ -1408,6 +1543,7 @@ export class AgentSession {
 	 *  `message_end` + `stopReason: "aborted"`; callers clear it in `finally` so
 	 *  it cannot leak into later unrelated aborts. */
 	#planInternalAbortPending = false;
+	#pendingAbortErrorId?: number;
 
 	#postPromptTasks = new Set<Promise<unknown>>();
 	#postPromptTasksPromise: Promise<void> | undefined = undefined;
@@ -1669,14 +1805,19 @@ export class AgentSession {
 		// toggle scopes priority to Fireworks alone, without mutating the shared
 		// session `serviceTier` that drives `/fast` and OpenAI/Anthropic priority.
 		this.agent.serviceTierResolver = model => this.#effectiveServiceTier(model);
-		this.#advisorReadOnlyTools = config.advisorReadOnlyTools;
+		this.#advisorTools = config.advisorTools;
 		this.#advisorWatchdogPrompt = config.advisorWatchdogPrompt;
+		this.#advisorSharedInstructions = config.advisorSharedInstructions;
+		this.#advisorContextPrompt = config.advisorContextPrompt;
+		this.#advisorConfigs = config.advisorConfigs;
 		this.#pruneToolDescriptions = config.pruneToolDescriptions === true;
 		this.#validateRetryFallbackChains();
 		this.#toolRegistry = config.toolRegistry ?? new Map();
 		this.#builtInToolNames = new Set(config.builtInToolNames ?? []);
 		this.#requestedToolNames = config.requestedToolNames;
 		this.#transformContext = config.transformContext ?? (messages => messages);
+		this.#transformProviderContext = config.transformProviderContext;
+		this.#advisorStreamFn = config.advisorStreamFn;
 		this.#onPayload = config.onPayload;
 		this.#workflowAgentTaskRunner = config.workflowAgentTaskRunner;
 		this.#workflowScriptEvalRunner = config.workflowScriptEvalRunner;
@@ -1717,12 +1858,15 @@ export class AgentSession {
 				await this.#applyRewind(rewindReport, messages);
 			}
 			this.#advisorPrimaryTurnsCompleted++;
-			if (this.#advisorRuntime && !this.#advisorRuntime.disposed) {
-				this.#advisorRuntime.onTurnEnd(messages);
+			if (this.#advisors.length > 0) {
+				for (const a of this.#advisors) {
+					if (!a.runtime.disposed) a.runtime.onTurnEnd(messages);
+				}
 				const syncBacklog = this.settings.get("advisor.syncBacklog");
 				if (syncBacklog !== "off") {
 					const threshold = parseInt(syncBacklog, 10);
-					await this.#advisorRuntime.waitForCatchup(30000, threshold, signal);
+					// Parallel so the 30s catch-up budget is shared across advisors, not summed.
+					await Promise.all(this.#advisors.map(a => a.runtime.waitForCatchup(30000, threshold, signal)));
 				}
 			}
 			await this.#maintainContextMidRun(messages, signal, context);
@@ -1892,12 +2036,14 @@ export class AgentSession {
 		// Mute the recorder across the re-prime: AdvisorRuntime.reset() aborts the advisor
 		// loop, and that abort can emit an `aborted` message_end we must not attribute to
 		// either session's transcript. Detach, reset, then re-attach the live agent's feed.
-		this.#advisorAgentUnsubscribe?.();
-		this.#advisorAgentUnsubscribe = undefined;
-		this.#advisorRuntime?.reset();
-		this.#advisorAdviseTool?.resetDeliveredNotes();
-		this.#advisorEmissionGuard.reset();
-		this.#attachAdvisorRecorderFeed();
+		for (const a of this.#advisors) {
+			a.agentUnsubscribe?.();
+			a.agentUnsubscribe = undefined;
+			a.runtime.reset();
+			a.adviseTool.resetDeliveredNotes();
+			a.emissionGuard.reset();
+			this.#attachAdvisorRecorderFeed(a);
+		}
 		this.#advisorPrimaryTurnsCompleted = 0;
 		this.#advisorInterruptImmuneTurnStart = undefined;
 		this.#advisorAutoResumeSuppressed = false;
@@ -1910,212 +2056,298 @@ export class AgentSession {
 
 	#buildAdvisorRuntime(seedToCurrent = false): boolean {
 		if (this.#isDisposed) return false;
-		if (this.#advisorRuntime) return true;
+		if (this.#advisors.length > 0) return true;
 		if (!this.#advisorEnabled) return false;
 		if (this.#agentKind !== "main" && !this.settings.get("advisor.subagents")) return false;
 
-		const advisorSel = resolveRoleSelection(
-			["advisor"],
-			this.settings,
-			this.#modelRegistry.getAvailable(),
-			this.#modelRegistry,
-		);
-		if (!advisorSel) {
-			logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive");
-			return false;
-		}
-
-		// Concern and blocker interrupt the running agent through the steering
-		// channel (aborting in-flight tools at the next steering boundary); when the
-		// loop has already yielded, triggerTurn resumes it so the advice is acted on
-		// immediately rather than waiting for the next user prompt. After a deliberate
-		// user interrupt the auto-resume is suppressed — but only while the agent is
-		// idle or still tearing the interrupted turn down: a concern is then recorded
-		// as a visible card and re-enters context when the user resumes. Once a turn
-		// is streaming again (a resume the user already drove) it is steered in live,
-		// since steering an active run auto-resumes nothing; parking it there would
-		// strand the advice and dump the backlog as one burst at the next prompt. A
-		// plain nit always rides the non-interrupting YieldQueue aside.
-		// Apply the per-session emission policy (one-advise-per-update gate,
-		// exact-text dedupe, content-free phrase filter) before any routing.
-		// Suppression here means the advisor model called `advise()` but the call
-		// is dropped silently — the model still sees `Recorded.` from the tool, so
-		// telling it "suppressed" doesn't tempt it into rephrasing the same useless
-		// note to bypass the dedupe.
-		const enqueueAdvice = (note: string, severity?: AdvisorSeverity) => {
-			if (!this.#advisorEmissionGuard.accept(note)) {
-				logger.debug("advisor advice suppressed by emission guard", { severity });
-				return;
-			}
-			const interrupting = isInterruptingSeverity(severity);
-			const channel = resolveAdvisorDeliveryChannel({
-				severity,
-				autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
-				// Key on the live agent-core loop, not session `isStreaming` (which also
-				// counts `#promptInFlightCount` during post-turn unwind). Only a running
-				// loop will consume a steer at its next boundary; steering into the unwind
-				// window would strand the card and let #drainStrandedQueuedMessages
-				// auto-resume it despite the user's interrupt.
-				streaming: this.agent.state.isStreaming,
-				aborting: this.#abortInProgress,
-				interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
-			});
-			if (channel === "aside") {
-				this.yieldQueue.enqueue("advisor", { note, severity });
-				return;
-			}
-			const notes: AdvisorNote[] = [{ note, severity }];
-			const content = formatAdvisorBatchContent(notes);
-			const details = { notes } satisfies AdvisorMessageDetails;
-			if (channel === "preserve") {
-				this.#preserveAdvisorCard({
-					role: "custom",
-					customType: "advisor",
-					content,
-					display: true,
-					attribution: "agent",
-					details,
-					timestamp: Date.now(),
-				});
-				return;
-			}
-			this.#recordAdvisorInterruptDelivered();
-			void this.sendCustomMessage(
-				{ customType: "advisor", content, display: true, attribution: "agent", details },
-				{ deliverAs: "steer", triggerTurn: true },
-			).catch(err => logger.debug("advisor delivery failed", { err: String(err) }));
-		};
-
-		const adviseTool = new AdviseTool(enqueueAdvice);
-		this.#advisorAdviseTool = adviseTool;
-		const advisorReadOnlyTools = this.#advisorReadOnlyTools ?? [];
-
-		const appendOnlyContext = new AppendOnlyContextManager();
-		const advisorThinkingLevel = advisorSel.thinkingLevel ?? ThinkingLevel.Medium;
-		const systemPrompt = [advisorSystemPrompt];
-		if (this.#advisorWatchdogPrompt) {
-			systemPrompt.push(this.#advisorWatchdogPrompt);
-		}
-		const advisorSessionId = this.sessionId ? `${this.sessionId}-advisor` : undefined;
+		// The lone implicit "default" advisor (slug "") reproduces the legacy
+		// single-advisor path: the `advisor` role model + `__advisor.jsonl`.
+		const legacy = !this.#advisorConfigs?.length;
+		const roster: AdvisorConfig[] = legacy ? [{ name: "default" }] : this.#advisorConfigs!;
 
 		// Advisor service tier (`serviceTierAdvisor`): "none" (default) runs the
 		// advisor on standard processing; "inherit" tracks the session's live tier
 		// per request (like the main agent, including /fast toggles) via a resolver;
-		// a concrete value pins the advisor to that tier regardless of the session.
+		// a concrete value pins the advisor to that tier. One value for all advisors.
 		const advisorTierSetting = this.settings.get("serviceTierAdvisor");
 		const advisorServiceTier =
 			advisorTierSetting === "inherit" ? undefined : resolveServiceTierSetting(advisorTierSetting, undefined);
 		const advisorServiceTierResolver =
 			advisorTierSetting === "inherit" ? (model: Model) => this.#effectiveServiceTier(model) : undefined;
 
-		// Thread the primary's telemetry into the advisor loop so the advisor
-		// model's GenAI spans + usage/cost hooks fire like every other model call,
-		// stamped with the advisor's own identity. `conversationId` is cleared so
-		// the advisor loop falls back to its own `-advisor` session id for
-		// `gen_ai.conversation.id` instead of inheriting the primary's
-		// conversation; undefined telemetry stays undefined (zero-overhead no-op).
-		const advisorTelemetry = this.agent.telemetry
-			? {
-					...this.agent.telemetry,
-					agent: {
-						id: advisorSessionId,
-						name: MODEL_ROLES.advisor.name,
-						description: formatModelString(advisorSel.model),
-					},
-					conversationId: undefined,
+		const usedSlugs = new Set<string>();
+		for (const config of roster) {
+			let slug = legacy ? "" : slugifyAdvisorName(config.name);
+			if (slug) {
+				let candidate = slug;
+				let n = 2;
+				while (usedSlugs.has(candidate)) candidate = `${slug}-${n++}`;
+				slug = candidate;
+				usedSlugs.add(slug);
+			}
+
+			// Resolve the advisor's model: an explicit `model` override wins; else the
+			// `advisor` role chain. A model that fails to resolve skips just this advisor.
+			let model: Model | undefined;
+			let thinkingLevel: ThinkingLevel | undefined;
+			if (config.model) {
+				const resolved = resolveModelOverride([config.model], this.#modelRegistry, this.settings);
+				model = resolved.model;
+				thinkingLevel = resolved.thinkingLevel;
+				if (!model) {
+					this.emitNotice("warning", `Advisor "${config.name}": no model matched "${config.model}"`, "advisor");
+					continue;
 				}
-			: undefined;
-		const advisorAgent = new Agent({
-			initialState: {
-				systemPrompt,
-				model: advisorSel.model,
-				thinkingLevel: toReasoningEffort(advisorThinkingLevel),
-				tools: [adviseTool, ...advisorReadOnlyTools],
-			},
-			appendOnlyContext,
-			sessionId: advisorSessionId,
-			getApiKey: requestModel => this.#modelRegistry.resolver(requestModel, advisorSessionId),
-			intentTracing: false,
-			telemetry: advisorTelemetry,
-			serviceTier: advisorServiceTier,
-			serviceTierResolver: advisorServiceTierResolver,
-		});
-		advisorAgent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
+			} else {
+				const sel = resolveAdvisorRoleSelection(
+					this.settings,
+					this.#modelRegistry.getAvailable(),
+					this.#modelRegistry,
+				);
+				if (!sel) {
+					logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive", {
+						advisor: config.name,
+					});
+					continue;
+				}
+				model = sel.model;
+				thinkingLevel = sel.thinkingLevel;
+			}
+			const advisorModel = model;
+			const advisorName = config.name;
+			const advisorThinkingLevel = thinkingLevel ?? ThinkingLevel.Medium;
 
-		const advisorAgentFacade: AdvisorAgent = {
-			prompt: input => advisorAgent.prompt(input),
-			abort: reason => advisorAgent.abort(reason),
-			reset: () => {
-				advisorAgent.reset();
-				appendOnlyContext.log.clear();
-			},
-			state: advisorAgent.state,
-		};
+			const emissionGuard = new AdvisorEmissionGuard();
+			const adviseTool = new AdviseTool((note, severity) => this.#routeAdvice(advisorRef, note, severity));
 
-		this.#advisorAgent = advisorAgent;
-		// Persist the advisor's turns to `<session>/__advisor.jsonl` (resolved lazily
-		// so it follows session switches) so its model usage is attributed in stats
-		// and its transcript shows in the Agent Hub — without registering it as a peer.
-		const recorder = new AdvisorTranscriptRecorder(
-			() => this.sessionManager.getSessionFile(),
-			() => this.sessionManager.getCwd(),
-			// On the advisor on→off→on toggle, wait for the prior recorder's close so
-			// two SessionManagers never hold the same __advisor.jsonl at once.
-			this.#advisorRecorderClosed,
-		);
-		this.#advisorTranscriptRecorder = recorder;
-		this.#attachAdvisorRecorderFeed();
-		this.#advisorRuntime = new AdvisorRuntime(advisorAgentFacade, {
-			snapshotMessages: () => this.agent.state.messages,
-			enqueueAdvice,
-			maintainContext: incomingTokens => this.#maintainAdvisorContext(incomingTokens),
-			obfuscator: this.#obfuscator,
-			beginAdvisorUpdate: () => this.#advisorEmissionGuard.beginUpdate(),
-		});
-		if (seedToCurrent) {
-			this.#advisorRuntime.seedTo(this.agent.state.messages.length);
+			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
+			// instructions; `config.instructions` adds this advisor's specialization.
+			const systemPrompt = [advisorSystemPrompt];
+			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
+			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
+			if (this.#advisorSharedInstructions) systemPrompt.push(this.#advisorSharedInstructions);
+			if (config.instructions?.trim()) systemPrompt.push(config.instructions.trim());
+
+			const names = config.tools?.length ? new Set(config.tools) : ADVISOR_DEFAULT_TOOL_NAMES;
+			const tools = (this.#advisorTools ?? []).filter(t => names.has(t.name));
+
+			const advisorSessionId = this.#advisorSessionId(slug);
+			const appendOnlyContext = new AppendOnlyContextManager();
+
+			// Thread the primary's telemetry into the advisor loop so the advisor
+			// model's GenAI spans + usage/cost hooks fire stamped with the advisor's
+			// own identity. `conversationId` is cleared so the advisor loop falls back
+			// to its own session id; undefined telemetry stays undefined.
+			const advisorTelemetry = this.agent.telemetry
+				? {
+						...this.agent.telemetry,
+						agent: {
+							id: advisorSessionId,
+							name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
+							description: formatModelString(advisorModel),
+						},
+						conversationId: undefined,
+					}
+				: undefined;
+			// Mirror the SDK's provider-shaping options (streamFn/onPayload/...,
+			// providerSessionState, promptCacheKey, transformProviderContext) so each
+			// advisor's requests cache, route, and obfuscate like the main turn.
+			const advisorAgent = new Agent({
+				initialState: {
+					systemPrompt,
+					model: advisorModel,
+					thinkingLevel: toReasoningEffort(advisorThinkingLevel),
+					tools: [adviseTool, ...tools],
+				},
+				appendOnlyContext,
+				sessionId: advisorSessionId,
+				promptCacheKey: advisorSessionId,
+				providerSessionState: this.#providerSessionState,
+				getApiKey: requestModel => this.#modelRegistry.resolver(requestModel, advisorSessionId),
+				streamFn: this.#advisorStreamFn,
+				onPayload: this.#onPayload,
+				onResponse: this.#onResponse,
+				onSseEvent: this.#onSseEvent,
+				transformProviderContext: this.#transformProviderContext,
+				intentTracing: false,
+				telemetry: advisorTelemetry,
+				serviceTier: advisorServiceTier,
+				serviceTierResolver: advisorServiceTierResolver,
+			});
+			advisorAgent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
+
+			const advisorAgentFacade: AdvisorAgent = {
+				prompt: input => advisorAgent.prompt(input),
+				abort: reason => advisorAgent.abort(reason),
+				reset: () => {
+					advisorAgent.reset();
+					appendOnlyContext.log.clear();
+				},
+				rollbackTo: count => {
+					// Drop the failed user batch + synthetic assistant-error turn
+					// `Agent.#runLoop` appended for a turn ending in `stopReason: "error"`.
+					const messages = advisorAgent.state.messages;
+					if (count < messages.length) {
+						messages.length = count;
+					}
+					appendOnlyContext.resetSyncCursor();
+					advisorAgent.state.error = undefined;
+				},
+				state: advisorAgent.state,
+			};
+
+			// Persist this advisor's turns to `<session>/__advisor[.<slug>].jsonl`
+			// (resolved lazily so it follows session switches) for stats attribution
+			// and Agent Hub observability, without registering it as a peer.
+			const recorder = new AdvisorTranscriptRecorder(
+				() => this.sessionManager.getSessionFile(),
+				() => this.sessionManager.getCwd(),
+				advisorTranscriptFilename(slug),
+				// On the advisor on→off→on toggle, wait for the prior recorders' closes
+				// so two SessionManagers never hold the same file at once.
+				this.#advisorRecorderClosed,
+			);
+			const runtime = new AdvisorRuntime(advisorAgentFacade, {
+				snapshotMessages: () => this.agent.state.messages,
+				enqueueAdvice: (note, severity) => this.#routeAdvice(advisorRef, note, severity),
+				maintainContext: incomingTokens => this.#maintainAdvisorContext(advisorRef, incomingTokens),
+				obfuscator: this.#obfuscator,
+				beginAdvisorUpdate: () => advisorRef.emissionGuard.beginUpdate(),
+				notifyFailure: error => {
+					const message = error instanceof Error ? error.message : String(error);
+					this.emitNotice(
+						"warning",
+						`Advisor${slug ? ` "${advisorName}"` : ""} unavailable for ${formatModelString(advisorModel)}: ${message}`,
+						"advisor",
+					);
+				},
+			});
+
+			const advisorRef: ActiveAdvisor = {
+				name: advisorName,
+				slug,
+				agent: advisorAgent,
+				runtime,
+				adviseTool,
+				emissionGuard,
+				recorder,
+				recorderClosed: Promise.resolve(),
+				model: advisorModel,
+				thinkingLevel: advisorThinkingLevel,
+			};
+			this.#attachAdvisorRecorderFeed(advisorRef);
+			if (seedToCurrent) runtime.seedTo(this.agent.state.messages.length);
+			this.#advisors.push(advisorRef);
 		}
 
-		// Batch non-blocking advisor notes into one injected custom message.
-		this.#advisorYieldQueueUnsubscribe = this.yieldQueue.register<AdvisorNote>("advisor", {
-			build: entries =>
-				entries.length === 0
-					? null
-					: ({
-							role: "custom",
-							customType: "advisor",
-							display: true,
-							attribution: "agent",
-							timestamp: Date.now(),
-							content: formatAdvisorBatchContent(entries),
-							details: { notes: entries } satisfies AdvisorMessageDetails,
-						} satisfies CustomMessage),
-			skipIdleFlush: true,
-		});
+		// One shared non-blocking aside channel for all advisors; the build callback
+		// aggregates every advisor's queued nits into one card (each entry already
+		// carries its own `advisor` name).
+		if (this.#advisors.length > 0 && !this.#advisorYieldQueueUnsubscribe) {
+			this.#advisorYieldQueueUnsubscribe = this.yieldQueue.register<AdvisorNote>("advisor", {
+				build: entries =>
+					entries.length === 0
+						? null
+						: ({
+								role: "custom",
+								customType: "advisor",
+								display: true,
+								attribution: "agent",
+								timestamp: Date.now(),
+								content: formatAdvisorBatchContent(entries),
+								details: { notes: entries } satisfies AdvisorMessageDetails,
+							} satisfies CustomMessage),
+				skipIdleFlush: true,
+			});
+		}
 
-		return true;
+		return this.#advisors.length > 0;
+	}
+
+	/** Provider/session id for an advisor's loop. The slug suffix MUST match the
+	 *  advisor's transcript filename so stats/telemetry attribute the same advisor. */
+	#advisorSessionId(slug: string): string | undefined {
+		if (!this.sessionId) return undefined;
+		return slug ? `${this.sessionId}-advisor-${slug}` : `${this.sessionId}-advisor`;
+	}
+
+	/**
+	 * Route one accepted advice note from `advisor` to the primary. Concern and
+	 * blocker interrupt the running agent through the steering channel; once the
+	 * loop has yielded, `triggerTurn` resumes it. After a deliberate user interrupt
+	 * auto-resume is suppressed while idle/unwinding (the note becomes a preserved
+	 * card re-entering on resume); a live-streaming turn is steered in directly. A
+	 * plain nit always rides the non-interrupting YieldQueue aside. Suppression by
+	 * the per-advisor emission guard drops the note silently — the model still saw
+	 * `Recorded.`, so it isn't tempted to rephrase the same note past the dedupe.
+	 */
+	#routeAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): void {
+		if (!advisor.emissionGuard.accept(note)) {
+			logger.debug("advisor advice suppressed by emission guard", { severity, advisor: advisor.name });
+			return;
+		}
+		// The implicit single ("default") advisor stamps no source name, so its
+		// agent-facing `<advisory>` bytes stay identical to the pre-multi-advisor path.
+		const source = advisor.slug ? advisor.name : undefined;
+		const interrupting = isInterruptingSeverity(severity);
+		const channel = resolveAdvisorDeliveryChannel({
+			severity,
+			autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
+			// Key on the live agent-core loop, not session `isStreaming` (which also
+			// counts `#promptInFlightCount` during post-turn unwind). Only a running
+			// loop consumes a steer at its next boundary.
+			streaming: this.agent.state.isStreaming,
+			aborting: this.#abortInProgress,
+			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
+		});
+		if (channel === "aside") {
+			this.yieldQueue.enqueue("advisor", { note, severity, advisor: source });
+			return;
+		}
+		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
+		const content = formatAdvisorBatchContent(notes);
+		const details = { notes } satisfies AdvisorMessageDetails;
+		if (channel === "preserve") {
+			this.#preserveAdvisorCard({
+				role: "custom",
+				customType: "advisor",
+				content,
+				display: true,
+				attribution: "agent",
+				details,
+				timestamp: Date.now(),
+			});
+			return;
+		}
+		this.#recordAdvisorInterruptDelivered();
+		void this.sendCustomMessage(
+			{ customType: "advisor", content, display: true, attribution: "agent", details },
+			{ deliverAs: "steer", triggerTurn: true },
+		).catch(err => logger.debug("advisor delivery failed", { err: String(err) }));
+	}
+
+	/** Re-prime every advisor's transcript view (compaction/shake/rewind) without the
+	 *  session-level latch reset {@link #resetAdvisorSessionState} performs. */
+	#resetAllAdvisorRuntimes(): void {
+		for (const a of this.#advisors) a.runtime.reset();
 	}
 
 	#stopAdvisorRuntime(): void {
-		// Detach the recorder feed BEFORE aborting the advisor agent: dispose() aborts
+		// Detach each recorder feed BEFORE aborting its advisor agent: dispose() aborts
 		// the loop, and an abort emits a final `message_end` we must not enqueue against
 		// a closing recorder (it would reopen and resurrect an already-released file).
-		this.#advisorAgentUnsubscribe?.();
-		this.#advisorAgentUnsubscribe = undefined;
-		if (this.#advisorRuntime) {
-			this.#advisorRuntime.dispose();
-			this.#advisorRuntime = undefined;
-		}
-		if (this.#advisorTranscriptRecorder) {
-			// Capture the close so dispose()/`/drop` can await the queued open+append+close —
+		const closes: Promise<void>[] = [];
+		for (const a of this.#advisors) {
+			a.agentUnsubscribe?.();
+			a.agentUnsubscribe = undefined;
+			a.runtime.dispose();
+			// Capture each close so dispose()/`/drop` can await the queued open+append+close —
 			// the last advisor turn would otherwise be lost on a fast process exit.
-			this.#advisorRecorderClosed = this.#advisorTranscriptRecorder.close();
-			this.#advisorTranscriptRecorder = undefined;
+			a.recorderClosed = a.recorder.close();
+			closes.push(a.recorderClosed);
 		}
-		if (this.#advisorAgent) {
-			this.#advisorAgent = undefined;
-		}
-		this.#advisorAdviseTool = undefined;
+		this.#advisorRecorderClosed = Promise.all(closes).then(() => {});
+		this.#advisors = [];
 		this.#advisorYieldQueueUnsubscribe?.();
 		this.#advisorYieldQueueUnsubscribe = undefined;
 	}
@@ -2123,16 +2355,13 @@ export class AgentSession {
 	/** Subscribe the advisor agent's finalized messages into the transcript recorder.
 	 *  Idempotent-by-replacement: callers detach the prior feed first. Kept separate
 	 *  so the re-prime path can mute the feed across an abort-driven reset. */
-	#attachAdvisorRecorderFeed(): void {
-		const agent = this.#advisorAgent;
-		const recorder = this.#advisorTranscriptRecorder;
-		if (!agent || !recorder) return;
-		this.#advisorAgentUnsubscribe = agent.subscribe(event => {
-			if (event.type === "message_end") recorder.record(event.message);
+	#attachAdvisorRecorderFeed(advisor: ActiveAdvisor): void {
+		advisor.agentUnsubscribe = advisor.agent.subscribe(event => {
+			if (event.type === "message_end") advisor.recorder.record(event.message);
 		});
 	}
 
-	async #promoteAdvisorContextModel(currentModel: Model): Promise<boolean> {
+	async #promoteAdvisorContextModel(advisor: ActiveAdvisor, currentModel: Model): Promise<boolean> {
 		const promotionSettings = this.settings.getGroup("contextPromotion");
 		if (!promotionSettings.enabled) return false;
 		const contextWindow = currentModel.contextWindow ?? 0;
@@ -2140,26 +2369,23 @@ export class AgentSession {
 		const targetModel = await this.#resolveContextPromotionTarget(currentModel, contextWindow);
 		if (!targetModel) return false;
 
-		const advisorSel = resolveRoleSelection(
-			["advisor"],
-			this.settings,
-			this.#modelRegistry.getAvailable(),
-			this.#modelRegistry,
-		);
-		const advisorThinkingLevel = advisorSel?.thinkingLevel ?? ThinkingLevel.Medium;
-
+		// Preserve this advisor's own thinking level (a configured `model:...:high`
+		// keeps its suffix across a promotion); only the model changes.
+		const advisorThinkingLevel = advisor.thinkingLevel;
 		try {
-			this.#advisorAgent?.setModel(targetModel);
-			this.#advisorAgent?.setThinkingLevel(toReasoningEffort(advisorThinkingLevel));
-			this.#advisorAgent?.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
-			this.#advisorAgent?.appendOnlyContext?.invalidateForModelChange();
+			advisor.agent.setModel(targetModel);
+			advisor.agent.setThinkingLevel(toReasoningEffort(advisorThinkingLevel));
+			advisor.agent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
+			advisor.agent.appendOnlyContext?.invalidateForModelChange();
 			logger.debug("Advisor context promotion switched model on overflow", {
+				advisor: advisor.name,
 				from: `${currentModel.provider}/${currentModel.id}`,
 				to: `${targetModel.provider}/${targetModel.id}`,
 			});
 			return true;
 		} catch (error) {
 			logger.warn("Advisor context promotion failed", {
+				advisor: advisor.name,
 				from: `${currentModel.provider}/${currentModel.id}`,
 				to: `${targetModel.provider}/${targetModel.id}`,
 				error: String(error),
@@ -2168,19 +2394,18 @@ export class AgentSession {
 		}
 	}
 
-	async #maintainAdvisorContext(incomingTokens: number): Promise<boolean> {
-		const advisor = this.#advisorAgent;
-		if (!advisor) return false;
+	async #maintainAdvisorContext(advisor: ActiveAdvisor, incomingTokens: number): Promise<boolean> {
+		const agent = advisor.agent;
 
 		const compactionSettings = this.settings.getGroup("compaction");
 		if (compactionSettings.strategy === "off") return false;
 		if (!compactionSettings.enabled) return false;
 
-		const advisorModel = advisor.state.model;
+		const advisorModel = agent.state.model;
 		const contextWindow = advisorModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
 
-		const messages = advisor.state.messages;
+		const messages = agent.state.messages;
 		let contextTokens = incomingTokens;
 		for (const message of messages) {
 			contextTokens += estimateTokens(message);
@@ -2191,9 +2416,9 @@ export class AgentSession {
 		}
 
 		// 1. Try promotion first
-		if (await this.#promoteAdvisorContextModel(advisorModel)) {
+		if (await this.#promoteAdvisorContextModel(advisor, advisorModel)) {
 			// Promotion succeeded, check if new model has enough space
-			const newModel = advisor.state.model;
+			const newModel = agent.state.model;
 			const newWindow = newModel.contextWindow ?? 0;
 			if (newWindow > 0) {
 				const stillNeedsCompaction = shouldCompact(contextTokens, newWindow, compactionSettings);
@@ -2215,7 +2440,9 @@ export class AgentSession {
 					timestamp,
 					summary: message.summary,
 					shortSummary: message.shortSummary,
-					firstKeptEntryId: (message as any).firstKeptEntryId || `msg-${i + 1}`,
+					firstKeptEntryId:
+						(message as CompactionSummaryMessage & { firstKeptEntryId?: string }).firstKeptEntryId ||
+						`msg-${i + 1}`,
 					tokensBefore: message.tokensBefore,
 				} satisfies CompactionEntry;
 			}
@@ -2229,33 +2456,37 @@ export class AgentSession {
 			} satisfies SessionMessageEntry;
 		});
 
-		const preparation = prepareCompaction(pathEntries, compactionSettings);
-		if (!preparation) {
-			// Cannot prepare compaction, fallback to re-prime
-			return true;
-		}
-
-		const advisorCompactionThinkingLevel: ThinkingLevel | undefined = advisor.state.disableReasoning
-			? ThinkingLevel.Off
-			: advisor.state.thinkingLevel;
-
-		// Advisor state is in-memory-only, so snapcompact's frame archive has no
-		// stable SessionEntry preserveData slot to carry across future advisor
-		// maintenance runs. Use an LLM summary even when the primary session is
-		// configured for snapcompact.
 		const availableModels = this.#modelRegistry.getAvailable();
 		const candidates = this.#resolveCompactionModelCandidates(advisorModel, availableModels);
 		if (candidates.length === 0) {
 			// No compaction candidates, fallback to re-prime
 			return true;
 		}
+		const preparation = prepareCompaction(
+			pathEntries,
+			compactionSettings,
+			candidates.filter(model => this.#modelRegistry.hasConfiguredAuth(model)),
+		);
+		if (!preparation) {
+			// Cannot prepare compaction, fallback to re-prime
+			return true;
+		}
+
+		const advisorCompactionThinkingLevel: ThinkingLevel | undefined = agent.state.disableReasoning
+			? ThinkingLevel.Off
+			: agent.state.thinkingLevel;
+
+		// Advisor state is in-memory-only, so snapcompact's frame archive has no
+		// stable SessionEntry preserveData slot to carry across future advisor
+		// maintenance runs. Use an LLM summary even when the primary session is
+		// configured for snapcompact.
 
 		let compactResult: CompactionResult | undefined;
 		let lastError: unknown;
-		const advisorSessionId = this.sessionId ? `${this.sessionId}-advisor` : undefined;
+		const advisorSessionId = this.#advisorSessionId(advisor.slug);
 		// Instrument the advisor's overflow-compaction one-shot like the primary
 		// compaction path so the advisor model's maintenance call also emits spans.
-		const telemetry = resolveTelemetry(advisor.telemetry, advisorSessionId);
+		const telemetry = resolveTelemetry(agent.telemetry, advisorSessionId);
 
 		for (const candidate of candidates) {
 			const apiKey = await this.#modelRegistry.getApiKey(candidate, advisorSessionId);
@@ -2272,6 +2503,9 @@ export class AgentSession {
 						thinkingLevel: advisorCompactionThinkingLevel,
 						convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
 						telemetry,
+						tools: agent.state.tools,
+						sessionId: advisorSessionId,
+						promptCacheKey: advisorSessionId,
 					},
 				);
 				break;
@@ -2296,7 +2530,7 @@ export class AgentSession {
 			firstKeptEntryId,
 		} as CompactionSummaryMessage & { firstKeptEntryId?: string };
 
-		advisor.replaceMessages([summaryMessage, ...preparation.recentMessages]);
+		agent.replaceMessages([summaryMessage, ...preparation.recentMessages]);
 		return false;
 	}
 
@@ -2629,82 +2863,8 @@ export class AgentSession {
 		}
 	};
 
-	#messageValueSignature(value: unknown): string {
-		return JSON.stringify(value) ?? "undefined";
-	}
-
-	#sessionMessagesReferToSameTurn(left: AgentMessage, right: AgentMessage): boolean {
-		if (left === right) return true;
-		if (left.role !== right.role) return false;
-		switch (left.role) {
-			case "assistant":
-				if (right.role !== "assistant") return false;
-				return (
-					left.timestamp === right.timestamp &&
-					left.provider === right.provider &&
-					left.model === right.model &&
-					left.responseId === right.responseId &&
-					left.stopReason === right.stopReason &&
-					this.#messageValueSignature(left.content) === this.#messageValueSignature(right.content)
-				);
-			case "toolResult":
-				if (right.role !== "toolResult") return false;
-				return (
-					left.timestamp === right.timestamp &&
-					left.toolCallId === right.toolCallId &&
-					left.toolName === right.toolName &&
-					left.isError === right.isError &&
-					this.#messageValueSignature(left.content) === this.#messageValueSignature(right.content)
-				);
-			case "user":
-				if (right.role !== "user") return false;
-				return (
-					left.timestamp === right.timestamp &&
-					left.attribution === right.attribution &&
-					this.#messageValueSignature(left.content) === this.#messageValueSignature(right.content)
-				);
-			case "developer":
-				if (right.role !== "developer") return false;
-				return (
-					left.timestamp === right.timestamp &&
-					left.attribution === right.attribution &&
-					this.#messageValueSignature(left.content) === this.#messageValueSignature(right.content)
-				);
-			case "fileMention":
-				if (right.role !== "fileMention") return false;
-				return (
-					left.timestamp === right.timestamp &&
-					this.#messageValueSignature(left.files) === this.#messageValueSignature(right.files)
-				);
-			default:
-				return false;
-		}
-	}
-
-	#sessionMessagePersistenceKey(message: AgentMessage): string | undefined {
-		switch (message.role) {
-			case "assistant":
-				return [
-					"assistant",
-					message.timestamp,
-					message.provider,
-					message.model,
-					message.responseId ?? "",
-					message.stopReason,
-				].join(":");
-			case "toolResult":
-				return `toolResult:${message.timestamp}:${message.toolCallId}:${message.toolName}`;
-			case "user":
-			case "developer":
-			case "fileMention":
-				return `${message.role}:${message.timestamp}`;
-			default:
-				return undefined;
-		}
-	}
-
 	#createMessageEndPersistenceSlot(message: AgentMessage): MessageEndPersistenceSlot | undefined {
-		const key = this.#sessionMessagePersistenceKey(message);
+		const key = sessionMessagePersistenceKey(message);
 		if (!key) return undefined;
 		const previous = this.#messageEndPersistenceTail;
 		const { promise, resolve } = Promise.withResolvers<void>();
@@ -2734,31 +2894,61 @@ export class AgentSession {
 	}
 
 	async #waitForSessionMessagePersistence(message: AgentMessage): Promise<void> {
-		const key = this.#sessionMessagePersistenceKey(message);
+		const key = sessionMessagePersistenceKey(message);
 		if (!key) return;
 		await this.#pendingMessageEndPersistence.get(key);
 	}
 
-	#sessionMessageAlreadyPersisted(message: AgentMessage): boolean {
-		const branch = this.sessionManager.getBranch();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
-			if (entry.type === "message" && this.#sessionMessagesReferToSameTurn(entry.message, message)) return true;
+	/**
+	 * Index every message entry on the current branch by persistence key, so
+	 * the mid-run-compaction planner can ask "is this turn message already on
+	 * the branch?" in O(1) instead of re-walking the branch per check.
+	 *
+	 * The Map's value is the list of branch messages that share a key — almost
+	 * always one. We only need the LIST when content equality matters (rare
+	 * collision tiebreaker via {@link sameMessageContent}); the empty/single-
+	 * entry common case lets the caller's lookup short-circuit at presence.
+	 *
+	 * Pre-#3629 the equivalent was `sessionManager.getBranch()` called twice
+	 * per turn message, each call rebuilding the path via O(n²) `unshift` and
+	 * structurally JSON-comparing every entry — seconds of synchronous work
+	 * per `onTurnEnd` on a long session and the load-bearing source of the
+	 * `ui.loop-blocked` warnings in the bug report.
+	 */
+	#indexPersistedMessagesByKey(): Map<string, AgentMessage[]> {
+		const index = new Map<string, AgentMessage[]>();
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "message") continue;
+			const key = sessionMessagePersistenceKey(entry.message);
+			if (key === undefined) continue;
+			const existing = index.get(key);
+			if (existing) existing.push(entry.message);
+			else index.set(key, [entry.message]);
 		}
-		return false;
+		return index;
 	}
 
-	#hasPersistedLaterTurnMessage(turnMessages: AgentMessage[], messageIndex: number): boolean {
+	/**
+	 * True when {@link message} is structurally identical to a message already
+	 * appended to the current branch. Pairs a fast persistence-key lookup with
+	 * a content-equality fallback so two logically distinct messages that
+	 * happen to collide on the cheap key (e.g. two assistant turns at the same
+	 * millisecond with `undefined` responseId) still count as DISTINCT.
+	 */
+	#sessionMessageAlreadyPersisted(message: AgentMessage): boolean {
+		const key = sessionMessagePersistenceKey(message);
+		if (key === undefined) return false;
 		const branch = this.sessionManager.getBranch();
-		for (let index = messageIndex + 1; index < turnMessages.length; index++) {
-			const message = turnMessages[index];
-			if (
-				branch.some(
-					entry => entry.type === "message" && this.#sessionMessagesReferToSameTurn(entry.message, message),
-				)
-			) {
-				return true;
-			}
+		// Reverse walk: recently-appended entries are at the tail, so the common
+		// "is the message I just emitted already in the branch?" lookup short-
+		// circuits in O(1) hot, O(branch) cold. Cheap-key compare for every
+		// entry; content compare only when the cheap check matches, so the
+		// expensive `JSON.stringify(content)` path stays off the hot loop.
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type !== "message") continue;
+			if (sessionMessagePersistenceKey(entry.message) !== key) continue;
+			if (sameMessageContent(entry.message, message)) return true;
 		}
 		return false;
 	}
@@ -2793,23 +2983,73 @@ export class AgentSession {
 		}
 	}
 
+	/**
+	 * On a user-interrupted (`Esc`) abort, copy the trailing thinking run into a
+	 * hidden `display: false` continuity message for the next turn WITHOUT
+	 * mutating the assistant message. The original thinking stays on the message
+	 * so live render, reload, and Ctrl+L rebuilds keep showing it; `convertToLlm`
+	 * strips the run from the provider request (incomplete/unsigned thinking is
+	 * rejected on resend) when this continuity message follows the assistant turn.
+	 */
+	#demoteInterruptedThinkingOnUserInterrupt(
+		message: AssistantMessage,
+	): CustomMessage<InterruptedThinkingDetails> | undefined {
+		if (message.stopReason !== "aborted" || !isUserInterruptAbort(message)) return undefined;
+		const demoted = demoteInterruptedThinking(message);
+		if (!demoted) return undefined;
+		const interruptedAt = Date.now();
+		return {
+			role: "custom",
+			customType: INTERRUPTED_THINKING_MESSAGE_TYPE,
+			content: prompt.render(interruptedThinkingTemplate, { reasoning: demoted.reasoning }),
+			display: false,
+			details: {
+				interruptedAt,
+				provider: message.provider,
+				model: message.model,
+				blockCount: demoted.blockCount,
+			},
+			attribution: "agent",
+			timestamp: interruptedAt,
+		};
+	}
+
 	async #persistTurnMessagesForMidRunCompaction(context: AgentTurnEndContext | undefined): Promise<boolean> {
 		if (!context) return true;
 		const turnMessages = [context.message, ...context.toolResults];
 		for (const message of turnMessages) {
 			await this.#waitForSessionMessagePersistence(message);
 		}
+		// One branch snapshot + one persistence-key index drives the entire
+		// planning pass. Pre-#3629 this re-walked the branch and structurally
+		// JSON-compared every entry per turn message, which on long sessions
+		// turned each `onTurnEnd` into a seconds-long sync block (the
+		// `ui.loop-blocked` warnings tagged `subagent:*` in the bug report).
+		const branchIndex = this.#indexPersistedMessagesByKey();
+		const turnKeys = turnMessages.map(sessionMessagePersistenceKey);
+		const persistedKeys = new Set<string>();
 		for (let index = 0; index < turnMessages.length; index++) {
-			const message = turnMessages[index];
-			if (this.#sessionMessageAlreadyPersisted(message)) continue;
-			if (this.#hasPersistedLaterTurnMessage(turnMessages, index)) {
-				logger.debug("Skipping mid-run compaction because turn persistence is out of order", {
-					role: message.role,
-					timestamp: message.timestamp,
-				});
-				return false;
+			const key = turnKeys[index];
+			if (key === undefined) continue;
+			const candidates = branchIndex.get(key);
+			if (!candidates) continue;
+			// Key match only counts when content also matches — two distinct
+			// messages that collided on the cheap key must STILL be persisted.
+			if (candidates.some(persisted => sameMessageContent(persisted, turnMessages[index]))) {
+				persistedKeys.add(key);
 			}
-			this.#persistSessionMessageIfMissing(message);
+		}
+		const plan = planTurnPersistence(turnKeys, persistedKeys);
+		if (plan.kind === "out-of-order") {
+			const message = turnMessages[plan.messageIndex];
+			logger.debug("Skipping mid-run compaction because turn persistence is out of order", {
+				role: message.role,
+				timestamp: message.timestamp,
+			});
+			return false;
+		}
+		for (const index of plan.toPersist) {
+			this.#persistSessionMessageIfMissing(turnMessages[index]);
 		}
 		return true;
 	}
@@ -2828,11 +3068,28 @@ export class AgentSession {
 		if (
 			event.type === "message_end" &&
 			event.message.role === "assistant" &&
-			event.message.stopReason === "aborted" &&
-			this.#planInternalAbortPending
+			event.message.stopReason === "aborted"
 		) {
-			(event.message as AssistantMessage).errorMessage = SILENT_ABORT_MARKER;
-			this.#planInternalAbortPending = false;
+			const message = event.message as AssistantMessage;
+			if (this.#planInternalAbortPending) {
+				message.errorMessage = SILENT_ABORT_MARKER;
+				message.errorId = AIError.create(AIError.Flag.SilentAbort);
+				this.#planInternalAbortPending = false;
+			} else if (this.#pendingAbortErrorId) {
+				message.errorId = this.#pendingAbortErrorId;
+				this.#pendingAbortErrorId = undefined;
+			}
+		}
+
+		const interruptedThinkingMessage =
+			event.type === "message_end" && event.message.role === "assistant"
+				? this.#demoteInterruptedThinkingOnUserInterrupt(event.message as AssistantMessage)
+				: undefined;
+		// `message_end` handling is fire-and-forget from agent-core. Make the
+		// hidden continuity turn visible to the next prompt before any awaited
+		// extension delivery or persistence can stall this handler.
+		if (interruptedThinkingMessage) {
+			this.agent.appendMessage(interruptedThinkingMessage);
 		}
 
 		const messageEndPersistence =
@@ -2977,6 +3234,15 @@ export class AgentSession {
 			} else {
 				persistMessageEnd();
 			}
+			if (interruptedThinkingMessage) {
+				this.sessionManager.appendCustomMessageEntry(
+					interruptedThinkingMessage.customType,
+					interruptedThinkingMessage.content,
+					interruptedThinkingMessage.display,
+					interruptedThinkingMessage.details,
+					interruptedThinkingMessage.attribution,
+				);
+			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
 			// Track assistant message for auto-compaction (checked on agent_end)
@@ -3033,9 +3299,10 @@ export class AgentSession {
 				}
 			}
 			if (event.message.role === "toolResult") {
-				const { toolName, details, isError, content } = event.message as {
+				const { toolName, toolCallId, details, isError, content } = event.message as {
+					toolCallId?: string;
 					toolName?: string;
-					details?: { path?: string; phases?: TodoPhase[]; report?: string; startedAt?: string };
+					details?: { op?: string; path?: string; phases?: TodoPhase[]; report?: string; startedAt?: string };
 					isError?: boolean;
 					content?: Array<TextContent | ImageContent>;
 				};
@@ -3049,6 +3316,9 @@ export class AgentSession {
 				}
 				if (toolName === "todo" && !isError && Array.isArray(details?.phases)) {
 					this.setTodoPhases(details.phases);
+					if (this.#isTodoInitResult(details, toolCallId)) {
+						this.#scheduleReplanTitleRefresh();
+					}
 				}
 				if (toolName === "todo" && isError) {
 					const errorText = content?.find(part => part.type === "text")?.text;
@@ -3145,7 +3415,7 @@ export class AgentSession {
 			if (
 				msg.stopReason === "error" &&
 				msg.provider === "github-copilot" &&
-				msg.errorMessage?.includes("GitHub Copilot authentication failed")
+				AIError.is(AIError.classifyMessage(msg), AIError.Flag.AuthFailed)
 			) {
 				await this.#modelRegistry.authStorage.remove("github-copilot");
 			}
@@ -3759,8 +4029,32 @@ export class AgentSession {
 
 		context.toolName = toolCall.name;
 		context.streamKey = toolCall.id ? `toolcall:${toolCall.id}` : `tool:${toolCall.name}:${contentIndex}`;
-		context.filePaths = this.#extractTtsrFilePathsFromArgs(toolCall.arguments);
+		context.filePaths = this.#extractTtsrToolFilePaths(toolCall);
 		return context;
+	}
+
+	/**
+	 * Resolve the file paths a tool call would touch for TTSR path-glob matching.
+	 *
+	 * Prefer the tool's own `matcherPaths` hook — it understands the wire format
+	 * (hashline `[path#TAG]` section headers, apply_patch envelope markers) and
+	 * surfaces paths the generic top-level argument scan never sees. Fall back
+	 * to {@link #extractTtsrFilePathsFromArgs} for tools that pass paths as
+	 * `path`/`paths` arguments and for tool calls whose payload has not yet
+	 * streamed a header.
+	 */
+	#extractTtsrToolFilePaths(toolCall: ToolCall): string[] | undefined {
+		const args = toolCall.arguments ?? {};
+		const tools = this.agent.state.tools;
+		const tool =
+			tools.find(t => t.name === toolCall.name) ??
+			tools.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name);
+		const toolPaths = tool?.matcherPaths?.(args);
+		if (toolPaths && toolPaths.length > 0) {
+			const normalized = toolPaths.flatMap(p => this.#normalizeTtsrPathCandidates(p));
+			if (normalized.length > 0) return Array.from(new Set(normalized));
+		}
+		return this.#extractTtsrFilePathsFromArgs(args);
 	}
 
 	/**
@@ -3776,6 +4070,14 @@ export class AgentSession {
 		if (!manager) {
 			return [];
 		}
+		const entries = this.#resolveTtsrMatcherEntries(toolCall);
+		if (entries) {
+			const matches: Rule[] = [];
+			for (const entry of entries) {
+				matches.push(...manager.checkSnapshot(entry.digest, this.#perFileTtsrContext(matchContext, entry.path)));
+			}
+			return matches;
+		}
 		const digest = this.#resolveTtsrMatcherDigest(toolCall);
 		if (digest !== undefined) {
 			return manager.checkSnapshot(digest, matchContext);
@@ -3785,14 +4087,44 @@ export class AgentSession {
 
 	/** Reconstruct the tool's normalized source snapshot via its `matcherDigest`, if any. */
 	#resolveTtsrMatcherDigest(toolCall: ToolCall | undefined): string | undefined {
-		if (!toolCall) {
-			return undefined;
-		}
+		const tool = this.#resolveTtsrTool(toolCall);
+		return tool?.matcherDigest?.(toolCall?.arguments ?? {});
+	}
+
+	/**
+	 * Per-file split of a streamed call (one entry per touched file paired with
+	 * the digest of only that file's added lines). Lets {@link #checkTtsrStream}
+	 * and {@link #checkTtsrAstStream} evaluate each file in isolation so a
+	 * path-scoped rule like `tool:edit(*.ts)` never fires on text that belongs
+	 * to a sibling Markdown hunk in a multi-file payload.
+	 */
+	#resolveTtsrMatcherEntries(toolCall: ToolCall | undefined): readonly { path: string; digest: string }[] | undefined {
+		const tool = this.#resolveTtsrTool(toolCall);
+		const entries = tool?.matcherEntries?.(toolCall?.arguments ?? {});
+		return entries && entries.length > 0 ? entries : undefined;
+	}
+
+	#resolveTtsrTool(toolCall: ToolCall | undefined) {
+		if (!toolCall) return undefined;
 		const tools = this.agent.state.tools;
-		const tool =
+		return (
 			tools.find(t => t.name === toolCall.name) ??
-			tools.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name);
-		return tool?.matcherDigest?.(toolCall.arguments ?? {});
+			tools.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name)
+		);
+	}
+
+	/**
+	 * Replace `matchContext`'s `filePaths` + `streamKey` so a per-file entry
+	 * gets its own glob-eligible path and its own TTSR buffer/repeat tracking
+	 * (each file's stream is independent inside the same tool call).
+	 */
+	#perFileTtsrContext(base: TtsrMatchContext, filePath: string): TtsrMatchContext {
+		const filePaths = this.#normalizeTtsrPathCandidates(filePath);
+		return {
+			...base,
+			filePaths: filePaths.length > 0 ? filePaths : [filePath],
+			streamKey: base.streamKey ? `${base.streamKey}#${filePath}` : undefined,
+		};
 	}
 
 	/**
@@ -3806,6 +4138,16 @@ export class AgentSession {
 		const manager = this.#ttsrManager;
 		if (!manager) {
 			return [];
+		}
+		const entries = this.#resolveTtsrMatcherEntries(toolCall);
+		if (entries) {
+			const matches: Rule[] = [];
+			for (const entry of entries) {
+				matches.push(
+					...(await manager.checkAstSnapshot(entry.digest, this.#perFileTtsrContext(matchContext, entry.path))),
+				);
+			}
+			return matches;
 		}
 		const digest = this.#resolveTtsrMatcherDigest(toolCall);
 		if (digest === undefined) {
@@ -4536,6 +4878,7 @@ export class AgentSession {
 				maxAttempts: event.maxAttempts,
 				delayMs: event.delayMs,
 				errorMessage: event.errorMessage,
+				errorId: event.errorId,
 			});
 		} else if (event.type === "auto_retry_end") {
 			await this.#extensionRunner.emit({
@@ -4695,6 +5038,10 @@ export class AgentSession {
 		return this.#isDisposed;
 	}
 
+	markMovedFromEmptySessionFile(sessionFile: string): void {
+		this.#movedFromEmptySessionFile = path.resolve(sessionFile);
+	}
+
 	/**
 	 * Synchronously mark the session as disposing so new work is rejected
 	 * immediately: eval starts throw, queued asides are dropped, and the
@@ -4771,6 +5118,9 @@ export class AgentSession {
 		await disposeJuliaKernelSessionsByOwner(this.#evalKernelOwnerId);
 		await shutdownTinyTitleClient();
 		this.#releasePowerAssertion();
+		// Clean up an empty session created by this session's /move so it doesn't accumulate.
+		await cleanupEmptyMoveSession(this.sessionManager, this.#movedFromEmptySessionFile);
+		this.#movedFromEmptySessionFile = undefined;
 		await this.sessionManager.close();
 		// beginDispose() stopped the advisor and captured its recorder close; await
 		// it so the final advisor turn is flushed before the process may exit.
@@ -5877,6 +6227,9 @@ export class AgentSession {
 			...options,
 			...(openrouterVariant !== undefined && { openrouterVariant }),
 			...(antigravityEndpointMode !== undefined && { antigravityEndpointMode }),
+			maxInFlightRequests: validateProviderMaxInFlightRequests(
+				options.maxInFlightRequests ?? this.settings.get("providers.maxInFlightRequests"),
+			),
 			loopGuard: {
 				enabled: this.settings.get("model.loopGuard.enabled"),
 				checkAssistantContent: this.settings.get("model.loopGuard.checkAssistantContent"),
@@ -6454,7 +6807,10 @@ export class AgentSession {
 
 	async promptCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
-		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice"> & { queueChipText?: string },
+		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice"> & {
+			queueChipText?: string;
+			queueOnly?: boolean;
+		},
 	): Promise<void> {
 		const textContent =
 			typeof message.content === "string"
@@ -6474,6 +6830,16 @@ export class AgentSession {
 			keywordNotices = this.#createMagicKeywordNotices(skillArgs);
 		}
 
+		if (options?.queueOnly) {
+			if (!options.streamingBehavior) {
+				throw new AgentBusyError();
+			}
+			for (const notice of keywordNotices) {
+				await this.#queueCustomMessage(notice, options.streamingBehavior);
+			}
+			await this.#queueCustomMessage(message, options.streamingBehavior, options.queueChipText);
+			return;
+		}
 		if (this.isStreaming) {
 			if (!options?.streamingBehavior) {
 				throw new AgentBusyError();
@@ -7039,6 +7405,40 @@ export class AgentSession {
 		}
 	}
 
+	/** Queue a custom message without starting a turn, matching steer/follow-up delivery. */
+	async #queueCustomMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
+		deliverAs: "steer" | "followUp",
+		queueChipText?: string,
+	): Promise<void> {
+		const details =
+			queueChipText !== undefined
+				? ({
+						...((message.details && typeof message.details === "object" ? message.details : {}) as Record<
+							string,
+							unknown
+						>),
+						__queueChipText: queueChipText,
+					} as T)
+				: message.details;
+		const appMessage: CustomMessage<T> = {
+			role: "custom",
+			customType: message.customType,
+			content: message.content,
+			display: message.display,
+			details,
+			attribution: message.attribution ?? "agent",
+			timestamp: Date.now(),
+		};
+		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (deliverAs === "followUp") {
+			this.agent.followUp(normalizedAppMessage);
+		} else {
+			this.agent.steer(normalizedAppMessage);
+		}
+		this.#scheduleIdleQueueDrain();
+	}
+
 	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
@@ -7281,6 +7681,74 @@ export class AgentSession {
 		this.#todoPhases = this.#cloneTodoPhases(phases);
 	}
 
+	#isTodoInitResult(details: Record<string, unknown>, toolCallId: string | undefined): boolean {
+		const detailOp = getStringProperty(details, "op");
+		if (detailOp) return detailOp === "init";
+		if (!toolCallId) return false;
+		for (let i = this.agent.state.messages.length - 1; i >= 0; i--) {
+			const message = this.agent.state.messages[i];
+			if (!message) continue;
+			const op = toolCallOpFromMessage(message, toolCallId);
+			if (op) return op === "init";
+		}
+		return false;
+	}
+
+	#buildReplanTitleContext(): string {
+		const turns: TitleConversationTurn[] = [];
+		for (
+			let i = this.agent.state.messages.length - 1;
+			i >= 0 && turns.length < REPLAN_TITLE_CONTEXT_TURN_LIMIT;
+			i--
+		) {
+			const message = this.agent.state.messages[i];
+			if (!message) continue;
+			const turn = titleConversationTurnFromMessage(message);
+			if (turn) turns.push(turn);
+		}
+		turns.reverse();
+		return formatTitleConversationContext(turns);
+	}
+
+	#scheduleReplanTitleRefresh(): void {
+		if (this.#replanTitleRefreshInFlight) return;
+		if (!this.settings.get("title.refreshOnReplan")) return;
+		if (this.sessionManager.titleSource === "user") return;
+		const context = this.#buildReplanTitleContext();
+		if (!context) return;
+		const sessionId = this.sessionManager.getSessionId();
+		const refresh = this.#refreshTitleAfterReplan(context, sessionId)
+			.catch(err => {
+				logger.warn("title-generator: replan refresh failed", {
+					sessionId,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			})
+			.finally(() => {
+				if (this.#replanTitleRefreshInFlight === refresh) {
+					this.#replanTitleRefreshInFlight = undefined;
+				}
+			});
+		this.#replanTitleRefreshInFlight = refresh;
+	}
+
+	async #refreshTitleAfterReplan(context: string, sessionId: string): Promise<void> {
+		const title = await generateSessionTitle(
+			context,
+			this.#modelRegistry,
+			this.settings,
+			sessionId,
+			this.model,
+			provider => this.agent.metadataForProvider(provider),
+		);
+		if (!title) return;
+		if (this.sessionManager.getSessionId() !== sessionId) return;
+		if (!this.settings.get("title.refreshOnReplan")) return;
+		if (this.sessionManager.titleSource === "user") return;
+		const setSessionName = this.sessionManager.setSessionName as SetSessionNameWithTrigger;
+		await setSessionName.call(this.sessionManager, title, "auto", "replan");
+	}
+
 	#syncTodoPhasesFromBranch(): void {
 		const phases = getLatestTodoPhasesFromEntries(this.sessionManager.getBranch());
 		// Strip completed/abandoned tasks — they were done in a previous run,
@@ -7319,6 +7787,7 @@ export class AgentSession {
 		preserveCompaction?: boolean;
 	}): Promise<void> {
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
+		this.#pendingAbortErrorId = userInterrupt ? AIError.create(AIError.Flag.UserInterrupt) : undefined;
 		if (userInterrupt) this.#advisorAutoResumeSuppressed = true;
 		// Pull advisor concerns out of the steer/follow-up queues before any await so
 		// the post-abort stranded-message drain can't auto-resume the run on them.
@@ -7422,9 +7891,11 @@ export class AgentSession {
 			// running advisor turn could otherwise finish, emit `message_end`, and recreate
 			// `<old>/__advisor.jsonl`. #resetAdvisorSessionState (after newSession) re-primes
 			// the advisor and re-attaches the feed at the new session's path.
-			this.#advisorAgentUnsubscribe?.();
-			this.#advisorAgentUnsubscribe = undefined;
-			if (this.#advisorTranscriptRecorder) await this.#advisorTranscriptRecorder.close();
+			for (const a of this.#advisors) {
+				a.agentUnsubscribe?.();
+				a.agentUnsubscribe = undefined;
+				await a.recorder.close();
+			}
 			try {
 				await this.sessionManager.dropSession(previousSessionFile);
 			} catch (err) {
@@ -7478,8 +7949,9 @@ export class AgentSession {
 	/**
 	 * Set a display name for the current session.
 	 */
-	setSessionName(name: string, source: "auto" | "user" = "auto"): Promise<boolean> {
-		return this.sessionManager.setSessionName(name, source);
+	setSessionName(name: string, source: "auto" | "user" = "auto", trigger?: SessionNameTrigger): Promise<boolean> {
+		const setSessionName = this.sessionManager.setSessionName as SetSessionNameWithTrigger;
+		return setSessionName.call(this.sessionManager, name, source, trigger);
 	}
 
 	/**
@@ -7557,16 +8029,24 @@ export class AgentSession {
 	/**
 	 * Set model directly.
 	 * Validates that a credential source is configured (synchronously, without
-	 * refreshing OAuth or running command-backed key programs) and saves to the
-	 * active session. Persists settings only when requested. The concrete key is
-	 * resolved lazily per request, so switching never blocks the event loop.
+	 * refreshing OAuth or running command-backed key programs). The active
+	 * session switches by default; when `currentContextTokens` is provided and
+	 * exceeds the refreshed candidate's context window, the live switch is
+	 * skipped while role persistence still runs. Returns whether the active
+	 * model actually switched, computed against the refreshed metadata so
+	 * dynamic providers (e.g. llama.cpp) honor their post-load contextWindow.
 	 * @throws Error if no API key available for the model
 	 */
 	async setModel(
 		model: Model,
 		role: string = "default",
-		options?: { selector?: string; thinkingLevel?: ThinkingLevel; persist?: boolean },
-	): Promise<void> {
+		options?: {
+			selector?: string;
+			thinkingLevel?: ThinkingLevel;
+			persist?: boolean;
+			currentContextTokens?: number;
+		},
+	): Promise<{ switched: boolean }> {
 		const previousEditMode = this.#resolveActiveEditMode();
 		if (!this.#modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
@@ -7574,14 +8054,27 @@ export class AgentSession {
 
 		const targetModel = await this.#modelRegistry.refreshSelectedModelMetadata(model);
 
-		this.#clearActiveRetryFallback();
-		this.#setModelWithProviderSessionReset(targetModel);
-		this.sessionManager.appendModelChange(`${targetModel.provider}/${targetModel.id}`, role);
+		const currentContextTokens = options?.currentContextTokens ?? 0;
+		const targetContextWindow = targetModel.contextWindow ?? 0;
+		const switched = !(
+			currentContextTokens > 0 &&
+			targetContextWindow > 0 &&
+			currentContextTokens > targetContextWindow
+		);
+
+		if (switched) {
+			this.#clearActiveRetryFallback();
+			this.#setModelWithProviderSessionReset(targetModel);
+			this.sessionManager.appendModelChange(`${targetModel.provider}/${targetModel.id}`, role);
+		}
 		if (options?.persist) {
 			this.settings.setModelRole(
 				role,
 				this.#formatRoleModelValue(role, targetModel, options.selector, options.thinkingLevel),
 			);
+		}
+		if (!switched) {
+			return { switched: false };
 		}
 		this.settings.getStorage()?.recordModelUsage(`${targetModel.provider}/${targetModel.id}`);
 
@@ -7589,6 +8082,7 @@ export class AgentSession {
 		// configured defaultLevel; otherwise preserve the current level (or auto).
 		this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		await this.#syncAfterModelChange(previousEditMode);
+		return { switched: true };
 	}
 
 	/**
@@ -8113,7 +8607,7 @@ export class AgentSession {
 		await this.sessionManager.rewriteEntries();
 		const sessionContext = this.buildDisplaySessionContext();
 		this.agent.replaceMessages(sessionContext.messages);
-		this.#advisorRuntime?.reset();
+		this.#resetAllAdvisorRuntimes();
 		this.#syncTodoPhasesFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		return result;
@@ -8150,7 +8644,7 @@ export class AgentSession {
 
 		const sessionContext = this.buildDisplaySessionContext();
 		this.agent.replaceMessages(sessionContext.messages);
-		this.#advisorRuntime?.reset();
+		this.#resetAllAdvisorRuntimes();
 		this.#syncTodoPhasesFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		return result;
@@ -8201,7 +8695,7 @@ export class AgentSession {
 		await this.sessionManager.rewriteEntries();
 		const sessionContext = this.buildDisplaySessionContext();
 		this.agent.replaceMessages(sessionContext.messages);
-		this.#advisorRuntime?.reset();
+		this.#resetAllAdvisorRuntimes();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		return { removed };
 	}
@@ -8258,7 +8752,7 @@ export class AgentSession {
 		await this.sessionManager.rewriteEntries();
 		const sessionContext = this.buildDisplaySessionContext();
 		this.agent.replaceMessages(sessionContext.messages);
-		this.#advisorRuntime?.reset();
+		this.#resetAllAdvisorRuntimes();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
 		return {
@@ -8333,19 +8827,32 @@ export class AgentSession {
 			const effectiveSettings = compactMode
 				? { ...compactionSettings, ...compactMode.overrides }
 				: compactionSettings;
-			if (compactMode?.requiresRemote) {
-				const remoteReady =
-					Boolean(effectiveSettings.remoteEndpoint) || shouldUseOpenAiRemoteCompaction(this.model);
-				if (!remoteReady) {
-					this.emitNotice(
-						"warning",
-						`remote compaction is unavailable for ${this.model.id} (no remote endpoint configured) — using a local summary instead`,
-						"compaction",
-					);
-				}
+			// /compact remote demands provider-native compaction. When no remote
+			// endpoint is configured (one would override per-model gating in
+			// compact()), drop fallback candidates that aren't remote-capable so the
+			// engine never silently runs a local summary on a configured-but-non-
+			// remote compactionModel. If filtering empties the chain, warn and fall
+			// back to the full chain so the operation still completes.
+			const availableModels = this.#modelRegistry.getAvailable();
+			const requireProviderRemote = Boolean(compactMode?.requiresRemote && !effectiveSettings.remoteEndpoint);
+			let compactionCandidates = this.#getCompactionModelCandidates(
+				availableModels,
+				requireProviderRemote ? shouldUseOpenAiRemoteCompaction : undefined,
+			);
+			if (requireProviderRemote && compactionCandidates.length === 0) {
+				this.emitNotice(
+					"warning",
+					`remote compaction is unavailable for ${this.model.id} (no remote endpoint configured and no provider-native remote-capable model in the fallback chain) — using a local summary instead`,
+					"compaction",
+				);
+				compactionCandidates = this.#getCompactionModelCandidates(availableModels);
 			}
 			const pathEntries = this.sessionManager.getBranch();
-			const preparation = prepareCompaction(pathEntries, effectiveSettings);
+			const preparation = prepareCompaction(
+				pathEntries,
+				effectiveSettings,
+				compactionCandidates.filter(model => this.#modelRegistry.hasConfiguredAuth(model)),
+			);
 			if (!preparation) {
 				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
@@ -8496,6 +9003,7 @@ export class AgentSession {
 							remoteInstructions: this.#baseSystemPrompt.join("\n\n"),
 							convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
 						},
+						compactionCandidates,
 					);
 					summary = result.summary;
 					shortSummary = result.shortSummary;
@@ -8534,7 +9042,7 @@ export class AgentSession {
 			// plan reference. Clear the sent-flag so #buildPlanReferenceMessage re-reads
 			// the plan from disk and re-injects it on the next turn (issue #1246).
 			this.#planReferenceSent = false;
-			this.#advisorRuntime?.reset();
+			this.#resetAllAdvisorRuntimes();
 			this.#syncTodoPhasesFromBranch();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 
@@ -8798,7 +9306,7 @@ export class AgentSession {
 			// Rebuild agent messages from session
 			const sessionContext = this.buildDisplaySessionContext();
 			this.agent.replaceMessages(sessionContext.messages);
-			this.#advisorRuntime?.reset();
+			this.#resetAllAdvisorRuntimes();
 			this.#syncTodoPhasesFromBranch();
 
 			return { document: handoffText, savedPath };
@@ -9015,7 +9523,7 @@ export class AgentSession {
 		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
 		const errorIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
-		if (sameModel && !errorIsFromBeforeCompaction && isContextOverflow(assistantMessage, contextWindow)) {
+		if (sameModel && !errorIsFromBeforeCompaction && AIError.isContextOverflow(assistantMessage, contextWindow)) {
 			// Remove the error message from agent state (it IS saved to session for history,
 			// but we don't want it in context for the retry)
 			const messages = this.agent.state.messages;
@@ -10063,11 +10571,15 @@ export class AgentSession {
 		});
 		return formatModelSelectorValue(modelKey, thinkingLevel);
 	}
-	#resolveContextPromotionConfiguredTarget(currentModel: Model, availableModels: Model[]): Model | undefined {
-		const configuredTarget = currentModel.contextPromotionTarget?.trim();
-		if (!configuredTarget) return undefined;
+	#resolveConfiguredModelTarget(
+		configuredTarget: string | undefined,
+		currentModel: Model,
+		availableModels: Model[],
+	): Model | undefined {
+		const trimmedTarget = configuredTarget?.trim();
+		if (!trimmedTarget) return undefined;
 
-		const parsed = parseModelString(configuredTarget, {
+		const parsed = parseModelString(trimmedTarget, {
 			allowMaxAlias: true,
 			isLiteralModelId: (provider, id) =>
 				availableModels.some(model => model.provider === provider && model.id === id),
@@ -10077,7 +10589,15 @@ export class AgentSession {
 			if (explicitModel) return explicitModel;
 		}
 
-		return availableModels.find(m => m.provider === currentModel.provider && m.id === configuredTarget);
+		return availableModels.find(m => m.provider === currentModel.provider && m.id === trimmedTarget);
+	}
+
+	#resolveContextPromotionConfiguredTarget(currentModel: Model, availableModels: Model[]): Model | undefined {
+		return this.#resolveConfiguredModelTarget(currentModel.contextPromotionTarget, currentModel, availableModels);
+	}
+
+	#resolveCompactionConfiguredTarget(currentModel: Model, availableModels: Model[]): Model | undefined {
+		return this.#resolveConfiguredModelTarget(currentModel.compactionModel, currentModel, availableModels);
 	}
 
 	#resolveRoleModelFull(
@@ -10102,11 +10622,15 @@ export class AgentSession {
 		});
 	}
 
-	#getCompactionModelCandidates(availableModels: Model[]): Model[] {
-		return this.#resolveCompactionModelCandidates(this.model, availableModels);
+	#getCompactionModelCandidates(availableModels: Model[], filter?: (model: Model) => boolean): Model[] {
+		return this.#resolveCompactionModelCandidates(this.model, availableModels, filter);
 	}
 
-	#resolveCompactionModelCandidates(preferredModel: Model | null | undefined, availableModels: Model[]): Model[] {
+	#resolveCompactionModelCandidates(
+		preferredModel: Model | null | undefined,
+		availableModels: Model[],
+		filter?: (model: Model) => boolean,
+	): Model[] {
 		const candidates: Model[] = [];
 		const seen = new Set<string>();
 
@@ -10115,9 +10639,16 @@ export class AgentSession {
 			const key = this.#getModelKey(model);
 			if (seen.has(key)) return;
 			seen.add(key);
+			// `seen` still tracks rejected models so the largest-context fallback
+			// scan below doesn't reintroduce them; the filter just suppresses
+			// inclusion in this caller's candidate chain.
+			if (filter && !filter(model)) return;
 			candidates.push(model);
 		};
 
+		if (preferredModel) {
+			addCandidate(this.#resolveCompactionConfiguredTarget(preferredModel, availableModels));
+		}
 		addCandidate(preferredModel ?? undefined);
 		for (const role of MODEL_ROLE_IDS) {
 			addCandidate(this.#resolveRoleModelFull(role, availableModels, preferredModel ?? undefined).model);
@@ -10164,8 +10695,10 @@ export class AgentSession {
 		customInstructions: string | undefined,
 		signal: AbortSignal,
 		options?: SummaryOptions,
+		precomputedCandidates?: Model[],
 	): Promise<CompactionResult> {
-		const candidates = this.#getCompactionModelCandidates(this.#modelRegistry.getAvailable());
+		const candidates =
+			precomputedCandidates ?? this.#getCompactionModelCandidates(this.#modelRegistry.getAvailable());
 		const telemetry = resolveTelemetry(this.agent.telemetry, this.sessionId);
 
 		for (const candidate of candidates) {
@@ -10189,6 +10722,9 @@ export class AgentSession {
 						// via resolveCompactionEffort so unsupported-effort models
 						// (xai-oauth/grok-build) don't trip requireSupportedEffort.
 						thinkingLevel: this.thinkingLevel,
+						tools: this.agent.state.tools,
+						sessionId: this.sessionId,
+						promptCacheKey: this.sessionId,
 					},
 				);
 			} catch (error) {
@@ -10508,15 +11044,21 @@ export class AgentSession {
 
 		// "overflow" forces context-full because the input itself is broken — a handoff
 		// LLM call would hit the same overflow. "incomplete" is an output-side problem,
-		// so a handoff request on the existing context is still viable. Snapcompact is
-		// a local-only strategy: if it cannot run, report the local blocker instead of
-		// silently swapping in a provider-backed summary.
+		// so a handoff request on the existing context is still viable.
 		let action: "context-full" | "handoff" | "snapcompact" =
 			compactionSettings.strategy === "snapcompact"
 				? "snapcompact"
 				: compactionSettings.strategy === "handoff" && reason !== "overflow" && !suppressHandoff
 					? "handoff"
 					: "context-full";
+		if (action === "snapcompact" && this.model && !this.model.input.includes("image")) {
+			this.emitNotice(
+				"warning",
+				`snapcompact needs a vision-capable active model (${this.model.id} is text-only); using context-full auto-compaction instead.`,
+				"compaction",
+			);
+			action = "context-full";
+		}
 		// Abort any older auto-compaction before installing this run's controller.
 		this.#autoCompactionAbortController?.abort();
 		const autoCompactionAbortController = new AbortController();
@@ -10595,7 +11137,10 @@ export class AgentSession {
 
 			const pathEntries = this.sessionManager.getBranch();
 
-			const preparation = prepareCompaction(pathEntries, compactionSettings);
+			const autoCompactionCandidates = this.#getCompactionModelCandidates(availableModels).filter(model =>
+				this.#modelRegistry.hasConfiguredAuth(model),
+			);
+			const preparation = prepareCompaction(pathEntries, compactionSettings, autoCompactionCandidates);
 			if (!preparation) {
 				await this.#emitSessionEvent({
 					type: "auto_compaction_end",
@@ -10658,21 +11203,15 @@ export class AgentSession {
 			// + a summary message carrying the imaged archive at FRAME_TOKEN_ESTIMATE
 			// per frame; #computeSnapcompactMaxFrames sizes the frame cap from the
 			// live window so we don't run snapcompact just to overflow every threshold
-			// tick. Any local blocker fails the snapcompact maintenance pass rather
-			// than falling back to a provider-backed LLM summary.
+			// tick. Any local blocker (non-ASCII transcript, kept-history too large,
+			// post-render overflow) downgrades auto maintenance to a context-full LLM
+			// summary instead of wedging the session (#3659) — auto runs the default
+			// strategy on the user's behalf, so a fallback that lets the session keep
+			// running is the right behavior. Manual `/compact snapcompact` keeps the
+			// local-only contract (#3599): the user explicitly picked it.
 			let snapcompactResult: snapcompact.CompactionResult | undefined;
+			let snapcompactBlocker: string | undefined;
 			if (action === "snapcompact" && compactionPrep.kind !== "fromHook") {
-				if (!this.model?.input.includes("image")) {
-					logger.warn("Snapcompact compaction requires a vision-capable model", {
-						model: this.model?.id,
-					});
-					this.emitNotice(
-						"warning",
-						`snapcompact needs a vision-capable model (${this.model?.id ?? "unknown"} is text-only). No LLM fallback was attempted.`,
-						"compaction",
-					);
-					throw new Error(`snapcompact cannot run locally: ${this.model?.id ?? "unknown"} is text-only.`);
-				}
 				const text = snapcompact.serializeConversation(
 					convertToLlm(preparation.messagesToSummarize.concat(preparation.turnPrefixMessages)),
 				);
@@ -10683,54 +11222,45 @@ export class AgentSession {
 						model: this.model?.id,
 						unrenderableRatio: renderScan.unrenderableRatio,
 					});
-					this.emitNotice(
-						"warning",
-						`snapcompact disabled: high non-ASCII rate detected (${percent}%). No LLM fallback was attempted.`,
-						"compaction",
-					);
-					throw new Error(
-						`snapcompact cannot render this conversation locally: high non-ASCII rate detected (${percent}%).`,
-					);
-				}
-				const maxFrames = this.#computeSnapcompactMaxFrames(preparation, compactionSettings);
-				if (maxFrames < 1) {
-					logger.warn("Snapcompact skipped: kept history alone exceeds the context budget", {
-						model: this.model?.id,
-					});
-					this.emitNotice(
-						"warning",
-						"snapcompact: kept history alone exceeds the context budget. No LLM fallback was attempted.",
-						"compaction",
-					);
-					throw new Error("snapcompact cannot run locally: kept history alone exceeds the context budget.");
-				}
-				snapcompactResult = await snapcompact.compact(preparation, {
-					convertToLlm,
-					model: this.model,
-					shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
-					maxFrames,
-				});
-
-				if (snapcompactResult) {
-					const ctxWindow = this.model?.contextWindow ?? 0;
-					const budget =
-						ctxWindow > 0
-							? ctxWindow - effectiveReserveTokens(ctxWindow, compactionSettings)
-							: Number.POSITIVE_INFINITY;
-					const projected = this.#projectSnapcompactContextTokens(preparation, snapcompactResult);
-					if (projected > budget) {
-						logger.warn("Snapcompact still overflows the window after frame-budget sizing", {
+					snapcompactBlocker = `snapcompact disabled: high non-ASCII rate detected (${percent}%); using context-full auto-compaction instead.`;
+				} else {
+					const maxFrames = this.#computeSnapcompactMaxFrames(preparation, compactionSettings);
+					if (maxFrames < 1) {
+						logger.warn("Snapcompact skipped: kept history alone exceeds the context budget", {
 							model: this.model?.id,
-							projected,
-							budget,
 						});
-						this.emitNotice(
-							"warning",
-							"snapcompact could not bring the context under the limit. No LLM fallback was attempted.",
-							"compaction",
-						);
-						throw new Error("snapcompact could not bring the context under the limit locally.");
+						snapcompactBlocker =
+							"snapcompact: kept history alone exceeds the context budget; using context-full auto-compaction instead.";
+					} else {
+						snapcompactResult = await snapcompact.compact(preparation, {
+							convertToLlm,
+							model: this.model,
+							shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
+							maxFrames,
+						});
+						if (snapcompactResult) {
+							const ctxWindow = this.model?.contextWindow ?? 0;
+							const budget =
+								ctxWindow > 0
+									? ctxWindow - effectiveReserveTokens(ctxWindow, compactionSettings)
+									: Number.POSITIVE_INFINITY;
+							const projected = this.#projectSnapcompactContextTokens(preparation, snapcompactResult);
+							if (projected > budget) {
+								logger.warn("Snapcompact still overflows the window after frame-budget sizing", {
+									model: this.model?.id,
+									projected,
+									budget,
+								});
+								snapcompactBlocker =
+									"snapcompact could not bring the context under the limit; using context-full auto-compaction instead.";
+								snapcompactResult = undefined;
+							}
+						}
 					}
+				}
+				if (snapcompactBlocker) {
+					this.emitNotice("warning", snapcompactBlocker, "compaction");
+					action = "context-full";
 				}
 			}
 
@@ -10783,6 +11313,9 @@ export class AgentSession {
 									// site. Clamped per-model inside compact() via
 									// resolveCompactionEffort.
 									thinkingLevel: this.thinkingLevel,
+									tools: this.agent.state.tools,
+									sessionId: this.sessionId,
+									promptCacheKey: this.sessionId,
 								},
 							);
 							break;
@@ -10792,11 +11325,12 @@ export class AgentSession {
 							}
 
 							const message = error instanceof Error ? error.message : String(error);
+							const id = AIError.classify(error, candidate.api);
 							if (this.#isCompactionAuthFailure(error)) {
 								lastError = this.#buildCompactionAuthError();
 								break;
 							}
-							if (this.#isCompactionSummarizationTimeoutMessage(message)) {
+							if (AIError.is(id, AIError.Flag.Timeout)) {
 								logger.warn(
 									hasMoreCandidates
 										? "Auto-compaction summarization timed out, trying next model"
@@ -10815,8 +11349,8 @@ export class AgentSession {
 								retrySettings.enabled &&
 								attempt < retrySettings.maxRetries &&
 								(retryAfterMs !== undefined ||
-									this.#isTransientErrorMessage(message) ||
-									isUsageLimitError(message));
+									AIError.is(id, AIError.Flag.Transient) ||
+									AIError.is(id, AIError.Flag.UsageLimit));
 							if (!shouldRetry) {
 								lastError = error;
 								break;
@@ -10898,7 +11432,7 @@ export class AgentSession {
 			// plan reference. Clear the sent-flag so #buildPlanReferenceMessage re-reads
 			// the plan from disk and re-injects it on the next turn (issue #1246).
 			this.#planReferenceSent = false;
-			this.#advisorRuntime?.reset();
+			this.#resetAllAdvisorRuntimes();
 			this.#syncTodoPhasesFromBranch();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 
@@ -11216,6 +11750,31 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
+	 * Classify retry decisions against the active session model. Test stream
+	 * shims and provider adapters can emit generic assistant metadata, but retry
+	 * policy belongs to the model that was actually requested for this turn.
+	 */
+	#classifyRetryMessage(message: AssistantMessage): number {
+		const activeModel = this.model;
+		if (!activeModel || message.api === activeModel.api) {
+			return AIError.classifyMessage(message);
+		}
+
+		const id = AIError.classifyMessage({
+			api: activeModel.api,
+			errorId: message.errorId,
+			errorMessage: message.errorMessage,
+			errorStatus: message.errorStatus,
+		});
+		message.errorId = id;
+		return id;
+	}
+
+	#isGenericAbortSentinel(message: AssistantMessage): boolean {
+		return message.errorMessage === "Request was aborted" || message.errorMessage === "Request was aborted.";
+	}
+
+	/**
 	 * Retry an empty, reason-less provider abort: a turn that ended `aborted`
 	 * with no content and the generic sentinel (bare `abort()`), but only while
 	 * the session is neither aborting nor tearing down. A user/lifecycle abort
@@ -11227,14 +11786,22 @@ export class AgentSession {
 	 * `prompt()`) or silently undo the guard's intended abort.
 	 */
 	#isRetryableReasonlessAbort(message: AssistantMessage): boolean {
-		return (
-			message.stopReason === "aborted" &&
-			message.content.length === 0 &&
-			message.errorMessage === GENERIC_ABORT_SENTINEL &&
-			!this.#abortInProgress &&
-			!this.#isDisposed &&
-			!this.#streamingEditAbortTriggered
-		);
+		if (
+			message.stopReason !== "aborted" ||
+			message.content.length !== 0 ||
+			this.#abortInProgress ||
+			this.#isDisposed ||
+			this.#streamingEditAbortTriggered
+		) {
+			return false;
+		}
+
+		const id = this.#classifyRetryMessage(message);
+		if (AIError.is(id, AIError.Flag.Abort)) return true;
+		if (!this.#isGenericAbortSentinel(message)) return false;
+
+		message.errorId = AIError.create(AIError.Flag.Abort);
+		return true;
 	}
 
 	/**
@@ -11243,21 +11810,15 @@ export class AgentSession {
 	 * Usage-limit errors are retryable because the retry handler performs credential switching.
 	 */
 	#isRetryableError(message: AssistantMessage): boolean {
-		if (message.stopReason !== "error" || !message.errorMessage) return false;
+		if (message.stopReason !== "error") return false;
 
+		const id = this.#classifyRetryMessage(message);
 		// Context overflow is handled by compaction, not retry
 		const contextWindow = this.model?.contextWindow ?? 0;
-		if (isContextOverflow(message, contextWindow)) return false;
+		if (AIError.isContextOverflow(message, contextWindow)) return false;
 
 		if (this.#isClassifierRefusal(message)) return true;
-		if (this.#isProviderErrorFinishReasonBeforeToolUse(message)) return true;
-		if (this.#isMalformedFunctionCallError(message)) return true;
-		if (this.#hasReplayUnsafeToolOutput(message)) return false;
-		if (message.errorMessage.includes(THINKING_LOOP_ERROR_MARKER)) return true;
-		if (this.#isStaleOpenAIResponsesReplayError(message)) return true;
-
-		const err = message.errorMessage;
-		return this.#isTransientErrorMessage(err) || isUsageLimitError(err);
+		return AIError.retriable(id, { replayUnsafe: this.#hasReplayUnsafeToolOutput(message) });
 	}
 	/**
 	 * Retried turns remove the failed assistant message from active context.
@@ -11269,71 +11830,10 @@ export class AgentSession {
 		return message.content.some(block => block.type === "toolCall");
 	}
 
-	#isStaleOpenAIResponsesReplayError(message: AssistantMessage): boolean {
-		const currentApi = this.model?.api;
-		if (
-			message.api !== "openai-responses" &&
-			message.api !== "openai-codex-responses" &&
-			currentApi !== "openai-responses" &&
-			currentApi !== "openai-codex-responses"
-		) {
-			return false;
-		}
-
-		const errorMessage = message.errorMessage;
-		if (!errorMessage) return false;
-
-		return (
-			/\bItem with id ['"][^'"]+['"] not found\.?/i.test(errorMessage) ||
-			(/previous[ _]?response/i.test(errorMessage) &&
-				/not[ _]?found|invalid|expired|stale|zero[ _-]?data[ _-]?retention/i.test(errorMessage))
-		);
-	}
-
 	#isClassifierRefusal(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error") return false;
 		const stopType = message.stopDetails?.type;
 		return stopType === "refusal" || stopType === "sensitive";
-	}
-
-	#isProviderErrorFinishReasonBeforeToolUse(message: AssistantMessage): boolean {
-		if (!message.errorMessage) return false;
-		if (message.content.some(block => block.type === "toolCall")) return false;
-		return /\bProvider (?:returned error finish_reason|finish_reason:\s*error)\b/i.test(message.errorMessage);
-	}
-
-	#isMalformedFunctionCallError(message: AssistantMessage): boolean {
-		if (!message.errorMessage) return false;
-		return /\bmalformed.?function.?call\b/i.test(message.errorMessage);
-	}
-
-	#isTransientErrorMessage(errorMessage: string): boolean {
-		return (
-			this.#isTransientEnvelopeErrorMessage(errorMessage) || this.#isTransientTransportErrorMessage(errorMessage)
-		);
-	}
-
-	#isTransientEnvelopeErrorMessage(errorMessage: string): boolean {
-		// Match Anthropic stream-envelope failures that indicate a broken stream before any content starts.
-		return /anthropic stream envelope error:/i.test(errorMessage) && /before message_start/i.test(errorMessage);
-	}
-
-	#isCompactionSummarizationTimeoutMessage(errorMessage: string): boolean {
-		return /\b(?:operation\s+)?timed?\s*out\b|\btimeout\b|\bstream stall\b/i.test(errorMessage);
-	}
-
-	#isTransientTransportErrorMessage(errorMessage: string): boolean {
-		// Match: overloaded_error, provider returned error, rate limit, 429, 5xx,
-		// service unavailable, provider-suggested retry, network/connection/socket errors, fetch failed,
-		// gateway upstream failures, terminated, retry delay exceeded, Bun HTTP/2 stream resets
-		// (RST_STREAM / REFUSED_STREAM / ENHANCE_YOUR_CALM, surfaced verbatim from
-		// src/http/h2_client/dispatch.zig)
-		return (
-			isUnexpectedSocketCloseMessage(errorMessage) ||
-			/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|\b5\d\d\b|service.?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)|malformed.?function.?call/i.test(
-				errorMessage,
-			)
-		);
 	}
 
 	#getRetryFallbackChains(): RetryFallbackChains {
@@ -11568,20 +12068,15 @@ export class AgentSession {
 	#isFireworksFastFallbackEligible(message: AssistantMessage): boolean {
 		const model = this.#activeFireworksFastModel();
 		if (!model) return false;
-		if (message.stopReason !== "error" || !message.errorMessage) return false;
+		if (message.stopReason !== "error") return false;
 		if (message.content.some(block => block.type === "toolCall")) return false;
 		// A content refusal/sensitivity stop is the model's decision, not a route
 		// failure — switching to the base model would just re-trigger it.
 		if (this.#isClassifierRefusal(message)) return false;
-		if (isContextOverflow(message, model.contextWindow ?? 0)) return false;
-		const err = message.errorMessage;
-		if (isUsageLimitError(err)) return false;
-		if (
-			/\b(?:401|403|unauthorized|forbidden|authentication|auth[_ ]?unavailable|no auth available|(?:invalid|no)[_ ]?api[_ ]?key)\b/i.test(
-				err,
-			)
-		)
-			return false;
+		const id = this.#classifyRetryMessage(message);
+		if (AIError.isContextOverflow(message, model.contextWindow ?? 0)) return false;
+		if (AIError.is(id, AIError.Flag.UsageLimit)) return false;
+		if (AIError.is(id, AIError.Flag.AuthFailed)) return false;
 		return this.#modelRegistry.find("fireworks", toFireworksBaseModelId(model.id)) !== undefined;
 	}
 
@@ -11747,7 +12242,8 @@ export class AgentSession {
 		}
 
 		const errorMessage = message.errorMessage || "Unknown error";
-		const staleOpenAIResponsesReplayError = this.#isStaleOpenAIResponsesReplayError(message);
+		const id = this.#classifyRetryMessage(message);
+		const staleOpenAIResponsesReplayError = AIError.is(id, AIError.Flag.StaleResponsesItem);
 		const parsedRetryAfterMs = this.#parseRetryAfterMsFromError(errorMessage);
 		let delayMs = staleOpenAIResponsesReplayError
 			? 0
@@ -11768,7 +12264,7 @@ export class AgentSession {
 			this.#resetCurrentResponsesProviderSession("stale replay error");
 		}
 
-		if (this.model && !staleOpenAIResponsesReplayError && isUsageLimitError(errorMessage)) {
+		if (this.model && !staleOpenAIResponsesReplayError && AIError.is(id, AIError.Flag.UsageLimit)) {
 			const retryAfterMs = parsedRetryAfterMs ?? calculateRateLimitBackoffMs(parseRateLimitReason(errorMessage));
 			const outcome = await this.#modelRegistry.authStorage.markUsageLimitReached(
 				this.model.provider,
@@ -11875,6 +12371,7 @@ export class AgentSession {
 			maxAttempts: retrySettings.maxRetries,
 			delayMs,
 			errorMessage,
+			errorId: message.errorId,
 		});
 
 		// Remove the failed assistant message from active context before retrying.
@@ -12787,7 +13284,7 @@ export class AgentSession {
 			this.#applyThinkingLevelToAgent(previousThinkingLevel);
 			this.agent.serviceTier = previousServiceTier;
 			this.#syncTodoPhasesFromBranch();
-			this.#advisorRuntime?.reset();
+			this.#resetAllAdvisorRuntimes();
 			this.#reconnectToAgent();
 			if (restoreMcpError) {
 				throw restoreMcpError;
@@ -13189,10 +13686,11 @@ export class AgentSession {
 		let totalInput = 0;
 		let totalOutput = 0;
 		let totalCacheRead = 0;
+		let totalReasoning = 0;
 		let totalCacheWrite = 0;
 		let totalCost = 0;
-
 		let totalPremiumRequests = 0;
+
 		const getTaskToolUsage = (details: unknown): Usage | undefined => {
 			if (!details || typeof details !== "object") return undefined;
 			const record = details as Record<string, unknown>;
@@ -13207,6 +13705,7 @@ export class AgentSession {
 				toolCalls += assistantMsg.content.filter(c => c.type === "toolCall").length;
 				totalInput += assistantMsg.usage.input;
 				totalOutput += assistantMsg.usage.output;
+				totalReasoning += assistantMsg.usage.reasoningTokens ?? 0;
 				totalCacheRead += assistantMsg.usage.cacheRead;
 				totalCacheWrite += assistantMsg.usage.cacheWrite;
 				totalPremiumRequests += assistantMsg.usage.premiumRequests ?? 0;
@@ -13218,6 +13717,7 @@ export class AgentSession {
 				if (usage) {
 					totalInput += usage.input;
 					totalOutput += usage.output;
+					totalReasoning += usage.reasoningTokens ?? 0;
 					totalCacheRead += usage.cacheRead;
 					totalCacheWrite += usage.cacheWrite;
 					totalPremiumRequests += usage.premiumRequests ?? 0;
@@ -13237,6 +13737,7 @@ export class AgentSession {
 			tokens: {
 				input: totalInput,
 				output: totalOutput,
+				reasoning: totalReasoning,
 				cacheRead: totalCacheRead,
 				cacheWrite: totalCacheWrite,
 				total: totalInput + totalOutput + totalCacheRead + totalCacheWrite,
@@ -13770,6 +14271,23 @@ export class AgentSession {
 	}
 
 	/**
+	 * Replace the live advisor roster from an edited `WATCHDOG.yml` (the `/advisor
+	 * configure` save path). Swaps the configs + shared baseline, then rebuilds the
+	 * runtimes in place so the change applies without a restart. When the advisor is
+	 * disabled the new configs are simply stored for the next enable.
+	 *
+	 * @returns the number of advisors active after the rebuild.
+	 */
+	applyAdvisorConfigs(advisors: AdvisorConfig[], sharedInstructions: string | undefined): number {
+		this.#advisorConfigs = advisors;
+		this.#advisorSharedInstructions = sharedInstructions;
+		if (!this.#advisorEnabled) return 0;
+		this.#stopAdvisorRuntime();
+		this.#buildAdvisorRuntime(true);
+		return this.#advisors.length;
+	}
+
+	/**
 	 * Whether the advisor setting is enabled for this session.
 	 */
 	isAdvisorEnabled(): boolean {
@@ -13783,7 +14301,28 @@ export class AgentSession {
 	 * not merely the setting. Drives the status-line badge and `/dump advisor`.
 	 */
 	isAdvisorActive(): boolean {
-		return this.#advisorAgent !== undefined;
+		return this.#advisors.length > 0;
+	}
+
+	/**
+	 * The names of the tools available to advisors this session (the pool a
+	 * `/advisor configure` editor lists). The advisor is a full agent, so this is the
+	 * full built tool set; a tool whose optional factory returns null (e.g. lsp with
+	 * no servers) is absent.
+	 */
+	getAdvisorAvailableToolNames(): string[] {
+		return (this.#advisorTools ?? []).map(tool => tool.name);
+	}
+
+	/**
+	 * The live advisor `Agent`, or `undefined` when no advisor runtime is
+	 * attached. Surfaced for diagnostics (`/dump advisor` already serializes
+	 * its transcript via {@link formatAdvisorHistoryAsText}) and so callers can
+	 * verify the advisor inherits the session's provider-shaping options
+	 * (`streamFn`, `promptCacheKey`, `providerSessionState`, ...).
+	 */
+	getAdvisorAgent(): Agent | undefined {
+		return this.#advisors[0]?.agent;
 	}
 
 	/**
@@ -13791,23 +14330,59 @@ export class AgentSession {
 	 */
 	getAdvisorStats(): AdvisorStats {
 		const configured = this.#advisorEnabled;
-		const advisor = this.#advisorAgent;
-		if (!advisor) {
+		const advisors = this.#advisors.map(a => this.#computeAdvisorStat(a));
+		if (advisors.length === 0) {
 			return {
 				configured,
 				active: false,
 				contextWindow: 0,
 				contextTokens: 0,
-				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				cost: 0,
 				messages: { user: 0, assistant: 0, total: 0 },
+				advisors: [],
 			};
 		}
-		const model = advisor.state.model;
-		const messages = advisor.state.messages;
+		const tokens = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+		const messages = { user: 0, assistant: 0, total: 0 };
+		let cost = 0;
+		let contextTokens = 0;
+		for (const a of advisors) {
+			tokens.input += a.tokens.input;
+			tokens.output += a.tokens.output;
+			tokens.reasoning += a.tokens.reasoning;
+			tokens.cacheRead += a.tokens.cacheRead;
+			tokens.cacheWrite += a.tokens.cacheWrite;
+			tokens.total += a.tokens.total;
+			messages.user += a.messages.user;
+			messages.assistant += a.messages.assistant;
+			messages.total += a.messages.total;
+			cost += a.cost;
+			contextTokens += a.contextTokens;
+		}
+		// Single-advisor displays read the top-level model/window directly; surface the
+		// first advisor's so the legacy status line stays byte-identical.
+		return {
+			configured,
+			active: true,
+			model: advisors[0].model,
+			contextWindow: advisors[0].contextWindow,
+			contextTokens,
+			tokens,
+			cost,
+			messages,
+			advisors,
+		};
+	}
+
+	/** Compute one advisor's stats slice (tokens, cost, context, message counts). */
+	#computeAdvisorStat(advisor: ActiveAdvisor): PerAdvisorStat {
+		const model = advisor.agent.state.model;
+		const messages = advisor.agent.state.messages;
 		const contextTokens = this.#estimateAdvisorContextTokens(messages);
 		let input = 0;
 		let output = 0;
+		let reasoning = 0;
 		let cacheRead = 0;
 		let cacheWrite = 0;
 		let cost = 0;
@@ -13820,24 +14395,18 @@ export class AgentSession {
 				const assistantMsg = message as AssistantMessage;
 				input += assistantMsg.usage.input;
 				output += assistantMsg.usage.output;
+				reasoning += assistantMsg.usage.reasoningTokens ?? 0;
 				cacheRead += assistantMsg.usage.cacheRead;
 				cacheWrite += assistantMsg.usage.cacheWrite;
 				cost += assistantMsg.usage.cost.total;
 			}
 		}
 		return {
-			configured,
-			active: true,
+			name: advisor.name,
 			model,
 			contextWindow: model.contextWindow ?? 0,
 			contextTokens,
-			tokens: {
-				input,
-				output,
-				cacheRead,
-				cacheWrite,
-				total: input + output + cacheRead + cacheWrite,
-			},
+			tokens: { input, output, reasoning, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite },
 			cost,
 			messages: { user, assistant, total: messages.length },
 		};
@@ -13853,19 +14422,30 @@ export class AgentSession {
 				? "Advisor setting is enabled, but no model is assigned to the 'advisor' role."
 				: "Advisor is disabled.";
 		}
-		const model = stats.model!;
-		const contextLine =
-			stats.contextWindow > 0
-				? `Context: ${stats.contextTokens.toLocaleString()} / ${stats.contextWindow.toLocaleString()} tokens (${Math.round((stats.contextTokens / stats.contextWindow) * 100)}%)`
-				: `Context: ${stats.contextTokens.toLocaleString()} tokens`;
-		const spendParts = [
-			`${stats.tokens.input.toLocaleString()} input`,
-			`${stats.tokens.output.toLocaleString()} output`,
-		];
-		if (stats.tokens.cacheRead > 0) spendParts.push(`${stats.tokens.cacheRead.toLocaleString()} cache read`);
-		if (stats.tokens.cacheWrite > 0) spendParts.push(`${stats.tokens.cacheWrite.toLocaleString()} cache write`);
-		const spendLine = `Spend: ${spendParts.join(", ")}, $${stats.cost.toFixed(4)}`;
-		return `Advisor is enabled (${model.provider}/${model.id}). ${contextLine}. ${spendLine}.`;
+		if (stats.advisors.length <= 1) {
+			const s = stats.advisors[0];
+			const contextLine =
+				s.contextWindow > 0
+					? `Context: ${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} tokens (${Math.round((s.contextTokens / s.contextWindow) * 100)}%)`
+					: `Context: ${s.contextTokens.toLocaleString()} tokens`;
+			const spendParts = [`${s.tokens.input.toLocaleString()} input`, `${s.tokens.output.toLocaleString()} output`];
+			if (s.tokens.cacheRead > 0) spendParts.push(`${s.tokens.cacheRead.toLocaleString()} cache read`);
+			if (s.tokens.cacheWrite > 0) spendParts.push(`${s.tokens.cacheWrite.toLocaleString()} cache write`);
+			const spendLine = `Spend: ${spendParts.join(", ")}, $${s.cost.toFixed(4)}`;
+			return `Advisor is enabled (${s.model.provider}/${s.model.id}). ${contextLine}. ${spendLine}.`;
+		}
+		const lines = [`Advisors enabled (${stats.advisors.length}):`];
+		for (const s of stats.advisors) {
+			const ctx =
+				s.contextWindow > 0
+					? `${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} (${Math.round((s.contextTokens / s.contextWindow) * 100)}%)`
+					: `${s.contextTokens.toLocaleString()}`;
+			lines.push(`  • ${s.name} (${s.model.provider}/${s.model.id}) — context ${ctx} tokens, $${s.cost.toFixed(4)}`);
+		}
+		lines.push(
+			`Totals: ${stats.tokens.input.toLocaleString()} input, ${stats.tokens.output.toLocaleString()} output, $${stats.cost.toFixed(4)}.`,
+		);
+		return lines.join("\n");
 	}
 
 	/**
@@ -13909,18 +14489,21 @@ export class AgentSession {
 	 * {@link formatSessionAsText}. Returns null when no advisor is active.
 	 */
 	formatAdvisorHistoryAsText(options?: { compact?: boolean }): string | null {
-		const advisor = this.#advisorAgent;
-		if (!advisor) return null;
-		if (options?.compact) {
-			return formatSessionHistoryMarkdown(advisor.state.messages);
-		}
-		return formatSessionDumpText({
-			messages: advisor.state.messages,
-			systemPrompt: advisor.state.systemPrompt,
-			model: advisor.state.model,
-			thinkingLevel: advisor.state.thinkingLevel,
-			tools: advisor.state.tools,
-		});
+		if (this.#advisors.length === 0) return null;
+		const dump = (a: ActiveAdvisor): string =>
+			options?.compact
+				? formatSessionHistoryMarkdown(a.agent.state.messages)
+				: formatSessionDumpText({
+						messages: a.agent.state.messages,
+						systemPrompt: a.agent.state.systemPrompt,
+						model: a.agent.state.model,
+						thinkingLevel: a.agent.state.thinkingLevel,
+						tools: a.agent.state.tools,
+					});
+		if (this.#advisors.length === 1) return dump(this.#advisors[0]);
+		return this.#advisors
+			.map(a => `### Advisor: ${a.name} (${a.agent.state.model.provider}/${a.agent.state.model.id})\n\n${dump(a)}`)
+			.join("\n\n");
 	}
 
 	// =========================================================================

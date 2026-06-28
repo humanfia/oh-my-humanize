@@ -43,6 +43,29 @@ export function formatTitleUserMessage(message: string): string {
 	return `<user-message>\n${prepareTitleInput(message)}\n</user-message>`;
 }
 
+/** Single recent conversation turn supplied to title refresh after replanning. */
+export interface TitleConversationTurn {
+	role: "user" | "assistant";
+	text?: string;
+	thinking?: string;
+}
+
+/** Format recent user/assistant context for title generation after a todo replan. */
+export function formatTitleConversationContext(turns: readonly TitleConversationTurn[]): string {
+	const formattedTurns: string[] = [];
+	for (const turn of turns) {
+		const sections: string[] = [];
+		const text = turn.text?.trim();
+		if (text) sections.push(text);
+		const thinking = turn.role === "assistant" ? turn.thinking?.trim() : undefined;
+		if (thinking) sections.push(`<thinking>\n${thinking}\n</thinking>`);
+		if (sections.length === 0) continue;
+		formattedTurns.push(`<${turn.role}>\n${sections.join("\n\n")}\n</${turn.role}>`);
+	}
+	if (formattedTurns.length === 0) return "";
+	return prepareTitleInput(`<conversation>\n${formattedTurns.join("\n\n")}\n</conversation>`);
+}
+
 /**
  * Greeting / acknowledgement / filler tokens. A first user message composed
  * entirely of these (or of bare numbers / punctuation / emoji) carries no
@@ -173,14 +196,15 @@ export function normalizeGeneratedTitle(value: string | null | undefined, source
  * (`TinyVMM` → `tinyvmm`). The user's message is the source of truth, so per
  * title token:
  *  1. typed verbatim in the message → keep it (the user established the casing);
- *  2. else the message has the same word with *distinctive* casing
- *     (`TinyVMM`, `iOS`, `API`) → adopt the user's casing (restoration);
+ *  2. else the message has the same word with *distinctive* mixed casing
+ *     (`TinyVMM`, `iOS`, `IDs`) → adopt the user's casing (restoration);
  *  3. else it's a camelCase artifact (lowercase word + stray interior capital,
  *     `dAemon`) the user never wrote → lowercase it;
  *  4. else leave it — preserves model-cased proper nouns like `GitHub`, `OAuth`.
  *
- * Restoration is limited to distinctively cased source tokens so a sentence that
- * merely *starts* with `For` can't force a mid-title `for` to `For`.
+ * Restoration is limited to distinctively *mixed*-cased source tokens: a sentence
+ * that merely *starts* with `For` can't force a mid-title `for` to `For`, and
+ * emphatic all-caps (`ALL ERROR HANDLING`) is never re-shouted over sentence case.
  */
 function reconcileTitleCasing(title: string, sourceText: string): string {
 	const verbatim = new Set<string>();
@@ -200,10 +224,16 @@ function reconcileTitleCasing(title: string, sourceText: string): string {
 	});
 }
 
-/** Casing richer than a leading capital — interior or repeated uppercase
- *  (`TinyVMM`, `iOS`, `API`). Worth restoring from the user's message. */
+/** Mixed-case identifier the user cased deliberately (`TinyVMM`, `iOS`, `IDs`):
+ *  an interior/repeated capital plus at least one lowercase letter. Only these
+ *  are restored when the model flattens them.
+ *
+ *  Pure all-caps is intentionally excluded. The model preserves its own acronyms
+ *  verbatim regardless, so restoring all-caps from the source would only ever
+ *  re-shout emphatic input (`ALL ERROR HANDLING`, `FIX THE BUG`) over the
+ *  sentence case the prompt asks for. */
 function isDistinctiveCasing(token: string): boolean {
-	return /\p{L}\p{Lu}/u.test(token);
+	return /\p{Ll}/u.test(token) && /\p{L}\p{Lu}/u.test(token);
 }
 
 /** A lowercase word carrying a stray interior capital (`dAemon`, `cReate`): the

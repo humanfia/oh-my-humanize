@@ -1,10 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { CURRENT_SESSION_VERSION, type SessionHeader } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import {
+	CURRENT_SESSION_VERSION,
+	type SessionHeader,
+	type SessionMessageEntry,
+} from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getTerminalId } from "@oh-my-pi/pi-tui";
-import { getAgentDir, getTerminalSessionsDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, getTerminalSessionsDir, removeWithRetries, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 interface JsonlMessageEntry {
 	type: "message";
@@ -51,7 +56,7 @@ describe("SessionManager.forkFrom", () => {
 			const terminalId = getTerminalId();
 			expect(terminalId).toBeString();
 			const breadcrumbFile = path.join(getTerminalSessionsDir(), terminalId ?? "missing");
-			await fs.rm(breadcrumbFile, { force: true });
+			await removeWithRetries(breadcrumbFile);
 
 			const forked = await SessionManager.forkFrom(sourceFile, cwd, sessionDir, undefined, {
 				suppressBreadcrumb: true,
@@ -65,12 +70,13 @@ describe("SessionManager.forkFrom", () => {
 			expect(await Bun.file(breadcrumbFile).exists()).toBe(false);
 			expect(cloneFile).not.toBe(sourceFile);
 
-			const lines = (await Bun.file(cloneFile).text()).trim().split("\n");
-			const cloneHeader = JSON.parse(lines[0] ?? "{}") as SessionHeader;
-			const cloneMessage = JSON.parse(lines[1] ?? "{}") as JsonlMessageEntry;
-			expect(cloneHeader.id).not.toBe(sourceHeader.id);
-			expect(cloneHeader.parentSession).toBe(sourceHeader.id);
-			expect(cloneHeader.cwd).toBe(cwd);
+			const cloneEntries = await loadEntriesFromFile(cloneFile);
+			const cloneHeader = cloneEntries.find((entry): entry is SessionHeader => entry.type === "session");
+			const cloneMessage = cloneEntries.find((entry): entry is SessionMessageEntry => entry.type === "message");
+			expect(cloneHeader?.id).not.toBe(sourceHeader.id);
+			expect(cloneHeader?.parentSession).toBe(sourceHeader.id);
+			expect(cloneHeader?.cwd).toBe(cwd);
+			if (cloneMessage?.message.role !== "user") throw new Error("expected forked user message");
 			expect(cloneMessage.message.content).toBe("hello");
 		} finally {
 			if (previousTermSessionId === undefined) {

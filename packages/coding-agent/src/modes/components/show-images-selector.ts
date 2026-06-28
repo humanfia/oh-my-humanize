@@ -1,6 +1,7 @@
-import { Container, type SelectItem, SelectList } from "@oh-my-pi/pi-tui";
+import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
 import { getSelectListTheme } from "../../modes/theme/theme";
 import { DynamicBorder } from "./dynamic-border";
+import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
 
 /**
  * Component that renders a show images selector with borders
@@ -41,5 +42,9 @@ export class ShowImagesSelectorComponent extends Container {
 
 	getSelectList(): SelectList {
 		return this.#selectList;
+	}
+
+	routeMouse(event: SgrMouseEvent, line: number, col: number): void {
+		routeSelectListMouseWithTopBorder(this.#selectList, event, line, col);
 	}
 }

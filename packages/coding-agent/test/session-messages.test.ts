@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { type AgentMessage, filterProviderReplayMessages } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@oh-my-pi/pi-ai";
 import { inferCopilotInitiator } from "@oh-my-pi/pi-ai/providers/github-copilot-headers";
-import { convertToLlm, wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
+import {
+	convertToLlm,
+	SKILL_PROMPT_MESSAGE_TYPE,
+	wrapSteeringForModel,
+} from "@oh-my-pi/pi-coding-agent/session/messages";
 
 function expectAttribution(message: Message | undefined, expected: "user" | "agent" | undefined): void {
 	expect(message).toBeDefined();
@@ -240,12 +244,12 @@ describe("convertToLlm custom message mapping", () => {
 		expect(converted[0].content.filter(content => content.type === "image")).toEqual([image]);
 	});
 
-	it("allows custom messages to opt into user attribution", () => {
+	it("keeps non-skill user-attributed custom messages on the developer role", () => {
 		const messages: AgentMessage[] = [
 			{
 				role: "custom",
-				customType: "skill-prompt",
-				content: "Run this skill with my arguments",
+				customType: "ultrathink-notice",
+				content: "User requested deeper reasoning",
 				display: true,
 				attribution: "user",
 				timestamp: Date.now(),
@@ -258,6 +262,83 @@ describe("convertToLlm custom message mapping", () => {
 		expect(converted[0]?.role).toBe("developer");
 		expectAttribution(converted[0], "user");
 		expect(inferCopilotInitiator(converted)).toBe("user");
+	});
+
+	it("maps user-invoked skill prompts to the user role", () => {
+		const messages: AgentMessage[] = [
+			{
+				role: "custom",
+				customType: SKILL_PROMPT_MESSAGE_TYPE,
+				content: "Run this skill with my arguments",
+				display: true,
+				attribution: "user",
+				timestamp: Date.now(),
+			},
+		];
+
+		const converted = convertToLlm(messages);
+
+		expect(converted).toHaveLength(1);
+		expect(converted[0]?.role).toBe("user");
+		expectAttribution(converted[0], "user");
+		expect(inferCopilotInitiator(converted)).toBe("user");
+		if (converted[0]?.role !== "user" || !Array.isArray(converted[0].content)) {
+			throw new Error("Expected user array content");
+		}
+		const text = converted[0].content.find(content => content.type === "text")?.text ?? "";
+		expect(text).toContain("Run this skill with my arguments");
+	});
+
+	it("keeps user-invoked skill prompt images in the user message", () => {
+		const image: ImageContent = { type: "image", data: "c2tpbGw=", mimeType: "image/png" };
+		const messages: AgentMessage[] = [
+			{
+				role: "custom",
+				customType: SKILL_PROMPT_MESSAGE_TYPE,
+				content: [{ type: "text", text: "Skill body" }, image],
+				display: true,
+				attribution: "user",
+				timestamp: Date.now(),
+			},
+		];
+
+		const converted = convertToLlm(messages);
+
+		expect(converted).toHaveLength(1);
+		expect(converted[0]?.role).toBe("user");
+		expectAttribution(converted[0], "user");
+		if (converted[0]?.role !== "user" || !Array.isArray(converted[0].content)) {
+			throw new Error("Expected user skill content");
+		}
+		expect(converted[0].content).toEqual([{ type: "text", text: "Skill body" }, image]);
+	});
+
+	it("routes non-user custom-message images through a user message", () => {
+		const image: ImageContent = { type: "image", data: "YWR2aXNvcg==", mimeType: "image/png" };
+		const messages: AgentMessage[] = [
+			{
+				role: "custom",
+				customType: "advisor",
+				content: [{ type: "text", text: "Advisor body" }, image],
+				display: true,
+				attribution: "agent",
+				timestamp: Date.now(),
+			},
+		];
+
+		const converted = convertToLlm(messages);
+
+		expect(converted.map(message => message.role)).toEqual(["developer", "user"]);
+		expectAttribution(converted[0], "agent");
+		expectAttribution(converted[1], "agent");
+		if (converted[0]?.role !== "developer" || !Array.isArray(converted[0].content)) {
+			throw new Error("Expected developer custom text");
+		}
+		expect(converted[0].content).toEqual([{ type: "text", text: "Advisor body" }]);
+		if (converted[1]?.role !== "user" || !Array.isArray(converted[1].content)) {
+			throw new Error("Expected user custom images");
+		}
+		expect(converted[1].content.filter(content => content.type === "image")).toEqual([image]);
 	});
 });
 

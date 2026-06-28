@@ -1,6 +1,6 @@
 {
   "name": "@oh-my-pi/pi-natives",
-  "version": "16.1.23",
+  "version": "16.2.2",
   "description": "Native Rust bindings for grep, clipboard, image processing, syntax highlighting, PTY, and shell operations via N-API",
   "type": "module",
   "homepage": "https://omh.sh",
@@ -36,7 +36,8 @@
     "test": "bun test --parallel",
     "fix": "biome check --write --unsafe .",
     "fmt": "biome format --write .",
-    "embed:native": "bun scripts/embed-native.ts",
+    "gen:native": "bun scripts/embed-native.ts",
+    "gen:native:reset": "bun scripts/embed-native.ts --reset",
     "gen:npm": "bun scripts/gen-npm-packages.ts",
     "bench": "bun bench/grep.ts"
   },

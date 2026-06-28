@@ -54,7 +54,7 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 	});
 
@@ -88,7 +88,7 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: session.settings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 		expect(customSession.isAdvisorEnabled()).toBe(false);
 
@@ -109,7 +109,11 @@ describe("AgentSession advisor toggle", () => {
 		expect(session.isAdvisorEnabled()).toBe(false);
 	});
 
-	it("setAdvisorEnabled reports inactive when no advisor model is assigned", () => {
+	it("setAdvisorEnabled reports inactive when the advisor role resolves to no model", () => {
+		// The advisor role falls back to the `slow` priority chain when unset, so an
+		// unset role still resolves a model. The inactive-but-enabled path is only
+		// reached when the configured advisor model cannot be resolved at all.
+		session.settings.setModelRole("advisor", "nonexistent/advisor-model");
 		const active = session.setAdvisorEnabled(true);
 		expect(active).toBe(false);
 		expect(session.isAdvisorActive()).toBe(false);
@@ -129,14 +133,14 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 		const sessionB = new AgentSession({
 			agent: session.agent,
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 
 		expect(sessionA.isAdvisorEnabled()).toBe(false);

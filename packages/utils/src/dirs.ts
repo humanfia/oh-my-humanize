@@ -431,6 +431,18 @@ export function __resetProfileSnapshotForTests(): void {
 	);
 }
 
+/**
+ * Test-only: rebuild profile + directory state from the current process env.
+ * Production code keeps the module-load profile stable; tests that mutate
+ * `setAgentDir`/`setProfile` need an exact restore point after they put env vars
+ * back.
+ */
+export function __resetDirsFromEnvForTests(): void {
+	activeProfile = readProfileFromEnvSafe();
+	__resetProfileSnapshotForTests();
+	refreshDirsFromEnv();
+}
+
 /** Activate a named profile. Passing undefined or "default" returns to the default profile. */
 export function setProfile(profile: string | undefined): void {
 	const next = normalizeProfileName(profile);
@@ -738,6 +750,11 @@ export function getTinyModelsCacheDir(agentDir?: string): string {
 /** Get the workflow monitor snapshot cache directory (~/.omp/agent/cache/workflows). */
 export function getWorkflowMonitorCacheDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, path.join("cache", "workflows"), "cache");
+}
+
+/** Get the document conversion cache directory (~/.omp/agent/cache/document-conversions; XDG default: $XDG_CACHE_HOME/omp/cache/document-conversions). */
+export function getDocumentConversionCacheDir(agentDir?: string): string {
+	return dirs.agentSubdir(agentDir, path.join("cache", "document-conversions"), "cache");
 }
 
 /** Get the sessions directory (~/.omp/agent/sessions). */

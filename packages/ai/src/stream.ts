@@ -1,3 +1,8 @@
+import * as crypto from "node:crypto";
+import * as fsSync from "node:fs";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { scheduler } from "node:timers/promises";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
 import {
@@ -8,15 +13,18 @@ import {
 	resolveWireModelId,
 } from "@oh-my-pi/pi-catalog/model-thinking";
 import { CATALOG_PROVIDERS, type ProviderCatalogEntry } from "@oh-my-pi/pi-catalog/provider-models";
-import { $env, $pickenv, extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
+import { $env, $pickenv, getConfigRootDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { getCustomApi } from "./api-registry";
 import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveRetryKey } from "./auth-retry";
-import { ProviderHttpError } from "./errors";
+import * as AIError from "./error";
+import { ProviderHttpError } from "./error";
+import { isUsageLimitOutcome } from "./error/rate-limit";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import type { CursorOptions } from "./providers/cursor";
 import type { DevinOptions } from "./providers/devin";
 import { isGitLabDuoModel, streamGitLabDuo } from "./providers/gitlab-duo";
+import { type GitLabDuoWorkflowOptions, streamGitLabDuoWorkflow } from "./providers/gitlab-duo-workflow";
 import type { GoogleOptions } from "./providers/google";
 import { getVertexAccessToken } from "./providers/google-auth";
 import type { GoogleGeminiCliOptions } from "./providers/google-gemini-cli";
@@ -53,7 +61,6 @@ import {
 	streamOpenAIResponses,
 } from "./providers/register-builtins";
 import { isSyntheticModel, streamSynthetic } from "./providers/synthetic";
-import { isUsageLimitOutcome } from "./rate-limit-utils";
 import { PROVIDER_REGISTRY } from "./registry";
 import type {
 	Api,
@@ -79,6 +86,454 @@ function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 		((model.api === "openai-completions" && isVertexExpressOpenAIUrl(model.baseUrl)) ||
 			(model.api === "anthropic-messages" && isVertexRawPredictUrl(model.baseUrl)))
 	);
+}
+
+type ProviderInFlightLease = {
+	path: string;
+	heartbeat: NodeJS.Timeout;
+	flushHeartbeat: () => Promise<void>;
+};
+
+type ProviderInFlightLeaseInfo = {
+	pid: number;
+	timestamp: number;
+	token: string;
+};
+type ProviderInFlightStaleLock = { token: string } | { mtimeMs: number };
+type ProviderInFlightLockIdentity = { dev: number; ino: number; birthtimeMs: number };
+
+const PROVIDER_INFLIGHT_LOCK_STALE_MS = 10_000;
+const PROVIDER_INFLIGHT_LEASE_STALE_MS = 30_000;
+const PROVIDER_INFLIGHT_HEARTBEAT_MS = 5_000;
+const PROVIDER_INFLIGHT_SIGNAL_FALLBACK_MS = 250;
+
+let configuredProviderMaxInFlightRequests: Record<string, number> = {};
+let providerInFlightRootOverride: string | undefined;
+
+export function configureProviderMaxInFlightRequests(limits: Record<string, number> | undefined): void {
+	configuredProviderMaxInFlightRequests = limits ?? {};
+}
+
+function resolveProviderInFlightLimit(
+	provider: string,
+	options?: Pick<StreamOptions, "maxInFlightRequests">,
+): number | undefined {
+	const limits = options?.maxInFlightRequests ?? configuredProviderMaxInFlightRequests;
+	const value = limits[provider];
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+	return Math.max(1, Math.floor(value));
+}
+
+function providerInFlightRoot(): string {
+	if (providerInFlightRootOverride) return providerInFlightRootOverride;
+	return path.join(getConfigRootDir(), "run", "provider-inflight");
+}
+
+function providerInFlightSegment(provider: string): string {
+	return crypto.createHash("sha256").update(provider).digest("base64url");
+}
+
+function providerInFlightDir(provider: string): string {
+	return path.join(providerInFlightRoot(), providerInFlightSegment(provider));
+}
+
+function providerInFlightSignalPath(provider: string): string {
+	return path.join(providerInFlightDir(provider), ".wakeup");
+}
+
+function providerInFlightLockDir(provider: string): string {
+	return `${providerInFlightDir(provider)}.lock`;
+}
+
+// `process.kill(pid, 0)` may throw for permission/sandbox reasons even when a
+// process exists. Treat non-ESRCH failures as alive; timestamp expiry still
+// reaps leases whose heartbeat stopped.
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+async function readProviderInFlightInfo(infoPath: string): Promise<ProviderInFlightLeaseInfo | null> {
+	try {
+		const content = await fs.readFile(infoPath, "utf-8");
+		const parsed = JSON.parse(content) as Partial<ProviderInFlightLeaseInfo>;
+		if (typeof parsed.pid !== "number" || typeof parsed.timestamp !== "number" || typeof parsed.token !== "string") {
+			return null;
+		}
+		return { pid: parsed.pid, timestamp: parsed.timestamp, token: parsed.token };
+	} catch {
+		return null;
+	}
+}
+
+async function writeProviderInFlightInfo(dir: string, token: string): Promise<void> {
+	const info: ProviderInFlightLeaseInfo = { pid: process.pid, timestamp: Date.now(), token };
+	const infoPath = path.join(dir, "info.json");
+	const tempPath = path.join(dir, `.info-${process.pid}-${crypto.randomUUID()}.tmp`);
+	try {
+		await Bun.write(tempPath, JSON.stringify(info));
+		await fs.rename(tempPath, infoPath);
+	} catch (error) {
+		await fs.rm(tempPath, { force: true }).catch(() => {});
+		throw error;
+	}
+}
+
+async function isProviderInFlightDirStale(dir: string, staleMs: number): Promise<boolean> {
+	const info = await readProviderInFlightInfo(path.join(dir, "info.json"));
+	if (info) {
+		if (!isProcessAlive(info.pid)) return true;
+		return Date.now() - info.timestamp > staleMs;
+	}
+
+	try {
+		const stat = await fs.stat(path.join(dir, "info.json"));
+		return Date.now() - stat.mtimeMs > staleMs;
+	} catch (error) {
+		if (!isEnoent(error)) throw error;
+	}
+
+	try {
+		const stat = await fs.stat(dir);
+		return Date.now() - stat.mtimeMs > staleMs;
+	} catch (error) {
+		if (isEnoent(error)) return false;
+		throw error;
+	}
+}
+
+async function readProviderInFlightStaleLock(lockDir: string): Promise<ProviderInFlightStaleLock | null> {
+	const infoPath = path.join(lockDir, "info.json");
+	const info = await readProviderInFlightInfo(infoPath);
+	if (info) return isProcessAlive(info.pid) ? null : { token: info.token };
+
+	try {
+		const stat = await fs.stat(lockDir);
+		return Date.now() - stat.mtimeMs > PROVIDER_INFLIGHT_LOCK_STALE_MS ? { mtimeMs: stat.mtimeMs } : null;
+	} catch (error) {
+		if (isEnoent(error)) return null;
+		throw error;
+	}
+}
+
+async function readProviderInFlightLockIdentity(lockDir: string): Promise<ProviderInFlightLockIdentity> {
+	const stat = await fs.stat(lockDir);
+	return { dev: stat.dev, ino: stat.ino, birthtimeMs: stat.birthtimeMs };
+}
+
+function isSameProviderInFlightLock(
+	current: ProviderInFlightLockIdentity,
+	expected: ProviderInFlightLockIdentity,
+): boolean {
+	if (current.dev !== expected.dev) return false;
+	if (current.ino !== 0 || expected.ino !== 0) return current.ino === expected.ino;
+	return current.birthtimeMs === expected.birthtimeMs;
+}
+
+async function releaseProviderInFlightStaleLock(lockDir: string, stale: ProviderInFlightStaleLock): Promise<void> {
+	if ("token" in stale) {
+		await releaseProviderInFlightLock(lockDir, stale.token);
+		return;
+	}
+
+	const infoPath = path.join(lockDir, "info.json");
+	if (await readProviderInFlightInfo(infoPath)) return;
+	try {
+		const stat = await fs.stat(lockDir);
+		if (stat.mtimeMs !== stale.mtimeMs || Date.now() - stat.mtimeMs <= PROVIDER_INFLIGHT_LOCK_STALE_MS) return;
+		await fs.rm(lockDir, { recursive: true, force: true });
+	} catch {}
+}
+
+// Best-effort token-checked release. A token mismatch means another process has
+// already replaced the lock, so the fresh lock must be left intact.
+async function releaseProviderInFlightLock(lockDir: string, token: string): Promise<void> {
+	try {
+		const info = await readProviderInFlightInfo(path.join(lockDir, "info.json"));
+		if (!info || info.token !== token) return;
+		await fs.rm(lockDir, { recursive: true, force: true });
+	} catch {}
+}
+
+async function releaseProviderInFlightLockDirIfSame(
+	lockDir: string,
+	identity: ProviderInFlightLockIdentity,
+): Promise<void> {
+	try {
+		if (await readProviderInFlightInfo(path.join(lockDir, "info.json"))) return;
+		const current = await readProviderInFlightLockIdentity(lockDir);
+		if (!isSameProviderInFlightLock(current, identity)) return;
+		await fs.rm(lockDir, { recursive: true, force: true });
+	} catch {}
+}
+
+async function acquireProviderInFlightLock(provider: string, signal?: AbortSignal): Promise<() => Promise<void>> {
+	const lockDir = providerInFlightLockDir(provider);
+	await fs.mkdir(path.dirname(lockDir), { recursive: true });
+
+	while (true) {
+		if (signal?.aborted) throw signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
+		try {
+			await fs.mkdir(lockDir);
+			const lockIdentity = await readProviderInFlightLockIdentity(lockDir);
+			const token = crypto.randomUUID();
+			try {
+				await writeProviderInFlightInfo(lockDir, token);
+			} catch (error) {
+				await releaseProviderInFlightLockDirIfSame(lockDir, lockIdentity);
+				throw error;
+			}
+			return async () => {
+				await releaseProviderInFlightLock(lockDir, token);
+			};
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+
+		const staleLock = await readProviderInFlightStaleLock(lockDir);
+		if (staleLock) {
+			await releaseProviderInFlightStaleLock(lockDir, staleLock);
+			await signalProviderInFlightWaiters(provider);
+			continue;
+		}
+
+		await waitForProviderInFlightSignal(provider, signal);
+	}
+}
+
+async function cleanupProviderInFlightLeases(providerDir: string): Promise<number> {
+	let active = 0;
+	let entries: string[];
+	try {
+		entries = await fs.readdir(providerDir);
+	} catch (error) {
+		if (isEnoent(error)) return 0;
+		throw error;
+	}
+
+	for (const entry of entries) {
+		const leaseDir = path.join(providerDir, entry);
+		let isDirectory = false;
+		try {
+			isDirectory = (await fs.stat(leaseDir)).isDirectory();
+		} catch (error) {
+			if (isEnoent(error)) continue;
+			throw error;
+		}
+		if (!isDirectory) continue;
+		if (await isProviderInFlightDirStale(leaseDir, PROVIDER_INFLIGHT_LEASE_STALE_MS)) {
+			await fs.rm(leaseDir, { recursive: true, force: true });
+			continue;
+		}
+		active++;
+	}
+	return active;
+}
+
+async function tryAcquireProviderInFlightLease(
+	provider: string,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<ProviderInFlightLease | null> {
+	const releaseLock = await acquireProviderInFlightLock(provider, signal);
+	try {
+		const dir = providerInFlightDir(provider);
+		await fs.mkdir(dir, { recursive: true });
+		const active = await cleanupProviderInFlightLeases(dir);
+		if (active >= limit) return null;
+
+		const leaseDir = path.join(dir, `${process.pid}-${Date.now()}-${crypto.randomUUID()}`);
+		const token = crypto.randomUUID();
+		try {
+			await fs.mkdir(leaseDir);
+			await writeProviderInFlightInfo(leaseDir, token);
+		} catch (error) {
+			await removeProviderInFlightLeaseDir(leaseDir).catch(() => {});
+			throw error;
+		}
+		let heartbeatFlush = Promise.resolve();
+		const touchHeartbeat = () => {
+			heartbeatFlush = heartbeatFlush
+				.then(
+					() => writeProviderInFlightInfo(leaseDir, token),
+					() => writeProviderInFlightInfo(leaseDir, token),
+				)
+				.catch(() => {});
+		};
+		const heartbeat = setInterval(touchHeartbeat, PROVIDER_INFLIGHT_HEARTBEAT_MS);
+		heartbeat.unref?.();
+		return { path: leaseDir, heartbeat, flushHeartbeat: () => heartbeatFlush };
+	} finally {
+		await releaseLock();
+	}
+}
+
+async function signalProviderInFlightWaiters(provider: string): Promise<void> {
+	try {
+		const dir = providerInFlightDir(provider);
+		await fs.mkdir(dir, { recursive: true });
+		await Bun.write(providerInFlightSignalPath(provider), String(Date.now()));
+	} catch {}
+}
+
+function waitForProviderInFlightSignal(provider: string, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted)
+		return Promise.reject(signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch"));
+	const signalPath = providerInFlightSignalPath(provider);
+	const waitStarted = Date.now();
+	const { promise, resolve, reject } = Promise.withResolvers<void>();
+	let settled = false;
+	let watcher: fsSync.FSWatcher | undefined;
+	const timer = setTimeout(() => finish(resolve), PROVIDER_INFLIGHT_SIGNAL_FALLBACK_MS);
+	const finish = (settle: () => void) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timer);
+		watcher?.close();
+		signal?.removeEventListener("abort", onAbort);
+		settle();
+	};
+	const onAbort = () => {
+		finish(() => reject(signal?.reason ?? new AIError.AbortError("Provider request aborted before dispatch")));
+	};
+	signal?.addEventListener("abort", onAbort, { once: true });
+	try {
+		watcher = fsSync.watch(providerInFlightDir(provider), (_event, filename) => {
+			if (filename === ".wakeup" || filename === null) {
+				finish(resolve);
+			}
+		});
+		void fs.stat(signalPath).then(
+			stat => {
+				if (stat.mtimeMs >= waitStarted) finish(resolve);
+			},
+			error => {
+				if (!isEnoent(error)) finish(resolve);
+			},
+		);
+	} catch {
+		// Filesystem notifications are best-effort across platforms; the fallback
+		// timer keeps stale-lock/lease cleanup progressing if an event is dropped.
+	}
+	return promise;
+}
+
+async function removeProviderInFlightLeaseDir(leasePath: string): Promise<void> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			await fs.rm(leasePath, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			if (isEnoent(error)) return;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (attempt < 2 && (code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM")) {
+				await Bun.sleep(25);
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
+async function releaseProviderInFlightLease(provider: string, lease: ProviderInFlightLease): Promise<void> {
+	clearInterval(lease.heartbeat);
+	await lease.flushHeartbeat();
+	await removeProviderInFlightLeaseDir(lease.path);
+	await signalProviderInFlightWaiters(provider);
+}
+
+async function acquireProviderInFlightSlot(
+	provider: string,
+	limit: number | undefined,
+	signal?: AbortSignal,
+): Promise<() => Promise<void>> {
+	if (limit === undefined) return async () => {};
+	let loggedWait = false;
+	while (true) {
+		if (signal?.aborted) throw signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
+		const lease = await tryAcquireProviderInFlightLease(provider, limit, signal);
+		if (lease) return () => releaseProviderInFlightLease(provider, lease);
+		if (!loggedWait) {
+			loggedWait = true;
+			logger.debug("Provider in-flight limit blocked request", { provider, limit });
+		}
+		await waitForProviderInFlightSignal(provider, signal);
+	}
+}
+
+export const __providerInFlightForTesting = {
+	setRoot(root: string | undefined): void {
+		providerInFlightRootOverride = root;
+	},
+	providerDir(provider: string): string {
+		return providerInFlightDir(provider);
+	},
+	lockDir(provider: string): string {
+		return providerInFlightLockDir(provider);
+	},
+	async captureStaleLockRelease(provider: string): Promise<(() => Promise<void>) | null> {
+		const lockDir = providerInFlightLockDir(provider);
+		const stale = await readProviderInFlightStaleLock(lockDir);
+		if (!stale) return null;
+		return () => releaseProviderInFlightStaleLock(lockDir, stale);
+	},
+	async captureLockDirRelease(provider: string): Promise<(() => Promise<void>) | null> {
+		const lockDir = providerInFlightLockDir(provider);
+		try {
+			const identity = await readProviderInFlightLockIdentity(lockDir);
+			return () => releaseProviderInFlightLockDirIfSame(lockDir, identity);
+		} catch {
+			return null;
+		}
+	},
+};
+
+function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal" | "maxInFlightRequests">>(
+	model: Model<Api>,
+	options: TOptions | undefined,
+	dispatch: () => AssistantMessageEventStream,
+): AssistantMessageEventStream {
+	const limit = resolveProviderInFlightLimit(model.provider, options);
+	if (limit === undefined) return dispatch();
+
+	const outer = new AssistantMessageEventStream();
+	void (async () => {
+		let release: (() => Promise<void>) | undefined;
+		let released = false;
+		const releaseOnce = async () => {
+			if (!release || released) return;
+			released = true;
+			await release();
+		};
+		try {
+			const startedWaitingAt = Date.now();
+			release = await acquireProviderInFlightSlot(model.provider, limit, options?.signal);
+			if (Date.now() - startedWaitingAt >= PROVIDER_INFLIGHT_SIGNAL_FALLBACK_MS) {
+				logger.debug("Provider in-flight limit wait completed", { provider: model.provider, limit });
+			}
+			if (options?.signal?.aborted) {
+				throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
+			}
+			const inner = dispatch();
+			try {
+				for await (const event of inner) {
+					outer.push(event);
+					if (outer.done) return;
+				}
+				if (!outer.done) outer.end(await inner.result());
+			} finally {
+				await releaseOnce();
+			}
+		} catch (error) {
+			await releaseOnce();
+			if (!outer.done) outer.fail(error);
+		}
+	})();
+	return outer;
 }
 
 function createVertexAuthenticatedFetch(options: StreamOptions | undefined): FetchImpl {
@@ -171,6 +626,8 @@ const LEGACY_ENV_KEYS: Record<string, KeyResolver> = {
 	exa: "EXA_API_KEY",
 	jina: "JINA_API_KEY",
 	brave: "BRAVE_API_KEY",
+	tinyfish: "TINYFISH_API_KEY",
+	firecrawl: "FIRECRAWL_API_KEY",
 };
 
 /**
@@ -235,7 +692,9 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	return withGeminiThinkingLoopGuard(model, options, opts => streamDispatch(model, context, opts));
+	return withGeminiThinkingLoopGuard(model, options, opts =>
+		withProviderInFlightLimit(model, opts, () => streamDispatch(model, context, opts)),
+	);
 }
 
 function streamDispatch<TApi extends Api>(
@@ -259,12 +718,23 @@ function streamDispatch<TApi extends Api>(
 	if (isGitLabDuoModel(model)) {
 		const apiKey = requestOptions.apiKey || getEnvApiKey(model.provider);
 		if (!apiKey) {
-			throw new Error(`No API key for provider: ${model.provider}`);
+			throw new AIError.MissingApiKeyError(model.provider);
 		}
 		return streamGitLabDuo(model, context, {
 			...(requestOptions as SimpleStreamOptions),
 			apiKey,
 		});
+	}
+
+	if (model.api === "gitlab-duo-agent") {
+		const apiKey = (requestOptions as StreamOptions | undefined)?.apiKey || getEnvApiKey(model.provider);
+		if (!apiKey) {
+			throw new AIError.MissingApiKeyError(model.provider);
+		}
+		return streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
+			...(requestOptions as StreamOptions | undefined),
+			apiKey,
+		} as GitLabDuoWorkflowOptions);
 	}
 
 	// Vertex AI uses Application Default Credentials, not API keys
@@ -277,7 +747,7 @@ function streamDispatch<TApi extends Api>(
 
 	const apiKey = requestOptions?.apiKey || getEnvApiKey(model.provider) || modelConfiguredAuthorizationApiKey(model);
 	if (!apiKey) {
-		throw new Error(`No API key for provider: ${model.provider}`);
+		throw new AIError.MissingApiKeyError(model.provider);
 	}
 	const providerOptions = isGoogleVertexAuthenticatedModel(model)
 		? {
@@ -361,8 +831,49 @@ function streamDispatch<TApi extends Api>(
 			return streamDevin(model as Model<"devin-agent">, context, providerOptions as DevinOptions);
 
 		default:
-			throw new Error(`Unhandled API: ${api}`);
+			throw new AIError.ConfigurationError(`Unhandled API: ${api}`);
 	}
+}
+
+/** Thinking-loop re-samples spent before {@link resolveWithThinkingLoopCook} cooks. */
+const THINKING_LOOP_MAX_ABORTS = 3;
+const THINKING_LOOP_RETRY_BASE_DELAY_MS = 500;
+const THINKING_LOOP_RETRY_MAX_DELAY_MS = 8_000;
+
+/**
+ * Resolve a completion, re-sampling a thinking-loop stall up to
+ * {@link THINKING_LOOP_MAX_ABORTS} times before letting it cook. The loop guard
+ * raises an empty `stopReason: "error"` stall on each guarded attempt; this
+ * result-path consumer re-dispatches a fresh request per stall and, once the abort
+ * budget is spent, runs one final pass with the guard disabled so a stubborn loop
+ * returns the model's raw output instead of a fatal stall. Non-stall results —
+ * including genuine errors — return immediately; a caller abort during backoff
+ * propagates so cancellation surfaces as an abort, never a stale stall result.
+ */
+async function resolveWithThinkingLoopCook(
+	signal: AbortSignal | undefined,
+	dispatch: () => AssistantMessageEventStream,
+	cook: () => AssistantMessageEventStream,
+): Promise<AssistantMessage> {
+	let message = await dispatch().result();
+	let thinkingLoopRetry = AIError.is(message.errorId, AIError.Flag.ThinkingLoop);
+	for (let attempt = 0; thinkingLoopRetry && attempt < THINKING_LOOP_MAX_ABORTS - 1; attempt += 1) {
+		// A caller abort surfaces as a thrown abort (never the stall, which would
+		// misclassify as a 502): throwIfAborted before backoff, and scheduler.wait
+		// rejects if the abort lands mid-delay.
+		signal?.throwIfAborted();
+		const delay = Math.min(THINKING_LOOP_RETRY_BASE_DELAY_MS * 2 ** attempt, THINKING_LOOP_RETRY_MAX_DELAY_MS);
+		await scheduler.wait(delay, { signal });
+		message = await dispatch().result();
+		thinkingLoopRetry =
+			message.stopReason === "error" &&
+			message.content.length === 0 &&
+			AIError.is(message.errorId, AIError.Flag.ThinkingLoop);
+	}
+	if (!thinkingLoopRetry) return message;
+	signal?.throwIfAborted();
+	// Abort budget spent and still looping: let it cook with the guard disabled.
+	return cook().result();
 }
 
 export async function complete<TApi extends Api>(
@@ -370,8 +881,11 @@ export async function complete<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): Promise<AssistantMessage> {
-	const s = stream(model, context, options);
-	return s.result();
+	return resolveWithThinkingLoopCook(
+		options?.signal,
+		() => stream(model, context, options),
+		() => stream(model, context, { ...options, loopGuard: { ...options?.loopGuard, enabled: false } }),
+	);
 }
 
 type AuthRetryFailure = {
@@ -383,7 +897,7 @@ type AuthRetryFailure = {
 function extractStatusFromAssistantError(message: AssistantMessage): number | undefined {
 	if (message.errorStatus !== undefined) return message.errorStatus;
 	if (!message.errorMessage) return undefined;
-	return extractHttpStatusFromError({ message: message.errorMessage });
+	return AIError.status({ message: message.errorMessage });
 }
 
 function isRetryableUpstreamError(error: unknown, status: number | undefined, message: string | undefined): boolean {
@@ -406,7 +920,9 @@ function isRetryableUpstreamError(error: unknown, status: number | undefined, me
 function createAssistantAuthError(message: AssistantMessage): Error {
 	const text = message.errorMessage ?? "Provider authentication failed";
 	const status = extractStatusFromAssistantError(message);
-	return status === undefined ? new Error(text) : new ProviderHttpError(text, status);
+	return status === undefined
+		? new AIError.ProviderResponseError(text, { kind: "runtime" })
+		: new ProviderHttpError(text, status);
 }
 
 function emitBufferedEvents(stream: AssistantMessageEventStream, events: AssistantMessageEvent[]): void {
@@ -475,7 +991,7 @@ export function streamSimple<TApi extends Api>(
 					captureAuthFailure &&
 					isRetryableUpstreamError(
 						error,
-						extractHttpStatusFromError(error),
+						AIError.status(error),
 						error instanceof Error ? error.message : undefined,
 					)
 				) {
@@ -503,7 +1019,7 @@ export function streamSimple<TApi extends Api>(
 				// A thrown resolver is a broker/OAuth/network failure, not a missing
 				// key — surface the cause instead of masking it as "No API key".
 				outer.fail(
-					new Error(
+					new AIError.ConfigurationError(
 						`Failed to resolve API key for provider ${model.provider}: ${error instanceof Error ? error.message : String(error)}`,
 						{ cause: error },
 					),
@@ -511,7 +1027,7 @@ export function streamSimple<TApi extends Api>(
 				return;
 			}
 			if (lastKey === undefined) {
-				outer.fail(new Error(`No API key for provider: ${model.provider}`));
+				outer.fail(new AIError.MissingApiKeyError(model.provider));
 				return;
 			}
 			let failure = await runAttempt(lastKey, true);
@@ -544,14 +1060,16 @@ export function streamSimple<TApi extends Api>(
 	// extension-registered APIs can't accidentally override a configured
 	// pi-native transport.
 	if (model.transport === "pi-native") {
-		return withGeminiThinkingLoopGuard(model, requestOptions, opts => streamPiNative(model, context, opts));
+		return withGeminiThinkingLoopGuard(model, requestOptions, opts =>
+			withProviderInFlightLimit(model, opts, () => streamPiNative(model, context, opts)),
+		);
 	}
 
 	// Check custom API registry (extension-provided APIs)
 	const customApiProvider = getCustomApi(model.api);
 	if (customApiProvider) {
 		return withGeminiThinkingLoopGuard(model, requestOptions, opts =>
-			customApiProvider.streamSimple(model, context, opts),
+			withProviderInFlightLimit(model, opts, () => customApiProvider.streamSimple(model, context, opts)),
 		);
 	}
 
@@ -572,12 +1090,22 @@ export function streamSimple<TApi extends Api>(
 		getEnvApiKey(model.provider) ||
 		modelConfiguredAuthorizationApiKey(model);
 	if (!apiKey) {
-		throw new Error(`No API key for provider: ${model.provider}`);
+		throw new AIError.MissingApiKeyError(model.provider);
 	}
 
 	// GitLab Duo - wraps Anthropic/OpenAI behind GitLab AI Gateway direct access tokens
 	if (isGitLabDuoModel(model)) {
-		return streamGitLabDuo(model, context, {
+		return withProviderInFlightLimit(model, requestOptions, () =>
+			streamGitLabDuo(model, context, {
+				...requestOptions,
+				apiKey,
+			}),
+		);
+	}
+
+	// GitLab Duo Workflow - IDE workflow protocol + WebSocket action bridge
+	if (model.api === "gitlab-duo-agent") {
+		return streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
 			...requestOptions,
 			apiKey,
 		});
@@ -586,21 +1114,25 @@ export function streamSimple<TApi extends Api>(
 	// Kimi Code - route to dedicated handler that wraps OpenAI or Anthropic API
 	if (isKimiModel(model)) {
 		// Pass raw SimpleStreamOptions - streamKimi handles mapping internally
-		return streamKimi(model as Model<"openai-completions">, context, {
-			...requestOptions,
-			apiKey,
-			format: requestOptions?.kimiApiFormat ?? "anthropic",
-		});
+		return withProviderInFlightLimit(model, requestOptions, () =>
+			streamKimi(model as Model<"openai-completions">, context, {
+				...requestOptions,
+				apiKey,
+				format: requestOptions?.kimiApiFormat ?? "anthropic",
+			}),
+		);
 	}
 
 	// Synthetic - route to dedicated handler that wraps OpenAI or Anthropic API
 	if (isSyntheticModel(model)) {
 		// Pass raw SimpleStreamOptions - streamSynthetic handles mapping internally
-		return streamSynthetic(model as Model<"openai-completions">, context, {
-			...requestOptions,
-			apiKey,
-			format: requestOptions?.syntheticApiFormat ?? "openai", // Default to OpenAI format
-		});
+		return withProviderInFlightLimit(model, requestOptions, () =>
+			streamSynthetic(model as Model<"openai-completions">, context, {
+				...requestOptions,
+				apiKey,
+				format: requestOptions?.syntheticApiFormat ?? "openai", // Default to OpenAI format
+			}),
+		);
 	}
 	const providerOptions = mapOptionsForApi(model, requestOptions, apiKey);
 	return stream(model, context, providerOptions);
@@ -617,8 +1149,11 @@ export async function completeSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): Promise<AssistantMessage> {
-	const s = streamSimple(model, context, options);
-	return s.result();
+	return resolveWithThinkingLoopCook(
+		options?.signal,
+		() => streamSimple(model, context, options),
+		() => streamSimple(model, context, { ...options, loopGuard: { ...options?.loopGuard, enabled: false } }),
+	);
 }
 
 const MIN_OUTPUT_TOKENS = 1024;
@@ -826,6 +1361,7 @@ function mapOptionsForApi<TApi extends Api>(
 		streamFirstEventTimeoutMs: options?.streamFirstEventTimeoutMs,
 		streamIdleTimeoutMs: options?.streamIdleTimeoutMs,
 		providerSessionState: options?.providerSessionState,
+		maxInFlightRequests: options?.maxInFlightRequests,
 		onPayload: options?.onPayload,
 		onResponse: options?.onResponse,
 		onSseEvent: options?.onSseEvent,
@@ -970,6 +1506,7 @@ function mapOptionsForApi<TApi extends Api>(
 					openrouterVariant: options?.openrouterVariant,
 					maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 					disableReasoning: options?.disableReasoning,
+					textVerbosity: options?.textVerbosity,
 				});
 			}
 			return castApi<"openai-completions">({
@@ -1004,6 +1541,7 @@ function mapOptionsForApi<TApi extends Api>(
 				openrouterVariant: options?.openrouterVariant,
 				maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 				disableReasoning: options?.disableReasoning,
+				textVerbosity: options?.textVerbosity,
 			});
 
 		case "azure-openai-responses":
@@ -1022,7 +1560,8 @@ function mapOptionsForApi<TApi extends Api>(
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
-				reasoningSummary: options?.hideThinkingSummary ? null : undefined,
+				reasoningSummary: options?.hideThinkingSummary ? null : "detailed",
+				textVerbosity: options?.textVerbosity,
 			});
 
 		case "google-generative-ai": {
@@ -1176,6 +1715,12 @@ function mapOptionsForApi<TApi extends Api>(
 			});
 		}
 
+		case "gitlab-duo-agent":
+			return castApi<"gitlab-duo-agent">({
+				...base,
+				cwd: options?.cwd,
+				toolChoice: options?.toolChoice,
+			});
 		case "devin-agent": {
 			const devinModel = model as Model<"devin-agent">;
 			const effort =
@@ -1187,9 +1732,8 @@ function mapOptionsForApi<TApi extends Api>(
 				chatModelUid: resolveWireModelId(devinModel, effort),
 			});
 		}
-
 		default:
-			throw new Error(`Unhandled API in mapOptionsForApi: ${model.api}`);
+			throw new AIError.ConfigurationError(`Unhandled API in mapOptionsForApi: ${model.api}`);
 	}
 }
 

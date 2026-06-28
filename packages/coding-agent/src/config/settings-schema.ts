@@ -132,7 +132,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	tools: [
 		"Available Tools",
 		"Todos",
-		"Search & Browser",
+		"Grep & Browser",
 		"GitHub",
 		"Output Limits",
 		"Execution",
@@ -278,6 +278,7 @@ export interface ModelTagsSettings {
 // under `as const` while still letting SettingValue infer the correct element type.
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
+const EMPTY_NUMBER_RECORD: Record<string, number> = {};
 const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
@@ -455,6 +456,18 @@ export const SETTINGS_SCHEMA = {
 
 	disabledProviders: { type: "array", default: EMPTY_STRING_ARRAY },
 
+	"providers.maxInFlightRequests": {
+		type: "record",
+		default: EMPTY_NUMBER_RECORD,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Max In-Flight Requests",
+			description:
+				'Maximum concurrent LLM requests per provider id (for example "openai" or "anthropic"), shared across local OMP processes with this config root. Omitted providers are unlimited.',
+		},
+	},
+
 	disabledExtensions: { type: "array", default: EMPTY_STRING_ARRAY },
 
 	modelRoles: { type: "record", default: EMPTY_STRING_RECORD },
@@ -585,6 +598,17 @@ export const SETTINGS_SCHEMA = {
 			label: "Transparent Status Line",
 			description:
 				"Use the terminal's default background for the status line instead of the theme's `statusLineBg`. Powerline end caps are dropped because they need a contrasting fill to bridge into the surrounding terminal.",
+		},
+	},
+	"statusLine.compactThinkingLevel": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Status Line",
+			label: "Compact Thinking Level",
+			description:
+				"Show the thinking level as a single icon on the model name instead of a separate ` · <level>` suffix.",
 		},
 	},
 	"tools.artifactSpillThreshold": {
@@ -776,6 +800,17 @@ export const SETTINGS_SCHEMA = {
 		default: 8,
 		description:
 			"Maximum number of inline images kept as live terminal graphics (default 8). Older images fall back to a text placeholder via a full redraw once the limit is exceeded. Set to 0 to keep every image (no limit).",
+	},
+
+	"terminal.showProgress": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Native Terminal Progress",
+			description: "Emit OSC 9;4 indeterminate progress while the agent or context maintenance is running",
+		},
 	},
 
 	"tui.textSizing": {
@@ -1155,6 +1190,23 @@ export const SETTINGS_SCHEMA = {
 				{ value: "1.1", label: "1.1", description: "Mild penalty" },
 				{ value: "1.2", label: "1.2", description: "Balanced" },
 				{ value: "1.5", label: "1.5", description: "Strong penalty" },
+			],
+		},
+	},
+
+	textVerbosity: {
+		type: "enum",
+		values: ["low", "medium", "high"] as const,
+		default: "high",
+		ui: {
+			tab: "model",
+			group: "Sampling",
+			label: "Text Verbosity",
+			description: "OpenAI Responses and Codex response verbosity (low, medium, or high)",
+			options: [
+				{ value: "low", label: "Low", description: "Prefer concise responses" },
+				{ value: "medium", label: "Medium", description: "Balance brevity and detail" },
+				{ value: "high", label: "High", description: "Prefer detailed responses (default)" },
 			],
 		},
 	},
@@ -1592,6 +1644,35 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"recap.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Idle Recap",
+			description: "Generate a brief LLM recap of where things stand after the terminal has been idle",
+		},
+	},
+
+	"recap.idleSeconds": {
+		type: "number",
+		default: 240,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Idle Recap Delay",
+			description: "Seconds to wait while idle before showing the recap",
+			options: [
+				{ value: "60", label: "1 minute" },
+				{ value: "120", label: "2 minutes" },
+				{ value: "240", label: "4 minutes" },
+				{ value: "300", label: "5 minutes" },
+				{ value: "600", label: "10 minutes" },
+			],
+		},
+	},
+
 	// Collab
 	"collab.relayUrl": {
 		type: "string",
@@ -1848,6 +1929,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"compaction.remoteStreamingV2Enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "Compaction",
+			label: "Remote Compaction V2",
+			description: "Use Responses streaming compaction for compatible remote compaction models",
+		},
+	},
+
 	"compaction.reserveTokens": { type: "number", default: 16384 },
 
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
@@ -1855,6 +1947,8 @@ export const SETTINGS_SCHEMA = {
 	"compaction.autoContinue": { type: "boolean", default: true },
 
 	"compaction.remoteEndpoint": { type: "string", default: undefined },
+
+	"compaction.v2RetainedMessageBudget": { type: "number", default: 64000 },
 
 	// Idle compaction
 	"compaction.idleEnabled": {
@@ -1983,7 +2077,6 @@ export const SETTINGS_SCHEMA = {
 			"anthropic",
 			"deepseek",
 			"harmony",
-			"pi",
 			"qwen3",
 			"gemini",
 			"gemma",
@@ -2010,7 +2103,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "anthropic", label: "Anthropic", description: "Use Anthropic-style in-band tool calls." },
 				{ value: "deepseek", label: "DeepSeek", description: "Use DeepSeek-style in-band tool calls." },
 				{ value: "harmony", label: "Harmony", description: "Use Harmony-style in-band tool calls." },
-				{ value: "pi", label: "Pi", description: "Use the Pi owned dialect (compact sigil-delimited tool calls)." },
 				{ value: "qwen3", label: "Qwen3", description: "Use the Qwen3 owned dialect." },
 				{ value: "gemini", label: "Gemini", description: "Use the Gemini owned dialect." },
 				{ value: "gemma", label: "Gemma", description: "Use the Gemma owned dialect." },
@@ -2416,11 +2508,16 @@ export const SETTINGS_SCHEMA = {
 			tab: "memory",
 			group: "Mnemopi",
 			label: "Mnemopi LLM Mode",
-			description: "Use no LLM, the configured smol model, or a remote OpenAI-compatible endpoint",
+			description:
+				"Use no LLM, the online tiny model (the TINY role from /models, else pi/smol), or a remote OpenAI-compatible endpoint",
 			condition: "mnemopiActive",
 			options: [
 				{ value: "none", label: "None", description: "Disable Mnemopi LLM-backed extraction" },
-				{ value: "smol", label: "Smol", description: "Use the configured pi-ai smol model" },
+				{
+					value: "smol",
+					label: "Online (tiny)",
+					description: "Use the online tiny model (the TINY role from /models, else pi/smol)",
+				},
 				{ value: "remote", label: "Remote", description: "Use the Mnemopi remote LLM settings below" },
 			],
 		},
@@ -3476,7 +3573,7 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Search & Browser",
+			group: "Grep & Browser",
 			label: "Headless Browser",
 			description: "Launch browser in headless mode (disable to show browser UI)",
 		},
@@ -3487,7 +3584,7 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Search & Browser",
+			group: "Grep & Browser",
 			label: "cmux Browser",
 			description:
 				"Use cmux WKWebView surfaces for browser automation when a cmux socket is available. Set PI_BROWSER_CMUX=0 or PI_BROWSER_CMUX=1 to override.",
@@ -3498,7 +3595,7 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "tools",
-			group: "Search & Browser",
+			group: "Grep & Browser",
 			label: "Screenshot Directory",
 			description:
 				"Directory to save screenshots. If unset, screenshots go to a temp file. Supports ~. Examples: ~/Downloads, ~/Desktop, /sdcard/Download (Android)",
@@ -3749,6 +3846,17 @@ export const SETTINGS_SCHEMA = {
 			group: "Modes",
 			label: "Goal Continuation Modes",
 			description: "Run modes where active goals may auto-continue between turns",
+		},
+	},
+
+	"title.refreshOnReplan": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Refresh Title on Replan",
+			description: "Refresh generated session titles after todo init replans unless the title was set by the user",
 		},
 	},
 
@@ -4318,7 +4426,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "providers",
 			group: "Tiny Model",
 			label: "Tiny Model",
-			description: "Session-title model: online pi/smol by default, or a local on-device model",
+			description:
+				"Session-title model: online (the TINY role from /models, else pi/smol) by default, or a local on-device model",
 			options: TINY_TITLE_MODEL_OPTIONS,
 		},
 	},
@@ -4357,7 +4466,7 @@ export const SETTINGS_SCHEMA = {
 			group: "General",
 			label: "Memory Model",
 			description:
-				"Mnemopi LLM for fact extraction + consolidation: online (smol/remote) by default, or a local on-device model",
+				"Mnemopi LLM for fact extraction + consolidation: online (the TINY role from /models, else smol/remote) by default, or a local on-device model",
 			condition: "mnemopiActive",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},
@@ -4372,7 +4481,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Thinking",
 			label: "Auto Thinking Model",
 			description:
-				"Difficulty classifier for the `auto` thinking level: online smol by default, or a local on-device model",
+				"Difficulty classifier for the `auto` thinking level: online (the TINY role from /models, else smol) by default, or a local on-device model",
 			condition: "autoThinkingActive",
 			options: AUTO_THINKING_MODEL_OPTIONS,
 		},
@@ -4396,7 +4505,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "providers",
 			group: "Tiny Model",
 			label: "Unexpected Stop Model",
-			description: "Classifier for unexpected-stop detection: online smol by default, or a local on-device model.",
+			description:
+				"Classifier for unexpected-stop detection: online (the TINY role from /models, else smol) by default, or a local on-device model.",
 			condition: "unexpectedStopDetection",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},
@@ -4804,11 +4914,22 @@ export interface CompactionSettings {
 	autoContinue: boolean;
 	remoteEnabled: boolean;
 	remoteEndpoint: string | undefined;
+	remoteStreamingV2Enabled: boolean;
+	v2RetainedMessageBudget: number;
 	idleEnabled: boolean;
 	idleThresholdTokens: number;
 	idleTimeoutSeconds: number;
 	supersedeReads: boolean;
 	dropUseless: boolean;
+}
+
+export interface RecapSettings {
+	enabled: boolean;
+	idleSeconds: number;
+}
+
+export interface TitleSettings {
+	refreshOnReplan: boolean;
 }
 
 export interface ContextPromotionSettings {
@@ -4956,6 +5077,8 @@ export interface GcSettings {
 /** Map group prefix -> typed settings interface */
 export interface GroupTypeMap {
 	compaction: CompactionSettings;
+	recap: RecapSettings;
+	title: TitleSettings;
 	contextPromotion: ContextPromotionSettings;
 	retry: RetrySettings;
 	memories: MemoriesSettings;

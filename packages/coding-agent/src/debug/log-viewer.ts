@@ -3,11 +3,13 @@ import {
 	extractPrintableText,
 	matchesKey,
 	padding,
+	parseSgrMouse,
 	replaceTabs,
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { bottomBorder, divider, row, topBorder } from "../modes/components/overlay-box";
 import { theme } from "../modes/theme/theme";
 import { copyToClipboard } from "../utils/clipboard";
 import {
@@ -23,6 +25,8 @@ export const LOAD_OLDER_LABEL = "### MOVE UP TO LOAD MORE...";
 
 const INITIAL_LOG_CHUNK = 50;
 const LOAD_OLDER_CHUNK = 50;
+const MIN_LOG_VIEWER_WIDTH = 48;
+const LOG_VIEWER_CHROME_LINES = 8;
 
 type LogEntry = {
 	rawLine: string;
@@ -182,6 +186,31 @@ export class DebugLogViewerModel {
 		if (this.#getCursorRow()?.kind !== "log" && !extendSelection) {
 			this.#selectionAnchorSelectableIndex = undefined;
 		}
+	}
+
+	moveCursorToRow(rowIndex: number, extendSelection: boolean): boolean {
+		const selectableIndex = this.#selectableRowIndices.indexOf(rowIndex);
+		if (selectableIndex < 0) {
+			return false;
+		}
+
+		if (extendSelection && this.#selectionAnchorSelectableIndex === undefined) {
+			const row = this.#getCursorRow();
+			if (row?.kind === "log") {
+				this.#selectionAnchorSelectableIndex = this.#cursorSelectableIndex;
+			}
+		}
+
+		this.#cursorSelectableIndex = selectableIndex;
+
+		if (!extendSelection) {
+			this.#selectionAnchorSelectableIndex = undefined;
+		}
+
+		if (this.#getCursorRow()?.kind !== "log" && !extendSelection) {
+			this.#selectionAnchorSelectableIndex = undefined;
+		}
+		return true;
 	}
 
 	getSelectedLogIndices(): number[] {
@@ -484,6 +513,9 @@ export class DebugLogViewerComponent implements Component {
 	#scrollRowOffset = 0;
 	#statusMessage: string | undefined;
 	#loadingOlder = false;
+	#bodyRowStart = 0;
+	#bodyRowCount = 0;
+	#bodyLineToRowIndex: Array<number | undefined> = [];
 
 	constructor(options: DebugLogViewerComponentOptions) {
 		this.#logSource = options.logSource;
@@ -501,6 +533,10 @@ export class DebugLogViewerComponent implements Component {
 	}
 
 	handleInput(keyData: string): void {
+		if (keyData.startsWith("\x1b[<") && this.#handleMouse(keyData)) {
+			return;
+		}
+
 		if (matchesKey(keyData, "escape") || matchesKey(keyData, "esc")) {
 			this.#onExit();
 			return;
@@ -598,59 +634,99 @@ export class DebugLogViewerComponent implements Component {
 		}
 	}
 
+	#handleMouse(keyData: string): boolean {
+		const event = parseSgrMouse(keyData);
+		if (!event) return false;
+
+		const overBody = event.row >= this.#bodyRowStart && event.row < this.#bodyRowStart + this.#bodyRowCount;
+		if (event.wheel !== null && overBody) {
+			this.#statusMessage = undefined;
+			const maxOffset = Math.max(0, this.#model.rows.length - this.#bodyHeight());
+			this.#scrollRowOffset = Math.max(0, Math.min(maxOffset, this.#scrollRowOffset + event.wheel * 3));
+			this.#onUpdate?.();
+			return true;
+		}
+
+		if (!event.leftClick || !overBody) return false;
+		const rowIndex = this.#bodyLineToRowIndex[event.row - this.#bodyRowStart];
+		if (rowIndex === undefined) return false;
+
+		const target = this.#model.rows[rowIndex];
+		if (!target || target.kind === "warning") return false;
+		this.#statusMessage = undefined;
+		this.#model.moveCursorToRow(rowIndex, false);
+		if (target.kind === "load-older") {
+			void this.#handleLoadOlder();
+			return true;
+		}
+
+		if (this.#model.isExpanded(target.logIndex)) {
+			this.#model.collapseSelected();
+		} else {
+			this.#model.expandSelected();
+		}
+		this.#ensureCursorVisible();
+		this.#onUpdate?.();
+		return true;
+	}
+
 	invalidate(): void {
 		// no cached child state
 	}
 
 	render(width: number): readonly string[] {
-		this.#lastRenderWidth = Math.max(20, width);
+		this.#lastRenderWidth = Math.max(MIN_LOG_VIEWER_WIDTH, width);
 		this.#ensureCursorVisible();
 
-		const innerWidth = Math.max(1, this.#lastRenderWidth - 2);
+		const contentWidth = Math.max(1, this.#lastRenderWidth - 4);
 		const bodyHeight = this.#bodyHeight();
 
-		const rows = this.#renderRows(innerWidth);
-		const visibleBodyLines = this.#renderVisibleBodyLines(rows, innerWidth, bodyHeight);
+		const rows = this.#renderRows(contentWidth);
+		this.#bodyRowStart = 4;
+		this.#bodyRowCount = bodyHeight;
+		const visibleBodyLines = this.#renderVisibleBodyLines(rows, bodyHeight);
 
 		return [
-			this.#frameTop(innerWidth),
-			this.#frameLine(this.#summaryText(), innerWidth),
-			this.#frameSeparator(innerWidth),
-			this.#frameLine(this.#filterText(), innerWidth),
-			this.#frameSeparator(innerWidth),
+			topBorder(this.#lastRenderWidth, "Recent Logs"),
+			row(this.#summaryText(), this.#lastRenderWidth),
+			row(this.#filterText(), this.#lastRenderWidth),
+			divider(this.#lastRenderWidth),
 			...visibleBodyLines,
-			this.#frameLine(this.#statusText(), innerWidth),
-			this.#frameBottom(innerWidth),
+			divider(this.#lastRenderWidth),
+			row(this.#statusText(), this.#lastRenderWidth),
+			row(theme.fg("dim", this.#controlsText()), this.#lastRenderWidth),
+			bottomBorder(this.#lastRenderWidth),
 		];
 	}
 
 	#summaryText(): string {
-		return ` # ${this.#model.visibleLogCount}/${this.#model.logCount} logs | ${this.#controlsText()}`;
+		const selected = this.#model.getSelectedCount();
+		const expanded = this.#model.expandedCount;
+		return `${theme.fg("muted", "showing")} ${theme.fg("accent", `${this.#model.visibleLogCount}/${this.#model.logCount}`)}  ${theme.fg("muted", "selected")} ${theme.fg(selected > 0 ? "accent" : "muted", String(selected))}  ${theme.fg("muted", "expanded")} ${theme.fg(expanded > 0 ? "accent" : "muted", String(expanded))}`;
 	}
 
 	#controlsText(): string {
-		return "Esc: back  Ctrl+C: copy  Up/Down: move  Shift+Up/Down: select range  Left/Right: collapse/expand  Ctrl+A: select all  Ctrl+O: load older  Ctrl+P: pid filter";
+		return "Esc close · Ctrl+C copy · ↑/↓/wheel move · click toggle · Shift+↑/↓ select · ←/→ collapse/expand · Ctrl+A all · Ctrl+O older · Ctrl+P pid";
 	}
 
 	#filterText(): string {
 		const sanitized = replaceTabs(sanitizeText(this.#model.filterQuery));
-		const query = sanitized.length === 0 ? "" : theme.fg("accent", sanitized);
+		const query = sanitized.length === 0 ? theme.fg("muted", "type to filter") : theme.fg("accent", sanitized);
 		const pidStatus = this.#model.isProcessFilterEnabled()
-			? theme.fg("success", "pid:on")
-			: theme.fg("muted", "pid:off");
-		return ` filter: ${query}  ${pidStatus}`;
+			? theme.fg("success", "pid on")
+			: theme.fg("muted", "pid off");
+		const loading = this.#loadingOlder ? `  ${theme.fg("warning", "loading older…")}` : "";
+		return `${theme.fg("muted", "filter")} ${query}  ${pidStatus}${loading}`;
 	}
 
 	#statusText(): string {
-		const base = ` Selected: ${this.#model.getSelectedCount()}  Expanded: ${this.#model.expandedCount}`;
-		if (this.#statusMessage) {
-			return `${base}  ${this.#statusMessage}`;
-		}
-		return base;
+		return this.#statusMessage
+			? theme.fg("success", this.#statusMessage)
+			: theme.fg("dim", "Enter loads older when highlighted; printable keys update filter");
 	}
 
 	#bodyHeight(): number {
-		return Math.max(3, this.#terminalRows - 8);
+		return Math.max(3, (process.stdout.rows || this.#terminalRows || 24) - LOG_VIEWER_CHROME_LINES);
 	}
 
 	async #handleLoadOlder(additionalCount: number = LOAD_OLDER_CHUNK): Promise<void> {
@@ -780,26 +856,25 @@ export class DebugLogViewerComponent implements Component {
 		return rendered;
 	}
 
-	#renderVisibleBodyLines(
-		rows: Array<{ lines: string[]; rowIndex: number }>,
-		innerWidth: number,
-		bodyHeight: number,
-	): string[] {
+	#renderVisibleBodyLines(rows: Array<{ lines: string[]; rowIndex: number }>, bodyHeight: number): string[] {
+		this.#bodyLineToRowIndex = [];
 		const lines: string[] = [];
 		if (rows.length === 0) {
-			lines.push(this.#frameLine(theme.fg("muted", "no matches"), innerWidth));
+			this.#bodyLineToRowIndex.push(undefined);
+			lines.push(row(theme.fg("muted", "no matches"), this.#lastRenderWidth));
 		}
 		for (let i = this.#scrollRowOffset; i < rows.length; i++) {
-			const row = rows[i];
-			if (!row) {
+			const renderedRow = rows[i];
+			if (!renderedRow) {
 				continue;
 			}
 
-			for (const line of row.lines) {
+			for (const line of renderedRow.lines) {
 				if (lines.length >= bodyHeight) {
 					break;
 				}
-				lines.push(this.#frameLine(line, innerWidth));
+				this.#bodyLineToRowIndex.push(renderedRow.rowIndex);
+				lines.push(row(line, this.#lastRenderWidth));
 			}
 
 			if (lines.length >= bodyHeight) {
@@ -808,7 +883,8 @@ export class DebugLogViewerComponent implements Component {
 		}
 
 		while (lines.length < bodyHeight) {
-			lines.push(this.#frameLine("", innerWidth));
+			this.#bodyLineToRowIndex.push(undefined);
+			lines.push(row("", this.#lastRenderWidth));
 		}
 
 		return lines;
@@ -840,7 +916,7 @@ export class DebugLogViewerComponent implements Component {
 			return;
 		}
 		const bodyHeight = Math.max(1, this.#bodyHeight());
-		const innerWidth = Math.max(1, this.#lastRenderWidth - 2);
+		const innerWidth = Math.max(1, this.#lastRenderWidth - 4);
 
 		// Scroll up: cursor is above viewport
 		if (cursorRowIndex < this.#scrollRowOffset) {
@@ -863,24 +939,6 @@ export class DebugLogViewerComponent implements Component {
 				}
 			}
 		}
-	}
-
-	#frameTop(innerWidth: number): string {
-		return `${theme.boxRound.topLeft}${theme.boxRound.horizontal.repeat(innerWidth)}${theme.boxRound.topRight}`;
-	}
-
-	#frameSeparator(innerWidth: number): string {
-		return `${theme.boxRound.teeRight}${theme.boxRound.horizontal.repeat(innerWidth)}${theme.boxRound.teeLeft}`;
-	}
-
-	#frameBottom(innerWidth: number): string {
-		return `${theme.boxRound.bottomLeft}${theme.boxRound.horizontal.repeat(innerWidth)}${theme.boxRound.bottomRight}`;
-	}
-
-	#frameLine(content: string, innerWidth: number): string {
-		const truncated = truncateToWidth(content, innerWidth);
-		const remaining = Math.max(0, innerWidth - visibleWidth(truncated));
-		return `${theme.boxRound.vertical}${truncated}${padding(remaining)}${theme.boxRound.vertical}`;
 	}
 
 	#copySelected() {

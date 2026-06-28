@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import type { Component } from "@oh-my-pi/pi-tui";
 import {
 	createProcessTerminalRenderHarness,
 	type ProcessTerminalRenderHarness,
@@ -10,6 +11,13 @@ import {
 // is only a sentinel that guarantees a reply even from terminals that ignore
 // `CSI ? u`. Some terminals (Superset / xterm-on-Electron) answer DA1 first;
 // the kitty reply must still be honored regardless of ordering.
+
+class ModalProbe implements Component {
+	invalidate(): void {}
+	render(): string[] {
+		return ["modal"];
+	}
+}
 describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () => {
 	let harness: ProcessTerminalRenderHarness | undefined;
 
@@ -65,5 +73,64 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 		expect(harness.terminal.kittyProtocolActive).toBe(false);
 		expect(out).toContain("\x1b[>4;2m");
 		expect(out).not.toContain("\x1b[>1u");
+	});
+
+	it("reasserts modifyOtherKeys fallback when fullscreen overlays enter the alternate screen", async () => {
+		harness = createProcessTerminalRenderHarness(100, 30);
+		await harness.settle();
+		harness.writes.length = 0;
+
+		await harness.feed("\x1b[?1;2c");
+		expect(harness.writes.join("")).toContain("\x1b[>4;2m");
+		harness.writes.length = 0;
+
+		const overlay = harness.tui.showOverlay(new ModalProbe(), {
+			fullscreen: true,
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+		});
+		await harness.settle();
+
+		const enterOut = harness.writes.join("");
+		expect(enterOut).toContain("\x1b[?1049h\x1b[>4;2m");
+		harness.writes.length = 0;
+
+		overlay.hide();
+		await harness.settle();
+
+		const exitOut = harness.writes.join("");
+		// xterm modifyOtherKeys is a single global flag (no per-screen stack),
+		// so the overlay exit must NOT emit `>4;0m` — that would clear it on the
+		// normal screen and break the composer between overlays. Only the kitty
+		// pop is per-screen and safe to emit on exit.
+		expect(exitOut).toContain("\x1b[?1049l");
+		expect(exitOut).not.toContain("\x1b[>4;0m");
+	});
+
+	it("pops the kitty keyboard frame on fullscreen overlay exit", async () => {
+		harness = createProcessTerminalRenderHarness(100, 30);
+		await harness.settle();
+		await harness.feed("\x1b[?0u", "\x1b[?1;2c");
+		expect(harness.terminal.kittyProtocolActive).toBe(true);
+		harness.writes.length = 0;
+
+		const overlay = harness.tui.showOverlay(new ModalProbe(), {
+			fullscreen: true,
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+		});
+		await harness.settle();
+		expect(harness.writes.join("")).toContain("\x1b[?1049h\x1b[>1u");
+		harness.writes.length = 0;
+
+		overlay.hide();
+		await harness.settle();
+
+		const exitOut = harness.writes.join("");
+		// Kitty keyboard flags are per-screen, so the matching pop must precede
+		// the alt-screen exit to balance the push from overlay entry.
+		expect(exitOut).toContain("\x1b[<u\x1b[?1049l");
 	});
 });

@@ -74,6 +74,8 @@ export const TRUNCATE_LENGTHS = {
 	LINE: 110,
 	/** Very short (task previews, badges) */
 	SHORT: 40,
+	/** Idle recap status line (~40-word LLM reply) */
+	RECAP: 280,
 } as const;
 
 /** Keybinding action that toggles tool-output expansion. */
@@ -97,6 +99,17 @@ export function expandKeyHint(): string {
 export function getPreviewLines(text: string, maxLines: number, maxLineLen: number, ellipsis?: Ellipsis): string[] {
 	const lines = text.split("\n").filter(l => l.trim());
 	return lines.slice(0, maxLines).map(l => truncateToWidth(l.trim(), maxLineLen, ellipsis));
+}
+
+/**
+ * Collapse a possibly multi-line string into a single line, then truncate it to
+ * `maxWidth` display cells. {@link truncateToWidth} alone caps width but
+ * newlines are zero-width, so multi-line content (markdown briefs, tool args,
+ * provider errors) would otherwise spill a single status row across several
+ * visual lines. Whitespace runs collapse to one space, so tabs are handled too.
+ */
+export function previewLine(text: string, maxWidth: number, ellipsis?: Ellipsis): string {
+	return truncateToWidth(text.replace(/\s+/g, " ").trim(), maxWidth, ellipsis);
 }
 
 // =============================================================================

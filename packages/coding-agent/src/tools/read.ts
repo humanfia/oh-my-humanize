@@ -3,7 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { formatHashlineHeader, formatNumberedLine, formatNumberedLines } from "@oh-my-pi/hashline";
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type {
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	ToolTier,
+} from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { glob, type SummaryResult, summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
@@ -83,6 +89,7 @@ import {
 	formatPathRelativeToCwd,
 	type LineRange,
 	parseLineRanges,
+	pathTargetsSsh,
 	resolveReadPath,
 	splitDelimitedPathEntry,
 	splitInternalUrlSel,
@@ -170,6 +177,10 @@ interface HashlineHeaderContext {
 	fullText?: string;
 }
 
+function formatReadHashlineHeader(displayPath: string, tag: string): string {
+	return formatHashlineHeader(path.basename(displayPath), tag);
+}
+
 function recordFullHashlineContext(
 	session: ToolSession,
 	absolutePath: string | undefined,
@@ -180,7 +191,7 @@ function recordFullHashlineContext(
 	const normalized = normalizeToLF(fullText);
 	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
 	return {
-		header: formatHashlineHeader(displayPath, tag),
+		header: formatReadHashlineHeader(displayPath, tag),
 		tag,
 		fullText: normalized,
 	};
@@ -203,7 +214,7 @@ async function readHashlineHeaderContext(
 }
 
 function hashlineHeaderContext(displayPath: string, tag: string): HashlineHeaderContext {
-	return { header: formatHashlineHeader(displayPath, tag), tag };
+	return { header: formatReadHashlineHeader(displayPath, tag), tag };
 }
 
 function prependHashlineHeader(text: string, context: HashlineHeaderContext | undefined): string {
@@ -742,11 +753,27 @@ function isMultiRange(parsed: ParsedSelector): boolean {
 	return parsed.kind === "lines" && parsed.ranges.length > 1;
 }
 
+function selectorChunkLooksReadLike(chunk: string): boolean {
+	const lower = chunk.toLowerCase();
+	return (
+		lower === "raw" || lower === "conflicts" || /^-\d+(?:[-+]\d+)?$/.test(chunk) || parseLineRanges(chunk) !== null
+	);
+}
+
+function invalidSelector(sel: string): ToolError {
+	return new ToolError(
+		`Invalid selector ':${sel}'. Use :N, :N-M, :N+K, :N- (open-ended), a comma-separated list of ranges, :raw, or a range combined with raw (e.g. :raw:50-100).`,
+	);
+}
+
 function parseSel(sel: string | undefined): ParsedSelector {
 	if (!sel || sel.length === 0) return { kind: "none" };
 
 	// Compound selector: `1-50:raw` or `raw:1-50`. Split into chunks and accept
-	// any combination of one line range (possibly multi) and the literal `raw`.
+	// exactly one line range (possibly multi) plus the literal `raw`. Selector-like
+	// compounds that are not in that accepted set are invalid rather than "none";
+	// otherwise `read` can silently widen a malformed selector like
+	// `artifact://5:conflicts:1-1` while `grep` rejects it.
 	if (sel.includes(":")) {
 		const chunks = sel.split(":");
 		if (chunks.length === 2) {
@@ -762,6 +789,7 @@ function parseSel(sel: string | undefined): ParsedSelector {
 				}
 			}
 		}
+		if (chunks.every(selectorChunkLooksReadLike)) throw invalidSelector(sel);
 		// Unrecognized compound — fall through (sqlite/archive/url consume their own colon syntax).
 		return { kind: "none" };
 	}
@@ -814,7 +842,8 @@ type SuffixMatchCache = Map<string, { absolutePath: string; displayPath: string 
  */
 export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	readonly name = "read";
-	readonly approval = "read" as const;
+	readonly approval = (args: unknown): ToolTier =>
+		pathTargetsSsh(String((args as { path?: unknown }).path ?? "")) ? "exec" : "read";
 	readonly label = "Read";
 	readonly loadMode = "essential";
 	readonly description: string;
@@ -1598,7 +1627,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const tag = await recordFileSnapshot(this.session, absolutePath);
 			if (tag) {
 				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText);
-				outputText = `${formatHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
+				outputText = `${formatReadHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
 			}
 		}
 		if (notices.length > 0) {

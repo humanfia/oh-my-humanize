@@ -62,13 +62,61 @@ describe("CombinedAutocompleteProvider", () => {
 	});
 
 	describe("slash commands", () => {
-		it("does not suggest slash commands after prose", async () => {
-			const provider = new CombinedAutocompleteProvider([{ name: "skill", description: "Manage skills" }], "/tmp");
-			const line = "run /sk";
+		it("suggests only skill commands after prose", async () => {
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "skill:security-scan", description: "Security scan" },
+					{ name: "model", description: "Switch model" },
+				],
+				"/tmp",
+			);
+			const line = "run /security";
+
+			const result = await provider.getSuggestions([line], 0, line.length);
+
+			expect(result?.prefix).toBe("/security");
+			expect(result?.items.map(item => item.value)).toEqual(["skill:security-scan"]);
+		});
+
+		it("suggests only skill commands after prior prompt lines", async () => {
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "skill:security-scan", description: "Security scan" },
+					{ name: "model", description: "Switch model" },
+				],
+				"/tmp",
+			);
+
+			const result = await provider.getSuggestions(["there is an issue", "/skill:"], 1, "/skill:".length);
+
+			expect(result?.prefix).toBe("/skill:");
+			expect(result?.items.map(item => item.value)).toEqual(["skill:security-scan"]);
+		});
+
+		it("does not suggest skills when the slash is inside a word", async () => {
+			const provider = new CombinedAutocompleteProvider(
+				[{ name: "skill:security-scan", description: "Security scan" }],
+				"/tmp",
+			);
+			const line = "word/security";
 
 			const result = await provider.getSuggestions([line], 0, line.length);
 
 			expect(result).toBeNull();
+		});
+
+		it("falls back to path suggestions for an unmatched mid-prompt slash token", async () => {
+			const provider = new CombinedAutocompleteProvider(
+				[{ name: "skill:security-scan", description: "Security scan" }],
+				"/tmp",
+			);
+			const line = "see /tmp";
+
+			const result = await provider.getSuggestions([line], 0, line.length);
+
+			expect(result).not.toBeNull();
+			expect(result?.prefix).toBe("/tmp");
+			expect(result?.items.map(item => item.value)).toContain("/tmp/");
 		});
 	});
 	describe("applyCompletion", () => {
@@ -106,6 +154,21 @@ describe("CombinedAutocompleteProvider", () => {
 
 			expect(result.lines[0]).toBe("  /skill ");
 			expect(result.cursorCol).toBe("  /skill ".length);
+		});
+
+		it("replaces the whole draft when applying a mid-prompt skill completion", () => {
+			const provider = new CombinedAutocompleteProvider([], "/tmp");
+			const result = provider.applyCompletion(
+				["explain this", "then use /security"],
+				1,
+				"then use /security".length,
+				{ value: "skill:security-scan", label: "/skill:security-scan" },
+				"/security",
+			);
+
+			expect(result.lines).toEqual(["/skill:security-scan"]);
+			expect(result.cursorLine).toBe(0);
+			expect(result.cursorCol).toBe("/skill:security-scan".length);
 		});
 
 		it("preserves earlier slash command arguments when completing a path inside the last argument", () => {

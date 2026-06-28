@@ -18,7 +18,7 @@ import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Container, Ellipsis, matchesKey, type OverlayHandle, type TUI } from "@oh-my-pi/pi-tui";
 import { formatAge, getProjectDir, logger, parseJsonlLenient } from "@oh-my-pi/pi-utils";
-import { ADVISOR_TRANSCRIPT_FILENAME } from "../../advisor";
+import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../../advisor";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { IrcBus } from "../../irc/bus";
@@ -115,9 +115,14 @@ function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string,
 		// The advisor transcript is observability-only: register it as a non-peer
 		// `advisor` kind under its owning session so the Hub can show its read-only
 		// transcript, but it never joins agent-facing rosters and is not revivable.
-		if (entry.name === ADVISOR_TRANSCRIPT_FILENAME) {
+		if (isAdvisorTranscriptName(entry.name)) {
 			const owner = parentId ?? MAIN_AGENT_ID;
-			const advisorId = `${owner}/advisor`;
+			// `__advisor.jsonl` → the default advisor (no slug); `__advisor.<slug>.jsonl`
+			// → a named advisor, keyed and labeled by its slug.
+			const slug =
+				entry.name === ADVISOR_TRANSCRIPT_FILENAME ? "" : entry.name.slice("__advisor.".length, -".jsonl".length);
+			const advisorId = slug ? `${owner}/advisor:${slug}` : `${owner}/advisor`;
+			const displayName = slug ? `advisor:${slug}` : "advisor";
 			const existing = registry.get(advisorId);
 			// Never clobber a non-advisor ref that happens to share this id (a freak
 			// user task literally named `<owner>/advisor`): leave it, skip the advisor.
@@ -127,7 +132,7 @@ function registerPersistedSubagentsFromDir(registry: AgentRegistry, dir: string,
 				if (existing) registry.unregister(advisorId);
 				registry.register({
 					id: advisorId,
-					displayName: "advisor",
+					displayName,
 					kind: "advisor",
 					parentId: owner,
 					session: null,
@@ -469,6 +474,9 @@ export class AgentHubOverlayComponent extends Container {
 			parts.push(theme.bold(replaceTabs(ref.id)));
 			parts.push(theme.fg("dim", replaceTabs(ref.displayName)));
 			parts.push(theme.fg("dim", ref.parentId ? `${ref.kind} · of ${ref.parentId}` : ref.kind));
+		}
+		if (ref.kind === "advisor") {
+			parts.push(theme.fg("warning", "read-only"));
 		}
 		if (task && !workflowWorkItem && task !== ref.displayName) {
 			parts.push(theme.fg("muted", sanitizeLine(task, TRUNCATE_LENGTHS.TITLE)));

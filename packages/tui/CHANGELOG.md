@@ -7,16 +7,25 @@
 - Changed package metadata links from the old Oh My Pi site/repository to the OMH site/repository.
 ### Added
 
-- Added support for rendering HTML `<code>` tags as theme-styled inline code blocks
-- Added support for rendering HTML `<hr>` tags as horizontal rules
-- Added support for rendering HTML `<blockquote>` tags with appropriate quote styling
+- Added a desktop notification fallback for Linux terminals using D-Bus (via notify-send or gdbus), enabling completion and prompt notifications in VTE-family terminals (such as GNOME Terminal, Ptyxis, Tilix), Alacritty, and xterm. This is automatically skipped for terminals with native notification support (like VS Code and Warp) and can be disabled using the PI_NO_DESKTOP_NOTIFY=1 environment variable.
 
 ### Fixed
 
-- Fixed HTML entity decoding within HTML-based inline code blocks
-- Fixed stray or unmatched HTML tags leaking into rendered output
-- Improved layout consistency by correctly handling HTML block-level tags in various contexts
-- Markdown renderer now handles inline `<code>…</code>` (rendered as themed inline code, identical to a backtick codespan, with HTML entities like `&amp;` decoded), block `<hr>` (rendered as a horizontal rule), and balanced single-line `<blockquote>…</blockquote>` (rendered with the quote border) instead of leaking the raw tags as literal text. Applies to the transcript renderer, table cells, list items, and the inline `renderInlineMarkdown` helper used for option labels; fenced code blocks keep such markup verbatim.
+- Fixed slash skill autocomplete not opening when there is existing prompt text, ensuring mid-prompt slash lookups correctly display and insert skill commands.
+- Fixed modified Enter and keyboard shortcuts in fullscreen overlays for terminals using the xterm modifyOtherKeys fallback (such as iTerm2 when Kitty keyboard negotiation is unavailable).
+
+## [16.2.0] - 2026-06-27
+
+### Added
+
+- Added support for rendering HTML <code>, <hr>, and <blockquote> tags with proper theme styling, entity decoding, and layout consistency across Markdown transcripts, table cells, list items, and option labels.
+- Added first-class support for Warp terminal (TERM_PROGRAM=WarpTerminal), enabling true color, platform-specific Kitty graphics protocol negotiation for inline images, and safe defaults for OSC 8 hyperlinks and synchronized output.
+- Added SelectList.routeMouse() and shared SGR mouse input routing helpers to support fullscreen overlay hit-testing.
+
+### Fixed
+
+- Fixed issues where stray, unmatched, or raw HTML tags would leak into the rendered output.
+- Fixed render scheduling to yield behind queued terminal input, preventing delayed Escape key delivery during heavy streaming paints.
 
 ## [16.1.20] - 2026-06-25
 

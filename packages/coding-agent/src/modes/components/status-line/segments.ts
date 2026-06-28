@@ -20,8 +20,18 @@ function withIcon(icon: string, text: string): string {
 	return icon ? `${icon} ${text}` : text;
 }
 
+/**
+ * Leading glyph of a thinking-level display string (e.g. "◉ xhigh" → "◉").
+ * Compact mode promotes this glyph to the model-segment icon so the level
+ * stays visible without the verbose " · <level>" tail.
+ */
+function thinkingGlyph(display: string): string {
+	const space = display.indexOf(" ");
+	return space === -1 ? display : display.slice(0, space);
+}
+
 function stripDisplayRoot(pwd: string): string {
-	for (const root of ["/work", path.join(os.homedir(), "Projects")]) {
+	for (const root of [path.join(os.homedir(), "Projects"), "/work"]) {
 		const relative = relativePathWithinRoot(root, pwd);
 		if (relative) return relative;
 	}
@@ -86,6 +96,30 @@ const modelSegment: StatusLineSegment = {
 			modelName = modelName.slice(7);
 		}
 
+		// Resolve the current thinking-level display ("◉ xhigh", "⟳ auto", …)
+		// when the model supports thinking and the segment isn't hiding it.
+		let thinkingDisplay = "";
+		if (opts.showThinkingLevel !== false && state.model?.thinking) {
+			if (ctx.session.isAutoThinking) {
+				// Pending (no turn classified yet / classifying) shows a symbol-theme
+				// question-box marker; once resolved it shows `<level>`.
+				const resolved = ctx.session.autoResolvedThinkingLevel();
+				thinkingDisplay = resolved
+					? (theme.thinking[resolved as keyof typeof theme.thinking] ?? resolved)
+					: `${theme.thinking.autoPending} auto`;
+			} else {
+				const level = state.thinkingLevel ?? ThinkingLevel.Off;
+				if (level !== ThinkingLevel.Off) {
+					thinkingDisplay = theme.thinking[level as keyof typeof theme.thinking] ?? "";
+				}
+			}
+		}
+
+		// Compact mode swaps the model icon for the thinking-level glyph and drops
+		// the " · <level>" tail, keeping the level visible as a single icon.
+		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "";
+		const modelIcon = compact ? thinkingGlyph(thinkingDisplay) : theme.icon.model;
+
 		// Fast-mode icon and thinking-level suffix trail the model name and are
 		// colored together with it as `statusLineModel`. The advisor "++" badge
 		// sits between the name and that tail in `accent`, so it reads as a
@@ -95,28 +129,13 @@ const modelSegment: StatusLineSegment = {
 		if (ctx.session.isFastModeActive() && theme.icon.fast) {
 			tail += ` ${theme.icon.fast}`;
 		}
-
-		if (opts.showThinkingLevel !== false && state.model?.thinking) {
-			if (ctx.session.isAutoThinking) {
-				// Pending (no turn classified yet / classifying) shows a symbol-theme
-				// question-box marker; once resolved it shows `<level>`.
-				const resolved = ctx.session.autoResolvedThinkingLevel();
-				const resolvedText = resolved ? (theme.thinking[resolved as keyof typeof theme.thinking] ?? resolved) : "";
-				tail += `${theme.sep.dot}${resolved ? resolvedText : `${theme.thinking.autoPending} auto`}`;
-			} else {
-				const level = state.thinkingLevel ?? ThinkingLevel.Off;
-				if (level !== ThinkingLevel.Off) {
-					const thinkingText = theme.thinking[level as keyof typeof theme.thinking];
-					if (thinkingText) {
-						tail += `${theme.sep.dot}${thinkingText}`;
-					}
-				}
-			}
+		if (!compact && thinkingDisplay) {
+			tail += `${theme.sep.dot}${thinkingDisplay}`;
 		}
 
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
 		// uses `success` to stay visibly distinct from the model name color.
-		let content = theme.fg("statusLineModel", withIcon(theme.icon.model, modelName));
+		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
 		if (ctx.session.isAdvisorActive()) {
 			content += theme.fg("success", "++");
 		}
@@ -202,7 +221,7 @@ const pathSegment: StatusLineSegment = {
 	render(ctx) {
 		const opts = ctx.options.path ?? {};
 
-		const projectDir = getProjectDir();
+		const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
 		const { scratch, relative } = classifyProjectDir(projectDir);
 		let pwd = projectDir;
 
@@ -213,6 +232,7 @@ const pathSegment: StatusLineSegment = {
 				pwd = stripDisplayRoot(pwd);
 			}
 		}
+		const repoSuffix = ctx.activeRepo ? ` ↳ ${ctx.activeRepo.relativeRepoRoot}` : "";
 		if (opts.abbreviate !== false) {
 			pwd = shortenPath(pwd);
 		}
@@ -222,6 +242,9 @@ const pathSegment: StatusLineSegment = {
 			const ellipsis = "…";
 			const sliceLen = Math.max(0, maxLen - ellipsis.length);
 			pwd = `${ellipsis}${pwd.slice(-sliceLen)}`;
+		}
+		if (repoSuffix) {
+			pwd = `${pwd}${repoSuffix}`;
 		}
 
 		const showScratchIcon = scratch && opts.stripWorkPrefix !== false;
@@ -396,13 +419,19 @@ const contextTotalSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * Total time the agent was actively processing this session — the union of
+ * every `agent_start`→`agent_end` window plus the currently-running window,
+ * sourced from {@link SegmentContext.activeMs}. Idle wall-clock between turns
+ * never accumulates, so the displayed total reflects how long the agent has
+ * been working for the user, not how long the session has been open. Hidden
+ * before the first second of activity to avoid flashing `0s` at session start.
+ */
 const timeSpentSegment: StatusLineSegment = {
 	id: "time_spent",
 	render(ctx) {
-		const elapsed = Date.now() - ctx.sessionStartTime;
-		if (elapsed < 1000) return { content: "", visible: false };
-
-		return { content: withIcon(theme.icon.time, formatDuration(elapsed)), visible: true };
+		if (ctx.activeMs < 1000) return { content: "", visible: false };
+		return { content: withIcon(theme.icon.time, formatDuration(ctx.activeMs)), visible: true };
 	},
 };
 

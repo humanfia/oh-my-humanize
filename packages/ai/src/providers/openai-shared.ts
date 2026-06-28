@@ -27,6 +27,7 @@ import {
 	parseStreamingJsonThrottled,
 	structuredCloneJSON,
 } from "@oh-my-pi/pi-utils";
+import * as AIError from "../error";
 import {
 	type Api,
 	type AssistantMessage,
@@ -59,6 +60,12 @@ import {
 	resolveCacheRetention,
 	sanitizeOpenAIResponsesHistoryItemsForReplay,
 } from "../utils";
+import {
+	clearStreamingPartialJson,
+	kStreamingArgumentsDone,
+	kStreamingLastParseLen,
+	kStreamingPartialJson,
+} from "../utils/block-symbols";
 import type { AssistantMessageEventStream } from "../utils/event-stream";
 import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
 import { getOpenRouterHeaders } from "../utils/openrouter-headers";
@@ -75,6 +82,7 @@ import {
 	setBearerAuthorizationHeader,
 } from "./openai-auth-headers";
 import type { ChatCompletionCreateParamsStreaming } from "./openai-chat-wire";
+import type { InputItem } from "./openai-codex/request-transformer";
 import type {
 	ResponseContentPartAddedEvent,
 	ResponseCreateParamsStreaming,
@@ -83,6 +91,7 @@ import type {
 	ResponseInput,
 	ResponseInputContent,
 	ResponseInputImage,
+	ResponseInputItem,
 	ResponseInputText,
 	ResponseOutputItem,
 	ResponseOutputMessage,
@@ -189,7 +198,8 @@ export function resolveOpenAIRequestSetup(
 	}
 	if (!apiKey) {
 		if (!$env.OPENAI_API_KEY) {
-			throw new Error(
+			throw new AIError.MissingApiKeyError(
+				undefined,
 				"OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it as an argument.",
 			);
 		}
@@ -782,7 +792,7 @@ export function resolveOpenAICompatPolicy<TApi extends Api>(
 	) {
 		const minEffort = getSupportedEfforts(model)[0];
 		if (minEffort === undefined) {
-			throw new Error(`Model ${model.provider}/${model.id} has no supported reasoning efforts`);
+			throw new AIError.ConfigurationError(`Model ${model.provider}/${model.id} has no supported reasoning efforts`);
 		}
 		wireEffort = mapOpenAIReasoningEffort(model, compat, minEffort);
 	}
@@ -1635,7 +1645,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
  * Codex uses the open item's recorded index) so the emitted stream events match
  * each decoder's existing behavior byte-for-byte.
  */
-type ResponsesToolCallBlock = ToolCall & { partialJson: string; lastParseLen?: number };
+type ResponsesToolCallBlock = ToolCall & { [kStreamingPartialJson]: string; [kStreamingLastParseLen]?: number };
 
 export function appendReasoningSummaryPart(
 	item: ResponseReasoningItem,
@@ -1722,11 +1732,11 @@ export function accumulateToolCallArgumentsDelta(
 	output: AssistantMessage,
 	contentIndex: number,
 ): void {
-	block.partialJson += delta;
-	const throttled = parseStreamingJsonThrottled(block.partialJson, block.lastParseLen ?? 0);
+	block[kStreamingPartialJson] += delta;
+	const throttled = parseStreamingJsonThrottled(block[kStreamingPartialJson], block[kStreamingLastParseLen] ?? 0);
 	if (throttled) {
 		block.arguments = throttled.value;
-		block.lastParseLen = throttled.parsedLen;
+		block[kStreamingLastParseLen] = throttled.parsedLen;
 	}
 	stream.push({ type: "toolcall_delta", contentIndex, delta, partial: output });
 }
@@ -1738,10 +1748,9 @@ export function accumulateToolCallArgumentsDelta(
  * drops the transient accumulation fields.
  */
 export function finalizeToolCallArgumentsDone(block: ResponsesToolCallBlock, args: string): void {
-	block.partialJson = args;
-	block.arguments = parseStreamingJson(block.partialJson);
-	delete (block as { partialJson?: string }).partialJson;
-	delete (block as { lastParseLen?: number }).lastParseLen;
+	block[kStreamingPartialJson] = args;
+	block.arguments = parseStreamingJson(block[kStreamingPartialJson]);
+	clearStreamingPartialJson(block);
 }
 
 export function accumulateCustomToolCallInputDelta(
@@ -1751,13 +1760,13 @@ export function accumulateCustomToolCallInputDelta(
 	output: AssistantMessage,
 	contentIndex: number,
 ): void {
-	block.partialJson += delta;
-	block.arguments = { input: block.partialJson };
+	block[kStreamingPartialJson] += delta;
+	block.arguments = { input: block[kStreamingPartialJson] };
 	stream.push({ type: "toolcall_delta", contentIndex, delta, partial: output });
 }
 
 export function finalizeCustomToolCallInputDone(block: ResponsesToolCallBlock, input: string): void {
-	block.partialJson = input;
+	block[kStreamingPartialJson] = input;
 	block.arguments = { input };
 }
 
@@ -1786,7 +1795,11 @@ export async function processResponsesStream<TApi extends Api>(
 	model: Model<TApi>,
 	options?: ProcessResponsesStreamOptions,
 ): Promise<void> {
-	type StreamingToolCallBlock = ToolCall & { partialJson: string; lastParseLen?: number; argumentsDone?: boolean };
+	type StreamingToolCallBlock = ToolCall & {
+		[kStreamingPartialJson]: string;
+		[kStreamingLastParseLen]?: number;
+		[kStreamingArgumentsDone]?: boolean;
+	};
 	interface StreamingItem {
 		item: ResponseReasoningItem | ResponseOutputMessage | ResponseFunctionToolCall | ResponseCustomToolCall;
 		block: ThinkingContent | TextContent | StreamingToolCallBlock;
@@ -1883,7 +1896,7 @@ export async function processResponsesStream<TApi extends Api>(
 			if (
 				candidate.item.type === "function_call" &&
 				candidate.block.type === "toolCall" &&
-				!candidate.block.argumentsDone
+				!candidate.block[kStreamingArgumentsDone]
 			) {
 				return candidate;
 			}
@@ -1934,7 +1947,11 @@ export async function processResponsesStream<TApi extends Api>(
 				registerOpenItem(event.output_index, item.id, { item, block });
 				stream.push({ type: "thinking_start", contentIndex: contentIndexOf(block), partial: output });
 			} else if (item.type === "message") {
-				const block: TextContent = { type: "text", text: "" };
+				const block: TextContent = {
+					type: "text",
+					text: "",
+					textSignature: encodeTextSignatureV1(item.id, item.phase ?? undefined),
+				};
 				output.content.push(block);
 				registerOpenItem(event.output_index, item.id, { item, block });
 				stream.push({ type: "text_start", contentIndex: contentIndexOf(block), partial: output });
@@ -1944,7 +1961,7 @@ export async function processResponsesStream<TApi extends Api>(
 					id: encodeResponsesToolCallId(item.call_id, item.id),
 					name: item.name,
 					arguments: {},
-					partialJson: item.arguments || "",
+					[kStreamingPartialJson]: item.arguments || "",
 				};
 				output.content.push(block);
 				registerOpenItem(
@@ -1968,7 +1985,7 @@ export async function processResponsesStream<TApi extends Api>(
 					customWireName: item.name,
 					// Custom tools stream a raw string, but we reuse `partialJson` as the
 					// accumulation buffer so later code that inspects the field still works.
-					partialJson: item.input ?? "",
+					[kStreamingPartialJson]: item.input ?? "",
 				};
 				output.content.push(block);
 				registerOpenItem(
@@ -2051,7 +2068,7 @@ export async function processResponsesStream<TApi extends Api>(
 			const entry = lookupOpenFunctionCallItem(event);
 			if (entry?.item.type === "function_call" && entry.block.type === "toolCall") {
 				finalizeToolCallArgumentsDone(entry.block, event.arguments);
-				entry.block.argumentsDone = true;
+				entry.block[kStreamingArgumentsDone] = true;
 			}
 		} else if (event.type === "response.custom_tool_call_input.delta") {
 			const entry = lookupOpenToolCallAlias(event, "custom_tool_call");
@@ -2119,10 +2136,10 @@ export async function processResponsesStream<TApi extends Api>(
 				closeOpenItem(event.output_index, item.id, entry);
 			} else if (item.type === "function_call") {
 				const block = entry?.block.type === "toolCall" ? entry.block : undefined;
-				const args = block?.argumentsDone
+				const args = block?.[kStreamingArgumentsDone]
 					? block.arguments
-					: block?.partialJson
-						? parseStreamingJson(block.partialJson)
+					: block?.[kStreamingPartialJson]
+						? parseStreamingJson(block[kStreamingPartialJson])
 						: parseStreamingJson(item.arguments || "{}");
 				const toolCall: ToolCall = {
 					type: "toolCall",
@@ -2137,9 +2154,7 @@ export async function processResponsesStream<TApi extends Api>(
 					// leaving block.arguments stale (often `{}`); the emitted toolCall
 					// and the persisted block must agree.
 					block.arguments = args;
-					delete (block as { partialJson?: string }).partialJson;
-					delete (block as { lastParseLen?: number }).lastParseLen;
-					delete (block as { argumentsDone?: boolean }).argumentsDone;
+					clearStreamingPartialJson(block);
 					contentIndex = contentIndexOf(block);
 				} else {
 					// `output_item.added` never arrived (lossy proxy) — synthesize the
@@ -2152,7 +2167,7 @@ export async function processResponsesStream<TApi extends Api>(
 				stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
 			} else if (item.type === "custom_tool_call") {
 				const block = entry?.block.type === "toolCall" ? entry.block : undefined;
-				const rawInput = block?.partialJson ? block.partialJson : (item.input ?? "");
+				const rawInput = block?.[kStreamingPartialJson] ? block[kStreamingPartialJson] : (item.input ?? "");
 				const toolCall: ToolCall = {
 					type: "toolCall",
 					id: encodeResponsesToolCallId(item.call_id, item.id),
@@ -2165,8 +2180,7 @@ export async function processResponsesStream<TApi extends Api>(
 					// Persist the final input on the stored block and drop the transient
 					// accumulation buffer, mirroring the function_call branch above.
 					block.arguments = { input: rawInput };
-					delete (block as { partialJson?: string }).partialJson;
-					delete (block as { lastParseLen?: number }).lastParseLen;
+					clearStreamingPartialJson(block);
 					contentIndex = contentIndexOf(block);
 				} else {
 					output.content.push(toolCall);
@@ -2201,13 +2215,16 @@ export async function processResponsesStream<TApi extends Api>(
 						: typeof statusDetailsReason === "string" && statusDetailsReason.length > 0
 							? `status_details: ${statusDetailsReason}`
 							: "Unknown error (no error details in response)";
-				throw new Error(message);
+				throw new AIError.ProviderResponseError(message, { provider: model.provider, kind: "output" });
 			}
 			if (response?.status === "incomplete" && response.incomplete_details?.reason === "content_filter") {
 				// A content-filtered turn is a failure, not a token-cap truncation —
 				// mapping it to "length" would route the agent loop into "shorten your
 				// output" recovery against a filtered prompt.
-				throw new Error("incomplete: content_filter");
+				throw new AIError.ProviderResponseError("incomplete: content_filter", {
+					provider: model.provider,
+					kind: "content-blocked",
+				});
 			}
 			promoteResponsesToolUseStopReason(output, (response as { end_turn?: boolean } | undefined)?.end_turn);
 			options?.onCompleted?.();
@@ -2223,7 +2240,10 @@ export async function processResponsesStream<TApi extends Api>(
 			const err = (event as any).error ?? event;
 			const code = err.code ?? "unknown";
 			const message = err.message ?? "no message";
-			throw new Error(`Error Code ${code}: ${message}`);
+			throw new AIError.ProviderResponseError(`Error Code ${code}: ${message}`, {
+				provider: model.provider,
+				kind: "output",
+			});
 		} else if (event.type === "response.failed") {
 			populateResponsesUsageFromResponse(output, event.response?.usage);
 			const error = event.response?.error ?? (event.response as any)?.status_details?.error;
@@ -2233,7 +2253,7 @@ export async function processResponsesStream<TApi extends Api>(
 				: details?.reason
 					? `incomplete: ${details.reason}`
 					: "Unknown error (no error details in response)";
-			throw new Error(message);
+			throw new AIError.ProviderResponseError(message, { provider: model.provider, kind: "output" });
 		}
 	}
 }
@@ -2273,16 +2293,18 @@ export function mapOpenAIResponsesStopReason(status: ResponseStatus | undefined)
 export function finalizePendingResponsesToolCalls(output: AssistantMessage): void {
 	for (const block of output.content) {
 		if (block.type !== "toolCall") continue;
-		const pending = block as ToolCall & { partialJson?: string; lastParseLen?: number; argumentsDone?: boolean };
-		if (pending.partialJson && !pending.argumentsDone) {
+		const pending = block as ToolCall & {
+			[kStreamingPartialJson]?: string;
+			[kStreamingLastParseLen]?: number;
+			[kStreamingArgumentsDone]?: boolean;
+		};
+		if (pending[kStreamingPartialJson] && !pending[kStreamingArgumentsDone]) {
 			pending.arguments =
 				pending.customWireName !== undefined
-					? { input: pending.partialJson }
-					: parseStreamingJson(pending.partialJson);
+					? { input: pending[kStreamingPartialJson] }
+					: parseStreamingJson(pending[kStreamingPartialJson]);
 		}
-		delete pending.partialJson;
-		delete pending.lastParseLen;
-		delete pending.argumentsDone;
+		clearStreamingPartialJson(pending);
 	}
 }
 
@@ -2535,6 +2557,45 @@ export function populateResponsesUsageFromResponse(
 }
 
 /**
+ * Structural equality for the chain prefix/option check, equivalent to the
+ * default {@link Bun.deepEquals} (own enumerable keys, `absent ≡ own-undefined`)
+ * except for two deliberate exclusions:
+ *  - **symbol-keyed properties are ignored** — `for…in` walks enumerable
+ *    *string* keys only (never symbols); these are plain wire items whose
+ *    prototype contributes no enumerable keys, so iteration is effectively
+ *    own-string-keyed. That is how the transient streaming symbols
+ *    (`block-symbols.ts`) stamped onto live request items are excluded (the
+ *    deep-cloned baseline never carries them). Do NOT add an
+ *    `Object.getOwnPropertySymbols` pass, or those symbols resurface and break
+ *    chaining.
+ *  - keys listed in `omitKeys` are skipped (the option compare omits `input`
+ *    and the per-turn `client_metadata`).
+ * A defined value differing across sides IS a difference; a key undefined or
+ * absent on both stays equal. Nested values use full {@link Bun.deepEquals}.
+ */
+function deepEqualsWithout(a: unknown, b: unknown, omitKeys?: Record<string, boolean>): boolean {
+	if (!a || !b || typeof a !== "object" || typeof b !== "object") return Bun.deepEquals(a, b);
+	const ao = a as Record<string, unknown>;
+	const bo = b as Record<string, unknown>;
+	for (const key in ao) {
+		if (omitKeys?.[key]) continue;
+		const av = ao[key];
+		const bv = bo[key];
+		if (av !== bv && !Bun.deepEquals(av, bv)) return false;
+	}
+	for (const key in bo) {
+		if (omitKeys?.[key]) continue;
+		if (bo[key] !== undefined && !(key in ao)) return false;
+	}
+	return true;
+}
+
+const TOP_LEVEL_EXCLUDE_MAP = {
+	input: true,
+	client_metadata: true,
+};
+
+/**
  * Strict-prefix delta for stateful `previous_response_id` chaining (used by the
  * platform Responses provider and the Codex provider on both transports):
  * returns the input items the current request appends beyond the previous
@@ -2543,24 +2604,30 @@ export function populateResponsesUsageFromResponse(
  * `client_metadata` (e.g. rotating turn ids) is excluded from the option
  * comparison; codex-rs excludes it from the same check.
  */
-export function buildResponsesDeltaInput<TItem>(
-	previous: { input?: unknown } | undefined,
+export function buildResponsesDeltaInput<TItem extends ResponseInputItem | InputItem>(
+	previous: { input?: TItem[] } | undefined,
 	previousResponseItems: readonly TItem[] | undefined,
-	current: { input?: unknown },
+	current: { input?: TItem[] },
 ): TItem[] | null {
 	if (!previous) return null;
 	if (!Array.isArray(previous.input) || !Array.isArray(current.input)) return null;
-	const previousWithoutInput = { ...previous, input: undefined, client_metadata: undefined };
-	const currentWithoutInput = { ...current, input: undefined, client_metadata: undefined };
-	if (!Bun.deepEquals(previousWithoutInput, currentWithoutInput)) {
+	if (!deepEqualsWithout(previous, current, TOP_LEVEL_EXCLUDE_MAP)) {
 		return null;
 	}
-	const baseline = [...previous.input, ...(previousResponseItems ?? [])];
-	if (current.input.length <= baseline.length) return null;
-	for (let index = 0; index < baseline.length; index += 1) {
-		if (!Bun.deepEquals(baseline[index], current.input[index])) {
-			return null;
+
+	const baselineLen = (previous.input?.length ?? 0) + (previousResponseItems?.length ?? 0);
+	if (current.input.length <= baselineLen) return null;
+
+	let index = 0;
+	for (const series of [previous.input, previousResponseItems]) {
+		if (!series) continue;
+		for (const item of series) {
+			if (deepEqualsWithout(item, current.input[index])) {
+				index++;
+			} else {
+				return null;
+			}
 		}
 	}
-	return current.input.slice(baseline.length) as TItem[];
+	return current.input.slice(index) as TItem[];
 }

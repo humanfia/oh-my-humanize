@@ -1,7 +1,15 @@
 import { execSync } from "node:child_process";
 import * as path from "node:path";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
-import type { Api, Context, Model, ModelSpec, SimpleStreamOptions, ThinkingConfig } from "@oh-my-pi/pi-ai/types";
+import type {
+	Api,
+	Context,
+	Model,
+	ModelSpec,
+	RemoteCompactionConfig,
+	SimpleStreamOptions,
+	ThinkingConfig,
+} from "@oh-my-pi/pi-ai/types";
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { isVertexExpressOpenAIUrl } from "@oh-my-pi/pi-catalog/hosts";
@@ -71,6 +79,7 @@ import {
 	discoverModelsByProviderType,
 	getImplicitOllamaBaseUrl,
 	getOllamaContextLengthOverride,
+	normalizeLiteLLMDiscoveryBaseUrl,
 } from "./model-discovery";
 import { ModelsConfigFile, type ProviderValidationModel, validateProviderConfiguration } from "./models-config";
 import type { ModelOverride, ModelsConfig, ProviderAuthMode } from "./models-config-schema";
@@ -95,6 +104,7 @@ interface ProviderOverride {
 	apiKey?: string;
 	authHeader?: boolean;
 	compat?: ModelSpec<Api>["compat"];
+	remoteCompaction?: RemoteCompactionConfig<Api>;
 	transport?: Model<Api>["transport"];
 }
 
@@ -127,7 +137,7 @@ interface ProviderOverride {
 export function mergeDiscoveredModel<TApi extends Api>(
 	model: Model<TApi>,
 	existing: Model<Api> | undefined,
-	providerOverride?: Pick<ProviderOverride, "baseUrl" | "headers" | "transport">,
+	providerOverride?: Pick<ProviderOverride, "baseUrl" | "headers" | "remoteCompaction" | "transport">,
 ): Model<TApi> {
 	if (existing) {
 		const supportsTools = model.supportsTools ?? existing.supportsTools;
@@ -136,6 +146,10 @@ export function mergeDiscoveredModel<TApi extends Api>(
 			baseUrl: providerOverride?.baseUrl ?? model.baseUrl ?? existing.baseUrl,
 			headers: existing.headers ? { ...existing.headers, ...model.headers } : model.headers,
 			transport: providerOverride?.transport ?? existing.transport ?? model.transport,
+			remoteCompaction: mergeProviderRemoteCompactionConfig(
+				mergeRemoteCompactionConfig(existing.remoteCompaction, model.remoteCompaction),
+				providerOverride?.remoteCompaction,
+			),
 			...(supportsTools !== undefined ? { supportsTools } : {}),
 			compat: model.compatConfig,
 		} as ModelSpec<TApi>);
@@ -146,6 +160,10 @@ export function mergeDiscoveredModel<TApi extends Api>(
 			baseUrl: providerOverride.baseUrl ?? model.baseUrl,
 			headers: providerOverride.headers ? { ...model.headers, ...providerOverride.headers } : model.headers,
 			...(providerOverride.transport !== undefined ? { transport: providerOverride.transport } : {}),
+			remoteCompaction: mergeProviderRemoteCompactionConfig(
+				model.remoteCompaction,
+				providerOverride.remoteCompaction,
+			),
 			compat: model.compatConfig,
 		} as ModelSpec<TApi>);
 	}
@@ -285,14 +303,80 @@ function resolveConfigValue(valueConfig: string): string | undefined {
 	return valueConfig;
 }
 
-function resolveConfigHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
-	if (!headers) return undefined;
+type HeaderSource = Record<string, string> | undefined;
+
+interface HeaderResolutionOptions {
+	authHeader?: boolean;
+	apiKeyConfig?: string;
+}
+
+function materializeConfigHeaderSources(
+	sources: readonly HeaderSource[],
+	options?: HeaderResolutionOptions,
+): Record<string, string> | undefined {
 	const resolved: Record<string, string> = {};
-	for (const [key, value] of Object.entries(headers)) {
-		const next = resolveConfigValue(value);
-		if (next) resolved[key] = next;
+	for (const source of sources) {
+		if (!source) continue;
+		for (const [key, value] of Object.entries(source)) {
+			const next = resolveConfigValue(value);
+			if (next) resolved[key] = next;
+		}
+	}
+	if (options?.authHeader && options.apiKeyConfig) {
+		const resolvedKey = resolveConfigValue(options.apiKeyConfig);
+		if (resolvedKey) resolved.Authorization = `Bearer ${resolvedKey}`;
 	}
 	return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+
+function createLiveConfigHeaders(
+	sources: readonly HeaderSource[],
+	options?: HeaderResolutionOptions,
+): Record<string, string> | undefined {
+	const liveSources = sources.filter((source): source is Record<string, string> => source !== undefined);
+	if (liveSources.length === 0 && (!options?.authHeader || !options.apiKeyConfig)) return undefined;
+
+	const localHeaders: Record<string, string> = {};
+	const allSources = [...liveSources, localHeaders];
+	const current = () => materializeConfigHeaderSources(allSources, options) ?? {};
+	return new Proxy(localHeaders, {
+		get(target, property, receiver) {
+			if (typeof property !== "string") return Reflect.get(target, property, receiver);
+			return current()[property];
+		},
+		set(target, property, value) {
+			if (typeof property !== "string" || typeof value !== "string") return false;
+			target[property] = value;
+			return true;
+		},
+		deleteProperty(target, property) {
+			if (typeof property !== "string") return false;
+			delete target[property];
+			return true;
+		},
+		has(_target, property) {
+			if (typeof property !== "string") return false;
+			return Object.hasOwn(current(), property);
+		},
+		ownKeys() {
+			return Reflect.ownKeys(current());
+		},
+		getOwnPropertyDescriptor(_target, property) {
+			if (typeof property !== "string") return undefined;
+			const headers = current();
+			if (!Object.hasOwn(headers, property)) return undefined;
+			return {
+				configurable: true,
+				enumerable: true,
+				value: headers[property],
+				writable: true,
+			};
+		},
+	});
+}
+
+function resolveConfigHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+	return materializeConfigHeaderSources([headers]);
 }
 
 function extractGoogleOAuthToken(value: string | undefined): string | undefined {
@@ -353,6 +437,22 @@ function mergeCompat<TBase extends object, TOverride extends object>(
 	return merged as TBase & TOverride;
 }
 
+function mergeRemoteCompactionConfig(
+	baseConfig: RemoteCompactionConfig<Api> | undefined,
+	overrideConfig: RemoteCompactionConfig<Api> | undefined,
+): RemoteCompactionConfig<Api> | undefined {
+	if (!baseConfig) return overrideConfig;
+	if (!overrideConfig) return baseConfig;
+	return { ...baseConfig, ...overrideConfig };
+}
+
+function mergeProviderRemoteCompactionConfig(
+	modelConfig: RemoteCompactionConfig<Api> | undefined,
+	providerConfig: RemoteCompactionConfig<Api> | undefined,
+): RemoteCompactionConfig<Api> | undefined {
+	return mergeRemoteCompactionConfig(providerConfig, modelConfig);
+}
+
 /**
  * Project a built model back to spec shape for the model-manager/cache
  * boundary: sparse compat comes from `compatConfig`, never from the resolved
@@ -380,6 +480,8 @@ interface ModelPatch {
 	headers?: Record<string, string>;
 	compat?: ModelSpec<Api>["compat"];
 	contextPromotionTarget?: string;
+	compactionModel?: string;
+	remoteCompaction?: RemoteCompactionConfig<Api>;
 	premiumMultiplier?: number;
 }
 
@@ -403,6 +505,10 @@ function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: ModelTr
 	if (patch.maxTokens !== undefined) result.maxTokens = patch.maxTokens;
 	if (patch.omitMaxOutputTokens !== undefined) result.omitMaxOutputTokens = patch.omitMaxOutputTokens;
 	if (patch.contextPromotionTarget !== undefined) result.contextPromotionTarget = patch.contextPromotionTarget;
+	if (patch.compactionModel !== undefined) result.compactionModel = patch.compactionModel;
+	if (patch.remoteCompaction !== undefined) {
+		result.remoteCompaction = mergeRemoteCompactionConfig(base.remoteCompaction, patch.remoteCompaction);
+	}
 	if (patch.premiumMultiplier !== undefined) result.premiumMultiplier = patch.premiumMultiplier;
 	if (patch.cost) {
 		result.cost = {
@@ -455,28 +561,20 @@ function mergeCustomModelHeaders(
 	authHeader: boolean | undefined,
 	apiKeyConfig: string | undefined,
 ): Record<string, string> | undefined {
-	const resolvedModelHeaders = resolveConfigHeaders(modelHeaders);
-	return mergeAuthHeader({ ...providerHeaders, ...resolvedModelHeaders }, authHeader, apiKeyConfig);
+	return createLiveConfigHeaders([providerHeaders, modelHeaders], { authHeader, apiKeyConfig });
 }
 
-function mergeAuthHeader(
-	headers: Record<string, string> | undefined,
+function mergeAuthHeaderSources(
+	sources: readonly HeaderSource[],
 	authHeader: boolean | undefined,
 	apiKeyConfig: string | undefined,
 ): Record<string, string> | undefined {
-	const nextHeaders = headers && Object.keys(headers).length > 0 ? { ...headers } : undefined;
-	if (!authHeader || !apiKeyConfig) {
-		return nextHeaders;
-	}
-	const resolvedKey = resolveConfigValue(apiKeyConfig);
-	return resolvedKey ? { ...nextHeaders, Authorization: `Bearer ${resolvedKey}` } : nextHeaders;
+	return createLiveConfigHeaders(sources, { authHeader, apiKeyConfig });
 }
 
 /**
  * Decide whether a custom-yaml model should force OAuth-style request shaping.
  * - Explicit `auth: oauth` → force on.
- * - Explicit `auth: apiKey` / `auth: none` → leave unset (auto-detect by key prefix).
- * - No `auth` specified and `api: anthropic-messages` → default on. Custom Anthropic
  *   endpoints are typically Claude-Code-style proxies (e.g. CLIProxyAPI) that expect
  *   the cloaked request shape regardless of how the proxy itself is authenticated.
  * - Otherwise → unset.
@@ -497,6 +595,7 @@ function buildCustomModelOverlay(
 	authHeader: boolean | undefined,
 	providerCompat: ModelSpec<Api>["compat"] | undefined,
 	providerAuth: ProviderAuthMode | undefined,
+	providerRemoteCompaction: RemoteCompactionConfig<Api> | undefined,
 	modelDef: CustomModelDefinitionLike,
 ): CustomModelOverlay | undefined {
 	const api = modelDef.api ?? providerApi;
@@ -518,6 +617,8 @@ function buildCustomModelOverlay(
 		headers: mergeCustomModelHeaders(providerHeaders, modelDef.headers, authHeader, providerApiKey),
 		compat: mergeCompat(providerCompat, modelDef.compat),
 		contextPromotionTarget: modelDef.contextPromotionTarget,
+		compactionModel: modelDef.compactionModel,
+		remoteCompaction: mergeRemoteCompactionConfig(providerRemoteCompaction, modelDef.remoteCompaction),
 		premiumMultiplier: modelDef.premiumMultiplier,
 		isOAuth: resolveCustomModelIsOAuth(api, providerAuth),
 	};
@@ -558,6 +659,8 @@ function finalizeCustomModel(model: CustomModelOverlay, options: CustomModelBuil
 		omitMaxOutputTokens: resolvedModel.omitMaxOutputTokens ?? reference?.omitMaxOutputTokens,
 		compat: mergeCompat(reference?.compatConfig, resolvedModel.compat),
 		contextPromotionTarget: resolvedModel.contextPromotionTarget,
+		compactionModel: resolvedModel.compactionModel,
+		remoteCompaction: resolvedModel.remoteCompaction,
 		premiumMultiplier: resolvedModel.premiumMultiplier,
 		isOAuth: resolvedModel.isOAuth,
 	} as ModelSpec<Api>);
@@ -1078,12 +1181,25 @@ export class ModelRegistry {
 					)
 				: models;
 
+		const withRemoteCompaction = providerConfig.remoteCompaction
+			? withDecoderMetadata.map(model =>
+					buildModel({
+						...model,
+						remoteCompaction: mergeProviderRemoteCompactionConfig(
+							model.remoteCompaction,
+							providerConfig.remoteCompaction,
+						),
+						compat: model.compatConfig,
+					} as ModelSpec<Api>),
+				)
+			: withDecoderMetadata;
+
 		if (providerConfig.provider !== "ollama" || providerConfig.api !== "openai-responses") {
-			return withDecoderMetadata;
+			return withRemoteCompaction;
 		}
 
 		const contextLengthOverride = getOllamaContextLengthOverride();
-		return withDecoderMetadata.map(model => {
+		return withRemoteCompaction.map(model => {
 			const normalized =
 				model.api === "openai-completions"
 					? buildModel({
@@ -1172,7 +1288,6 @@ export class ModelRegistry {
 		const discoverableProviders: DiscoveryProviderConfig[] = [];
 		const providerEntries = Object.entries(value.providers ?? {});
 		const configuredProviders = new Set(Object.keys(value.providers ?? {}));
-
 		for (const [providerName, providerConfig] of providerEntries) {
 			const resolvedProviderHeaders = resolveConfigHeaders(providerConfig.headers);
 			// Always set overrides when baseUrl/headers/apiKey/authHeader/compat/disableStrictTools/transport are present
@@ -1183,15 +1298,20 @@ export class ModelRegistry {
 				providerConfig.authHeader !== undefined ||
 				providerConfig.compat ||
 				providerConfig.disableStrictTools ||
+				providerConfig.remoteCompaction ||
 				providerConfig.transport
 			) {
 				const disableStrictCompat = providerConfig.disableStrictTools ? { disableStrictTools: true } : undefined;
 				overrides.set(providerName, {
-					baseUrl: providerConfig.baseUrl,
+					baseUrl:
+						providerConfig.discovery?.type === "litellm"
+							? normalizeLiteLLMDiscoveryBaseUrl(providerConfig.baseUrl)
+							: providerConfig.baseUrl,
 					headers: resolvedProviderHeaders,
 					apiKey: providerConfig.apiKey,
 					authHeader: providerConfig.authHeader,
 					compat: mergeCompat(providerConfig.compat, disableStrictCompat),
+					remoteCompaction: providerConfig.remoteCompaction,
 					transport: providerConfig.transport,
 				});
 			}
@@ -1212,6 +1332,7 @@ export class ModelRegistry {
 					baseUrl: providerConfig.baseUrl,
 					headers: resolvedProviderHeaders,
 					compat: mergeCompat(providerConfig.compat, disableStrictCompat),
+					remoteCompaction: providerConfig.remoteCompaction,
 					discovery: providerConfig.discovery,
 					optional: false,
 				});
@@ -1301,6 +1422,9 @@ export class ModelRegistry {
 	#configuredDiscoveryCacheProviderId(providerConfig: DiscoveryProviderConfig): string {
 		if (providerConfig.discovery.type === "openai-models-list") {
 			return `${providerConfig.provider}:openai-models-list-context-v2`;
+		}
+		if (providerConfig.discovery.type === "litellm") {
+			return `${providerConfig.provider}:litellm-rich-v1`;
 		}
 		return providerConfig.provider;
 	}
@@ -1597,17 +1721,25 @@ export class ModelRegistry {
 			baseUrl: override.baseUrl ?? baseOverride?.baseUrl,
 			apiKey: override.apiKey ?? baseOverride?.apiKey,
 			authHeader: override.authHeader ?? baseOverride?.authHeader,
-			headers: override.headers ? { ...(baseOverride?.headers ?? {}), ...override.headers } : baseOverride?.headers,
+			headers: override.headers
+				? createLiveConfigHeaders([baseOverride?.headers, override.headers])
+				: baseOverride?.headers,
 			compat: override.compat ? mergeCompat(baseOverride?.compat, override.compat) : baseOverride?.compat,
+			remoteCompaction: mergeRemoteCompactionConfig(baseOverride?.remoteCompaction, override.remoteCompaction),
 			transport: override.transport ?? baseOverride?.transport,
 		};
 	}
-	#applyProviderTransportOverride<T extends { baseUrl?: string; headers?: Record<string, string> }>(
+	#applyProviderTransportOverride<
+		T extends { baseUrl?: string; headers?: Record<string, string>; remoteCompaction?: RemoteCompactionConfig<Api> },
+	>(
 		entry: T,
-		override: Pick<ProviderOverride, "baseUrl" | "headers" | "authHeader" | "apiKey" | "transport">,
+		override: Pick<
+			ProviderOverride,
+			"baseUrl" | "headers" | "authHeader" | "apiKey" | "remoteCompaction" | "transport"
+		>,
 	): T {
-		const headers = mergeAuthHeader(
-			override.headers ? { ...entry.headers, ...override.headers } : entry.headers,
+		const headers = mergeAuthHeaderSources(
+			override.headers ? [entry.headers, override.headers] : [entry.headers],
 			override.authHeader,
 			override.apiKey,
 		);
@@ -1618,6 +1750,7 @@ export class ModelRegistry {
 			// Preserve the model's existing transport when the override omits one;
 			// providers without a `transport` field keep the default per-API dispatch.
 			...(override.transport !== undefined ? { transport: override.transport } : {}),
+			remoteCompaction: mergeProviderRemoteCompactionConfig(entry.remoteCompaction, override.remoteCompaction),
 		};
 	}
 	#applyRuntimeProviderOverrides(models: Model<Api>[]): Model<Api>[] {
@@ -1719,7 +1852,6 @@ export class ModelRegistry {
 
 	#parseModels(config: ModelsConfig): CustomModelOverlay[] {
 		const models: CustomModelOverlay[] = [];
-
 		for (const [providerName, providerConfig] of Object.entries(config.providers ?? {})) {
 			const modelDefs = providerConfig.models ?? [];
 			if (modelDefs.length === 0) continue; // Override-only, no custom models
@@ -1740,6 +1872,7 @@ export class ModelRegistry {
 					providerConfig.authHeader,
 					providerCompat,
 					(providerConfig.auth as ProviderAuthMode | undefined) ?? undefined,
+					providerConfig.remoteCompaction,
 					modelDef as CustomModelDefinitionLike,
 				);
 				if (!model) continue;
@@ -2147,6 +2280,7 @@ export class ModelRegistry {
 					config.authHeader,
 					config.compat,
 					undefined,
+					config.remoteCompaction,
 					modelDef as CustomModelDefinitionLike,
 				);
 				if (!overlay) {
@@ -2214,6 +2348,7 @@ export class ModelRegistry {
 							providerAuthHeader,
 							providerCompat,
 							undefined,
+							config.remoteCompaction,
 							modelDef as CustomModelDefinitionLike,
 						);
 						if (overlay) results.push(finalizeCustomModel(overlay, { useDefaults: true }));
@@ -2231,6 +2366,7 @@ export class ModelRegistry {
 			config.headers ||
 			config.apiKey ||
 			config.authHeader !== undefined ||
+			config.remoteCompaction !== undefined ||
 			config.transport !== undefined
 		) {
 			const transportOverride = {
@@ -2238,6 +2374,7 @@ export class ModelRegistry {
 				headers: config.headers,
 				apiKey: config.apiKey,
 				authHeader: config.authHeader,
+				remoteCompaction: config.remoteCompaction,
 				transport: config.transport,
 			};
 			const nextRuntimeOverride = this.#mergeProviderOverride(
@@ -2299,6 +2436,7 @@ export interface ProviderConfigInput {
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	headers?: Record<string, string>;
 	compat?: ModelSpec<Api>["compat"];
+	remoteCompaction?: RemoteCompactionConfig<Api>;
 	authHeader?: boolean;
 	/** Streaming transport override — see {@link Model.transport}. */
 	transport?: Model<Api>["transport"];
@@ -2333,6 +2471,8 @@ export interface ProviderConfigInput {
 		headers?: Record<string, string>;
 		compat?: ModelSpec<Api>["compat"];
 		contextPromotionTarget?: string;
+		compactionModel?: string;
+		remoteCompaction?: RemoteCompactionConfig<Api>;
 		premiumMultiplier?: number;
 	}>;
 }

@@ -12,6 +12,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -21,6 +22,8 @@ interface FakeAcpBuiltinSession {
 	sessionId: string;
 	sessionName: string;
 	_todoPhases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
+	_switchedTo: string | undefined;
+	_movedFromEmptySessionFile: string | undefined;
 	toggleFastMode(): boolean;
 	setFastMode(enabled: boolean): void;
 	isFastModeEnabled(): boolean;
@@ -34,6 +37,8 @@ interface FakeAcpBuiltinSession {
 	settings: Settings;
 	model: { provider: string; id: string } | undefined;
 	newSession(opts?: { drop?: boolean; parentSession?: string }): Promise<boolean>;
+	switchSession(sessionPath: string): Promise<boolean>;
+	markMovedFromEmptySessionFile(sessionFile: string): void;
 	fork(): Promise<boolean>;
 	handoff(instr?: string): Promise<{ document: string; savedPath?: string } | undefined>;
 	exportToHtml(outputPath?: string): Promise<string>;
@@ -50,9 +55,32 @@ interface FakeAcpBuiltinSession {
 	redeemResetCredit: (target: ResetCreditTarget) => Promise<ResetCreditRedeemOutcome>;
 }
 
+interface FakeAcpBuiltinSessionManager {
+	_sessionFile: string | undefined;
+	_cwd: string;
+	_entries: { type: string }[];
+	_customEntries: Array<{ customType: string; data: unknown }>;
+	_movedTo: string | undefined;
+	_flushed: boolean;
+	_droppedSessions: string[];
+	_sessionName: string | undefined;
+	getSessionId(): string;
+	getSessionFile(): string | undefined;
+	getEntries(): { type: string }[];
+	getBranch(): { type: string }[];
+	appendCustomEntry(customType: string, data?: unknown): string;
+	flush(): Promise<void>;
+	moveTo(newCwd: string): Promise<void>;
+	setSessionFile(sessionFile: string): Promise<void>;
+	dropSession(sessionPath: string): Promise<void>;
+	getCwd(): string;
+	setSessionName(name: string, source: string): Promise<boolean>;
+}
+
 function createRuntime() {
 	const settings = Settings.isolated();
 	const output: string[] = [];
+	let fakeSessionManager: FakeAcpBuiltinSessionManager | undefined;
 	const session: FakeAcpBuiltinSession = {
 		fastMode: false,
 		forcedToolChoice: undefined as string | undefined,
@@ -61,6 +89,8 @@ function createRuntime() {
 		sessionId: "fake-session-id",
 		sessionName: "Fake Session",
 		_todoPhases: [],
+		_switchedTo: undefined,
+		_movedFromEmptySessionFile: undefined,
 		toggleFastMode() {
 			this.fastMode = !this.fastMode;
 			return this.fastMode;
@@ -82,6 +112,17 @@ function createRuntime() {
 		},
 		async newSession(_opts?: { drop?: boolean; parentSession?: string }) {
 			return true;
+		},
+		async switchSession(sessionPath: string) {
+			this._switchedTo = path.resolve(sessionPath);
+			this.sessionFile = this._switchedTo;
+			if (!fakeSessionManager) throw new Error("fake session manager not initialized");
+			await fakeSessionManager.flush();
+			await fakeSessionManager.setSessionFile(this._switchedTo);
+			return true;
+		},
+		markMovedFromEmptySessionFile(sessionFile: string) {
+			this._movedFromEmptySessionFile = path.resolve(sessionFile);
 		},
 		async fork() {
 			return true;
@@ -114,13 +155,14 @@ function createRuntime() {
 		async refreshSshTool(_options?: { activateIfAvailable?: boolean }) {},
 	};
 	const typedSession = session as unknown as AgentSession & FakeAcpBuiltinSession;
-	const fakeSessionManager = {
+	fakeSessionManager = {
 		_sessionFile: undefined as string | undefined,
 		_cwd: "/tmp/project",
 		_entries: [] as { type: string }[],
 		_customEntries: [] as Array<{ customType: string; data: unknown }>,
 		_movedTo: undefined as string | undefined,
 		_flushed: false,
+		_droppedSessions: [] as string[],
 		_sessionName: undefined as string | undefined,
 		getSessionId(): string {
 			return "fake-session-id";
@@ -144,6 +186,19 @@ function createRuntime() {
 		async moveTo(newCwd: string) {
 			this._cwd = newCwd;
 			this._movedTo = newCwd;
+		},
+		async setSessionFile(sessionFile: string) {
+			this._sessionFile = path.resolve(sessionFile);
+			const headerLine = (await Bun.file(this._sessionFile).text()).split("\n", 1)[0] ?? "{}";
+			const header = JSON.parse(headerLine) as { cwd?: string };
+			if (header.cwd) {
+				this._cwd = path.resolve(header.cwd);
+				this._movedTo = this._cwd;
+			}
+		},
+		async dropSession(sessionPath: string) {
+			this._droppedSessions.push(path.resolve(sessionPath));
+			await fs.rm(sessionPath, { force: true });
 		},
 		getCwd(): string {
 			return this._cwd;
@@ -493,22 +548,6 @@ describe("session lifecycle commands", () => {
 		expect(notified).toBe(false);
 	});
 
-	it("/move: reports moved path via sessionManager.getCwd() and calls notifyTitleChanged", async () => {
-		const { output, fakeSessionManager, runtime } = createRuntime();
-		let notified = false;
-		runtime.notifyTitleChanged = async () => {
-			notified = true;
-		};
-		const moveTarget = os.tmpdir();
-		const expectedMovedTo = path.resolve(moveTarget);
-		const result = await executeAcpBuiltinSlashCommand(`/move ${moveTarget}`, runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(fakeSessionManager._flushed).toBe(true);
-		expect(fakeSessionManager._movedTo).toBe(expectedMovedTo);
-		expect(output[0]).toContain(expectedMovedTo);
-		expect(notified).toBe(true);
-	});
-
 	it("/move: refuses while streaming", async () => {
 		const { output, session, runtime } = createRuntime();
 		session.isStreaming = true;
@@ -577,7 +616,7 @@ describe("wave 3 commands", () => {
 			expect(output[0]).toBe(`Wrote todos to ${target}`);
 			expect(await fs.readFile(target, "utf8")).toBe("# Work\n- [ ] Ship it\n");
 		} finally {
-			await fs.rm(tempRoot, { recursive: true, force: true });
+			await removeWithRetries(tempRoot);
 		}
 	});
 
@@ -594,7 +633,7 @@ describe("wave 3 commands", () => {
 			expect(output[0]).toBe(`Wrote todos to ${target}`);
 			expect(await fs.readFile(target, "utf8")).toBe("# Work\n- [ ] Ship it\n");
 		} finally {
-			await fs.rm(tempRoot, { recursive: true, force: true });
+			await removeWithRetries(tempRoot);
 		}
 	});
 
@@ -613,7 +652,7 @@ describe("wave 3 commands", () => {
 				{ name: "Imported", tasks: [{ content: "Active task", status: "in_progress" }] },
 			]);
 		} finally {
-			await fs.rm(tempRoot, { recursive: true, force: true });
+			await removeWithRetries(tempRoot);
 		}
 	});
 
@@ -633,7 +672,7 @@ describe("wave 3 commands", () => {
 				{ name: "Default", tasks: [{ content: "From cwd", status: "in_progress" }] },
 			]);
 		} finally {
-			await fs.rm(tempRoot, { recursive: true, force: true });
+			await removeWithRetries(tempRoot);
 		}
 	});
 
@@ -651,7 +690,7 @@ describe("wave 3 commands", () => {
 			expect(output[0]).toContain(`Could not parse ${target}:`);
 			expect(session._todoPhases).toEqual([]);
 		} finally {
-			await fs.rm(tempRoot, { recursive: true, force: true });
+			await removeWithRetries(tempRoot);
 		}
 	});
 

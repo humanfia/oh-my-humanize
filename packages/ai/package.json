@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/pi-ai",
-	"version": "16.1.23",
+	"version": "16.2.2",
 	"description": "Unified LLM API with automatic model discovery and provider configuration",
 	"homepage": "https://omh.sh",
 	"author": "Can Boluk",
@@ -60,6 +60,10 @@
 		".": {
 			"types": "./src/index.ts",
 			"import": "./src/index.ts"
+		},
+		"./error": {
+			"types": "./src/error/index.ts",
+			"import": "./src/error/index.ts"
 		},
 		"./*": {
 			"types": "./src/*.ts",

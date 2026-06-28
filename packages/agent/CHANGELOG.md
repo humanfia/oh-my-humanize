@@ -6,10 +6,37 @@
 
 - Added terminal tool results so final-result tools can end an agent loop cleanly
   without synthesizing an aborted assistant message.
+### Changed
+
+- Enabled V2 streaming remote compaction by default for compatible AI and OpenAI-compatible models, which forwards full conversation history to the provider and supports session routing, prompt caching, provider-native tool history replay, transient error retries, and configurable timeouts.
+
 ### Fixed
 
-- Fixed API-level provider refusals being replayed as assistant dialogue on later requests, which could anchor repeated refusals after a single blocked turn. ([#3592](https://github.com/can1357/oh-my-pi/issues/3592))
-- Fixed `streamProxy` leaking internal `partialJson` streaming state onto the final `AssistantMessage` when the stream ended without a `toolcall_end` event. The field is now accumulated in a side-channel `Map` (eliminating `as any` casts on the accumulation path), written onto the content object via a typed `ToolCall & { partialJson: string }` intersection so downstream renderers can still read it during streaming, and scrubbed from all content blocks at `toolcall_end`, `done`, and `error` — guaranteeing it never appears on the final message.
+- Fixed an issue where assistant responses and encrypted reasoning could be lost during local history trimming.
+- Added `title_change` session metadata to the compaction entry type union to maintain type compatibility for hosts with title audit entries.
+
+## [16.2.2] - 2026-06-27
+
+### Added
+
+- Added optional AgentTool.matcherPaths(args) and AgentTool.matcherEntries(args) hooks to allow tools to surface target file paths and isolate file evaluations for path-scoped stream matchers (e.g., when handling multi-file payloads or embedded paths in streamed arguments).
+
+### Removed
+
+- Removed support for Pi dialect integration.
+
+## [16.2.0] - 2026-06-27
+
+### Added
+
+- Added an optional `cwdResolver` to `Agent` and `getCwd` to `AgentLoopConfig` to dynamically resolve the working directory per LLM call, allowing workspace-scoped provider discovery (such as GitLab Duo Agent) to follow live directory changes without reconstructing the agent.
+
+### Fixed
+
+- Fixed an issue where API-level provider refusals were replayed as assistant dialogue on subsequent requests, preventing repeated refusals after a single blocked turn.
+- Fixed a bug where internal streaming state (`partialJson`) could leak onto the final `AssistantMessage` if a stream ended without a `toolcall_end` event.
+- Fixed `Agent` to correctly forward the working directory (`cwd`) into provider stream options, enabling providers like GitLab Duo Agent to scope local tool execution to the workspace.
+- Enabled custom OpenAI-compatible providers to use native remote compaction instead of falling back to local summarization.
 
 ## [16.1.23] - 2026-06-26
 

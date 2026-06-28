@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Effort } from "@oh-my-pi/pi-ai";
+import { clearCustomApis } from "@oh-my-pi/pi-ai/api-registry";
+import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
+import { __providerInFlightForTesting, streamSimple } from "@oh-my-pi/pi-ai/stream";
+import type { Context } from "@oh-my-pi/pi-ai/types";
 import {
 	getDefault,
 	getEnumValues,
@@ -11,9 +15,17 @@ import {
 	type SettingPath,
 	Settings,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+
+function context(): Context {
+	return {
+		systemPrompt: [],
+		messages: [{ role: "user", content: "hi", timestamp: 0 }],
+	};
+}
 
 describe("Settings", () => {
 	let settingsState: SettingsTestState | undefined;
@@ -49,10 +61,14 @@ describe("Settings", () => {
 		return parsed as Record<string, unknown>;
 	};
 
-	afterEach(() => {
+	afterEach(async () => {
+		clearCustomApis();
+		__providerInFlightForTesting.setRoot(undefined);
+		AgentStorage.resetInstance();
 		restoreSettingsTestState(settingsState);
 		settingsState = undefined;
-		tempDir?.removeSync();
+		await Bun.sleep(0);
+		await tempDir?.remove();
 	});
 	describe("defaults", () => {
 		it("keeps eight inline images live by default", async () => {
@@ -60,10 +76,22 @@ describe("Settings", () => {
 			expect(settings.get("tui.maxInlineImages")).toBe(8);
 		});
 
+		it("keeps native terminal progress disabled by default", async () => {
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("terminal.showProgress")).toBe(false);
+			expect(getDefault("terminal.showProgress")).toBe(false);
+		});
+
 		it("keeps the normal startup splash disabled by default", async () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			expect(settings.get("startup.showSplash")).toBe(false);
 			expect(getDefault("startup.showSplash")).toBe(false);
+		});
+
+		it("defaults provider in-flight request limits to an empty map", async () => {
+			const settings = Settings.isolated();
+			expect(settings.get("providers.maxInFlightRequests")).toEqual({});
+			expect(getDefault("providers.maxInFlightRequests")).toEqual({});
 		});
 
 		it("exposes all tool calling mode options", () => {
@@ -78,7 +106,6 @@ describe("Settings", () => {
 				"anthropic",
 				"deepseek",
 				"harmony",
-				"pi",
 				"qwen3",
 				"gemini",
 				"gemma",
@@ -243,6 +270,17 @@ describe("Settings", () => {
 			expect(savedSettings.defaultThinkingLevel).toBe(Effort.High);
 			expect(savedSettings.theme).toEqual({ dark: "anthracite" });
 			expect((savedSettings.modelRoles as { default?: string } | undefined)?.default).toBe("claude-sonnet");
+		});
+
+		it("persists native terminal progress only after the user changes it", async () => {
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(await readSettings()).toEqual({});
+
+			settings.set("terminal.showProgress", true);
+			await settings.flush();
+
+			const savedSettings = await readSettings();
+			expect(savedSettings.terminal).toEqual({ showProgress: true });
 		});
 
 		it("filters model allow-list and disabled providers by current path prefix", async () => {
@@ -669,6 +707,79 @@ describe("Settings", () => {
 			});
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			expect(settings.get("power.sleepPrevention")).toBe("off");
+		});
+
+		describe("provider request limits", () => {
+			it("uses the effective merged value when configuring hooks", async () => {
+				const settings = Settings.isolated({ "providers.maxInFlightRequests": { openai: 1 } });
+				__providerInFlightForTesting.setRoot(tempDir.join("provider-inflight"));
+				registerMockApi();
+				const firstStarted = Promise.withResolvers<void>();
+				const releaseFirst = Promise.withResolvers<void>();
+				let active = 0;
+				let maxActive = 0;
+				let callIndex = 0;
+				const mock = createMockModel({
+					provider: "openai",
+					handler: async () => {
+						callIndex++;
+						active++;
+						maxActive = Math.max(maxActive, active);
+						try {
+							if (callIndex === 1) {
+								firstStarted.resolve();
+								await releaseFirst.promise;
+							}
+							return { content: [`reply ${callIndex}`] };
+						} finally {
+							active--;
+						}
+					},
+				});
+
+				settings.set("providers.maxInFlightRequests", { openai: 4 });
+
+				const first = streamSimple(mock.model, context());
+				const firstResult = first.result();
+				await firstStarted.promise;
+				const second = streamSimple(mock.model, context());
+				await Bun.sleep(20);
+
+				expect(settings.get("providers.maxInFlightRequests")).toEqual({ openai: 1 });
+				expect(mock.calls).toHaveLength(1);
+
+				releaseFirst.resolve();
+				await Promise.all([firstResult, second.result()]);
+				expect(maxActive).toBe(1);
+			});
+
+			it("rejects invalid provider limits from config.yml", async () => {
+				await writeSettings({ providers: { maxInFlightRequests: { openai: "2" } } });
+
+				await expect(Settings.init({ cwd: projectDir, agentDir })).rejects.toThrow(
+					"Provider request limits must be positive numbers: openai",
+				);
+			});
+
+			it("rejects invalid provider limits from project settings", async () => {
+				await Bun.write(
+					path.join(getProjectAgentDir(projectDir), "settings.json"),
+					JSON.stringify({ providers: { maxInFlightRequests: { anthropic: 0 } } }),
+				);
+
+				await expect(Settings.init({ cwd: projectDir, agentDir, inMemory: true })).rejects.toThrow(
+					"Provider request limits must be positive numbers: anthropic",
+				);
+			});
+
+			it("rejects invalid provider limits from config overlays", async () => {
+				const overlayPath = tempDir.join("overlay.yml");
+				await Bun.write(overlayPath, YAML.stringify({ providers: { maxInFlightRequests: { umans: -1 } } }));
+
+				await expect(
+					Settings.init({ cwd: projectDir, agentDir, inMemory: true, configFiles: [overlayPath] }),
+				).rejects.toThrow("Provider request limits must be positive numbers: umans");
+			});
 		});
 	});
 });

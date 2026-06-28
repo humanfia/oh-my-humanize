@@ -11,6 +11,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { $which } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import { removeWithRetries } from "../../utils/src/temp";
 import { e2eApiKey, resolveApiKey } from "./oauth";
 
 // Resolve OAuth tokens at module level (async, runs before tests)
@@ -776,7 +777,7 @@ describe("Generate E2E Tests", () => {
 				expect(request.authorization).toBe("Bearer impersonated-token");
 			} finally {
 				__resetVertexTokenCache();
-				await fs.rm(tmpDir, { recursive: true, force: true });
+				await removeWithRetries(tmpDir);
 				if (originalProject === undefined) delete Bun.env.GOOGLE_CLOUD_PROJECT;
 				else Bun.env.GOOGLE_CLOUD_PROJECT = originalProject;
 				if (originalGcpProject === undefined) delete Bun.env.GCP_PROJECT;

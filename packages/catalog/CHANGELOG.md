@@ -7,7 +7,36 @@
 - Changed package metadata links and description from the old Oh My Pi branding to OMH.
 ### Added
 
-- Added `OpenAICompat.supportsNamedToolChoice` so string-only OpenAI-compatible chat servers can keep forced tool use without emitting the named function-object `tool_choice` shape. ([#3593](https://github.com/can1357/oh-my-pi/issues/3593))
+- Added support and configuration parameters for V2 streaming compaction in RemoteCompactionConfig, catalog types, and model/provider metadata.
+
+### Changed
+
+- Updated pricing and context window limits for several catalog models.
+- Disabled reasoning capability for multiple providers in the catalog.
+
+## [16.2.2] - 2026-06-27
+
+### Removed
+
+- Removed 'pi' from the list of supported dialects.
+
+## [16.2.0] - 2026-06-27
+
+### Added
+
+- Added GitLab Duo Agent catalog discovery, including namespace selection, live model mapping, and a bundled fallback model for fresh installs.
+- Added OpenAICompat.supportsNamedToolChoice to support forced tool use on string-only OpenAI-compatible chat servers without emitting the named function-object tool_choice shape.
+- Added model metadata support for provider-native remote compaction and compaction-only model selection.
+
+### Changed
+
+- Disabled the thinking-effort selector for GitLab Duo Agent models since the underlying platform parameters are server-fixed.
+
+### Fixed
+
+- Improved GitLab Duo Agent and Duo Workflow namespace and project discovery to robustly handle paginated groups, SSH remotes with custom ports, Git worktrees, self-managed GitLab instances with relative paths, and configuration via GITLAB_DUO_PROJECT_PATH or GITLAB_DUO_PROJECT_ID.
+- Fixed built-in LiteLLM discovery to prefer rich proxy metadata from management endpoints and avoid caching stale capability data.
+- Fixed GitLab Duo Workflow model specifications to resolve correct static context windows, enabling accurate context usage tracking and auto-compaction.
 
 ## [16.1.23] - 2026-06-26
 

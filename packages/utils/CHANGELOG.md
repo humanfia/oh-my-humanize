@@ -1,16 +1,28 @@
 # Changelog
 
 ## [Unreleased]
+
 ### Added
 
-- Added a relaxed JSON parser that supports single-quoted strings, unquoted keys, and comments
-- Added `parseStreamingJson` for robust parsing of truncated or malformed streaming JSON
-- Added `parseStreamingJsonThrottled` for efficient processing of incremental streaming updates
+- Added `escapeXmlAttribute` utility function for safe XML attribute value encoding.
+
+### Fixed
+
+- Fixed a crash in `ptree.ChildProcess.bytes()` and the `ssh://` read path when handling large subprocess outputs (over 128 KB) under Bun by ensuring it consistently returns a `Uint8Array`.
+
+## [16.2.0] - 2026-06-27
+
+### Added
+
+- Added a relaxed JSON parser supporting single-quoted strings, unquoted keys, and comments.
+- Added `parseStreamingJson` and `parseStreamingJsonThrottled` for robust, efficient parsing of truncated or incremental streaming JSON.
+- Added an XDG-aware document conversion cache directory helper.
+- Exported `removeWithRetries()` as a standalone asynchronous function to handle retry-on-EBUSY cleanup logic.
 
 ### Changed
 
-- Reworked streaming SSE JSON (`readSseJson`) to recover a truncated or lightly malformed final event through the shared streaming JSON parser (relocated here from `@oh-my-pi/pi-ai`), ending the stream cleanly on a cut-off tail instead of throwing. Non-container final events (provider error text, bare scalars) still surface as a `SyntaxError`.
-- Increased the EBUSY retry delay from 25ms to 50ms (40 retries × 50ms = 2s total window, up from 1s). Windows can hold file locks on SQLite databases for up to ~1.5s after `close()`, and the previous 1-second window was too short for some test cleanup scenarios — `settings-manager.test.ts` and `sdk-credential-disabled-bridge.test.ts` still failed with EBUSY even when using `removeSyncWithRetries`.
+- Improved `readSseJson` to gracefully recover truncated or malformed final events using the streaming JSON parser, ending the stream cleanly instead of throwing.
+- Increased the retry delay for EBUSY file-lock errors from 25ms to 50ms (extending the total retry window to 2 seconds) to improve reliability on Windows.
 
 ### Changed
 

@@ -35,6 +35,7 @@ function createCtx(overrides?: { pathMaxLength?: number; branch?: string | null 
 			sessionManager: undefined,
 		} as unknown as SegmentContext["session"],
 		width: 120,
+		compactThinkingLevel: false,
 		options: {
 			path: {
 				abbreviate: false,
@@ -60,7 +61,8 @@ function createCtx(overrides?: { pathMaxLength?: number; branch?: string | null 
 		contextWindow: 0,
 		autoCompactEnabled: false,
 		subagentCount: 0,
-		sessionStartTime: Date.now(),
+		activeMs: 0,
+		activeRepo: null,
 		git: {
 			branch: overrides?.branch ?? null,
 			status: null,

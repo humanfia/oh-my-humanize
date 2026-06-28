@@ -4,12 +4,10 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
+	nextActionableTask,
 	resolveTodoMarkdownPath,
-	selectStickyTodoWindow,
 	TODO_STRIKE_HOLD_FRAMES,
-	type TodoItem,
 	type TodoPhase,
-	type TodoStatus,
 	TodoTool,
 	todoMatchesAnyDescription,
 	todoToolRenderer,
@@ -98,6 +96,38 @@ describe("TodoTool auto-start behavior", () => {
 	});
 });
 
+describe("nextActionableTask", () => {
+	it("returns the in-progress task before the first pending task across phases", () => {
+		const task = nextActionableTask([
+			{
+				name: "First",
+				tasks: [{ content: "queued first", status: "pending" }],
+			},
+			{
+				name: "Second",
+				tasks: [{ content: "active second", status: "in_progress" }],
+			},
+		]);
+
+		expect(task?.content).toBe("active second");
+	});
+
+	it("falls back to the first pending task when nothing is in progress", () => {
+		const task = nextActionableTask([
+			{
+				name: "Done",
+				tasks: [{ content: "finished", status: "completed" }],
+			},
+			{
+				name: "Next",
+				tasks: [{ content: "first pending", status: "pending" }],
+			},
+		]);
+
+		expect(task?.content).toBe("first pending");
+	});
+});
+
 it("renders completed tasks as checked before revealing strikethrough", async () => {
 	const tool = new TodoTool(createSession());
 	await tool.execute("call-1", { op: "init", list: [{ phase: "Execution", items: ["finish"] }] });
@@ -127,6 +157,7 @@ describe("TodoTool operations", () => {
 
 		const tasks = result.details?.phases[0]?.tasks ?? [];
 		expect(tasks.map(task => task.status)).toEqual(["pending", "pending", "in_progress"]);
+		expect(result.details?.op).toBe("start");
 	});
 
 	it("demotes the current in_progress task when starting another", async () => {
@@ -305,60 +336,6 @@ describe("TodoTool empty items tolerance", () => {
 		const summary = result.content.find(part => part.type === "text");
 		if (summary?.type !== "text") throw new Error("Expected text summary");
 		expect(summary.text).toContain("Missing items for append operation");
-	});
-});
-
-describe("selectStickyTodoWindow", () => {
-	const makeTasks = (statuses: TodoStatus[]): TodoItem[] =>
-		statuses.map((status, i) => ({ content: `task-${i + 1}`, status }));
-
-	it("returns first 5 of 7 pending tasks with hiddenOpenCount = 2", () => {
-		const tasks = makeTasks(["pending", "pending", "pending", "pending", "pending", "pending", "pending"]);
-		const { visible, hiddenOpenCount } = selectStickyTodoWindow(tasks, 5);
-		expect(visible.map(t => t.content)).toEqual(["task-1", "task-2", "task-3", "task-4", "task-5"]);
-		expect(hiddenOpenCount).toBe(2);
-	});
-
-	it("slides the window past completed tasks so the next pending fills the top", () => {
-		const tasks = makeTasks(["completed", "completed", "completed", "in_progress", "pending", "pending", "pending"]);
-		const { visible, hiddenOpenCount } = selectStickyTodoWindow(tasks, 5);
-		expect(visible.map(t => t.content)).toEqual(["task-4", "task-5", "task-6", "task-7"]);
-		expect(hiddenOpenCount).toBe(0);
-	});
-
-	it("slides all the way down to the final two pending tasks", () => {
-		const tasks = makeTasks(["completed", "completed", "completed", "completed", "completed", "pending", "pending"]);
-		const { visible, hiddenOpenCount } = selectStickyTodoWindow(tasks, 5);
-		expect(visible.map(t => t.content)).toEqual(["task-6", "task-7"]);
-		expect(hiddenOpenCount).toBe(0);
-	});
-
-	it("falls back to the trailing window when every task is closed", () => {
-		const tasks = makeTasks([
-			"completed",
-			"abandoned",
-			"completed",
-			"completed",
-			"abandoned",
-			"completed",
-			"completed",
-		]);
-		const { visible, hiddenOpenCount } = selectStickyTodoWindow(tasks, 5);
-		expect(visible.map(t => t.content)).toEqual(["task-3", "task-4", "task-5", "task-6", "task-7"]);
-		expect(hiddenOpenCount).toBe(0);
-	});
-
-	it("returns an empty window for an empty task list", () => {
-		const { visible, hiddenOpenCount } = selectStickyTodoWindow([], 5);
-		expect(visible).toEqual([]);
-		expect(hiddenOpenCount).toBe(0);
-	});
-
-	it("honours a custom maxVisible cap", () => {
-		const tasks = makeTasks(["pending", "pending", "pending", "pending", "pending", "pending", "pending"]);
-		const { visible, hiddenOpenCount } = selectStickyTodoWindow(tasks, 3);
-		expect(visible.map(t => t.content)).toEqual(["task-1", "task-2", "task-3"]);
-		expect(hiddenOpenCount).toBe(4);
 	});
 });
 

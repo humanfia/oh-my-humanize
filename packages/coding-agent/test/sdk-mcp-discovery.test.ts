@@ -12,7 +12,7 @@ import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TOOL_DISCOVERY_AUTO_THRESHOLD } from "@oh-my-pi/pi-coding-agent/tool-discovery/mode";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 
 function createMcpCustomTool(name: string, serverName: string, mcpToolName: string): CustomTool {
@@ -67,7 +67,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 	afterAll(() => {
 		authStorage.close();
 		if (registryDir && fs.existsSync(registryDir)) {
-			fs.rmSync(registryDir, { recursive: true, force: true });
+			removeSyncWithRetries(registryDir);
 		}
 	});
 
@@ -78,7 +78,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 
 	afterEach(() => {
 		if (tempDir && fs.existsSync(tempDir)) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+			removeSyncWithRetries(tempDir);
 		}
 	});
 
@@ -311,15 +311,15 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			enableLsp: false,
 		});
 
-		expect(await session.activateDiscoveredTools(["search"])).toEqual(["search"]);
-		expect(session.getSelectedDiscoveredToolNames()).toContain("search");
+		expect(await session.activateDiscoveredTools(["grep"])).toEqual(["grep"]);
+		expect(session.getSelectedDiscoveredToolNames()).toContain("grep");
 
 		await session.setActiveToolsByName(["read", "search_tool_bm25"]);
 
-		expect(session.getActiveToolNames()).not.toContain("search");
-		expect(session.getSelectedDiscoveredToolNames()).not.toContain("search");
-		expect(await session.activateDiscoveredTools(["search"])).toEqual(["search"]);
-		expect(session.getActiveToolNames()).toContain("search");
+		expect(session.getActiveToolNames()).not.toContain("grep");
+		expect(session.getSelectedDiscoveredToolNames()).not.toContain("grep");
+		expect(await session.activateDiscoveredTools(["grep"])).toEqual(["grep"]);
+		expect(session.getActiveToolNames()).toContain("grep");
 	});
 	it("restores explicit MCP, thinking, and service-tier entries when resuming without rewriting the session file", async () => {
 		const firstManager = SessionManager.create(tempDir, tempDir);

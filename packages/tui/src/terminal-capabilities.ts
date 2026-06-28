@@ -1,5 +1,6 @@
 import { encodeSixel } from "@oh-my-pi/pi-natives";
 import { $env, isBunTestRuntime, isTerminalHeadless } from "@oh-my-pi/pi-utils";
+import { sendDesktopNotification, shouldDeliverDesktopNotification } from "./desktop-notify";
 import {
 	detectKittyUnicodePlaceholdersSupport,
 	getKittyGraphics,
@@ -122,6 +123,15 @@ export class TerminalInfo {
 			return;
 		}
 		process.stdout.write(formatted);
+		// VTE-family terminals (Ptyxis, GNOME Terminal, Tilix, …) plus Alacritty
+		// and bare xterm-on-Wayland have no in-band escape that surfaces an
+		// arbitrary desktop toast (#3685). When the chosen `notifyProtocol` is
+		// BEL on a Linux session bus, also fan the notification out via
+		// libnotify so users see the toast and the BEL still fires for tmux
+		// `monitor-bell` / X11 urgency hints / audible bell.
+		if (this.notifyProtocol === NotifyProtocol.Bell && shouldDeliverDesktopNotification(this.id, true)) {
+			sendDesktopNotification(message);
+		}
 	}
 }
 
@@ -383,18 +393,24 @@ function getFallbackImageProtocol(terminalId: TerminalId): ImageProtocol | null 
 	}
 	return null;
 }
-function getWarpTerminalInfo(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = Bun.env): TerminalInfo {
-	// Warp for Windows still drives WSL shells from the Windows renderer, where
-	// the Kitty APC sequences print as visible garbage. Detect that case via the
-	// WSL host markers (Bun reports `process.platform === "linux"` inside WSL)
-	// and treat it the same as native win32.
+/**
+ * Warp implements the Kitty graphics protocol only on macOS/Linux; its Windows
+ * build (including Warp-hosted WSL shells) renders the same APC sequences as
+ * visible garbage. Keep platform/env injectable so the carve-out is testable
+ * without mutating `process.platform`.
+ */
+export function resolveWarpImageProtocol(
+	platform: NodeJS.Platform = process.platform,
+	env: NodeJS.ProcessEnv = Bun.env,
+): ImageProtocol | null {
 	const windowsHost =
 		platform === "win32" || (platform === "linux" && Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP));
-	return windowsHost
-		? new TerminalInfo("warp", null, true, false, NotifyProtocol.Bell)
-		: new TerminalInfo("warp", ImageProtocol.Kitty, true, false, NotifyProtocol.Bell);
+	return windowsHost ? null : ImageProtocol.Kitty;
 }
 
+function getWarpTerminalInfo(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = Bun.env): TerminalInfo {
+	return new TerminalInfo("warp", resolveWarpImageProtocol(platform, env), true, false, NotifyProtocol.Osc9);
+}
 const KNOWN_TERMINALS = Object.freeze({
 	// Fallback terminals
 	base: new TerminalInfo("base", null, false, false, NotifyProtocol.Bell),
@@ -406,7 +422,12 @@ const KNOWN_TERMINALS = Object.freeze({
 	iterm2: new TerminalInfo("iterm2", ImageProtocol.Iterm2, true, true, NotifyProtocol.Osc9),
 	vscode: new TerminalInfo("vscode", null, true, true, NotifyProtocol.Bell),
 	alacritty: new TerminalInfo("alacritty", null, true, true, NotifyProtocol.Bell),
-	warp: getWarpTerminalInfo(process.platform),
+	// Warp identifies via TERM_PROGRAM=WarpTerminal and ships the Kitty graphics
+	// protocol on macOS/Linux (direct placement only — no Unicode placeholders, so
+	// detectKittyUnicodePlaceholdersSupport correctly excludes it). It does not
+	// honor OSC 8 yet (the escape renders as visible text), so hyperlinks stay off,
+	// but it does support OSC 9 notifications.
+	warp: new TerminalInfo("warp", ImageProtocol.Kitty, true, false, NotifyProtocol.Osc9),
 });
 
 /** Resolve terminal identity from environment markers used by common emulators. */
@@ -441,7 +462,7 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 		if (caseEq(TERM_PROGRAM, "iterm.app")) return "iterm2";
 		if (caseEq(TERM_PROGRAM, "vscode")) return "vscode";
 		if (caseEq(TERM_PROGRAM, "alacritty")) return "alacritty";
-		if (caseEq(TERM_PROGRAM, "WarpTerminal")) return "warp";
+		if (caseEq(TERM_PROGRAM, "warpterminal")) return "warp";
 	}
 
 	if (TERM?.toLowerCase().includes("ghostty")) return "ghostty";
@@ -474,6 +495,9 @@ export const TERMINAL: RuntimeTerminal = (() => {
 	const forcedImageProtocol = getForcedImageProtocol();
 	if (forcedImageProtocol !== undefined) {
 		resolved.imageProtocol = forcedImageProtocol;
+	} else if (resolved.id === "warp") {
+		// Warp advertises Kitty graphics on macOS/Linux only; drop it on win32.
+		resolved.imageProtocol = resolveWarpImageProtocol();
 	} else if (!resolved.imageProtocol) {
 		const fallbackImageProtocol = getFallbackImageProtocol(resolved.id);
 		if (fallbackImageProtocol) resolved.imageProtocol = fallbackImageProtocol;

@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 import type { ProxyAssistantMessageEvent } from "@oh-my-pi/pi-agent-core/proxy";
 import { type ProxyMessageEventStream, streamProxy } from "@oh-my-pi/pi-agent-core/proxy";
 import type { AssistantMessageEvent, Context, FetchImpl, Model, ToolCall } from "@oh-my-pi/pi-ai";
+import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 const mockModel: Model = buildModel({
@@ -248,11 +249,10 @@ describe("streamProxy — server disconnect without terminal event", () => {
 
 		const result = await stream.result();
 		expect(result.stopReason).toBe("error");
-		// partialJson must not leak into the final message via the catch-block path
 		const toolCall = result.content.find((c): c is ToolCall => c.type === "toolCall");
 		expect(toolCall).toBeDefined();
 		if (toolCall) {
-			expect("partialJson" in toolCall).toBe(false);
+			expect(getStreamingPartialJson(toolCall)).toBeUndefined();
 		}
 	});
 });

@@ -1,24 +1,33 @@
 import { describe, expect, it, vi } from "bun:test";
 import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
+import type { TUI } from "@oh-my-pi/pi-tui";
 import { type } from "arktype";
+import type { ModelRegistry } from "../../config/model-registry";
+import type { Settings } from "../../config/settings";
+import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../modes/components/advisor-config";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
-import { getThemeByName } from "../../modes/theme/theme";
+import { getThemeByName, setThemeInstance } from "../../modes/theme/theme";
 import advisorSystemPrompt from "../../prompts/advisor/system.md" with { type: "text" };
 import { SecretObfuscator } from "../../secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../session/session-history-format";
 import { YieldQueue } from "../../session/yield-queue";
+import { BUILTIN_TOOL_NAMES } from "../../tools/builtin-names";
 import {
-	ADVISOR_READONLY_TOOL_NAMES,
+	ADVISOR_DEFAULT_TOOL_NAMES,
 	AdviseTool,
 	type AdvisorAgent,
 	type AdvisorNote,
 	AdvisorRuntime,
 	type AdvisorRuntimeHost,
+	advisorTranscriptFilename,
 	deriveAdvisorTelemetry,
 	formatAdvisorBatchContent,
+	formatAdvisorContextPrompt,
 	isAdvisorInterruptImmuneTurnActive,
+	isAdvisorTranscriptName,
 	isInterruptingSeverity,
 	resolveAdvisorDeliveryChannel,
+	type WatchdogConfigDoc,
 } from "..";
 
 describe("advisor", () => {
@@ -49,11 +58,31 @@ describe("advisor", () => {
 
 			const rendered = formatSessionHistoryMarkdown(messages);
 
-			expect(rendered).toContain("→ search(needle @ packages/coding-agent/src) ⇒ error");
+			expect(rendered).toContain("→ grep(needle @ packages/coding-agent/src) ⇒ error");
 			expect(rendered).not.toContain("paths[0]");
 			expect(advisorSystemPrompt).toContain("Arguments absent from the rendered transcript are UNKNOWN");
 			expect(advisorSystemPrompt).toContain("NEVER assert concrete values, array indexes");
 			expect(advisorSystemPrompt).toContain("NEVER claim `paths[0]`, array flattening, or malformed `paths`");
+		});
+	});
+
+	describe("formatAdvisorContextPrompt", () => {
+		it("renders project context files into a block with path and verbatim content", () => {
+			const rendered = formatAdvisorContextPrompt([
+				{
+					path: "/repo/AGENTS.md",
+					content: "Use `bun check`, never `tsc`.\nNo `any` unless absolutely necessary.",
+				},
+			]);
+			expect(rendered).toBeDefined();
+			expect(rendered).toContain('<file path="/repo/AGENTS.md">');
+			// Content is injected verbatim (noEscape) so backticks/markup survive for the model.
+			expect(rendered).toContain("Use `bun check`, never `tsc`.");
+			expect(rendered).toContain("No `any` unless absolutely necessary.");
+		});
+
+		it("returns undefined when there are no context files", () => {
+			expect(formatAdvisorContextPrompt([])).toBeUndefined();
 		});
 	});
 
@@ -134,6 +163,57 @@ describe("advisor", () => {
 			const md = formatSessionHistoryMarkdown([irc], { expandPrimaryContext: true });
 			expect(md).toContain("[irc]");
 			expect(md).not.toContain("<primary-context");
+		});
+	});
+
+	describe("formatSessionHistoryMarkdown expandEditDiffs", () => {
+		const diff = "--- a/foo.ts\n+++ b/foo.ts\n@@ -1,2 +1,2 @@\n-const x = 1;\n+const x = 2;";
+		const editCall = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "c1", name: "edit", arguments: { path: "foo.ts" } }],
+			timestamp: 1,
+		} as unknown as AgentMessage;
+		const editResult = {
+			role: "toolResult",
+			toolCallId: "c1",
+			toolName: "edit",
+			content: "ok",
+			details: { diff },
+			timestamp: 2,
+		} as unknown as AgentMessage;
+
+		it("appends the full diff in a fenced block when expandEditDiffs is set", () => {
+			const md = formatSessionHistoryMarkdown([editCall, editResult], {
+				expandEditDiffs: true,
+				watchedRoles: true,
+			});
+			expect(md).toContain("```diff");
+			expect(md).toContain("-const x = 1;");
+			expect(md).toContain("+const x = 2;");
+		});
+
+		it("omits the diff body without the flag", () => {
+			const md = formatSessionHistoryMarkdown([editCall, editResult], { watchedRoles: true });
+			expect(md).not.toContain("```diff");
+			expect(md).not.toContain("+const x = 2;");
+		});
+
+		it("widens the fence past backtick runs in the diff body", () => {
+			const fenced = "--- a/readme.md\n+++ b/readme.md\n@@ -1 +1 @@\n-```\n+```ts\n+code\n+```";
+			const result = {
+				role: "toolResult",
+				toolCallId: "c1",
+				toolName: "edit",
+				content: "ok",
+				details: { diff: fenced },
+				timestamp: 2,
+			} as unknown as AgentMessage;
+			const md = formatSessionHistoryMarkdown([editCall, result], {
+				expandEditDiffs: true,
+				watchedRoles: true,
+			});
+			// The body contains a ``` run, so the wrapping fence widens to 4 backticks.
+			expect(md).toContain("````diff");
 		});
 	});
 
@@ -351,6 +431,18 @@ describe("advisor", () => {
 			expect(content).toContain("second &lt;note&gt; &amp; more");
 			// Exactly one severity attribute (only the blocker note carries one).
 			expect(content.split('severity="').length - 1).toBe(1);
+		});
+
+		it("emits an advisor attribute only for named advisors, escaping the name", () => {
+			const content = formatAdvisorBatchContent([
+				{ note: "named note", advisor: 'Arch "X"' },
+				{ note: "default note" },
+			]);
+			// Named advisor: attribute present, double quote escaped for attribute context.
+			expect(content).toContain('advisor="Arch &quot;X&quot;"');
+			// A note with no source (the legacy/default advisor) carries no advisor attribute.
+			expect(content.split('advisor="').length - 1).toBe(1);
+			expect(content).toContain("default note");
 		});
 	});
 
@@ -637,6 +729,46 @@ describe("advisor", () => {
 			await Promise.resolve();
 
 			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain(placeholder);
+			expect(promptInputs[0]).not.toContain(secret);
+		});
+
+		it("surfaces edit diff details but redacts secrets inside the diff", async () => {
+			const secret = "DIFF_SECRET_TOKEN_123";
+			const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);
+			const placeholder = obfuscator.obfuscate(secret);
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const diff = `--- a/config.ts\n+++ b/config.ts\n@@ -1 +1 @@\n-const token = "old";\n+const token = "${secret}";`;
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "c1", name: "edit", arguments: { path: "config.ts" } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+				{
+					role: "toolResult",
+					toolCallId: "c1",
+					toolName: "edit",
+					content: "ok",
+					details: { diff },
+					timestamp: 2,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				obfuscator,
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd();
+			await Promise.resolve();
+
+			expect(promptInputs).toHaveLength(1);
+			// The diff is surfaced to the advisor (expandEditDiffs) ...
+			expect(promptInputs[0]).toContain("+const token =");
+			// ... but a secret living inside details.diff is obfuscated (details now walked).
 			expect(promptInputs[0]).toContain(placeholder);
 			expect(promptInputs[0]).not.toContain(secret);
 		});
@@ -984,6 +1116,202 @@ describe("advisor", () => {
 			expect(runtime.backlog).toBe(0);
 		});
 
+		it("notifies the host once when consecutive prompt failures make the advisor unavailable", async () => {
+			const promptInputs: string[] = [];
+			const failures: unknown[] = [];
+			let shouldFail = true;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					if (shouldFail) {
+						throw new Error("404 No endpoints available matching your guardrail restrictions and data policy.");
+					}
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				notifyFailure: error => failures.push(error),
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+
+			expect(promptInputs).toHaveLength(3);
+			expect(failures).toHaveLength(1);
+			const failure = failures[0];
+			expect(failure).toBeInstanceOf(Error);
+			if (!(failure instanceof Error)) throw new Error("expected advisor failure error");
+			expect(failure.message).toContain("No endpoints available");
+
+			messages.push({ role: "user", content: "bbb", timestamp: 2 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+
+			expect(promptInputs).toHaveLength(6);
+			expect(failures).toHaveLength(1);
+
+			shouldFail = false;
+			messages.push({ role: "user", content: "ccc", timestamp: 3 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+			expect(failures).toHaveLength(1);
+
+			shouldFail = true;
+			messages.push({ role: "user", content: "ddd", timestamp: 4 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+
+			expect(failures).toHaveLength(2);
+		});
+
+		it("treats a clean prompt resolution with state.error as a failed turn (real Agent contract)", async () => {
+			// `Agent.#runLoop` catches provider/stream failures internally — it resolves
+			// `prompt()` cleanly and stores the message on `state.error` (e.g. the
+			// OpenRouter ZDR `404 No endpoints available` case from #3635). The runtime
+			// must surface that as a failed turn even though the awaited promise did
+			// not reject.
+			const promptInputs: string[] = [];
+			const failures: unknown[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			let shouldFail = true;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					state.error = shouldFail
+						? "404 No endpoints available matching your guardrail restrictions and data policy."
+						: undefined;
+				},
+				abort: () => {},
+				reset: () => {
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				notifyFailure: error => failures.push(error),
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+
+			expect(promptInputs).toHaveLength(3);
+			expect(failures).toHaveLength(1);
+			const failure = failures[0];
+			if (!(failure instanceof Error)) throw new Error("expected advisor failure error");
+			expect(failure.message).toContain("No endpoints available");
+			expect(runtime.backlog).toBe(0);
+
+			shouldFail = false;
+			messages.push({ role: "user", content: "bbb", timestamp: 2 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+			expect(failures).toHaveLength(1);
+
+			shouldFail = true;
+			messages.push({ role: "user", content: "ccc", timestamp: 3 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+
+			expect(failures).toHaveLength(2);
+		});
+
+		it("rolls advisor state back after each failed prompt so retries don't replay duplicate turns", async () => {
+			// The real `Agent` appends the user batch + a synthetic `stopReason: "error"`
+			// assistant turn before `state.error` is read. Without rollback, the runtime's
+			// retry/drop path would replay the failed batch on top of those orphans,
+			// duplicating session-update user turns and leaking dropped failures into the
+			// next successful run's context.
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const rollbackCalls: number[] = [];
+			const lengthsBeforePrompt: number[] = [];
+			let shouldFail = true;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					lengthsBeforePrompt.push(state.messages.length);
+					state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
+					if (shouldFail) {
+						state.messages.push({
+							role: "assistant",
+							content: [{ type: "text", text: "" }],
+							stopReason: "error",
+							errorMessage: "404 No endpoints available",
+							timestamp: Date.now(),
+						} as unknown as AgentMessage);
+						state.error = "404 No endpoints available";
+					} else {
+						state.messages.push({
+							role: "assistant",
+							content: [{ type: "text", text: "ok" }],
+							timestamp: Date.now(),
+						} as unknown as AgentMessage);
+						state.error = undefined;
+					}
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				rollbackTo: count => {
+					rollbackCalls.push(count);
+					if (count < state.messages.length) state.messages.length = count;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+			await Bun.sleep(0);
+
+			// Three failed prompts each rolled back to the empty baseline, so every retry
+			// saw a clean state.messages instead of stacked failed turns.
+			expect(lengthsBeforePrompt).toEqual([0, 0, 0]);
+			expect(rollbackCalls).toEqual([0, 0, 0]);
+			// The drop-after-3 path also left state.messages empty — no orphan failed
+			// turns leak into the next successful run's context.
+			expect(state.messages).toHaveLength(0);
+			expect(state.error).toBeUndefined();
+
+			// A subsequent successful run starts from the clean baseline and is NOT
+			// rolled back.
+			shouldFail = false;
+			messages.push({ role: "user", content: "bbb", timestamp: 2 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await Bun.sleep(0);
+
+			expect(lengthsBeforePrompt[lengthsBeforePrompt.length - 1]).toBe(0);
+			expect(rollbackCalls).toHaveLength(3);
+			expect(state.messages).toHaveLength(2);
+		});
+
 		it("drops the in-flight batch when a reset aborts the advisor prompt", async () => {
 			const promptInputs: string[] = [];
 			const { promise: firstPromptStarted, resolve: startFirstPrompt } = Promise.withResolvers<void>();
@@ -1042,14 +1370,18 @@ describe("advisor", () => {
 		});
 	});
 
-	describe("read-only tool allowlist", () => {
-		it("selects only the investigation tools from a mixed toolset", () => {
-			const toolset = ["read", "edit", "grep", "bash", "glob", "write", "advise"];
-			const selected = toolset.filter(name => ADVISOR_READONLY_TOOL_NAMES.has(name));
-			expect(selected).toEqual(["read", "grep", "glob"]);
-			expect(ADVISOR_READONLY_TOOL_NAMES.has("edit")).toBe(false);
-			expect(ADVISOR_READONLY_TOOL_NAMES.has("bash")).toBe(false);
-			expect(ADVISOR_READONLY_TOOL_NAMES.has("write")).toBe(false);
+	describe("advisor default tools", () => {
+		it("defaults to read/grep/glob, a subset of the full grantable tool pool", () => {
+			expect([...ADVISOR_DEFAULT_TOOL_NAMES]).toEqual(["read", "grep", "glob"]);
+			// The advisor is a full agent now: every built tool is grantable (no hard
+			// read-only restriction), including mutating ones like edit/bash/write.
+			const builtin = new Set<string>(BUILTIN_TOOL_NAMES);
+			for (const name of ["read", "grep", "glob", "edit", "bash", "write"]) {
+				expect(builtin.has(name)).toBe(true);
+			}
+			for (const name of ADVISOR_DEFAULT_TOOL_NAMES) {
+				expect(builtin.has(name)).toBe(true);
+			}
 		});
 	});
 
@@ -1070,6 +1402,26 @@ describe("advisor", () => {
 			expect(text).toContain("blocker");
 			expect(text).toContain("deleting the wrong file");
 			expect(text).toContain("watch the empty case");
+		});
+
+		it("prefixes the note with a named-advisor label, but not for the default advisor", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const card = createAdvisorMessageCard(
+				{
+					notes: [
+						{ note: "module boundary leak", severity: "concern", advisor: "Architecture" },
+						{ note: "default-advisor note", advisor: "default" },
+					],
+				},
+				() => true,
+				uiTheme,
+			);
+			const text = strip(card.render(80));
+			expect(text).toContain("[Architecture]");
+			expect(text).toContain("module boundary leak");
+			// The implicit "default" advisor stays unlabeled.
+			expect(text).not.toContain("[default]");
 		});
 
 		it("collapses to the first notes with an overflow hint", async () => {
@@ -1208,6 +1560,103 @@ describe("advisor", () => {
 					}),
 				).toBe("steer");
 			}
+		});
+	});
+	describe("advisor transcript filenames", () => {
+		it("derives default and named transcript filenames", () => {
+			expect(advisorTranscriptFilename("")).toBe("__advisor.jsonl");
+			expect(advisorTranscriptFilename("arch")).toBe("__advisor.arch.jsonl");
+		});
+
+		it("recognizes default and named advisor transcripts, and nothing else", () => {
+			expect(isAdvisorTranscriptName("__advisor.jsonl")).toBe(true);
+			expect(isAdvisorTranscriptName("__advisor.arch.jsonl")).toBe(true);
+			expect(isAdvisorTranscriptName("__advisor-2.jsonl")).toBe(false);
+			expect(isAdvisorTranscriptName("Foo.jsonl")).toBe(false);
+			expect(isAdvisorTranscriptName("__advisor.arch.bak")).toBe(false);
+		});
+	});
+
+	describe("AdvisorConfigOverlayComponent", () => {
+		const deps = {
+			modelRegistry: { getCanonicalModelSelections: () => [] } as unknown as ModelRegistry,
+			settings: {} as unknown as Settings,
+			scopedModels: [],
+			availableToolNames: ["read", "grep", "glob", "lsp", "web_search"],
+		};
+		const callbacks = {
+			loadDoc: async () => ({ advisors: [] }),
+			save: async () => {},
+			close: () => {},
+			requestRender: () => {},
+			notify: () => {},
+		};
+		const strip = (lines: readonly string[]): string => lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+		const make = (doc: WatchdogConfigDoc, extra?: Partial<AdvisorConfigDeps>): AdvisorConfigOverlayComponent =>
+			new AdvisorConfigOverlayComponent({} as unknown as TUI, { ...deps, ...extra }, "project", doc, callbacks);
+		const fullHeight = Math.max(14, process.stdout.rows || 40);
+
+		it("paints a full-screen split frame: roster sidebar + selected-advisor preview", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make({
+				instructions: "shared baseline",
+				advisors: [
+					{ name: "Architecture", model: "x-ai/grok-code-fast:high" },
+					{ name: "Security", tools: ["read", "web_search"] },
+				],
+			});
+			const frame = overlay.render(200);
+			// Fills the screen top-to-bottom (the fix for the bottom-anchored frame
+			// whose offset broke mouse hit-testing and wasted the upper space).
+			expect(frame.length).toBe(fullHeight);
+			const text = strip(frame);
+			expect(text).toContain("Advisor configuration");
+			expect(text).toContain("project");
+			expect(text).toContain("Architecture");
+			expect(text).toContain("Security");
+			expect(text).toContain("+ Add advisor");
+			expect(text).toContain("Save & apply");
+			// Right preview reflects the highlighted (first) advisor.
+			expect(text).toContain("x-ai/grok-code-fast:high");
+			expect(text).toContain("read, grep, glob (default)");
+		});
+
+		it("moves the preview with keyboard selection and preserves an explicit tool set", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make({
+				advisors: [{ name: "Architecture" }, { name: "Security", tools: ["read", "web_search"] }],
+			});
+			overlay.render(200);
+			overlay.handleInput("\x1b[B"); // arrow down → highlight Security
+			expect(strip(overlay.render(200))).toContain("read, web_search");
+		});
+
+		it("opens an advisor's detail editor on a left click in the sidebar", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make({ advisors: [{ name: "Architecture" }, { name: "Security" }] });
+			// Render once so the frame geometry is recorded; the first advisor sits on
+			// the first body row (0-based screen row 1 → SGR 1-based row 2).
+			overlay.render(120);
+			overlay.handleInput("\x1b[<0;4;2M"); // left-button press, col 4, row 2
+			const text = strip(overlay.render(120));
+			expect(text).toContain("Editing");
+			expect(text).toContain("Architecture");
+		});
+
+		it("seeds a visible default advisor (labeled with the role model) when the config is empty", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make({ advisors: [] }, { defaultModelLabel: "anthropic/claude-opus" });
+			const text = strip(overlay.render(200));
+			expect(text).toContain("default");
+			expect(text).toContain("anthropic/claude-opus");
 		});
 	});
 });

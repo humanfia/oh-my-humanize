@@ -13,7 +13,7 @@ import { getOAuthProviders, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oau
 import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
 import { ModelRegistry, type ProviderConfigInput } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 describe("ModelRegistry runtime provider registration", () => {
 	let tempDir: string;
@@ -44,7 +44,7 @@ describe("ModelRegistry runtime provider registration", () => {
 		}
 		authStorage.close();
 		if (tempDir && fs.existsSync(tempDir)) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+			removeSyncWithRetries(tempDir);
 		}
 	});
 
@@ -141,6 +141,36 @@ describe("ModelRegistry runtime provider registration", () => {
 		expectProviderHeader(registry, providerName, runtimeHeader, undefined);
 	});
 
+	test("registerProvider keeps runtime header objects live for request-time reads", () => {
+		const providerHeaders: Record<string, string> = { "X-Request-ID": "request-1" };
+		const modelHeaders: Record<string, string> = { "X-Message-ID": "message-1" };
+
+		registry.registerProvider(
+			"runtime-provider",
+			{
+				baseUrl: "https://runtime.example.com/v1",
+				apiKey: "RUNTIME_KEY",
+				api: "openai-completions",
+				headers: providerHeaders,
+				models: [{ ...baseModel, headers: modelHeaders }],
+			},
+			"ext://runtime",
+		);
+
+		providerHeaders["X-Request-ID"] = "request-2";
+		providerHeaders["X-Turn-ID"] = "turn-2";
+		modelHeaders["X-Message-ID"] = "message-2";
+		modelHeaders["X-Model-Turn-ID"] = "model-turn-2";
+
+		const model = registry.find("runtime-provider", "runtime-model");
+		expect({ ...(model?.headers ?? {}) }).toEqual({
+			"X-Request-ID": "request-2",
+			"X-Turn-ID": "turn-2",
+			"X-Message-ID": "message-2",
+			"X-Model-Turn-ID": "model-turn-2",
+		});
+	});
+
 	test("registerProvider applies authHeader overrides to existing provider models across refresh", async () => {
 		const providerName = "anthropic";
 
@@ -150,6 +180,76 @@ describe("ModelRegistry runtime provider registration", () => {
 
 		registry.clearSourceRegistrations("ext://runtime");
 		expectProviderHeader(registry, providerName, "Authorization", undefined);
+	});
+
+	test("registerProvider applies remoteCompaction-only overrides to existing provider models across refresh", async () => {
+		const providerName = "anthropic";
+		const overrideEndpoint = "https://runtime.example.com/v1/compact";
+
+		expect(getProviderModels(registry, providerName).length).toBeGreaterThan(1);
+		registry.registerProvider(
+			providerName,
+			{ remoteCompaction: { enabled: false, endpoint: overrideEndpoint } },
+			"ext://runtime",
+		);
+
+		const expectCompaction = () => {
+			for (const model of getProviderModels(registry, providerName)) {
+				expect(model.remoteCompaction?.enabled).toBe(false);
+				expect(model.remoteCompaction?.endpoint).toBe(overrideEndpoint);
+			}
+		};
+		expectCompaction();
+		await registry.refresh("offline");
+		expectCompaction();
+		await registry.refreshProvider(providerName, "offline");
+		expectCompaction();
+
+		registry.clearSourceRegistrations("ext://runtime");
+		for (const model of getProviderModels(registry, providerName)) {
+			expect(model.remoteCompaction?.endpoint).not.toBe(overrideEndpoint);
+		}
+	});
+
+	test("refreshRuntimeProviders preserves model-level remoteCompaction over provider defaults", async () => {
+		const providerName = "dynamic-compact-provider";
+		const providerEndpoint = "https://runtime.example.com/v1/responses/provider-compact";
+		const modelEndpoint = "https://runtime.example.com/v1/responses/model-compact";
+
+		registry.registerProvider(
+			providerName,
+			{
+				baseUrl: "https://runtime.example.com/v1",
+				apiKey: "RUNTIME_KEY",
+				api: "openai-responses",
+				remoteCompaction: {
+					enabled: true,
+					api: "openai-responses",
+					endpoint: providerEndpoint,
+					model: "provider-compact",
+				},
+				fetchDynamicModels: async () => [
+					{
+						...baseModel,
+						id: "dynamic-compact-model",
+						remoteCompaction: {
+							endpoint: modelEndpoint,
+							model: "model-compact",
+						},
+					},
+				],
+			},
+			"ext://runtime",
+		);
+
+		await registry.refreshRuntimeProviders("online");
+		const model = registry.find(providerName, "dynamic-compact-model");
+		expect(model?.remoteCompaction).toEqual({
+			enabled: true,
+			api: "openai-responses",
+			endpoint: modelEndpoint,
+			model: "model-compact",
+		});
 	});
 
 	test("registerProvider preserves explicit thinking and backfills wire facts", () => {

@@ -83,6 +83,7 @@ function createContext(): {
 		updatePendingMessagesDisplay: Spy;
 	};
 	inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined>;
+	sessionListeners: Array<(event: { type: string }) => void>;
 } {
 	let editorText = "";
 	const abort = vi.fn();
@@ -97,6 +98,7 @@ function createContext(): {
 	const requestRender = vi.fn();
 	const resetDisplay = vi.fn();
 	const inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
+	const sessionListeners: Array<(event: { type: string }) => void> = [];
 	const handleBtwCommand = vi.fn(async () => {});
 	const handleBtwEscape = vi.fn(() => true);
 	const hasActiveBtw = vi.fn(() => false);
@@ -163,6 +165,13 @@ function createContext(): {
 			clearQueue,
 			getQueuedMessages,
 			prompt,
+			subscribe: vi.fn((listener: (event: { type: string }) => void) => {
+				sessionListeners.push(listener);
+				return () => {
+					const index = sessionListeners.indexOf(listener);
+					if (index >= 0) sessionListeners.splice(index, 1);
+				};
+			}),
 		} as unknown as InteractiveModeContext["session"],
 		viewSession: {
 			isCompacting: false,
@@ -197,7 +206,6 @@ function createContext(): {
 		showDebugSelector: vi.fn(),
 		toggleTodoExpansion: vi.fn(),
 		showAgentHub: vi.fn(),
-		showStatus,
 		handleHotkeysCommand,
 		unfocusSession: vi.fn(async () => {}),
 		focusParentSession: vi.fn(async () => {}),
@@ -212,6 +220,7 @@ function createContext(): {
 		showSessionSelector: vi.fn(),
 		shutdown: vi.fn(async () => {}),
 		clearEditor: vi.fn(),
+		showStatus,
 	} as unknown as InteractiveModeContext;
 
 	return {
@@ -245,6 +254,7 @@ function createContext(): {
 			updatePendingMessagesDisplay,
 		},
 		inputListeners,
+		sessionListeners,
 	};
 }
 beforeEach(async () => {
@@ -416,7 +426,9 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("aborts streaming even when the working loader is no longer present", () => {
+	it("requires a second Esc within two seconds to abort streaming", () => {
+		const now = vi.spyOn(Date, "now");
+		now.mockReturnValue(1_000);
 		const { ctx, editor, spies } = createContext();
 		(ctx.session as { isStreaming: boolean }).isStreaming = true;
 		const controller = new InputController(ctx);
@@ -426,10 +438,102 @@ describe("InputController escape behavior", () => {
 
 		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
 		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.showStatus).toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
+
+		now.mockReturnValue(2_500);
+		editor.onEscape?.();
+
 		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
-	it("requests active workflow stops before aborting the active stream on Esc", () => {
+	it("expires the streaming Esc arm instead of aborting on a late second press", () => {
+		const now = vi.spyOn(Date, "now");
+		now.mockReturnValue(1_000);
+		const { ctx, editor, spies } = createContext();
+		(ctx.session as { isStreaming: boolean }).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+		now.mockReturnValue(3_001);
+		editor.onEscape?.();
+
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.showStatus).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves the streaming Esc arm when streamingComponent appears between presses", () => {
+		// Pre-`message_start`: first Esc arms on the per-turn sentinel. `message_start`
+		// then publishes `ctx.streamingComponent`; the second Esc must still abort the
+		// same live turn instead of re-arming on the new component reference.
+		const now = vi.spyOn(Date, "now");
+		now.mockReturnValue(1_000);
+		const { ctx, editor, spies } = createContext();
+		(ctx.session as { isStreaming: boolean }).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+		(ctx as unknown as { streamingComponent: object }).streamingComponent = {};
+		now.mockReturnValue(1_500);
+		editor.onEscape?.();
+
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+	});
+
+	it("aborts on the second Esc even when ctx.streamingMessage was replaced by a delta in between", () => {
+		// `EventController` replaces `ctx.streamingMessage` with a fresh immutable
+		// snapshot on every `message_update`; the per-turn sentinel is unaffected so
+		// swapping the message must not invalidate the armed token.
+		const now = vi.spyOn(Date, "now");
+		now.mockReturnValue(1_000);
+		const { ctx, editor, spies } = createContext();
+		(ctx.session as { isStreaming: boolean }).isStreaming = true;
+		(ctx as unknown as { streamingComponent: object }).streamingComponent = {};
+		(ctx as unknown as { streamingMessage: object }).streamingMessage = { content: [] };
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+		(ctx as unknown as { streamingMessage: object }).streamingMessage = { content: ["delta"] };
+		now.mockReturnValue(1_500);
+		editor.onEscape?.();
+
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+	});
+
+	it("clears the streaming Esc arm when the current turn ends", () => {
+		const now = vi.spyOn(Date, "now");
+		now.mockReturnValue(1_000);
+		const { ctx, editor, spies, sessionListeners } = createContext();
+		(ctx.session as { isStreaming: boolean }).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		// Fallback arm (no streamingMessage/streamingComponent yet — pre-message_start).
+		editor.onEscape?.();
+		expect(sessionListeners).toHaveLength(1);
+
+		// Turn 1 ends; a new turn starts. session.subscribe receives both transitions,
+		// either of which must invalidate the still-armed fallback token so it cannot
+		// fast-abort the new turn's first Esc.
+		for (const listener of sessionListeners) {
+			listener({ type: "agent_end" });
+			listener({ type: "agent_start" });
+		}
+
+		now.mockReturnValue(1_500);
+		editor.onEscape?.();
+
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.showStatus).toHaveBeenCalledTimes(2);
+	});
+
+	it("requests active workflow stops before aborting the active stream on confirmed Esc", () => {
 		const stopSpy = vi
 			.spyOn(WorkflowCommandHelpers, "requestActiveWorkflowStopsForRuntime")
 			.mockResolvedValue({ attemptIds: ["attempt-1"], abortedAttemptIds: ["attempt-1"] });
@@ -438,6 +542,7 @@ describe("InputController escape behavior", () => {
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
+		editor.onEscape?.();
 		editor.onEscape?.();
 
 		expect(stopSpy).toHaveBeenCalledWith(ctx, {

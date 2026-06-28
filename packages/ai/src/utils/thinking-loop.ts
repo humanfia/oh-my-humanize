@@ -10,11 +10,9 @@
  *
  * This guard watches the streamed `thinking` deltas and, on a match, terminates
  * the stream with a synthetic `error` {@link AssistantMessage} that carries
- * **no observable content**. An empty-content `stopReason: "error"` whose
- * message hits the transient-transport pattern is what `AgentSession`
- * classifies as a *retryable* stop (a contentful error stop is treated as
- * replay-unsafe and is never retried), so the turn is discarded and re-sampled
- * instead of committing the garbage transcript.
+ * **no observable content**. An empty-content `stopReason: "error"` message tagged
+ * with `AIError.Flag.ThinkingLoop` lets result consumers and `AgentSession` discard
+ * the runaway and re-sample instead of committing garbage transcript.
  *
  * Three failure shapes are detected:
  * 1. **Verbatim tail repetition** — a short unit repeated back-to-back (e.g.
@@ -33,12 +31,13 @@
  *
  * Scope is narrow: guarded Gemini/DeepSeek streams before any tool call. Native
  * thinking is checked first; assistant text can also be checked for providers
- * that surface reasoning as visible prose. On a hit, the failed turn is emitted
- * as an empty retryable stream-stall error so the session drops and re-samples
- * it instead of committing the runaway transcript. Disable with
- * `PI_NO_THINKING_LOOP_GUARD=1`.
+ * that surface reasoning as visible prose. On a hit the failed turn is emitted as
+ * an empty retryable stream-stall error; result-awaiting callers (`complete`,
+ * `completeSimple`) re-sample it a few times and then let a stubborn loop cook
+ * through one unguarded pass. Disable detection with `PI_NO_THINKING_LOOP_GUARD=1`.
  */
 import { logger } from "@oh-my-pi/pi-utils";
+import * as AIError from "../error";
 import type { Api, AssistantMessage, Model, StreamOptions } from "../types";
 import { AssistantMessageEventStream } from "./event-stream";
 
@@ -403,7 +402,9 @@ export function guardThinkingLoopStream(
 						provider: model.provider,
 						detail,
 					});
-					controller.abort(new Error(THINKING_LOOP_ERROR_MARKER));
+					controller.abort(
+						AIError.attach(new Error(THINKING_LOOP_ERROR_MARKER), AIError.create(AIError.Flag.ThinkingLoop)),
+					);
 					outer.push({
 						type: "error",
 						reason: "error",
@@ -433,7 +434,9 @@ export function guardThinkingLoopStream(
  * Apply the loop guard around a provider dispatch. For non-guarded models
  * (or when disabled) this is a transparent pass-through. For guarded models it injects a
  * guard abort signal into the provider call so a detected loop tears down the
- * upstream, then wraps the returned stream.
+ * upstream, then wraps the returned stream. The guard only raises the retryable
+ * stall; bounding the re-samples and the final cook pass lives in the
+ * result-awaiting caller.
  */
 export function withGeminiThinkingLoopGuard<
 	O extends { signal?: AbortSignal; loopGuard?: { enabled?: boolean; checkAssistantContent?: boolean } },
@@ -474,6 +477,7 @@ function buildThinkingLoopError(model: Model<Api>, detail: string): AssistantMes
 		// "stream stall" makes the transport/session retry classifiers treat this
 		// as a transient (retryable) failure with no bespoke rule.
 		errorMessage: `${THINKING_LOOP_ERROR_MARKER}: the model repeated near-identical content (${detail}). Treating as a stream stall and retrying.`,
+		errorId: AIError.create(AIError.Flag.ThinkingLoop),
 		timestamp: Date.now(),
 	};
 }
