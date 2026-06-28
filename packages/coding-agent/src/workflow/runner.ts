@@ -118,6 +118,8 @@ export class WorkflowRunnerError extends Error {
 	}
 }
 
+const WORKFLOW_STOP_REQUEST_POLL_MS = 50;
+
 export async function runWorkflow(options: WorkflowRunnerOptions): Promise<WorkflowRunnerResult> {
 	startLifecycleAttempt(options);
 	const run = startWorkflowRun(options.host, options.definition, {
@@ -161,43 +163,106 @@ interface WorkflowRuntimeSignal {
 }
 
 function workflowRuntimeSignal(options: WorkflowRunnerOptions): WorkflowRuntimeSignal {
-	const maxRuntimeMs = options.maxRuntimeMs;
-	if (maxRuntimeMs === undefined) {
-		return {
-			signal: options.signal,
-			nodeAbortSignal: options.nodeAbortSignal,
-			nodeAbortSignalForActivation: options.nodeAbortSignalForActivation,
-			dispose: () => {},
-		};
-	}
-	const timeoutController = new AbortController();
-	const timeout = setTimeout(() => timeoutController.abort(workflowMaxRuntimeStopReason(maxRuntimeMs)), maxRuntimeMs);
-	const timeoutSignal = timeoutController.signal;
-	const signal = combineAbortSignals(options.signal, timeoutSignal);
-	const nodeAbortSignal = combineAbortSignals(options.nodeAbortSignal, timeoutSignal);
+	const disposers: Array<() => void> = [];
+	const timeoutSignal = workflowRuntimeTimeoutSignal(options.maxRuntimeMs, disposers);
+	const lifecycleStop = workflowLifecycleStopSignal(options, disposers);
+	const signal = combineAbortSignals([options.signal, timeoutSignal, lifecycleStop.signal]);
+	const nodeAbortSignal = combineAbortSignals([
+		options.nodeAbortSignal,
+		options.signal,
+		timeoutSignal,
+		lifecycleStop.nodeAbortSignal,
+	]);
 	return {
 		signal,
 		nodeAbortSignal,
 		nodeAbortSignalForActivation:
-			options.nodeAbortSignalForActivation === undefined
+			options.nodeAbortSignalForActivation === undefined &&
+			timeoutSignal === undefined &&
+			lifecycleStop.nodeAbortSignal === undefined
 				? undefined
-				: activation => combineAbortSignals(options.nodeAbortSignalForActivation?.(activation), timeoutSignal),
-		dispose: () => clearTimeout(timeout),
+				: activation =>
+						combineAbortSignals([
+							options.nodeAbortSignalForActivation?.(activation),
+							options.signal,
+							timeoutSignal,
+							lifecycleStop.nodeAbortSignal,
+						]),
+		dispose: () => {
+			for (const dispose of disposers.splice(0)) dispose();
+		},
 	};
 }
 
-function combineAbortSignals(first: AbortSignal | undefined, second: AbortSignal): AbortSignal {
-	if (first === undefined) return second;
+function workflowRuntimeTimeoutSignal(
+	maxRuntimeMs: number | undefined,
+	disposers: Array<() => void>,
+): AbortSignal | undefined {
+	if (maxRuntimeMs === undefined) return undefined;
+	const timeoutController = new AbortController();
+	const timeout = setTimeout(() => timeoutController.abort(workflowMaxRuntimeStopReason(maxRuntimeMs)), maxRuntimeMs);
+	disposers.push(() => clearTimeout(timeout));
+	return timeoutController.signal;
+}
+
+interface WorkflowLifecycleStopSignal {
+	signal?: AbortSignal;
+	nodeAbortSignal?: AbortSignal;
+}
+
+function workflowLifecycleStopSignal(
+	options: WorkflowRunnerOptions,
+	disposers: Array<() => void>,
+): WorkflowLifecycleStopSignal {
+	const lifecycle = options.lifecycle;
+	if (lifecycle === undefined) return {};
+	const stopController = new AbortController();
+	const nodeAbortController = new AbortController();
+	let nodeAbortTimeout: NodeJS.Timeout | undefined;
+	const abortNodes = (reason: string): void => {
+		if (!nodeAbortController.signal.aborted) nodeAbortController.abort(reason);
+	};
+	const inspectStopRequest = (): void => {
+		if (stopController.signal.aborted) return;
+		const attempt = reconstructWorkflowFamilies(options.host.getBranch())
+			.find(candidate => candidate.id === lifecycle.familyId)
+			?.attempts.find(candidate => candidate.id === lifecycle.attemptId);
+		if (attempt?.status !== "stop_requested") return;
+		const reason = attempt.stop?.reason ?? "workflow stop requested";
+		stopController.abort(reason);
+		const deadlineMs = attempt.stop?.deadlineMs ?? lifecycle.stopDeadlineMs ?? 0;
+		if (deadlineMs <= 0) {
+			abortNodes("stop deadline elapsed");
+			return;
+		}
+		nodeAbortTimeout = setTimeout(() => abortNodes("stop deadline elapsed"), deadlineMs);
+	};
+	const poll = setInterval(inspectStopRequest, WORKFLOW_STOP_REQUEST_POLL_MS);
+	queueMicrotask(inspectStopRequest);
+	disposers.push(() => {
+		clearInterval(poll);
+		if (nodeAbortTimeout !== undefined) clearTimeout(nodeAbortTimeout);
+	});
+	return {
+		signal: stopController.signal,
+		nodeAbortSignal: nodeAbortController.signal,
+	};
+}
+
+function combineAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+	const activeSignals = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (activeSignals.length === 0) return undefined;
+	if (activeSignals.length === 1) return activeSignals[0];
 	const controller = new AbortController();
 	const abortFrom = (signal: AbortSignal): void => {
 		if (!controller.signal.aborted) {
 			controller.abort(signal.reason);
 		}
 	};
-	if (first.aborted) abortFrom(first);
-	if (second.aborted) abortFrom(second);
-	first.addEventListener("abort", () => abortFrom(first), { once: true });
-	second.addEventListener("abort", () => abortFrom(second), { once: true });
+	for (const signal of activeSignals) {
+		if (signal.aborted) abortFrom(signal);
+		signal.addEventListener("abort", () => abortFrom(signal), { once: true });
+	}
 	return controller.signal;
 }
 

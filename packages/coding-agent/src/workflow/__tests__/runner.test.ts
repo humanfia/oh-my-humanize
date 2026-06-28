@@ -6,7 +6,7 @@ import { $ } from "bun";
 import type { WorkflowDefinition } from "../definition";
 import type { FlowFreeze } from "../freeze";
 import type { RuntimeBindingSnapshot, WorkflowLifecycleBranchEntry } from "../lifecycle";
-import { reconstructWorkflowFamilies } from "../lifecycle";
+import { reconstructWorkflowFamilies, requestWorkflowAttemptStop } from "../lifecycle";
 import { WorkflowNodeAbortedError, type WorkflowNodeRuntimeHost } from "../node-runtime";
 import { runWorkflow } from "../runner";
 import type { WorkflowActivation } from "../scheduler";
@@ -302,6 +302,57 @@ describe("runWorkflow lifecycle", () => {
 			frontierNodeIds: ["operatorGate"],
 			completedActivationIds: [],
 			abortedActivationIds: ["activation-1"],
+		});
+	});
+
+	it("aborts active nodes when a lifecycle stop request reaches its deadline", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = stopRequestedDefinition();
+		const freeze = freezeForDefinition(definition);
+		let stopRequested = false;
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				if (!stopRequested) {
+					stopRequested = true;
+					requestWorkflowAttemptStop(host, {
+						attemptId: "attempt-1",
+						deadlineMs: 1,
+						reason: "test external stop",
+					});
+				}
+				const signal = input.signal;
+				if (signal === undefined) throw new Error("expected node abort signal");
+				return await new Promise((_, reject) => {
+					const onAbort = () => reject(new WorkflowNodeAbortedError("stop deadline elapsed"));
+					if (signal.aborted) onAbort();
+					else signal.addEventListener("abort", onAbort, { once: true });
+				});
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "long",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["long", "aborted"],
+		]);
+		const family = reconstructWorkflowFamilies(host.getBranch())[0]!;
+		expect(family.attempts[0]?.status).toBe("stopped");
+		expect(family.checkpoints[0]).toMatchObject({
+			abortedActivationIds: ["activation-1"],
+			frontierNodeIds: ["long"],
 		});
 	});
 
@@ -603,6 +654,22 @@ function humanCheckpointAfterDefinition(): WorkflowDefinition {
 			},
 		],
 		edges: [{ from: "operatorGate", to: "continueWork" }],
+	};
+}
+
+function stopRequestedDefinition(): WorkflowDefinition {
+	return {
+		name: "stop-requested",
+		version: 1,
+		models: { roles: {}, defaults: {} },
+		nodes: [
+			{
+				id: "long",
+				type: "script",
+				script: { language: "sh", code: "long" },
+			},
+		],
+		edges: [],
 	};
 }
 
