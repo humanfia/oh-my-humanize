@@ -32,6 +32,22 @@ describe("example workflow scripts", () => {
 		expect(artifact.definition.nodes.some(node => node.id === "runDocsValidation")).toBe(true);
 	});
 
+	it("keeps parallel integration evidence outside the reviewer output schema", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/parallel-implementation-review/parallel-implementation-review.omhflow`,
+		);
+		const node = artifact.definition.nodes.find(candidate => candidate.id === "integrationReview");
+
+		expect(node).toMatchObject({
+			id: "integrationReview",
+			type: "agent",
+			agent: "task",
+			model: {
+				role: "reviewer",
+			},
+		});
+	});
+
 	it("keeps research reproduction agent prompts read-only around command evidence", async () => {
 		const prompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction/prompts/reproduction.md`,

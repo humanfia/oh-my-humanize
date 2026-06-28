@@ -155,7 +155,7 @@ sequence:
   - node:
       id: integrationReview
       type: agent
-      agent: reviewer
+      agent: task
       model:
         role: reviewer
       reads:
