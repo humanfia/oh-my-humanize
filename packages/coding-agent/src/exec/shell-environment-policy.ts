@@ -22,6 +22,8 @@ export function buildWorkflowShellEnvironment(
 	const inheritedEnv = definedShellEnvironment(baseEnv);
 	delete inheritedEnv.PYTHONNOUSERSITE;
 	delete inheritedEnv.PYTHONPATH;
+	delete inheritedEnv.OMP_WORKFLOW_CONTEXT;
+	delete inheritedEnv.OMP_WORKFLOW_RESOURCE_DIR;
 	return {
 		...inheritedEnv,
 		...buildNonInteractiveEnv(overrides, baseEnv, platform),

@@ -764,6 +764,35 @@ edges: []
 		}
 	});
 
+	it("does not pass serialized workflow context to child processes spawned by js workflow scripts", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-eval-context-child-env-");
+		const settings = await Settings.init();
+		const session: ToolSession = {
+			cwd: tempDir.path(),
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => null,
+			settings,
+		};
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: tempDir.path(),
+			runEvalScript: createEvalToolScriptRunner(session),
+		});
+
+		const result = await runWorkflow({
+			host: new MemoryWorkflowHost(),
+			definition: jsWorkflowContextChildEnvDefinition(),
+			runId: "run-real-eval-context-child-env",
+			startNodeId: "seed",
+			runtimeHost: host,
+		});
+
+		expect(result.scheduler.state).toMatchObject({
+			ledger: { round: 9 },
+			contextChildEnv: "clean",
+		});
+	});
+
 	it("gives js workflow script nodes the workflow script timeout by default", async () => {
 		const calls: EvalToolParams[] = [];
 		const executeSpy = spyOn(EvalTool.prototype, "execute").mockImplementation(async (_toolCallId, params) => {
@@ -1073,6 +1102,54 @@ function jsSpawnEnvDefinition(): WorkflowDefinition {
 			},
 		],
 		edges: [],
+	};
+}
+
+function jsWorkflowContextChildEnvDefinition(): WorkflowDefinition {
+	const contextExpansion = "$" + "{OMP_WORKFLOW_CONTEXT-clean}";
+	const shellCommand = `printf "%s\\n" "${contextExpansion}"`;
+	return {
+		name: "eval-context-child-env",
+		version: 1,
+		models: { roles: {}, defaults: {} },
+		nodes: [
+			{
+				id: "seed",
+				type: "script",
+				script: {
+					language: "js",
+					code: 'return { summary: "seeded", statePatch: [{ op: "set", path: "/ledger", value: { round: 8 } }] };',
+				},
+				writes: ["/ledger"],
+			},
+			{
+				id: "checkEnv",
+				type: "script",
+				script: {
+					language: "js",
+					code: [
+						"const observedRound = workflowContext.state.ledger.round + 1;",
+						`const proc = Bun.spawn(${JSON.stringify(["sh", "-c", shellCommand])}, { stdout: "pipe", stderr: "pipe" });`,
+						"const [stdout, stderr, exitCode] = await Promise.all([",
+						"  new Response(proc.stdout).text(),",
+						"  new Response(proc.stderr).text(),",
+						"  proc.exited,",
+						"]);",
+						'if (exitCode !== 0) throw new Error(stderr || "child exited " + exitCode);',
+						"return {",
+						'  summary: "workflow context stayed local to js runtime",',
+						"  statePatch: [",
+						'    { op: "set", path: "/ledger/round", value: observedRound },',
+						'    { op: "set", path: "/contextChildEnv", value: stdout.trim() },',
+						"  ],",
+						"};",
+					].join("\n"),
+				},
+				reads: ["/ledger"],
+				writes: ["/ledger", "/contextChildEnv"],
+			},
+		],
+		edges: [{ from: "seed", to: "checkEnv" }],
 	};
 }
 

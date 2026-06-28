@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed JS workflow scripts passing the full serialized workflow context to every spawned child process, which could make late-stage workflow finalizers fail with `E2BIG` once review transcripts grew large; JS scripts still receive `workflowContext` in-process, while child processes inherit only lightweight workflow env.
 - Fixed the experimental research-reproduction workflow accepting broad command-only tasks without an auditable `Claim Source`; reproduction tasks now fail closed before running commands when no source/test/docs-derived claim is provided.
 - Fixed the experimental performance-optimization workflow accepting benchmark-positive candidates without semantic behavior probe evidence; positive selections now fail closed unless the retained branch or repair report records a project-specific `semantic-probe` for the public behavior at risk.
 - Fixed the experimental refactor-migration workflow review context omitting parsed allowed scopes and leaking JSON key noise into compatibility highlights, so reviewers can fail closed on scope and compatibility evidence before accepting a migration.

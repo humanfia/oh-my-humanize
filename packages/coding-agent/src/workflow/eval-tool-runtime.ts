@@ -34,7 +34,9 @@ async function workflowScriptToolSession(
 	// Workflow script nodes are attempt-scoped runtime resources. Do not retain
 	// Python kernels under the interactive session after a workflow has completed.
 	settings.override("python.kernelMode", "per-call");
-	const evalEnvironment = buildWorkflowShellEnvironment(workflowScriptEnvironment(request));
+	const evalEnvironment = buildWorkflowShellEnvironment(
+		workflowScriptEnvironment({ resourceDir: request.resourceDir }),
+	);
 	return {
 		...toolSession,
 		getEvalSessionId: () => `workflow-script:${runnerSessionId}:${request.activationId}`,
