@@ -2354,7 +2354,10 @@ describe("example workflow scripts", () => {
 		});
 	});
 
-	it("lets unresolved nonterminal lane validation risk reach integration review", async () => {
+	it.each([
+		"completed_with_unresolved_integration_risk",
+		"complete_with_unresolved_integration_risk",
+	])("lets unresolved nonterminal lane validation risk reach integration review for %s", async status => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-nonterminal-validation-risk-");
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
@@ -2371,7 +2374,7 @@ describe("example workflow scripts", () => {
 				{
 					tuple_id: tupleId,
 					producer_node: "implementTests",
-					status: "completed_with_unresolved_integration_risk",
+					status,
 					validation: {
 						result: "fail",
 					},
@@ -2411,7 +2414,7 @@ describe("example workflow scripts", () => {
 				},
 				{
 					lane: "implementTests",
-					status: "completed_with_unresolved_integration_risk",
+					status,
 					validation_status: "fail",
 				},
 			],

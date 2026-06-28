@@ -13,7 +13,7 @@ The original assignment may ask for a plain-text gate such as `continue`,
 not as the final transport format. Do not submit raw gate text as the final
 result.
 
-Use incremental `yield` sections:
+Submit one single terminal structured result with these fields:
 
 - `type: ["overall_correctness"]` with `"correct"` when the workflow should take
   the successful/terminal gate, or `"incorrect"` when it should take the

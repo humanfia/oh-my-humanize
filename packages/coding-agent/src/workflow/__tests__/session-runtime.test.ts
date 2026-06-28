@@ -775,6 +775,8 @@ edges: []
 		if (assignment === undefined) throw new Error("review assignment missing");
 		expect(assignment).toContain("Workflow review adapter:");
 		expect(assignment).toContain('type: ["overall_correctness"]');
+		expect(assignment).toContain("single terminal structured result");
+		expect(assignment).not.toContain("Use incremental `yield` sections");
 		expect(assignment).toContain("Declared workflow gates: continue, finish");
 		expect(assignment).toContain(reviewPrompt);
 		expect(assignment.lastIndexOf("Workflow review adapter:")).toBeGreaterThan(assignment.indexOf(reviewPrompt));
@@ -827,6 +829,7 @@ edges: []
 		expect(assignment.lastIndexOf('type: ["confidence"]')).toBeGreaterThan(
 			assignment.lastIndexOf("First line must be exactly"),
 		);
+		expect(assignment).not.toContain("Use incremental `yield` sections");
 		expect(output.verdict).toBe("finish");
 	});
 

@@ -166,7 +166,8 @@ async function laneArtifactClassification(filePath) {
 			stringField(validation, "status") || stringField(validation, "result") || stringField(validation, "verdict"),
 		);
 		const validationExitCode = numberField(validation, "exitCode") ?? numberField(validation, "exit_code");
-		const validationRiskIsNonterminal = data?.hard_stop === false && status.startsWith("completed_with_");
+		const validationRiskIsNonterminal =
+			data?.hard_stop === false && (status.startsWith("completed_with_") || status.startsWith("complete_with_"));
 		if (isBlockingStatus(status)) {
 			return {
 				status,
