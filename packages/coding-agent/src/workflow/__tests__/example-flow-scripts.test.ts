@@ -2989,7 +2989,7 @@ describe("example workflow scripts", () => {
 		);
 		expect(optimizationPrompt).toContain("Treat your current\ndirectory as lane-local");
 		expect(optimizationPrompt).toContain("Do not run `git worktree add` from the shared task checkout");
-		expect(optimizationPrompt).toContain("git clone\n--no-hardlinks");
+		expect(optimizationPrompt).toContain("git clone --no-hardlinks");
 		expect(optimizationPrompt).toContain("candidate patch");
 		expect(optimizationPrompt).toContain("git apply --check");
 		expect(optimizationPrompt).toContain("outside the project tree");
@@ -2999,6 +2999,7 @@ describe("example workflow scripts", () => {
 		expect(optimizationPrompt).toContain("bwrap --tmpfs /tmp");
 		expect(optimizationPrompt).toContain("Do not run branch build, benchmark, validation, apply-check");
 		expect(optimizationPrompt).toContain("from `cwd: .` or the shared\ntask workspace");
+		expect(optimizationPrompt).toContain("current OMH-managed isolated\nlane worktree");
 		expect(optimizationPrompt).toContain("scratch-workspace creation commands");
 		expect(optimizationPrompt).not.toContain("workflow-output/tmp/{{strategy}}-*");
 		expect(optimizationPrompt).not.toContain("../workflow-scratch/{{strategy}}-*");
@@ -3481,6 +3482,86 @@ describe("example workflow scripts", () => {
 				delete process.env.OMH_RUN_TMP;
 			} else {
 				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
+	it("allows OMH-managed isolated worktree evidence while enforcing lane scratch roots", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-omh-worktree-evidence-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		const previousWorktreeDir = process.env.OMP_WORKTREE_DIR;
+		const runTmp = `${cwd}/run-tmp`;
+		const managedWorktreeRoot = `${cwd}/../omh-managed-wt`;
+		const managedLaneWorktree = `${managedWorktreeRoot}/tryAlgorithmicChange-abcd1234/merged`;
+		process.env.OMH_RUN_TMP = runTmp;
+		process.env.OMP_WORKTREE_DIR = managedWorktreeRoot;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			const taskText = [
+				"Benchmark Command:",
+				"echo benchmark",
+				"",
+				"Validation Command:",
+				"echo validation",
+				"",
+				"Scratch Root:",
+				runTmp,
+			].join("\n");
+			await Bun.write(`${cwd}/task.md`, taskText);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+			await Bun.write(
+				`${cwd}/workflow-output/perf-algorithmic.md`,
+				[
+					"# Algorithmic candidate",
+					"",
+					`OMH-managed isolated lane worktree cwd: ${managedLaneWorktree}`,
+					"Benchmark command ran in the OMH-managed isolated lane worktree.",
+					`Apply-check worktree: ${runTmp}/algorithmic/apply-check`,
+					`Candidate patch path: ${cwd}/workflow-output/perf-algorithmic-candidate.diff`,
+					"No branch build, benchmark, validation, apply-check, or candidate execution command was run from the shared workspace.",
+				].join("\n"),
+			);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "benchmarkCandidates",
+				scriptFileName: "run-benchmark-validation.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/benchmark"],
+				initialState: {
+					task: {
+						text: taskText,
+						scratchRoot: runTmp,
+						benchmarkCommand: "echo benchmark",
+						validationCommand: "echo validation",
+					},
+				},
+			});
+
+			expect(result.scheduler.state.benchmark).toMatchObject({
+				status: "pass",
+				benchmarkExitCode: 0,
+				validationExitCode: 0,
+			});
+			expect(result.scheduler.state.benchmark).not.toHaveProperty("isolationViolation");
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+			if (previousWorktreeDir === undefined) {
+				delete process.env.OMP_WORKTREE_DIR;
+			} else {
+				process.env.OMP_WORKTREE_DIR = previousWorktreeDir;
 			}
 		}
 	});

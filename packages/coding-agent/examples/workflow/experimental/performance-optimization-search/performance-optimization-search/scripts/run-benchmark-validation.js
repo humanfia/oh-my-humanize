@@ -345,10 +345,21 @@ function allowedScratchRoots(task) {
 		process.env.OMH_RUN_TMP,
 		optionalTaskField(taskText, "Scratch Directory"),
 		optionalTaskField(taskText, "Scratch Root"),
+		...workflowManagedIsolationRoots(),
 	]
 		.filter(path => typeof path === "string" && path.trim() !== "")
 		.map(path => normalizeAbsolutePath(path.trim()))
 		.filter(path => path !== "");
+}
+
+function workflowManagedIsolationRoots() {
+	return [process.env.OMP_WORKTREE_DIR, defaultWorkflowManagedWorktreeRoot()];
+}
+
+function defaultWorkflowManagedWorktreeRoot() {
+	const home = process.env.HOME;
+	if (typeof home !== "string" || home.trim() === "") return "";
+	return `${home}/.omp/wt`;
 }
 
 function optionalTaskField(taskText, label) {
@@ -625,11 +636,11 @@ function disallowedScratchRootViolationMarkdown(disallowedScratchReferences, roo
 		"",
 		"## Disallowed Scratch Root Violation",
 		"",
-		"Parallel optimization lanes must keep scratch copies, worktrees, benchmark fixtures, and temporary data under this run's allowed scratch root.",
-		"Evidence that points at `/tmp` or another scratch root outside `OMH_RUN_TMP` or the task-declared scratch directory cannot prove tuple isolation.",
+		"Parallel optimization lanes must keep scratch copies, worktrees, benchmark fixtures, and temporary data under this run's allowed lane roots.",
+		"Evidence that points at `/tmp` or another scratch root outside `OMH_RUN_TMP`, the task-declared scratch directory, or an OMH-managed isolation worktree cannot prove tuple isolation.",
 		"Writable bare `/tmp` sandbox mounts such as `bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp` are not valid isolation evidence; mount or bind a directory under the allowed run-local scratch root instead.",
 		"",
-		"## Allowed Scratch Roots",
+		"## Allowed Lane Roots",
 		"",
 		roots.length > 0 ? roots.map(root => `- ${root}`).join("\n") : "- none declared",
 		"",

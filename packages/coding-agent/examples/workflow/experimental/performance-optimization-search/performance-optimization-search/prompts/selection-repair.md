@@ -37,19 +37,23 @@ that the reviewer can evaluate:
 - also reject `.git/worktrees/*` metadata in the shared task checkout. It means
   a branch ran `git worktree add` from the shared checkout, which mutates shared
   git metadata and is not read-only inspection. Branches must use independent
-  scratch copies or clones under `task.scratchRoot`;
+  scratch copies or clones under `task.scratchRoot` only when the current
+  OMH-managed isolated lane worktree is not enough;
 - reject shared sibling scratch such as `../workflow-scratch`; it can reuse
   stale work from another tuple and does not prove lane isolation;
 - reject bare `/tmp` scratch unless the task explicitly declares it as the
-  scratch directory; lane evidence must point under `task.scratchRoot`;
+  scratch directory; lane evidence must point under `task.scratchRoot` or an
+  OMH-managed isolated worktree;
 - reject writable bare `/tmp` sandbox mounts such as `bwrap --tmpfs /tmp`,
   `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`; sandbox scratch must be backed
-  by a lane directory under `task.scratchRoot`;
+  by a lane directory under `task.scratchRoot` or the OMH-managed isolated
+  worktree;
 - reject branch evidence where scratch-workspace creation, build, benchmark,
   validation, apply-check, or candidate execution ran from `cwd: .`, the task
   workspace, or the unmodified shared workspace. Shared project files may be
-  inspected, but branch execution evidence must come from lane-local clones or
-  copies under `task.scratchRoot`;
+  inspected, but branch execution evidence must come from the current
+  OMH-managed isolated lane worktree or lane-local clones/copies under
+  `task.scratchRoot`;
 - if validation or benchmark failed, preserve the failure evidence and explain
   the minimal next repair needed;
 - if one branch has a measured positive result, apply at most one selected candidate patch
@@ -84,11 +88,13 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 - project files retained, reverted, or intentionally left unchanged, including
   whether the shared workspace was clean before selection;
 - whether project-local scratch and shared sibling scratch were absent before
-  selection, and whether all branch scratch paths were under `task.scratchRoot`;
+  selection, and whether all branch scratch paths were under `task.scratchRoot`
+  or an OMH-managed isolated lane worktree;
 - whether branch evidence avoided writable bare `/tmp` sandbox mounts and
   `TMPDIR=/tmp` execution surfaces;
 - whether branch build, benchmark, validation, apply-check, and candidate
-  execution cwd/worktree paths were lane-local under `task.scratchRoot`;
+  execution cwd/worktree paths were lane-local under `task.scratchRoot` or an
+  OMH-managed isolated lane worktree;
 - exact rollback/no-change evidence;
 - exact semantic probe evidence for the retained candidate, or why no candidate
   could be safely retained;

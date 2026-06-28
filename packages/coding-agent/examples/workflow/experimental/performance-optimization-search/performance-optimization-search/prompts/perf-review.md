@@ -35,15 +35,16 @@ Return `finish` only when:
   must not live under `workflow-output/tmp` or shared sibling scratch such as
   `../workflow-scratch`; bare `/tmp` scratch is accepted only when the task
   explicitly declares it as the scratch directory; otherwise branch evidence
-  must point under `task.scratchRoot`;
+  must point under `task.scratchRoot` or an OMH-managed isolated worktree;
 - branch execution did not create writable bare `/tmp` sandbox mounts such as
   `bwrap --tmpfs /tmp`, `--bind /tmp`, `--dir /tmp`, or `TMPDIR=/tmp`; sandbox
-  scratch must be backed by a lane directory under `task.scratchRoot`;
+  scratch must be backed by a lane directory under `task.scratchRoot` or the
+  OMH-managed isolated worktree;
 - branch scratch-workspace creation, build, benchmark, validation, apply-check,
   and candidate execution did not run from `cwd: .`, the task workspace, or the
   unmodified shared workspace; shared project files may be inspected, but branch
-  execution evidence must come from lane-local clones or copies under
-  `task.scratchRoot`;
+  execution evidence must come from the current OMH-managed isolated lane
+  worktree or lane-local clones/copies under `task.scratchRoot`;
 - there is a clearly selected positive optimization or a documented no-win
   result with rollback evidence;
 - losing or negative branches are reverted or explicitly isolated;
