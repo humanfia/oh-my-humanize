@@ -907,6 +907,41 @@ describe("example workflow scripts", () => {
 		expect(evidence).toContain("896 passed");
 	});
 
+	it("records absent research reproduction variant command evidence as null", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-absent-variant-command-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runVariant",
+			scriptFileName: "run-variant.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/variant"],
+			initialState: {
+				task: {
+					validationCommand: `python -c "print('9 passed')"`,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.variant).toMatchObject({
+			status: "pass",
+			variantCommandEvidence: null,
+			validationCommandEvidence: {
+				role: "validation",
+				exitCode: 0,
+			},
+		});
+		const jsonEvidence = await Bun.file(`${cwd}/workflow-output/reproduction-variant.json`).json();
+		expect(jsonEvidence.variantCommandEvidence).toBeNull();
+		expect(jsonEvidence.validationCommandEvidence).toMatchObject({
+			role: "validation",
+			stdout: "9 passed\n",
+		});
+	});
+
 	it("counts script-backed negative controls as research reproduction variant exercise", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-negative-control-");
 		const cwd = tempDir.path();

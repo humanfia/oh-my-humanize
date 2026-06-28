@@ -637,6 +637,46 @@ edges: []
 		expect(output.summary).toBe("COMPLETE\nValidation passed after the required loop round.");
 	});
 
+	it("bridges workflow review gates to the reviewer output schema", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: JSON.stringify({
+						overall_correctness: "correct",
+						explanation: "verdict finish\nThe generated tests are coherent and validation passed.",
+						confidence: 0.91,
+					}),
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "testReview",
+			type: "review",
+			prompt: "Return finish only when generated tests are coherent and validation passed.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(capturedRequest?.task.assignment).toContain("Workflow review adapter:");
+		expect(capturedRequest?.task.assignment).toContain('type: ["overall_correctness"]');
+		expect(capturedRequest?.task.assignment).toContain("Declared workflow gates: continue, finish");
+		expect(capturedRequest?.task.assignment).toContain(node.prompt);
+		expect(output.verdict).toBe("finish");
+	});
+
 	it("routes one-line reviewer verdict prefixes before falling back", async () => {
 		const result = await runRetryReview("COMPLETE Validation passed after the required loop round.");
 

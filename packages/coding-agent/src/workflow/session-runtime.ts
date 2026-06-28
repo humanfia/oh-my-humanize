@@ -1,4 +1,5 @@
-import { extractRetryHint } from "@oh-my-pi/pi-utils";
+import { extractRetryHint, prompt as promptTemplate } from "@oh-my-pi/pi-utils";
+import workflowReviewNodeAdapterPrompt from "../prompts/system/workflow-review-node-adapter.md" with { type: "text" };
 import { workflowAgentTaskIdForNode } from "./agent-task-id";
 import type { WorkflowScriptLanguage } from "./definition";
 import { formatWorkflowAgentWorkItemLabel } from "./display";
@@ -218,7 +219,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 					id: workflowAgentTaskIdForNode(input.node.id),
 					description: taskLabel,
 					role: taskLabel,
-					assignment,
+					assignment: workflowReviewNodeAssignment(assignment, input.gates, input.fallbackVerdict),
 				},
 			};
 			applyWorkflowNodeIsolation(request, input.node);
@@ -235,6 +236,18 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			return output;
 		},
 	};
+}
+
+function workflowReviewNodeAssignment(
+	assignment: string,
+	gates: readonly string[] | undefined,
+	fallbackVerdict: string | undefined,
+): string {
+	return promptTemplate.render(workflowReviewNodeAdapterPrompt, {
+		assignment,
+		declaredGates: gates === undefined || gates.length === 0 ? "(none)" : gates.join(", "),
+		fallbackVerdict: fallbackVerdict ?? "(none)",
+	});
 }
 
 function applyWorkflowNodeIsolation(

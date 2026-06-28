@@ -14,7 +14,7 @@ const variantExerciseSummary = variant ? analyzeExercise(variant, variantCommand
 const validationExerciseSummary = analyzeExercise(validation, validationCommand);
 const variantCommandEvidence = variant
 	? commandEvidence("variant", variantCommand, variant, variantExerciseSummary)
-	: undefined;
+	: null;
 const validationCommandEvidence = commandEvidence(
 	"validation",
 	validationCommand,
@@ -50,32 +50,32 @@ return {
 		{
 			op: "set",
 			path: "/variant",
-				value: {
-					variantCommand,
-					variantExitCode: variant?.exitCode,
-					variantStdoutPath: variant ? evidencePath : undefined,
-					variantStderrPath: variant ? evidencePath : undefined,
-					variantExerciseSummary,
-					variantCommandEvidence: variant
-						? stateCommandEvidence("variant", variantCommand, variant, variantExerciseSummary, evidencePath)
-						: undefined,
+			value: {
+				variantCommand,
+				variantExitCode: variant?.exitCode,
+				variantStdoutPath: variant ? evidencePath : undefined,
+				variantStderrPath: variant ? evidencePath : undefined,
+				variantExerciseSummary,
+				variantCommandEvidence: variant
+					? stateCommandEvidence("variant", variantCommand, variant, variantExerciseSummary, evidencePath)
+					: null,
+				validationCommand,
+				validationExitCode: validation.exitCode,
+				validationStdoutPath: evidencePath,
+				validationStderrPath: evidencePath,
+				validationExercised,
+				exerciseSummary: validationExerciseSummary,
+				validationCommandEvidence: stateCommandEvidence(
+					"validation",
 					validationCommand,
-					validationExitCode: validation.exitCode,
-					validationStdoutPath: evidencePath,
-					validationStderrPath: evidencePath,
-					validationExercised,
-					exerciseSummary: validationExerciseSummary,
-					validationCommandEvidence: stateCommandEvidence(
-						"validation",
-						validationCommand,
-						validation,
-						validationExerciseSummary,
-						evidencePath,
-					),
-					status: variantPass && validationPass ? "pass" : "fail",
-					outputPath,
+					validation,
+					validationExerciseSummary,
 					evidencePath,
-				},
+				),
+				status: variantPass && validationPass ? "pass" : "fail",
+				outputPath,
+				evidencePath,
+			},
 		},
 	],
 };
