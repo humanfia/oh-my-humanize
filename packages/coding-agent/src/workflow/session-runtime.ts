@@ -278,7 +278,7 @@ const DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY: NormalizedWorkflowAgentTaskRetry
 async function runAgentTaskWithTransientRetry(
 	options: WorkflowSessionRuntimeOptions,
 	request: WorkflowAgentTaskRequest,
-	reasonIsRetryable: WorkflowAgentTaskRetryableReason = workflowAgentTaskReasonIsTransient,
+	retryDispositionForReason: WorkflowAgentTaskRetryDispositionFactory = workflowAgentTaskRetryDispositionForReason,
 ): Promise<WorkflowAgentTaskResult> {
 	if (options.runAgentTask === undefined) {
 		throw new WorkflowNodeRuntimeError(`workflow agent node "${request.nodeId}" requires a subagent runtime adapter`);
@@ -289,24 +289,28 @@ async function runAgentTaskWithTransientRetry(
 	for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
 		throwIfWorkflowSignalAborted(request.signal);
 		let transientReason: string;
+		let retryDisposition: WorkflowAgentTaskRetryDisposition;
 		try {
 			const result = await options.runAgentTask(request);
 			transientReason = workflowAgentTaskFailureReason(result);
-			if (result.exitCode === 0 || !reasonIsRetryable(transientReason)) {
+			retryDisposition = retryDispositionForReason(transientReason, policy);
+			if (result.exitCode === 0 || !retryDisposition.retryable) {
 				return attachWorkflowAgentTaskRetryHistory(result, retryHistory);
 			}
 			lastTransientResult = result;
-			if (attempt >= policy.maxAttempts) return attachWorkflowAgentTaskRetryHistory(result, retryHistory);
+			if (attempt >= retryDisposition.maxAttempts) return attachWorkflowAgentTaskRetryHistory(result, retryHistory);
 		} catch (error) {
 			if (workflowErrorWasAborted(error)) throw error;
 			transientReason = formatWorkflowErrorReason(error);
-			if (!reasonIsRetryable(transientReason) || attempt >= policy.maxAttempts) throw error;
+			retryDisposition = retryDispositionForReason(transientReason, policy);
+			if (!retryDisposition.retryable || attempt >= retryDisposition.maxAttempts) throw error;
 		}
 		const retryEntry = workflowAgentTaskRetryHistoryEntry(
 			policy,
 			attempt,
 			transientReason,
 			options.retryRandom ?? Math.random,
+			retryDisposition,
 		);
 		retryHistory.push(retryEntry);
 		await sleepBeforeWorkflowAgentTaskRetry(options, request.signal, retryEntry.delayMs);
@@ -322,7 +326,16 @@ async function runAgentTaskWithTransientRetry(
 	);
 }
 
-type WorkflowAgentTaskRetryableReason = (reason: string) => boolean;
+interface WorkflowAgentTaskRetryDisposition {
+	retryable: boolean;
+	maxAttempts: number;
+	delayMs?: number;
+}
+
+type WorkflowAgentTaskRetryDispositionFactory = (
+	reason: string,
+	policy: NormalizedWorkflowAgentTaskRetryPolicy,
+) => WorkflowAgentTaskRetryDisposition;
 
 function attachWorkflowAgentTaskRetryHistory(
 	result: WorkflowAgentTaskResult,
@@ -378,12 +391,32 @@ function workflowAgentTaskFailureReason(result: WorkflowAgentTaskResult): string
 	return [result.error, result.stderr, result.output].filter((part): part is string => part !== undefined).join("\n");
 }
 
+function workflowAgentTaskRetryDispositionForReason(
+	reason: string,
+	policy: NormalizedWorkflowAgentTaskRetryPolicy,
+): WorkflowAgentTaskRetryDisposition {
+	return {
+		retryable: workflowAgentTaskReasonIsTransient(reason),
+		maxAttempts: policy.maxAttempts,
+	};
+}
+
 function workflowAgentTaskReasonIsTransient(reason: string): boolean {
 	return WORKFLOW_AGENT_TRANSIENT_PROVIDER_ERROR_PATTERN.test(reason);
 }
 
-function workflowReviewTaskReasonIsRetryable(reason: string): boolean {
-	return workflowAgentTaskReasonIsTransient(reason) || workflowReviewTaskReasonIsSchemaContractFailure(reason);
+function workflowReviewTaskReasonIsRetryable(
+	reason: string,
+	policy: NormalizedWorkflowAgentTaskRetryPolicy,
+): WorkflowAgentTaskRetryDisposition {
+	if (workflowReviewTaskReasonIsSchemaContractFailure(reason)) {
+		return {
+			retryable: true,
+			maxAttempts: Math.min(policy.maxAttempts, 2),
+			delayMs: 0,
+		};
+	}
+	return workflowAgentTaskRetryDispositionForReason(reason, policy);
 }
 
 function workflowReviewTaskReasonIsSchemaContractFailure(reason: string): boolean {
@@ -403,11 +436,13 @@ function workflowAgentTaskRetryHistoryEntry(
 	completedAttempt: number,
 	transientReason: string,
 	random: WorkflowRetryRandomSource,
+	disposition: WorkflowAgentTaskRetryDisposition,
 ): WorkflowActivationRetryHistoryEntry {
-	const delayMs = workflowAgentTaskRetryDelayMs(policy, completedAttempt, transientReason, random);
+	const delayMs =
+		disposition.delayMs ?? workflowAgentTaskRetryDelayMs(policy, completedAttempt, transientReason, random);
 	return {
 		attempt: completedAttempt,
-		maxAttempts: policy.maxAttempts,
+		maxAttempts: disposition.maxAttempts,
 		reason: boundWorkflowRetryReason(transientReason),
 		nextAttempt: completedAttempt + 1,
 		delayMs,

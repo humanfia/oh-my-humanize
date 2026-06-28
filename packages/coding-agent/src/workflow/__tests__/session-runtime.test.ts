@@ -653,6 +653,62 @@ edges: []
 		expect(output.retryHistory?.[0]?.reason).toContain("schema_violation");
 	});
 
+	it("fails closed quickly after repeated review schema violations", async () => {
+		let calls = 0;
+		const delays: number[] = [];
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 6, baseDelayMs: 10_000, maxDelayMs: 60_000 },
+			retryDelay: async delayMs => {
+				delays.push(delayMs);
+			},
+			runAgentTask: async () => {
+				calls += 1;
+				return {
+					exitCode: 1,
+					output: JSON.stringify({
+						error: "schema_violation",
+						message: "explanation: is required",
+						missingRequired: ["explanation", "confidence"],
+						data: JSON.stringify({ overall_correctness: "correct" }),
+					}),
+					stderr: "schema_violation: missing required fields: explanation, confidence",
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "testReview",
+			type: "review",
+			prompt: "Return finish only with schema-valid test evidence.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(calls).toBe(2);
+		expect(delays).toEqual([]);
+		expect(output.verdict).toBe("continue");
+		expect(output.summary).toContain("downgraded schema_violation");
+		expect(output.retryHistory).toEqual([
+			{
+				attempt: 1,
+				maxAttempts: 2,
+				reason: expect.stringContaining("schema_violation"),
+				nextAttempt: 2,
+				delayMs: 0,
+			},
+		]);
+	});
+
 	it("uses the first non-empty line as the verdict before falling back", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
