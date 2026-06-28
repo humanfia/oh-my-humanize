@@ -810,15 +810,15 @@ function recoverReviewOutputFromSchemaViolation(
 
 	const reason = result.error || result.stderr || "schema_violation";
 	const repairVerdict = verdictFromReviewerCorrectness("incorrect", gates, fallbackVerdict);
-	const acceptedVerdict = parsed.verdict === repairVerdict ? parsed.verdict : repairVerdict;
-	const summary =
-		parsed.verdict === acceptedVerdict
-			? `recovered schema_violation as verdict ${parsed.verdict}: ${reason}\n${parsed.summary}`
-			: `downgraded schema_violation from verdict ${parsed.verdict} to verdict ${acceptedVerdict}: ${reason}\n${parsed.summary}`;
-	const boundedSummary = boundWorkflowSummary(summary, acceptedVerdict);
+	if (parsed.verdict !== repairVerdict) {
+		throw new WorkflowNodeRuntimeError(`workflow review node "${nodeId}" exhausted schema retries: ${reason}`);
+	}
+
+	const summary = `recovered schema_violation as verdict ${parsed.verdict}: ${reason}\n${parsed.summary}`;
+	const boundedSummary = boundWorkflowSummary(summary, parsed.verdict);
 	const output: WorkflowReviewNodeOutput = {
 		summary: boundedSummary.summary,
-		verdict: acceptedVerdict,
+		verdict: parsed.verdict,
 	};
 	if (result.retryHistory !== undefined && result.retryHistory.length > 0) {
 		output.retryHistory = result.retryHistory.map(entry => ({ ...entry }));

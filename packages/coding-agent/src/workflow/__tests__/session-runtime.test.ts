@@ -653,7 +653,7 @@ edges: []
 		expect(output.retryHistory?.[0]?.reason).toContain("schema_violation");
 	});
 
-	it("fails closed quickly after repeated review schema violations", async () => {
+	it("fails review nodes quickly after repeated schema-invalid success payloads", async () => {
 		let calls = 0;
 		const delays: number[] = [];
 		const host = createSessionWorkflowRuntimeHost({
@@ -686,27 +686,18 @@ edges: []
 			fallbackVerdict: "continue",
 		};
 
-		const output = await host.runReviewNode({
-			node,
-			activation: workflowActivation(node.id),
-			prompt: node.prompt,
-			gates: node.gates,
-			fallbackVerdict: node.fallbackVerdict,
-		});
+		await expect(
+			host.runReviewNode({
+				node,
+				activation: workflowActivation(node.id),
+				prompt: node.prompt,
+				gates: node.gates,
+				fallbackVerdict: node.fallbackVerdict,
+			}),
+		).rejects.toThrow('workflow review node "testReview" exhausted schema retries');
 
 		expect(calls).toBe(2);
 		expect(delays).toEqual([]);
-		expect(output.verdict).toBe("continue");
-		expect(output.summary).toContain("downgraded schema_violation");
-		expect(output.retryHistory).toEqual([
-			{
-				attempt: 1,
-				maxAttempts: 2,
-				reason: expect.stringContaining("schema_violation"),
-				nextAttempt: 2,
-				delayMs: 0,
-			},
-		]);
 	});
 
 	it("uses the first non-empty line as the verdict before falling back", async () => {
@@ -785,7 +776,7 @@ edges: []
 		expect(output.verdict).toBe("finish");
 	});
 
-	it("recovers workflow review verdicts from partial schema violation payloads", async () => {
+	it("fails schema-invalid success review payloads after retry exhaustion", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
 			agentTaskRetryPolicy: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
@@ -816,20 +807,18 @@ edges: []
 			fallbackVerdict: "continue",
 		};
 
-		const output = await host.runReviewNode({
-			node,
-			activation: workflowActivation(node.id),
-			prompt: node.prompt,
-			gates: node.gates,
-			fallbackVerdict: node.fallbackVerdict,
-		});
-
-		expect(output.verdict).toBe("continue");
-		expect(output.summary).toContain("downgraded schema_violation");
-		expect(output.artifacts).toEqual(["/tmp/reportReview.md", "/tmp/reportReview.jsonl"]);
+		await expect(
+			host.runReviewNode({
+				node,
+				activation: workflowActivation(node.id),
+				prompt: node.prompt,
+				gates: node.gates,
+				fallbackVerdict: node.fallbackVerdict,
+			}),
+		).rejects.toThrow('workflow review node "reportReview" exhausted schema retries');
 	});
 
-	it("downgrades declared success gates placed in partial reviewer correctness fields", async () => {
+	it("fails declared success gates placed in partial reviewer correctness fields", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
 			agentTaskRetryPolicy: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
@@ -854,19 +843,18 @@ edges: []
 			fallbackVerdict: "continue",
 		};
 
-		const output = await host.runReviewNode({
-			node,
-			activation: workflowActivation(node.id),
-			prompt: node.prompt,
-			gates: node.gates,
-			fallbackVerdict: node.fallbackVerdict,
-		});
-
-		expect(output.verdict).toBe("continue");
-		expect(output.summary).toContain("downgraded schema_violation");
+		await expect(
+			host.runReviewNode({
+				node,
+				activation: workflowActivation(node.id),
+				prompt: node.prompt,
+				gates: node.gates,
+				fallbackVerdict: node.fallbackVerdict,
+			}),
+		).rejects.toThrow('workflow review node "fixReview" exhausted schema retries');
 	});
 
-	it("downgrades correct reviewer schema violations to a semantic repair gate", async () => {
+	it("fails correct reviewer schema violations instead of routing semantic repair", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",
 			agentTaskRetryPolicy: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
@@ -891,16 +879,15 @@ edges: []
 			fallbackVerdict: "continue",
 		};
 
-		const output = await host.runReviewNode({
-			node,
-			activation: workflowActivation(node.id),
-			prompt: node.prompt,
-			gates: node.gates,
-			fallbackVerdict: node.fallbackVerdict,
-		});
-
-		expect(output.verdict).toBe("continue");
-		expect(output.summary).toContain("downgraded schema_violation");
+		await expect(
+			host.runReviewNode({
+				node,
+				activation: workflowActivation(node.id),
+				prompt: node.prompt,
+				gates: node.gates,
+				fallbackVerdict: node.fallbackVerdict,
+			}),
+		).rejects.toThrow('workflow review node "reviewRound" exhausted schema retries');
 	});
 
 	it("recovers findings-only reviewer schema violations to a semantic repair gate", async () => {

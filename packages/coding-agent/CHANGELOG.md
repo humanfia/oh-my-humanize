@@ -23,7 +23,7 @@
 
 ### Fixed
 
-- Fixed workflow review nodes treating recovered schema-invalid success payloads as clean pass signals; malformed review success now gets one immediate schema-contract retry and then fails closed to the repair/fallback gate if the reviewer still omits required fields.
+- Fixed workflow review nodes treating recovered schema-invalid success payloads as clean pass signals; malformed review success now gets one immediate schema-contract retry and then fails the review node if the reviewer still omits required fields, while findings-only repair signals still route to the repair gate.
 - Fixed the experimental parallel-implementation-review workflow running its non-gating integration evidence node through the structured reviewer agent schema, which could fail a canary before the durable evidence materializer ran.
 - Fixed workflow reviewer schema-violation recovery treating findings-only partial review output as a node failure instead of routing it through the semantic repair gate.
 - Fixed workflow review nodes launched through the reviewer agent failing on schema-only or recoverable partial schema-violation output contracts instead of mapping structured reviewer verdicts back to declared workflow gates.
