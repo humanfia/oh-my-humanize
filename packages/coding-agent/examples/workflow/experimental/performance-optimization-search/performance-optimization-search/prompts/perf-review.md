@@ -56,10 +56,11 @@ Return `finish` only when:
 - a positive optimization is accepted only when the task-declared Validation
   Command passed;
 - a documented no-win result is accepted only when the task contract explicitly
-  contains `No-Win Result: allowed`, `No-Code/No-Change Allowed: Yes`, or
-  `No-Code Allowed: Yes`; the current project diff is empty; and at
-  least one branch records `no-win-result: yes` plus rollback/no-change
-  evidence;
+  contains `No-Win Result: allowed`, `No-Code/No-Change Allowed: Yes`,
+  `No-Code Allowed: Yes`, or unambiguously says to archive or accept a
+  no-win result when no safe positive candidate exists; the current project
+  diff is empty; and at least one branch records `no-win-result: yes` plus
+  rollback/no-change evidence;
 - when all attempted branches are losing, reverted, or inconclusive; the
   project diff is empty; at least one branch records `no-win-result: yes`; and
   the task does not explicitly authorize a no-win success, return `finish` so

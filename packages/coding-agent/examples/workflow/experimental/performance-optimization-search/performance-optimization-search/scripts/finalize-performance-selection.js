@@ -143,7 +143,10 @@ function allowsNoWinArchive(taskValue) {
 	return (
 		/\bNo-Win Result\s*:\s*allowed\b/iu.test(taskText) ||
 		/\bNo-Code\/No-Change Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText) ||
-		/\bNo-Code Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText)
+		/\bNo-Code Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText) ||
+		/\barchive\s+a\s+no-win\s+result\b/iu.test(taskText) ||
+		/\bno-win\s+is\s+acceptable\s+only\s+with\b/iu.test(taskText) ||
+		/\btask\s+(?:permits|allows|accepts)\s+a\s+no-win\s+result\b/iu.test(taskText)
 	);
 }
 

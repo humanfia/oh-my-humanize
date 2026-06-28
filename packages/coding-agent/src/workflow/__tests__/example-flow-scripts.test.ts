@@ -4567,6 +4567,81 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("finalizes performance no-win when the task contract authorizes archival in prose", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-prose-no-win-authorization-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance search with prose no-win authorization",
+			"",
+			"Objective:",
+			"Search for a bounded optimization without changing semantics. If no safe positive candidate exists, archive a no-win result with real benchmark evidence.",
+			"",
+			"Benchmark Command:",
+			"cargo test -q --release --test tests test_gitignore",
+			"",
+			"Validation Command:",
+			"cargo test -q --test tests test_gitignore",
+			"",
+			"Acceptance Criteria:",
+			"- no-win is acceptable only with real branch evidence, not sleep/no-op loops.",
+		].join("\n");
+
+		await Bun.write(`${cwd}/README.md`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "README.md", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Algorithmic",
+				"",
+				"final-selection: no",
+				"no-win-result: yes",
+				"rollback evidence: clean workspace after reverting the non-reproducing candidate",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			["# Caching", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# IO", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/performance-benchmark.md`, "# Benchmark\n\nExit code: 0\n");
+
+		const finalize = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+					outputPath: "workflow-output/performance-benchmark.md",
+				},
+			},
+		});
+
+		expect(finalize.scheduler.state.selection).toMatchObject({
+			status: "pass",
+			terminalState: "no-win",
+			noWinBranches: ["algorithmic"],
+		});
+	});
+
 	it("finalizes positive performance repair evidence from status-style report lines", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-repair-status-lines-");
 		const cwd = tempDir.path();

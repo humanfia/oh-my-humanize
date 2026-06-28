@@ -80,9 +80,11 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 - `final-selection: no` for losing, reverted, conflict-only, or no-win
   branches;
 - `no-win-result: yes` only when the task contract explicitly contains
-  `No-Win Result: allowed`, `No-Code/No-Change Allowed: Yes`, or
-  `No-Code Allowed: Yes`; the branch made or retained no project changes; and
-  measured evidence shows no safe positive optimization for this branch;
+  `No-Win Result: allowed`, `No-Code/No-Change Allowed: Yes`,
+  `No-Code Allowed: Yes`, or unambiguously says to archive or accept a no-win
+  result when no safe positive candidate exists; the branch made or retained no
+  project changes; and measured evidence shows no safe positive optimization
+  for this branch;
 - benchmark or validation commands you ran, if any.
 
 Do not fabricate measurements. The workflow will run the task-declared
