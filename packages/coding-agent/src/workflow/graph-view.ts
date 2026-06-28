@@ -2470,6 +2470,26 @@ function formatWorkflowChangeApplication(application: WorkflowChangeRequestRecor
 		: `${application.target}:${targetId}:${application.actor}`;
 }
 
+function latestWorkflowChangeDraftApplication(
+	request: WorkflowChangeRequestRecord,
+): WorkflowChangeRequestRecord["applications"][number] | undefined {
+	return request.applications
+		.filter(application => application.target === "draft" && application.draftId !== undefined)
+		.at(-1);
+}
+
+function hasWorkflowChangeFreezeApplication(request: WorkflowChangeRequestRecord): boolean {
+	return request.applications.some(application => application.target === "freeze");
+}
+
+function workflowChangeDraftFileName(requestId: string): string {
+	const slug = requestId
+		.replace(/[^A-Za-z0-9._-]+/gu, "-")
+		.replace(/^-+/u, "")
+		.replace(/-+$/u, "");
+	return `${slug.length === 0 ? "workflow-change" : slug}.omhflow`;
+}
+
 function formatWorkflowGraphActions(
 	family: WorkflowRunFamilySnapshot,
 	currentAttempt: WorkflowRunAttemptSnapshot | undefined,
@@ -2512,11 +2532,18 @@ function formatWorkflowGraphActions(
 		actions.push(`Reject: /workflow reject-change ${request.id} --actor human --reason <reason>`);
 	}
 	for (const request of family.changeRequests.filter(
-		request => request.status === "approved" && request.applications.length === 0,
+		request => request.status === "approved" && !hasWorkflowChangeFreezeApplication(request),
 	)) {
-		if (latestFreeze !== undefined) {
+		const draftApplication = latestWorkflowChangeDraftApplication(request);
+		if (draftApplication?.draftId === undefined) {
 			actions.push(
-				`Apply change: /workflow apply-change ${request.id} --freeze-id ${latestFreeze.id} --actor human`,
+				`Generate draft: /workflow apply-change ${request.id} --draft-path workflow-output/${workflowChangeDraftFileName(
+					request.id,
+				)} --actor human`,
+			);
+		} else {
+			actions.push(
+				`Freeze draft: /workflow freeze workflow-output/${draftApplication.draftId} --family-id ${family.id}`,
 			);
 		}
 	}

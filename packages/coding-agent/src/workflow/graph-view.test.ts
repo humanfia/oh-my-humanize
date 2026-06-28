@@ -60,6 +60,28 @@ describe("buildWorkflowGraphView", () => {
 		expect(text).toContain("Restart · /workflow restart attempt-2:checkpoint-1");
 		expect(text).not.toContain("Restart · /workflow restart workflow-family:attempt-1:checkpoint-1");
 	});
+
+	it("guides approved change requests through draft generation before freezing", () => {
+		const view = buildWorkflowGraphView(workflowFamilyWithApprovedChangeRequest());
+		const text = renderWorkflowGraphText(view);
+
+		expect(text).toContain(
+			"Generate draft · /workflow apply-change change-acceptance-review --draft-path workflow-output/change-acceptance-review.omhflow --actor human",
+		);
+		expect(text).not.toContain(
+			"Apply change · /workflow apply-change change-acceptance-review --freeze-id freeze-1 --actor human",
+		);
+	});
+
+	it("guides generated workflow drafts through freezing before restart", () => {
+		const view = buildWorkflowGraphView(workflowFamilyWithApprovedChangeRequest("change-acceptance-review.omhflow"));
+		const text = renderWorkflowGraphText(view);
+
+		expect(text).toContain("Freeze draft · /workflow freeze workflow-output/change-acceptance-review.omhflow");
+		expect(text).not.toContain(
+			"Apply change · /workflow apply-change change-acceptance-review --freeze-id freeze-1 --actor human",
+		);
+	});
 });
 
 describe("renderWorkflowGraphDiagram", () => {
@@ -322,6 +344,69 @@ function workflowFamilyWithRestartedCheckpoint(): WorkflowRunFamilySnapshot {
 			},
 		],
 		changeRequests: [],
+	};
+}
+
+function workflowFamilyWithApprovedChangeRequest(draftId?: string): WorkflowRunFamilySnapshot {
+	const definition: WorkflowDefinition = {
+		name: "approved-change-smoke",
+		version: 1,
+		models: { roles: {}, defaults: {} },
+		nodes: [
+			{ id: "build", type: "agent" },
+			{ id: "review", type: "review" },
+			{ id: "archive", type: "script", script: { language: "js", file: "archive.js" } },
+		],
+		edges: [
+			{ from: "build", to: "review" },
+			{ from: "review", to: "archive" },
+		],
+	};
+	return {
+		id: "approved-change-family",
+		freezes: [flowFreeze(definition)],
+		attempts: [
+			{
+				id: "attempt-1",
+				familyId: "approved-change-family",
+				freezeId: "freeze-1",
+				startNodeId: "build",
+				status: "stopped",
+				runtimeBindingSnapshot: runtimeBinding(),
+				activations: [],
+			},
+		],
+		checkpoints: [
+			{
+				id: "attempt-1:checkpoint-1",
+				familyId: "approved-change-family",
+				attemptId: "attempt-1",
+				completedActivationIds: [],
+				abortedActivationIds: [],
+				frontierNodeIds: ["review"],
+				state: {},
+				sourceMapping: { review: "review" },
+			},
+		],
+		changeRequests: [
+			{
+				id: "change-acceptance-review",
+				familyId: "approved-change-family",
+				status: "approved",
+				actor: "agent:review",
+				origin: "internal-agent",
+				reason: "add stronger acceptance review",
+				operations: [
+					{
+						op: "add_node",
+						node: { id: "acceptanceReview", type: "review" },
+					},
+				],
+				frontierMapping: {},
+				approvedBy: "human:operator",
+				applications: draftId === undefined ? [] : [{ target: "draft", actor: "human:operator", draftId }],
+			},
+		],
 	};
 }
 
