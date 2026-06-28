@@ -27,6 +27,11 @@ const downstreamFinalizationOnly =
 	roundMinimumSatisfied &&
 	!buildRepairRequested &&
 	isDownstreamFinalizationOnlyReview(reviewSummary);
+const structuredCorrectnessAccepted =
+	reviewVerdict === "continue" &&
+	roundMinimumSatisfied &&
+	!buildRepairRequested &&
+	normalizeOverallCorrectness(review.data?.overall_correctness) === "correct";
 const completionSatisfiedButContinued =
 	reviewVerdict === "continue" &&
 	roundMinimumSatisfied &&
@@ -44,10 +49,12 @@ if (reviewVerdict === "complete" && buildRepairRequested) {
 	reason = "review summary requested build repair despite complete verdict";
 }
 
-if (downstreamFinalizationOnly || completionSatisfiedButContinued) {
+if (downstreamFinalizationOnly || structuredCorrectnessAccepted || completionSatisfiedButContinued) {
 	decision = "complete";
 	reason = downstreamFinalizationOnly
 		? "review requested downstream finalization rather than more build work"
+		: structuredCorrectnessAccepted
+			? "review reported overall correctness after satisfying the required build/review rounds"
 		: "review continuation contradicted completion satisfied evidence";
 }
 
@@ -70,6 +77,7 @@ const route = {
 	...(requiredRoundCount === null ? {} : { requiredRoundCount }),
 	completedRoundCount,
 	downstreamFinalizationOnly,
+	structuredCorrectnessAccepted,
 	completionSatisfiedButContinued,
 	setupBlockerEvidenceFiles,
 	externalValidationBlockerEvidenceFiles,
@@ -109,6 +117,13 @@ function completedActivationCount(nodeId) {
 function normalizeVerdict(value) {
 	const text = typeof value === "string" ? value.toLowerCase() : "";
 	return /\bcontinue\b/u.test(text) ? "continue" : "complete";
+}
+
+function normalizeOverallCorrectness(value) {
+	const text = typeof value === "string" ? value.toLowerCase() : "";
+	if (/\bcorrect\b/u.test(text)) return "correct";
+	if (/\bincorrect\b/u.test(text)) return "incorrect";
+	return "unknown";
 }
 
 function taskRequiredRoundCount(text) {

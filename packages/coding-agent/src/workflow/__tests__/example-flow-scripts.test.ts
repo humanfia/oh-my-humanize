@@ -1129,6 +1129,78 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("routes structurally correct reviews to archive without depending on summary wording", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-structured-review-accepted-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const classifyRouteScript = await Bun.file(
+			`${AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR}/classify-review-route.js`,
+		).text();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Route a completed review to archive.",
+				"",
+				"Requires at least three meaningful build/review cycles.",
+				"",
+				"Validation Command:",
+				"echo validate",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/progress.md`,
+			[
+				"ROUND 1: added focused implementation evidence and validation passed.",
+				"ROUND 2: repaired review feedback and validation passed.",
+				"ROUND 3: repaired final style issue and validation passed.",
+			].join("\n"),
+		);
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "agent-loop-structured-review-accepted-route",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "reviewRound",
+						type: "script",
+						script: {
+							language: "js",
+							code: [
+								"return {",
+								"  summary: 'The project-specific contract is satisfied and validation artifacts were checked.',",
+								"  data: { verdict: 'continue', overall_correctness: 'correct', findings: [] },",
+								"};",
+							].join("\n"),
+						},
+						writes: ["/review"],
+					},
+					{
+						id: "classifyReviewRoute",
+						type: "script",
+						script: {
+							language: "js",
+							code: classifyRouteScript,
+						},
+						writes: ["/reviewRoute"],
+					},
+				],
+				edges: [{ from: "reviewRound", to: "classifyReviewRoute" }],
+			},
+		});
+
+		expect(result.scheduler.state.reviewRoute).toMatchObject({
+			decision: "complete",
+			reviewVerdict: "continue",
+			structuredCorrectnessAccepted: true,
+		});
+	});
+
 	it("treats trailing slash allowed paths as recursive scope fences", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-trailing-slash-scope-");
 		const cwd = tempDir.path();
