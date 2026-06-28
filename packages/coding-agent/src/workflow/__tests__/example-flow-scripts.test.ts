@@ -521,6 +521,63 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/claim-evidence-guard.md`).text()).toContain("tests/test_timed.py");
 	});
 
+	it("accepts source-backed research claims before script evidence exists", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-claim-before-script-evidence-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const accepted = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardClaimEvidence",
+			scriptFileName: "guard-claim-evidence.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/claimEvidence"],
+			initialState: {
+				task: {
+					claimSource:
+						"tests/test_itsdangerous/test_timed.py and tests/test_itsdangerous/test_url_safe.py define timed and URL-safe serializer behavior.",
+				},
+				claim: {
+					status: "claim_extracted_missing_script_evidence",
+					claim: {
+						concrete_claim:
+							"URLSafeTimedSerializer signs and later loads a URL-safe timed payload before max_age expires.",
+						metric: "loads(dumps(value), max_age=N) == value",
+					},
+					evidence: [
+						{
+							path: "tests/test_itsdangerous/test_timed.py",
+							line: 104,
+							symbol: "TestTimedSerializer.test_max_age",
+							assertion: "assert serializer.loads(signed, max_age=10) == value",
+						},
+						{
+							path: "tests/test_itsdangerous/test_url_safe.py",
+							line: 21,
+							symbol: "TestURLSafeTimedSerializer",
+							excerpt: "class TestURLSafeTimedSerializer(TestURLSafeSerializer, TestTimedSerializer):",
+						},
+					],
+					script_evidence_assessment: {
+						reproductionCommandEvidence:
+							"missing; the script node has not provided stdout, stderr, exit code, or artifact path for the declared reproduction command.",
+						validationCommandEvidence:
+							"missing; the script node has not provided stdout, stderr, exit code, or artifact path for the required validation command.",
+					},
+				},
+			},
+		});
+
+		expect(accepted.scheduler.state.claimEvidence).toMatchObject({
+			status: "pass",
+			sourceRefs: expect.arrayContaining([
+				"tests/test_itsdangerous/test_timed.py",
+				"tests/test_itsdangerous/test_url_safe.py",
+			]),
+		});
+	});
+
 	it("keeps non-exercising research reproduction evidence on the refinement route", async () => {
 		const artifact = await loadWorkflowArtifact(
 			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,

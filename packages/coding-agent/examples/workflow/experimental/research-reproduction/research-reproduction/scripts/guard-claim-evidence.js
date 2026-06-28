@@ -1,12 +1,14 @@
 const state = workflowContext.state && typeof workflowContext.state === "object" ? workflowContext.state : {};
+const task = state.task && typeof state.task === "object" ? state.task : {};
 const claim = state.claim && typeof state.claim === "object" ? state.claim : {};
 const claimText = structuredText(claim);
-const sourceRefs = collectSourceRefs(claimText);
+const sourceEvidenceText = structuredText([claim.evidence, claim.sourceEvidence, claim.source_refs, claim.sourceRefs, task.claimSource]);
+const sourceRefs = collectSourceRefs(sourceEvidenceText || claimText);
 const negativeEvidence = /\b(?:no concrete|not provided|not available|did not inspect|cannot cite|only named)\b/iu.test(
-	claimText,
+	sourceEvidenceText || claimText,
 );
 
-if (negativeEvidence || sourceRefs.length === 0 || !hasConcreteAnchor(claimText)) {
+if (negativeEvidence || sourceRefs.length === 0 || !hasConcreteAnchor(sourceEvidenceText || claimText)) {
 	await Bun.write(
 		"workflow-output/claim-evidence-guard.md",
 		[

@@ -719,6 +719,41 @@ edges: []
 		expect(output.artifacts).toEqual(["/tmp/reportReview.md", "/tmp/reportReview.jsonl"]);
 	});
 
+	it("recovers declared gates placed in partial reviewer correctness fields", async () => {
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async () => ({
+				exitCode: 1,
+				output: JSON.stringify({
+					error: "schema_violation",
+					message: "explanation: is required",
+					missingRequired: ["explanation", "confidence"],
+					data: JSON.stringify({ overall_correctness: "finish" }),
+				}),
+				stderr: "schema_violation: missing required fields: explanation, confidence",
+			}),
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "fixReview",
+			type: "review",
+			prompt: "Return finish only when no-code bug evidence is accepted.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(output.verdict).toBe("finish");
+	});
+
 	it("routes one-line reviewer verdict prefixes before falling back", async () => {
 		const result = await runRetryReview("COMPLETE Validation passed after the required loop round.");
 

@@ -24,6 +24,7 @@
 ### Fixed
 
 - Fixed workflow review nodes launched through the reviewer agent failing on schema-only or recoverable partial schema-violation output contracts instead of mapping structured reviewer verdicts back to declared workflow gates.
+- Fixed workflow review recovery when a reviewer placed a declared workflow gate in `overall_correctness`, and fixed the experimental research-reproduction claim guard rejecting source-backed claims before script evidence nodes had run.
 - Fixed the experimental performance-optimization-search workflow rejecting measured no-win outcomes when the task contract authorized no-win archival in explicit prose instead of a fixed `No-Win Result: allowed` marker.
 - Fixed the experimental refactor-migration workflow carrying stale "no source files changed" compatibility notes into review context after real source edits were present.
 - Fixed the experimental bug-triage-repro-fix workflow rejecting valid no-code archives when the cause reconciliation refuted a proposed defect using natural handoff wording.

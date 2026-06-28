@@ -818,6 +818,12 @@ function reviewRecoveryDataHasSignal(data: unknown, gates: string[] | undefined)
 	const record = data as Record<string, unknown>;
 	if (record.overall_correctness === "correct" || record.overall_correctness === "incorrect") return true;
 	if (
+		typeof record.overall_correctness === "string" &&
+		declaredGateFor(record.overall_correctness, gates) !== undefined
+	) {
+		return true;
+	}
+	if (
 		typeof record.verdict === "string" &&
 		(gates === undefined || declaredGateFor(record.verdict, gates) !== undefined)
 	) {
