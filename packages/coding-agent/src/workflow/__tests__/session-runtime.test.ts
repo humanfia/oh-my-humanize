@@ -357,6 +357,76 @@ edges: []
 		expect(progress).not.toContain(`local://${cwd}/.agent-output/build.md`);
 	});
 
+	it("keeps runtime observability authoritative when agents write the runtime directory", async () => {
+		using tempDir = TempDir.createSync("@omh-workflow-observability-owned-");
+		const cwd = tempDir.path();
+		const host = createSessionWorkflowRuntimeHost({
+			cwd,
+			runAgentTask: async request => {
+				if (request.nodeId === "build") {
+					await Bun.write(
+						`${cwd}/workflow-output/omh-runtime/observability.json`,
+						`${JSON.stringify(
+							{
+								version: 1,
+								activations: [
+									{
+										ts: "2026-06-28T00:00:00.000Z",
+										activationId: "build:activation-1",
+										nodeId: "implementationRound",
+										type: "agent",
+										status: "completed",
+										summary: "agent-authored runtime progress",
+										artifacts: ["workflow-output/agent-authored-evidence.md"],
+									},
+								],
+								lifecycle: [],
+							},
+							null,
+							2,
+						)}\n`,
+					);
+					await Bun.write(`${cwd}/workflow-output/omh-runtime/progress.md`, "# Agent-authored runtime progress\n");
+				}
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: `${request.nodeId} completed` }),
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const buildNode: WorkflowNode = { id: "build", type: "agent", prompt: "Build the thing." };
+		const reviewNode: WorkflowNode = { id: "review", type: "agent", prompt: "Review the thing." };
+		await host.runAgentNode({
+			node: buildNode,
+			activation: workflowActivation(buildNode.id),
+			agent: "builder",
+			prompt: buildNode.prompt,
+		});
+		await host.runAgentNode({
+			node: reviewNode,
+			activation: workflowActivation(reviewNode.id),
+			agent: "reviewer",
+			prompt: reviewNode.prompt,
+		});
+
+		const observability = await Bun.file(`${cwd}/workflow-output/omh-runtime/observability.json`).json();
+		expect(observability.activations.map((activation: { nodeId: string }) => activation.nodeId)).toEqual([
+			"build",
+			"review",
+		]);
+		expect(observability.activations.map((activation: { activationId: string }) => activation.activationId)).toEqual([
+			"build:activation-1",
+			"review:activation-1",
+		]);
+		const progress = await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text();
+		expect(progress).toContain("build");
+		expect(progress).toContain("review");
+		expect(progress).not.toContain("implementationRound");
+		expect(progress).not.toContain("agent-authored runtime progress");
+	});
+
 	it("surfaces recovered transient retries in workflow observability", async () => {
 		using tempDir = TempDir.createSync("@omh-workflow-retry-observability-");
 		const cwd = tempDir.path();

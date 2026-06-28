@@ -51,10 +51,14 @@ export interface RecordWorkflowCheckpointObservabilityOptions {
 	workspace?: WorkflowCheckpointWorkspaceSnapshot;
 }
 
+const workflowObservabilityIndices = new Map<string, WorkflowObservabilityIndex>();
+
 export function createWorkflowObservabilityRecorder(cwd: string): WorkflowObservabilityRecorder {
 	let pendingWrite: Promise<void> = Promise.resolve();
+	const index = emptyWorkflowObservabilityIndex();
+	workflowObservabilityIndices.set(cwd, index);
 	return event => {
-		const write = pendingWrite.then(() => writeWorkflowObservabilityEvent(cwd, event)).catch(() => undefined);
+		const write = pendingWrite.then(() => writeWorkflowObservabilityEvent(cwd, index, event)).catch(() => undefined);
 		pendingWrite = write;
 		return write;
 	};
@@ -85,7 +89,8 @@ export async function recordWorkflowCheckpointObservability(
 		summary: `checkpoint ${options.checkpointId}: completed ${options.completedActivationIds.length}, aborted ${options.abortedActivationIds.length}, frontier ${options.frontierNodeIds.join(", ") || "none"}`,
 	};
 	if (options.workspace !== undefined) event.workspaceStatus = options.workspace.status;
-	await writeWorkflowObservabilityEvent(cwd, event);
+	const index = workflowObservabilityIndices.get(cwd) ?? emptyWorkflowObservabilityIndex();
+	await writeWorkflowObservabilityEvent(cwd, index, event);
 }
 
 function workflowObservabilityActivation(
@@ -135,18 +140,24 @@ function workflowObservabilityRetryHistoryFromData(
 
 async function writeWorkflowObservabilityEvent(
 	cwd: string,
+	index: WorkflowObservabilityIndex,
 	event: WorkflowObservabilityActivation | WorkflowObservabilityLifecycleEvent,
 ): Promise<void> {
 	const indexPath = `${cwd}/${WORKFLOW_OBSERVABILITY_INDEX_PATH}`;
 	const materializedEvent =
 		"activationId" in event ? await materializeWorkflowObservabilityArtifacts(cwd, event) : event;
-	const previous = await readWorkflowObservabilityIndex(indexPath);
-	const next: WorkflowObservabilityIndex =
-		"activationId" in materializedEvent
-			? { ...previous, activations: [...previous.activations, materializedEvent] }
-			: { ...previous, lifecycle: [...previous.lifecycle, materializedEvent] };
-	await Bun.write(indexPath, `${JSON.stringify(next, null, 2)}\n`);
-	await Bun.write(`${cwd}/${WORKFLOW_OBSERVABILITY_PROGRESS_PATH}`, renderWorkflowObservabilityProgress(next));
+	if ("activationId" in materializedEvent) {
+		const existingIndex = index.activations.findIndex(
+			activation => activation.activationId === materializedEvent.activationId,
+		);
+		if (existingIndex >= 0) index.activations.splice(existingIndex, 1, materializedEvent);
+		else index.activations.push(materializedEvent);
+	} else {
+		index.lifecycle.push(materializedEvent);
+	}
+	workflowObservabilityIndices.set(cwd, index);
+	await Bun.write(indexPath, `${JSON.stringify(index, null, 2)}\n`);
+	await Bun.write(`${cwd}/${WORKFLOW_OBSERVABILITY_PROGRESS_PATH}`, renderWorkflowObservabilityProgress(index));
 }
 
 async function materializeWorkflowObservabilityArtifacts(
@@ -211,43 +222,6 @@ function workflowObservabilityPortablePath(value: string): string {
 	return value.split(path.sep).join("/");
 }
 
-async function readWorkflowObservabilityIndex(indexPath: string): Promise<WorkflowObservabilityIndex> {
-	try {
-		const parsed: unknown = JSON.parse(await Bun.file(indexPath).text());
-		if (isWorkflowObservabilityIndex(parsed)) return parsed;
-		return emptyWorkflowObservabilityIndex();
-	} catch (error) {
-		if (isEnoent(error)) return emptyWorkflowObservabilityIndex();
-		throw error;
-	}
-}
-
-function isWorkflowObservabilityIndex(value: unknown): value is WorkflowObservabilityIndex {
-	if (!isWorkflowRecord(value)) return false;
-	if (value.version !== 1) return false;
-	if (!Array.isArray(value.activations)) return false;
-	if (!value.activations.every(isWorkflowObservabilityActivation)) return false;
-	if (value.lifecycle === undefined) return true;
-	return Array.isArray(value.lifecycle) && value.lifecycle.every(isWorkflowObservabilityLifecycleEvent);
-}
-
-function isWorkflowObservabilityActivation(value: unknown): value is WorkflowObservabilityActivation {
-	if (!isWorkflowRecord(value)) return false;
-	return (
-		typeof value.ts === "string" &&
-		typeof value.activationId === "string" &&
-		typeof value.nodeId === "string" &&
-		typeof value.type === "string" &&
-		value.status === "completed" &&
-		typeof value.summary === "string" &&
-		Array.isArray(value.artifacts) &&
-		value.artifacts.every(artifact => typeof artifact === "string") &&
-		(value.verdict === undefined || typeof value.verdict === "string") &&
-		(value.retries === undefined ||
-			(Array.isArray(value.retries) && value.retries.every(isWorkflowObservabilityRetryHistoryEntry)))
-	);
-}
-
 function isWorkflowObservabilityRetryHistoryEntry(value: unknown): value is WorkflowActivationRetryHistoryEntry {
 	if (!isWorkflowRecord(value)) return false;
 	return (
@@ -260,24 +234,6 @@ function isWorkflowObservabilityRetryHistoryEntry(value: unknown): value is Work
 		Number.isInteger(value.nextAttempt) &&
 		typeof value.delayMs === "number" &&
 		Number.isInteger(value.delayMs)
-	);
-}
-
-function isWorkflowObservabilityLifecycleEvent(value: unknown): value is WorkflowObservabilityLifecycleEvent {
-	if (!isWorkflowRecord(value)) return false;
-	return (
-		typeof value.ts === "string" &&
-		value.event === "checkpoint_created" &&
-		typeof value.attemptId === "string" &&
-		typeof value.checkpointId === "string" &&
-		Array.isArray(value.completedActivationIds) &&
-		value.completedActivationIds.every(id => typeof id === "string") &&
-		Array.isArray(value.abortedActivationIds) &&
-		value.abortedActivationIds.every(id => typeof id === "string") &&
-		Array.isArray(value.frontierNodeIds) &&
-		value.frontierNodeIds.every(id => typeof id === "string") &&
-		(value.workspaceStatus === undefined || typeof value.workspaceStatus === "string") &&
-		typeof value.summary === "string"
 	);
 }
 
