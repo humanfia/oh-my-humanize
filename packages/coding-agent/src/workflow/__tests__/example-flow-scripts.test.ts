@@ -5511,6 +5511,11 @@ describe("example workflow scripts", () => {
 					status: "ready",
 					strategy_summary:
 						"Compatibility boundary: verify=str branch keeps immediate cafile/capath return before cert handling.",
+					review_context: {
+						compatibility: {
+							only_workflow_output_evidence_changed: false,
+						},
+					},
 					notes: [
 						"Behavior: lazily import warnings and call warnings.warn(message, DeprecationWarning, stacklevel=2).",
 						"Rationale: stacklevel=2 keeps warnings attributed to the public caller.",
@@ -5547,6 +5552,8 @@ describe("example workflow scripts", () => {
 		expect(context).toContain("stacklevel=2 keeps warnings attributed");
 		expect(context).toContain("verify=str branch keeps immediate cafile/capath return before cert handling");
 		expect(context).not.toContain("strategy_summary");
+		expect(context).not.toContain('compatibility": {');
+		expect(context).not.toContain("only_workflow_output_evidence_changed");
 	});
 
 	it("archives accepted refactor migrations with runtime activation rollback evidence", async () => {

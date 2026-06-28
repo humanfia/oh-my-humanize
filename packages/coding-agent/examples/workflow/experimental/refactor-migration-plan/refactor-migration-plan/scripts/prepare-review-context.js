@@ -160,11 +160,8 @@ async function projectDiffPreview() {
 }
 
 function compatibilityReviewHighlights(value) {
-	const text = evidenceText(value);
-	if (!text.trim()) return [];
-	const lines = text
-		.split(/\r?\n/u)
-		.map(line => line.trim())
+	const lines = evidenceStrings(value)
+		.map(text => text.trim())
 		.filter(line =>
 			/\b(?:behavior|boundary|compatibility|preserve|requirement|rollback|warning|stacklevel|public|observable|must|exact)\b/iu.test(
 				line,
@@ -173,6 +170,14 @@ function compatibilityReviewHighlights(value) {
 		.map(cleanHighlightLine)
 		.filter(Boolean);
 	return uniqueStrings(lines).slice(0, 40);
+}
+
+function evidenceStrings(value) {
+	if (typeof value === "string") return [value];
+	if (value === undefined || value === null) return [];
+	if (Array.isArray(value)) return value.flatMap(item => evidenceStrings(item));
+	if (typeof value !== "object") return [];
+	return Object.values(value).flatMap(item => evidenceStrings(item));
 }
 
 function cleanHighlightLine(line) {
@@ -184,12 +189,6 @@ function cleanHighlightLine(line) {
 		.replace(/",?$/u, "")
 		.replace(/\\"/gu, "\"")
 		.trim();
-}
-
-function evidenceText(value) {
-	if (typeof value === "string") return value;
-	if (value === undefined || value === null) return "";
-	return JSON.stringify(value, null, 2);
 }
 
 function reviewContextMarkdown({ workspace, diff, compatibilityHighlights }) {

@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration workflow regenerating raw JSON structure lines as compatibility highlights in the reviewer context, which could cause repeated review loops on stale artifact noise.
 - Fixed the experimental agent-build-review-loop workflow allowing builder rounds to start when the task-declared validation command pointed at a directory or another invalid explicit executable.
 - Fixed workflow read-only workspace guards treating external monitor assignment metadata updates as project mutations; `monitor-assignment.json` is now treated as operator/runtime metadata while task inputs and project files remain guarded.
 - Fixed the experimental performance-optimization workflow treating OMH-managed isolated lane worktrees as disallowed scratch evidence; branch reports may now cite the runtime isolation worktree while extra scratch remains constrained to the task-declared run root.
