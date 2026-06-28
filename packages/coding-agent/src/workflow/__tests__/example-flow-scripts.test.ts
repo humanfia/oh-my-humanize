@@ -42,6 +42,99 @@ describe("example workflow scripts", () => {
 		expect(prompt).toContain("Only script nodes may execute task-declared commands and write command evidence.");
 	});
 
+	it("routes bug triage no-code evidence to validation instead of patching", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix.omhflow`,
+		);
+		const isolateTargets = artifact.definition.edges
+			.filter(edge => edge.from === "isolateCause")
+			.map(edge => edge.to);
+		expect(isolateTargets).toEqual(["classifyResolutionRoute"]);
+
+		const outgoing = artifact.definition.edges.filter(edge => edge.from === "classifyResolutionRoute");
+		const noCodeTargets = outgoing
+			.filter(edge =>
+				edge.condition === undefined
+					? true
+					: evaluateWorkflowCondition(edge.condition.source, {
+							state: { resolution: { route: "no-code" } },
+							outputs: {},
+						}),
+			)
+			.map(edge => edge.to);
+		expect(noCodeTargets).toEqual(["runRegression"]);
+
+		const patchTargets = outgoing
+			.filter(edge =>
+				edge.condition === undefined
+					? true
+					: evaluateWorkflowCondition(edge.condition.source, {
+							state: { resolution: { route: "patch" } },
+							outputs: {},
+						}),
+			)
+			.map(edge => edge.to);
+		expect(patchTargets).toEqual(["initialPatchFix"]);
+	});
+
+	it("materializes bug triage no-code evidence before validation", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-no-code-route-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Investigate a reported behavior that may already be fixed.",
+			"",
+			"No-Code Resolution: allowed",
+			"",
+			"Reproduction Command:",
+			"python -c \"print('behavior already correct')\"",
+			"",
+			"Validation Command:",
+			"python -c \"print('validated')\"",
+		].join("\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "classifyResolutionRoute",
+			scriptFileName: "classify-resolution-route.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/resolution", "/patch"],
+			initialState: {
+				task: {
+					taskText,
+					reproductionCommand: "python -c \"print('behavior already correct')\"",
+					validationCommand: "python -c \"print('validated')\"",
+				},
+				repro: {
+					exitCode: 0,
+					outputPath: "workflow-output/reproduction.md",
+				},
+				cause: {
+					narrowest_fix_boundary: "parser default-map handling",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.resolution).toMatchObject({
+			route: "no-code",
+			allowedNoCodeResolution: true,
+			reproductionExitCode: 0,
+		});
+		expect(result.scheduler.state.patch).toMatchObject({
+			mode: "no-code",
+			rollbackPath: "workflow-output/bugfix-rollback.md",
+			rootCauseReconciliationPath: "workflow-output/no-bug-root-cause.md",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/bugfix-rollback.md`).text()).toContain(
+			"No project files were changed",
+		);
+		const reconciliation = await Bun.file(`${cwd}/workflow-output/no-bug-root-cause.md`).text();
+		expect(reconciliation).toContain("## Cause Reconciliation");
+		expect(reconciliation).toContain("isolateCause");
+	});
+
 	it("binds research reproduction validation evidence as standalone prompt context", async () => {
 		const artifact = await loadWorkflowArtifact(
 			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,

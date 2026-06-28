@@ -27,6 +27,8 @@ stateSchema:
     bug: object
     repro: object
     cause: object
+    resolution: object
+    /resolution/route: string
     patch: object
     regression: object
     review: string
@@ -36,6 +38,8 @@ resources:
   - path: scripts/precheck-task-contract.js
     kind: script
   - path: scripts/run-reproduction.js
+    kind: script
+  - path: scripts/classify-resolution-route.js
     kind: script
   - path: scripts/run-regression.js
     kind: script
@@ -99,6 +103,18 @@ nodes:
       file: prompts/isolate-cause.md
     writes:
       - /cause
+  - id: classifyResolutionRoute
+    type: script
+    reads:
+      - /task
+      - /repro
+      - /cause
+    script:
+      language: js
+      file: scripts/classify-resolution-route.js
+    writes:
+      - /resolution
+      - /patch
   - id: initialPatchFix
     type: agent
     agent: task
@@ -145,6 +161,7 @@ nodes:
     reads:
       - /task
       - /patch
+      - /resolution
     script:
       language: js
       file: scripts/run-regression.js
@@ -195,7 +212,15 @@ edges:
   - from: runReproduction
     to: isolateCause
   - from: isolateCause
+    to: classifyResolutionRoute
+  - from: classifyResolutionRoute
     to: initialPatchFix
+    when: state.resolution.route == "patch"
+    label: patch required
+  - from: classifyResolutionRoute
+    to: runRegression
+    when: state.resolution.route == "no-code"
+    label: no-code evidence
   - from: initialPatchFix
     to: runRegression
   - from: patchFix
