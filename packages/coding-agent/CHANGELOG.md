@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration workflow carrying stale "no source files changed" compatibility notes into review context after real source edits were present.
 - Fixed the experimental bug-triage-repro-fix workflow rejecting valid no-code archives when the cause reconciliation refuted a proposed defect using natural handoff wording.
 - Fixed workflow observability hiding recovered transient agent retries; successful retry recovery now appears in `workflow-output/omh-runtime/observability.json` and progress summaries.
 - Fixed the experimental research-reproduction workflow rejecting multi-line `Claim Source` evidence blocks while preserving the single-line command contract for shell commands.

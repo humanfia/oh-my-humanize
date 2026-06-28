@@ -5825,6 +5825,7 @@ describe("example workflow scripts", () => {
 					notes: [
 						"Behavior: lazily import warnings and call warnings.warn(message, DeprecationWarning, stacklevel=2).",
 						"Rationale: stacklevel=2 keeps warnings attributed to the public caller.",
+						"Rollback notes archived in the artifact; no production source files were changed.",
 					],
 				},
 			},
@@ -5857,6 +5858,7 @@ describe("example workflow scripts", () => {
 		expect(context).toContain("test is an untracked project file");
 		expect(context).toContain("stacklevel=2 keeps warnings attributed");
 		expect(context).toContain("verify=str branch keeps immediate cafile/capath return before cert handling");
+		expect(context).not.toContain("no production source files were changed");
 		expect(context).not.toContain("strategy_summary");
 		expect(context).not.toContain('compatibility": {');
 		expect(context).not.toContain("only_workflow_output_evidence_changed");

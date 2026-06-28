@@ -3,7 +3,7 @@ const task = state.task && typeof state.task === "object" ? state.task : {};
 const taskText = typeof task.text === "string" ? task.text : await readOptionalText("task.md");
 const workspace = await workspaceReviewContext(taskText);
 const diff = await projectDiffPreview();
-const compatibilityHighlights = compatibilityReviewHighlights(state.compatibility);
+const compatibilityHighlights = compatibilityReviewHighlights(state.compatibility, workspace);
 const outputPath = "workflow-output/refactor-migration-review-context.md";
 
 await Bun.write(outputPath, reviewContextMarkdown({ workspace, diff, compatibilityHighlights }));
@@ -159,7 +159,7 @@ async function projectDiffPreview() {
 	};
 }
 
-function compatibilityReviewHighlights(value) {
+function compatibilityReviewHighlights(value, workspace) {
 	const lines = evidenceStrings(value)
 		.map(text => text.trim())
 		.filter(line =>
@@ -168,8 +168,25 @@ function compatibilityReviewHighlights(value) {
 			),
 		)
 		.map(cleanHighlightLine)
+		.filter(line => !staleNoSourceChangeHighlight(line, workspace))
 		.filter(Boolean);
 	return uniqueStrings(lines).slice(0, 40);
+}
+
+function staleNoSourceChangeHighlight(line, workspace) {
+	if (!workspaceHasSourceChanges(workspace)) return false;
+	return /\bno\s+(?:production\s+)?source\s+files?\s+(?:were\s+)?changed\b/iu.test(line);
+}
+
+function workspaceHasSourceChanges(workspace) {
+	return workspace.changedFiles.some(entry => sourceLikeChangedPath(entry.path));
+}
+
+function sourceLikeChangedPath(filePath) {
+	if (filePath.startsWith("tests/") || filePath.startsWith("test/")) return false;
+	if (filePath.startsWith("docs/") || filePath.startsWith("doc/")) return false;
+	if (filePath.endsWith(".md") || filePath.endsWith(".rst") || filePath.endsWith(".txt")) return false;
+	return !allowedGeneratedPath(filePath);
 }
 
 function evidenceStrings(value) {
