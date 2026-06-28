@@ -1812,10 +1812,12 @@ function findWorkflowCheckpointForAttempt(
 	family: WorkflowRunFamilySnapshot,
 	attempt: WorkflowRunAttemptSnapshot,
 ): WorkflowCheckpointSnapshot | undefined {
+	const ownedCheckpoint = family.checkpoints.filter(checkpoint => checkpoint.attemptId === attempt.id).at(-1);
+	if (ownedCheckpoint !== undefined) return ownedCheckpoint;
 	if (attempt.checkpointId !== undefined) {
 		return family.checkpoints.find(checkpoint => checkpoint.id === attempt.checkpointId);
 	}
-	return family.checkpoints.filter(checkpoint => checkpoint.attemptId === attempt.id).at(-1);
+	return undefined;
 }
 
 function findWorkflowCheckpointActivation(

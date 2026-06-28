@@ -4,6 +4,7 @@ import type { FlowFreeze } from "./freeze";
 import {
 	buildWorkflowGraphView,
 	renderWorkflowGraphDiagram,
+	renderWorkflowGraphText,
 	selectWorkflowGraphViewNode,
 	type WorkflowGraphView,
 } from "./graph-view";
@@ -49,6 +50,15 @@ describe("buildWorkflowGraphView", () => {
 			"local:///tmp/workflow/build.md",
 			"local:///tmp/workflow/build.jsonl",
 		]);
+	});
+
+	it("recommends the latest checkpoint owned by a restarted stopped attempt", () => {
+		const view = buildWorkflowGraphView(workflowFamilyWithRestartedCheckpoint());
+		const text = renderWorkflowGraphText(view);
+
+		expect(view.checkpoint?.id).toBe("attempt-2:checkpoint-1");
+		expect(text).toContain("Restart · /workflow restart attempt-2:checkpoint-1");
+		expect(text).not.toContain("Restart · /workflow restart workflow-family:attempt-1:checkpoint-1");
 	});
 });
 
@@ -236,6 +246,81 @@ function workflowFamilyWithAgentArtifacts(): WorkflowRunFamilySnapshot {
 			},
 		],
 		checkpoints: [],
+		changeRequests: [],
+	};
+}
+
+function workflowFamilyWithRestartedCheckpoint(): WorkflowRunFamilySnapshot {
+	const definition: WorkflowDefinition = {
+		name: "restart-control-smoke",
+		version: 1,
+		models: { roles: {}, defaults: {} },
+		nodes: [
+			{ id: "mutationGate", type: "human", checkpoint: "after" },
+			{ id: "buildRound", type: "agent" },
+		],
+		edges: [
+			{
+				from: "mutationGate",
+				to: "buildRound",
+				condition: { source: 'outputs.mutationGate.response == "Approve"' },
+			},
+		],
+	};
+	return {
+		id: "workflow-family",
+		freezes: [flowFreeze(definition)],
+		attempts: [
+			{
+				id: "workflow-family:attempt-1",
+				familyId: "workflow-family",
+				freezeId: "freeze-1",
+				startNodeId: "mutationGate",
+				status: "stopped",
+				runtimeBindingSnapshot: runtimeBinding(),
+				activations: [],
+			},
+			{
+				id: "attempt-2",
+				familyId: "workflow-family",
+				freezeId: "freeze-1",
+				startNodeId: "mutationGate",
+				status: "stopped",
+				runtimeBindingSnapshot: runtimeBinding(),
+				checkpointId: "workflow-family:attempt-1:checkpoint-1",
+				activations: [
+					{
+						id: "activation-1",
+						nodeId: "mutationGate",
+						parentActivationIds: [],
+						status: "completed",
+						output: { data: { response: "Approve" }, summary: "Approve" },
+					},
+				],
+			},
+		],
+		checkpoints: [
+			{
+				id: "workflow-family:attempt-1:checkpoint-1",
+				familyId: "workflow-family",
+				attemptId: "workflow-family:attempt-1",
+				completedActivationIds: [],
+				abortedActivationIds: [],
+				frontierNodeIds: ["mutationGate"],
+				state: {},
+				sourceMapping: { mutationGate: "mutationGate" },
+			},
+			{
+				id: "attempt-2:checkpoint-1",
+				familyId: "workflow-family",
+				attemptId: "attempt-2",
+				completedActivationIds: ["activation-1"],
+				abortedActivationIds: [],
+				frontierNodeIds: ["buildRound"],
+				state: {},
+				sourceMapping: { buildRound: "buildRound" },
+			},
+		],
 		changeRequests: [],
 	};
 }

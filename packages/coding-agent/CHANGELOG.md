@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed workflow manager restart controls preferring the source checkpoint for a restarted stopped attempt instead of the latest checkpoint produced by that attempt, which could send operators back into an already-resolved human gate.
 - Fixed duplicate workflow change request submissions with the same id creating conflicting proposed/approved records; identical repeats are now idempotent and conflicting repeats fail before they can poison apply/restart lifecycle state.
 - Fixed the experimental agent-build-review-loop workflow continuing into extra build rounds when a reviewer fallback verdict said `continue` but the review summary showed the task contract was satisfied.
 - Fixed the experimental refactor-migration workflow regenerating raw JSON structure lines as compatibility highlights in the reviewer context, which could cause repeated review loops on stale artifact noise.
