@@ -791,7 +791,10 @@ function schemaViolationReviewRecoverySource(
 	if (!isSchemaViolation || payload === undefined) return undefined;
 
 	const data = schemaViolationData(payload.data);
-	if (data === undefined || !reviewRecoveryDataHasSignal(data, gates)) return undefined;
+	if (data === undefined) return undefined;
+	const findingsRecovery = reviewFindingsRecoverySource(data, gates);
+	if (findingsRecovery !== undefined) return findingsRecovery;
+	if (!reviewRecoveryDataHasSignal(data, gates)) return undefined;
 	if (typeof data === "string") return data;
 	try {
 		return JSON.stringify(data);
@@ -833,6 +836,62 @@ function reviewRecoveryDataHasSignal(data: unknown, gates: string[] | undefined)
 		if (typeof source === "string" && reviewTextHasDeclaredGate(source, gates)) return true;
 	}
 	return false;
+}
+
+function reviewFindingsRecoverySource(data: unknown, gates: string[] | undefined): string | undefined {
+	const record = schemaViolationRecord(data);
+	const findings = record?.findings;
+	if (!Array.isArray(findings) || findings.length === 0) return undefined;
+	const summary = reviewFindingsSummary(findings);
+	if (summary === undefined) return undefined;
+	const repairGate = verdictFromReviewerCorrectness("incorrect", gates, undefined);
+	return JSON.stringify({
+		overall_correctness: "incorrect",
+		explanation: `verdict ${repairGate}\n${summary}`,
+		confidence: reviewFindingsConfidence(findings),
+	});
+}
+
+function schemaViolationRecord(data: unknown): Record<string, unknown> | undefined {
+	if (typeof data === "string") {
+		const parsed = parseJsonObject(data.trim());
+		return parsed ?? undefined;
+	}
+	if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+	return data as Record<string, unknown>;
+}
+
+function reviewFindingsSummary(findings: unknown[]): string | undefined {
+	const lines: string[] = [];
+	for (const finding of findings.slice(0, 3)) {
+		const line = reviewFindingLine(finding);
+		if (line !== undefined) lines.push(line);
+	}
+	if (lines.length === 0) return undefined;
+	const suffix =
+		findings.length > lines.length ? `\n- ${findings.length - lines.length} additional finding(s) omitted` : "";
+	return `Reviewer reported ${findings.length} finding(s):\n${lines.join("\n")}${suffix}`;
+}
+
+function reviewFindingLine(finding: unknown): string | undefined {
+	if (typeof finding === "string") return `- ${finding}`;
+	if (finding === null || typeof finding !== "object" || Array.isArray(finding)) return undefined;
+	const record = finding as Record<string, unknown>;
+	const title = typeof record.title === "string" ? record.title.trim() : "";
+	const body = typeof record.body === "string" ? record.body.trim() : "";
+	const priority =
+		typeof record.priority === "number" && Number.isFinite(record.priority) ? `P${record.priority}: ` : "";
+	const content = [title, body].filter(part => part.length > 0).join(" - ");
+	return content.length > 0 ? `- ${priority}${content}` : undefined;
+}
+
+function reviewFindingsConfidence(findings: unknown[]): number {
+	for (const finding of findings) {
+		if (finding === null || typeof finding !== "object" || Array.isArray(finding)) continue;
+		const confidence = (finding as Record<string, unknown>).confidence;
+		if (typeof confidence === "number" && Number.isFinite(confidence)) return Math.max(0, Math.min(1, confidence));
+	}
+	return 0.8;
 }
 
 function reviewTextHasDeclaredGate(text: string, gates: string[] | undefined): boolean {

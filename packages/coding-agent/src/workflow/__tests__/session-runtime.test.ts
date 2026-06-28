@@ -790,6 +790,51 @@ edges: []
 		expect(output.summary).toContain("recovered schema_violation");
 	});
 
+	it("recovers findings-only reviewer schema violations to a semantic repair gate", async () => {
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async () => ({
+				exitCode: 1,
+				output: JSON.stringify({
+					error: "schema_violation",
+					message: "overall_correctness: is required",
+					missingRequired: ["overall_correctness", "explanation", "confidence"],
+					data: JSON.stringify({
+						findings: [
+							{
+								title: "Separate top-level tests with two blank lines",
+								body: "The newest diff violates project style, so another build round should repair it.",
+								priority: 2,
+							},
+						],
+					}),
+				}),
+				stderr: "schema_violation: missing required fields: overall_correctness, explanation, confidence",
+			}),
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "reviewRound",
+			type: "review",
+			prompt: "Return complete only when the build/review loop is done.",
+			gates: ["complete", "continue"],
+			fallbackVerdict: "continue",
+		};
+
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(output.verdict).toBe("continue");
+		expect(output.summary).toContain("recovered schema_violation as verdict continue");
+		expect(output.summary).toContain("Separate top-level tests with two blank lines");
+	});
+
 	it("routes one-line reviewer verdict prefixes before falling back", async () => {
 		const result = await runRetryReview("COMPLETE Validation passed after the required loop round.");
 
