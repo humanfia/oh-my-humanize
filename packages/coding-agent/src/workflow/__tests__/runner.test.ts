@@ -10,7 +10,12 @@ import { reconstructWorkflowFamilies } from "../lifecycle";
 import { WorkflowNodeAbortedError, type WorkflowNodeRuntimeHost } from "../node-runtime";
 import { runWorkflow } from "../runner";
 import type { WorkflowActivation } from "../scheduler";
-import { assertWorkflowCheckpointWorkspaceMatches } from "../workspace-checkpoint";
+import {
+	assertWorkflowCheckpointWorkspaceMatches,
+	assertWorkflowWorkspaceSnapshotUnchanged,
+	captureWorkflowCheckpointWorkspace,
+	workflowRuntimeScratchDirtyPathPrefixes,
+} from "../workspace-checkpoint";
 
 describe("runWorkflow lifecycle", () => {
 	it("fails fast when an agent output declares a fail-closed terminal status", async () => {
@@ -222,6 +227,33 @@ describe("runWorkflow lifecycle", () => {
 			expect(progress).toContain("## Lifecycle Events");
 			expect(progress).toContain("checkpoint_created");
 			expect(progress).toContain("frontier writePartial");
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true });
+		}
+	});
+
+	it("does not treat monitor assignment updates as read-only workspace changes", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "omp-workflow-monitor-metadata-"));
+		try {
+			await initializeGitWorkspace(workspace);
+			await Bun.write(path.join(workspace, "task.md"), "Run a workflow canary.\n");
+			await Bun.write(path.join(workspace, "manifest-entry.json"), '{"runId":"run-1"}\n');
+			await Bun.write(path.join(workspace, "monitor-assignment.json"), '{"monitor":"pending"}\n');
+			await Bun.write(path.join(workspace, "workflow-output", "documentation-precheck.md"), "precheck\n");
+			const snapshotOptions = {
+				ignoredDirtyPathPrefixes: workflowRuntimeScratchDirtyPathPrefixes(workspace),
+			};
+			const before = await captureWorkflowCheckpointWorkspace(workspace, snapshotOptions);
+
+			await Bun.write(path.join(workspace, "monitor-assignment.json"), '{"monitor":"agent-1"}\n');
+			const after = await captureWorkflowCheckpointWorkspace(workspace, snapshotOptions);
+
+			expect(() => assertWorkflowWorkspaceSnapshotUnchanged(before, after, "readOnlyNode")).not.toThrow();
+			expect(after?.dirtyPaths).toEqual([
+				"manifest-entry.json",
+				"task.md",
+				"workflow-output/documentation-precheck.md",
+			]);
 		} finally {
 			await fs.rm(workspace, { recursive: true, force: true });
 		}

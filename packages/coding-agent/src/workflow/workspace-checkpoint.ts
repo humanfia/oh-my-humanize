@@ -113,6 +113,7 @@ export function workflowRuntimeScratchDirtyPathPrefixes(workspaceRoot: string | 
 	if (workspaceRoot === undefined) return [];
 	return normalizeIgnoredDirtyPathPrefixes(workspaceRoot, [
 		"workflow-output/omh-runtime",
+		"monitor-assignment.json",
 		process.env.OMH_RUN_TMP,
 		Bun.env.OMH_RUN_TMP,
 		process.env.TMPDIR,
