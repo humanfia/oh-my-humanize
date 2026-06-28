@@ -67,6 +67,7 @@ export interface HookSelectorOptions {
 	onLeft?: () => void;
 	onRight?: () => void;
 	onExternalEditor?: () => void;
+	onSlashCommandStart?: () => void;
 	helpText?: string;
 	slider?: HookSelectorSlider;
 	/** Indices into the original options that cannot be selected: they render
@@ -166,6 +167,8 @@ export class HookSelectorComponent extends Container {
 	#onLeftCallback: (() => void) | undefined;
 	#onRightCallback: (() => void) | undefined;
 	#onExternalEditorCallback: (() => void) | undefined;
+	#onSlashCommandStartCallback: (() => void) | undefined;
+	#slashCommandHandedOff = false;
 	#slider: HookSelectorSlider | undefined;
 	#sliderIndex: number = 0;
 	#sliderComponent: Text | undefined;
@@ -201,6 +204,7 @@ export class HookSelectorComponent extends Container {
 		this.#onLeftCallback = opts?.onLeft;
 		this.#onRightCallback = opts?.onRight;
 		this.#onExternalEditorCallback = opts?.onExternalEditor;
+		this.#onSlashCommandStartCallback = opts?.onSlashCommandStart;
 		if (opts?.slider && opts.slider.segments.length > 0) {
 			this.#slider = opts.slider;
 			this.#sliderIndex = Math.max(0, Math.min(opts.slider.index, opts.slider.segments.length - 1));
@@ -613,12 +617,28 @@ export class HookSelectorComponent extends Container {
 		return true;
 	}
 
+	#handleSlashCommandStart(keyData: string): boolean {
+		if (!this.#onSlashCommandStartCallback) return false;
+		if (this.#slashCommandHandedOff) return true;
+		if (this.#searchQuery.length > 0) return false;
+		if (extractPrintableText(keyData) !== "/") return false;
+		this.#slashCommandHandedOff = true;
+		this.#onSlashCommandStartCallback();
+		return true;
+	}
+
 	handleInput(keyData: string): void {
+		if (this.#slashCommandHandedOff) return;
+
 		// Reset countdown on any interaction
 		this.#countdown?.reset();
 
 		if (matchesSelectCancel(keyData)) {
 			this.#onCancelCallback();
+			return;
+		}
+
+		if (this.#handleSlashCommandStart(keyData)) {
 			return;
 		}
 

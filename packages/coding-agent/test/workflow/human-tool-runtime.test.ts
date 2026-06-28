@@ -56,12 +56,29 @@ describe("workflow human input ask tool runtime adapter", () => {
 		expect(capturedOptions?.map(option => (typeof option === "string" ? option : option.label))).toEqual([
 			"Reject (Recommended)",
 			"Approve",
+			"Checkpoint for commands",
 			"Other (type your own)",
 		]);
 		expect(result).toEqual({
 			response: "Approve",
 			selectedOptions: ["Approve"],
 		});
+	});
+
+	it("turns the checkpoint option into a workflow abort for lifecycle commands", async () => {
+		const ui = {
+			select: async () => "Checkpoint for commands",
+			editor: async () => undefined,
+		} as unknown as ExtensionUIContext;
+		const runner = createAskToolHumanInputRunner(createToolSession(), () => createToolContext(ui));
+
+		await expect(
+			runner({
+				activationId: "activation-checkpoint",
+				nodeId: "operatorGate",
+				question: "Approve this workflow mutation?",
+			}),
+		).rejects.toThrow('workflow human node "operatorGate" checkpointed for operator commands');
 	});
 
 	it("maps user cancellation to a workflow node abort instead of a failed checkpoint", async () => {

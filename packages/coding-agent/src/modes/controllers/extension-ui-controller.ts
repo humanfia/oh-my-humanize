@@ -28,6 +28,11 @@ import { setSessionTerminalTitle, setTerminalTitle } from "../../utils/title-gen
 
 const MAX_WIDGET_LINES = 10;
 
+function selectorHelpTextWithSlashCommand(helpText: string | undefined): string {
+	const base = helpText ?? "up/down navigate  enter select  esc cancel";
+	return base.includes("/ command") ? base : `${base}  / command`;
+}
+
 export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
@@ -561,7 +566,12 @@ export class ExtensionUiController {
 							}
 						: undefined,
 					onExternalEditor: dialogOptions?.onExternalEditor,
-					helpText: dialogOptions?.helpText,
+					onSlashCommandStart: () => {
+						this.ctx.editor.setText("/");
+						dialogOptions?.onSlashCommandStart?.();
+						settle(undefined);
+					},
+					helpText: selectorHelpTextWithSlashCommand(dialogOptions?.helpText),
 					initialIndex: dialogOptions?.initialIndex,
 					timeout: dialogOptions?.timeout,
 					onTimeout: dialogOptions?.onTimeout,

@@ -209,6 +209,30 @@ describe("HookSelectorComponent", () => {
 		expect(selected).toBe("Third");
 	});
 
+	it("hands slash-started commands back to the prompt without selecting the highlighted option", () => {
+		let selected: string | undefined;
+		let slashHandoffCount = 0;
+		const component = new HookSelectorComponent(
+			"Approve this workflow mutation?",
+			["Reject", "Approve", "Checkpoint for commands"],
+			option => {
+				selected = option;
+			},
+			() => {},
+			{
+				onSlashCommandStart: () => {
+					slashHandoffCount += 1;
+				},
+			},
+		);
+
+		component.handleInput("/");
+		component.handleInput("\n");
+
+		expect(slashHandoffCount).toBe(1);
+		expect(selected).toBeUndefined();
+	});
+
 	it("does not select disabled options", () => {
 		let selected: string | undefined;
 		const component = new HookSelectorComponent(
