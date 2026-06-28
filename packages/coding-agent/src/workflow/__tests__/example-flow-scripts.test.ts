@@ -3212,6 +3212,61 @@ describe("example workflow scripts", () => {
 		expect(archive).toContain("Cause Reconciliation");
 	});
 
+	it("allows no-code bug triage archives when the proposed defect is refuted by evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-refuted-cause-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await initializeCleanGitRepo(cwd);
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Objective:", "Investigate malformed JSON request caching.", "", "No-Code Resolution: allowed"].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction.md`, "1 passed\n");
+		await Bun.write(`${cwd}/workflow-output/regression.md`, "69 passed\n");
+		await Bun.write(`${cwd}/workflow-output/bugfix-rollback.md`, "No rollback needed for a no-code result.\n");
+		await Bun.write(
+			`${cwd}/workflow-output/no-bug-root-cause.md`,
+			[
+				"# No-Bug Root Cause",
+				"",
+				"## Cause Reconciliation",
+				"",
+				"The classify/cause handoff identified this as a coverage-only gap unless a targeted",
+				"reproducer showed an active defect. It proposed malformed JSON cache masking as",
+				"the strongest potential defect boundary.",
+				"",
+				"That proposed defect is refuted by exercised behavior in this checkout: silent JSON",
+				"parsing returned None, and the later non-silent parse still raised a 400 response.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveBugfix",
+			scriptFileName: "archive-bugfix.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				task: {
+					taskText: "No-Code Resolution: allowed",
+				},
+				cause: {
+					narrowest_fix_boundary: ["Patch malformed JSON cache behavior if the focused reproducer fails."],
+				},
+				regression: {
+					status: "pass",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			validation: "pass",
+			projectChangedFiles: [],
+		});
+	});
+
 	it("keeps bug triage no-code prompts tied to cause reconciliation", async () => {
 		const patchPrompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/prompts/patch-fix.md`,

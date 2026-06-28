@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed the experimental bug-triage-repro-fix workflow rejecting valid no-code archives when the cause reconciliation refuted a proposed defect using natural handoff wording.
 - Fixed workflow observability hiding recovered transient agent retries; successful retry recovery now appears in `workflow-output/omh-runtime/observability.json` and progress summaries.
 - Fixed the experimental research-reproduction workflow rejecting multi-line `Claim Source` evidence blocks while preserving the single-line command contract for shell commands.
 - Fixed the experimental agent-build-review-loop workflow ignoring a reviewer's structured `overall_correctness: "correct"` signal after required build/review rounds were satisfied, which could route accepted work into unnecessary extra build cycles.

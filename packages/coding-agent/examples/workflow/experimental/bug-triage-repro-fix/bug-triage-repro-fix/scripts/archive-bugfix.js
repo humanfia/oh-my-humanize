@@ -122,7 +122,7 @@ function hasNonEmptyEvidenceField(value, keys) {
 
 function hasCauseReconciliation(text) {
 	if (!/(^|\n)#{1,3}\s+Cause Reconciliation\b/iu.test(text)) return false;
-	if (!/\b(isolateCause|cause evidence|cause finding|fix boundary)\b/iu.test(text)) return false;
+	if (!/\b(isolateCause|cause evidence|cause finding|cause handoff|fix boundary|defect boundary|proposed defect)\b/iu.test(text)) return false;
 	return /\b(reconcile|reconciled|resolved|refute|refuted|reject|rejected|invalidated|false positive|not a defect)\b/iu.test(
 		text,
 	);
