@@ -322,6 +322,51 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("accepts multi-line research reproduction claim evidence while commands stay single-line", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-multiline-claim-source-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Reproduce an explicit serializer compatibility claim from concrete project evidence.",
+				"",
+				"Claim Source:",
+				"- tests/test_signer.py:42 verifies signature round trips for serializer payloads.",
+				"- src/itsdangerous/serializer.py:126 documents the selected serialization boundary.",
+				"",
+				"Reproduction Command:",
+				"python -m pytest tests/test_signer.py -q",
+				"",
+				"Validation Command:",
+				"python -m pytest tests/test_signer.py -q",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "precheckTaskContract",
+			scriptFileName: "precheck-task-contract.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/task", "/runtime", "/review"],
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
+		).toBe("completed");
+		expect(result.scheduler.state.task).toMatchObject({
+			claimSource: [
+				"- tests/test_signer.py:42 verifies signature round trips for serializer payloads.",
+				"- src/itsdangerous/serializer.py:126 documents the selected serialization boundary.",
+			].join("\n"),
+			reproductionCommand: "python -m pytest tests/test_signer.py -q",
+			validationCommand: "python -m pytest tests/test_signer.py -q",
+		});
+	});
+
 	it("fails research reproduction claims without concrete project evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-claim-evidence-guard-");
 		const cwd = tempDir.path();

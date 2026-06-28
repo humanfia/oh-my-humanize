@@ -90,7 +90,7 @@ function requiredCommand(taskContract, label) {
 }
 
 function requiredField(taskContract, label) {
-	const value = optionalField(taskContract, label);
+	const value = optionalTextField(taskContract, label);
 	if (!value) throw new Error(`research-reproduction task.md must declare ${label}`);
 	return value;
 }
@@ -107,6 +107,20 @@ function optionalCommand(taskContract, label) {
 	return optionalField(taskContract, label);
 }
 
+function optionalTextField(taskContract, label) {
+	const lines = taskContract.split(/\r?\n/u);
+	const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+	const pattern = new RegExp(`^\\s*${escaped}\\s*:\\s*(.*)\\s*$`, "iu");
+	for (let index = 0; index < lines.length; index += 1) {
+		const match = pattern.exec(lines[index] ?? "");
+		if (!match) continue;
+		const inline = match[1]?.trim();
+		if (inline) return inline;
+		return followingTextBlock(lines, index + 1);
+	}
+	return "";
+}
+
 function optionalField(taskContract, label) {
 	const lines = taskContract.split(/\r?\n/u);
 	const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -119,6 +133,26 @@ function optionalField(taskContract, label) {
 		return followingSingleLineCommand(lines, index + 1, label);
 	}
 	return "";
+}
+
+function followingTextBlock(lines, startIndex) {
+	const valueLines = [];
+	let inFence = false;
+	for (const line of lines.slice(startIndex)) {
+		const trimmed = line.trim();
+		if (!inFence && valueLines.length === 0 && !trimmed) continue;
+		if (!inFence && trimmed && isTaskSectionHeading(trimmed)) break;
+		if (trimmed.startsWith("```")) {
+			inFence = !inFence;
+			continue;
+		}
+		if (!inFence && !trimmed && valueLines.length > 0) {
+			valueLines.push("");
+			continue;
+		}
+		valueLines.push(inFence ? line.trimEnd() : trimmed);
+	}
+	return valueLines.join("\n").trim();
 }
 
 function followingSingleLineCommand(lines, startIndex, label) {

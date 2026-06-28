@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- Fixed workflow observability hiding recovered transient agent retries; successful retry recovery now appears in `workflow-output/omh-runtime/observability.json` and progress summaries.
+- Fixed the experimental research-reproduction workflow rejecting multi-line `Claim Source` evidence blocks while preserving the single-line command contract for shell commands.
 - Fixed the experimental agent-build-review-loop workflow ignoring a reviewer's structured `overall_correctness: "correct"` signal after required build/review rounds were satisfied, which could route accepted work into unnecessary extra build cycles.
 - Fixed the experimental research-reproduction workflow accepting extracted claims that only named broad source areas; a claim evidence guard now requires concrete project source/test references before command reproduction can proceed.
 - Fixed workflow manager change controls suggesting `apply-change --freeze-id` before a draft workflow existed; approved changes now guide operators through draft generation and draft freezing before restart.

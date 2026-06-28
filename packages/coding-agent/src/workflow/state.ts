@@ -17,6 +17,14 @@ export interface WorkflowActivationOutput {
 	artifacts?: string[];
 }
 
+export interface WorkflowActivationRetryHistoryEntry {
+	attempt: number;
+	maxAttempts: number;
+	reason: string;
+	nextAttempt: number;
+	delayMs: number;
+}
+
 export interface WorkflowStateAccessPolicy {
 	allowedReadPaths?: string[];
 	allowedWritePaths?: string[];

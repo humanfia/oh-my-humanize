@@ -1,6 +1,6 @@
 import type { WorkflowModelContext, WorkflowNode, WorkflowScriptLanguage } from "./definition";
 import type { WorkflowActivation } from "./scheduler";
-import type { WorkflowActivationOutput } from "./state";
+import type { WorkflowActivationOutput, WorkflowActivationRetryHistoryEntry } from "./state";
 
 export interface WorkflowNodeRuntimeInput {
 	node: WorkflowNode;
@@ -42,6 +42,7 @@ export interface WorkflowReviewNodeOutput {
 	summary?: string;
 	verdict: string;
 	artifacts?: string[];
+	retryHistory?: WorkflowActivationRetryHistoryEntry[];
 }
 
 export interface WorkflowNodeRuntimeHost {
@@ -255,7 +256,12 @@ async function executeReviewNode(
 	}
 	const result: WorkflowActivationOutput = {
 		summary: output.summary,
-		data: { verdict: output.verdict },
+		data: {
+			verdict: output.verdict,
+			...(output.retryHistory !== undefined && output.retryHistory.length > 0
+				? { retryHistory: output.retryHistory.map(entry => ({ ...entry })) }
+				: {}),
+		},
 		statePatch: [{ op: "set", path: reviewVerdictStatePath(node), value: output.verdict }],
 	};
 	if (output.artifacts !== undefined) result.artifacts = output.artifacts;

@@ -9,6 +9,7 @@ import {
 	DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES,
 	validateWorkflowActivationOutput,
 	type WorkflowActivationOutput,
+	type WorkflowActivationRetryHistoryEntry,
 } from "./state";
 
 const WORKFLOW_SUMMARY_TRUNCATION_SUFFIX =
@@ -67,6 +68,7 @@ export interface WorkflowAgentTaskResult {
 	patchPath?: string;
 	branchName?: string;
 	changesApplied?: boolean | null;
+	retryHistory?: WorkflowActivationRetryHistoryEntry[];
 }
 
 export type WorkflowAgentTaskRunner = (request: WorkflowAgentTaskRequest) => Promise<WorkflowAgentTaskResult>;
@@ -269,28 +271,49 @@ async function runAgentTaskWithTransientRetry(
 	}
 	const policy = normalizeWorkflowAgentTaskRetryPolicy(options.agentTaskRetryPolicy);
 	let lastTransientResult: WorkflowAgentTaskResult | undefined;
+	const retryHistory: WorkflowActivationRetryHistoryEntry[] = [];
 	for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
 		throwIfWorkflowSignalAborted(request.signal);
 		let transientReason: string;
 		try {
 			const result = await options.runAgentTask(request);
 			transientReason = workflowAgentTaskFailureReason(result);
-			if (result.exitCode === 0 || !workflowAgentTaskReasonIsTransient(transientReason)) return result;
+			if (result.exitCode === 0 || !workflowAgentTaskReasonIsTransient(transientReason)) {
+				return attachWorkflowAgentTaskRetryHistory(result, retryHistory);
+			}
 			lastTransientResult = result;
-			if (attempt >= policy.maxAttempts) return result;
+			if (attempt >= policy.maxAttempts) return attachWorkflowAgentTaskRetryHistory(result, retryHistory);
 		} catch (error) {
 			if (workflowErrorWasAborted(error)) throw error;
 			transientReason = formatWorkflowErrorReason(error);
 			if (!workflowAgentTaskReasonIsTransient(transientReason) || attempt >= policy.maxAttempts) throw error;
 		}
-		await sleepBeforeWorkflowAgentTaskRetry(options, policy, attempt, request.signal, transientReason);
+		const retryEntry = workflowAgentTaskRetryHistoryEntry(
+			policy,
+			attempt,
+			transientReason,
+			options.retryRandom ?? Math.random,
+		);
+		retryHistory.push(retryEntry);
+		await sleepBeforeWorkflowAgentTaskRetry(options, request.signal, retryEntry.delayMs);
 	}
-	if (lastTransientResult !== undefined) return lastTransientResult;
-	return {
-		exitCode: 1,
-		output: "",
-		error: `workflow agent task "${request.nodeId}" exhausted transient retry attempts`,
-	};
+	if (lastTransientResult !== undefined) return attachWorkflowAgentTaskRetryHistory(lastTransientResult, retryHistory);
+	return attachWorkflowAgentTaskRetryHistory(
+		{
+			exitCode: 1,
+			output: "",
+			error: `workflow agent task "${request.nodeId}" exhausted transient retry attempts`,
+		},
+		retryHistory,
+	);
+}
+
+function attachWorkflowAgentTaskRetryHistory(
+	result: WorkflowAgentTaskResult,
+	retryHistory: readonly WorkflowActivationRetryHistoryEntry[],
+): WorkflowAgentTaskResult {
+	if (retryHistory.length === 0) return result;
+	return { ...result, retryHistory: retryHistory.map(entry => ({ ...entry })) };
 }
 
 function normalizeWorkflowAgentTaskRetryPolicy(
@@ -351,19 +374,33 @@ function formatWorkflowErrorReason(error: unknown): string {
 	return String(error);
 }
 
-async function sleepBeforeWorkflowAgentTaskRetry(
-	options: WorkflowSessionRuntimeOptions,
+function workflowAgentTaskRetryHistoryEntry(
 	policy: NormalizedWorkflowAgentTaskRetryPolicy,
 	completedAttempt: number,
-	signal: AbortSignal | undefined,
 	transientReason: string,
+	random: WorkflowRetryRandomSource,
+): WorkflowActivationRetryHistoryEntry {
+	const delayMs = workflowAgentTaskRetryDelayMs(policy, completedAttempt, transientReason, random);
+	return {
+		attempt: completedAttempt,
+		maxAttempts: policy.maxAttempts,
+		reason: boundWorkflowRetryReason(transientReason),
+		nextAttempt: completedAttempt + 1,
+		delayMs,
+	};
+}
+
+function boundWorkflowRetryReason(reason: string): string {
+	const compact = reason.replace(/\s+/gu, " ").trim();
+	if (compact.length <= 1_000) return compact;
+	return `${compact.slice(0, 997).trimEnd()}...`;
+}
+
+async function sleepBeforeWorkflowAgentTaskRetry(
+	options: WorkflowSessionRuntimeOptions,
+	signal: AbortSignal | undefined,
+	delayMs: number,
 ): Promise<void> {
-	const delayMs = workflowAgentTaskRetryDelayMs(
-		policy,
-		completedAttempt,
-		transientReason,
-		options.retryRandom ?? Math.random,
-	);
 	if (delayMs <= 0) return;
 	throwIfWorkflowSignalAborted(signal);
 	await (options.retryDelay ?? sleepWorkflowRetryDelay)(delayMs, signal);
@@ -603,7 +640,7 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 				: result.output;
 		const boundedSummary = boundWorkflowSummary(summarySource, `agent node "${nodeId}" completed`);
 		const data = { ...result.data };
-		applyTaskIsolationResultData(data, result);
+		applyTaskResultData(data, result);
 		return mergeActivationArtifacts(
 			{
 				summary: boundedSummary.summary,
@@ -614,7 +651,7 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 	}
 	const structured = parseStructuredActivationOutput(result.output, { allowObjectSummaryFallback: true });
 	if (structured) {
-		return mergeActivationArtifacts(structured, artifacts);
+		return mergeActivationArtifacts(applyTaskResultMetadata(structured, result), artifacts);
 	}
 	const boundedSummary = boundWorkflowSummary(result.output, `agent node "${nodeId}" completed`);
 	const data: Record<string, unknown> = { exitCode: result.exitCode };
@@ -622,7 +659,7 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 		data.summaryTruncated = true;
 		data.summaryBytes = boundedSummary.originalBytes;
 	}
-	applyTaskIsolationResultData(data, result);
+	applyTaskResultData(data, result);
 	const output: WorkflowActivationOutput = {
 		summary: boundedSummary.summary,
 		data,
@@ -633,13 +670,26 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 	return output;
 }
 
-function applyTaskIsolationResultData(data: Record<string, unknown>, result: WorkflowAgentTaskResult): void {
+function applyTaskResultMetadata(
+	output: WorkflowActivationOutput,
+	result: WorkflowAgentTaskResult,
+): WorkflowActivationOutput {
+	const data = output.data === undefined ? {} : { ...output.data };
+	applyTaskResultData(data, result);
+	if (Object.keys(data).length === 0) return output;
+	return { ...output, data };
+}
+
+function applyTaskResultData(data: Record<string, unknown>, result: WorkflowAgentTaskResult): void {
 	if (result.agentId !== undefined) data.agentId = result.agentId;
 	if (result.outputPath !== undefined) data.outputPath = result.outputPath;
 	if (result.sessionFile !== undefined) data.sessionFile = result.sessionFile;
 	if (result.patchPath !== undefined) data.patchPath = result.patchPath;
 	if (result.branchName !== undefined) data.branchName = result.branchName;
 	if (result.changesApplied !== undefined) data.changesApplied = result.changesApplied;
+	if (result.retryHistory !== undefined && result.retryHistory.length > 0) {
+		data.retryHistory = result.retryHistory.map(entry => ({ ...entry }));
+	}
 }
 
 function activationOutputFromHumanInputResult(result: WorkflowHumanInputResult): WorkflowActivationOutput {
@@ -671,6 +721,9 @@ function reviewOutputFromTaskResult(
 		summary: boundedSummary.summary,
 		verdict: parsed.verdict,
 	};
+	if (result.retryHistory !== undefined && result.retryHistory.length > 0) {
+		output.retryHistory = result.retryHistory.map(entry => ({ ...entry }));
+	}
 	const artifacts = taskResultArtifactReferences(result);
 	if (artifacts.length > 0) {
 		output.artifacts = artifacts;

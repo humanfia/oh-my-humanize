@@ -3,7 +3,7 @@ import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { WorkflowNode } from "./definition";
 import type { WorkflowCheckpointWorkspaceSnapshot } from "./lifecycle";
 import type { WorkflowReviewNodeOutput } from "./node-runtime";
-import type { WorkflowActivationOutput } from "./state";
+import type { WorkflowActivationOutput, WorkflowActivationRetryHistoryEntry } from "./state";
 
 const WORKFLOW_OBSERVABILITY_INDEX_PATH = "workflow-output/omh-runtime/observability.json";
 const WORKFLOW_OBSERVABILITY_PROGRESS_PATH = "workflow-output/omh-runtime/progress.md";
@@ -27,6 +27,7 @@ interface WorkflowObservabilityActivation {
 	summary: string;
 	artifacts: string[];
 	verdict?: string;
+	retries?: WorkflowActivationRetryHistoryEntry[];
 }
 
 interface WorkflowObservabilityLifecycleEvent {
@@ -104,7 +105,32 @@ function workflowObservabilityActivation(
 		artifacts: output.artifacts ?? [],
 	};
 	if ("verdict" in output) event.verdict = output.verdict;
+	const retries = workflowObservabilityRetryHistory(output);
+	if (retries.length > 0) event.retries = retries;
 	return event;
+}
+
+function workflowObservabilityRetryHistory(
+	output: WorkflowActivationOutput | WorkflowReviewNodeOutput,
+): WorkflowActivationRetryHistoryEntry[] {
+	if ("retryHistory" in output && output.retryHistory !== undefined) {
+		return output.retryHistory.map(entry => ({ ...entry }));
+	}
+	if (!("data" in output) || output.data === undefined) return [];
+	return workflowObservabilityRetryHistoryFromData(output.data);
+}
+
+function workflowObservabilityRetryHistoryFromData(
+	data: Record<string, unknown>,
+): WorkflowActivationRetryHistoryEntry[] {
+	const value = data.retryHistory;
+	if (!Array.isArray(value)) return [];
+	const retries: WorkflowActivationRetryHistoryEntry[] = [];
+	for (const entry of value) {
+		if (!isWorkflowObservabilityRetryHistoryEntry(entry)) continue;
+		retries.push({ ...entry });
+	}
+	return retries;
 }
 
 async function writeWorkflowObservabilityEvent(
@@ -216,7 +242,24 @@ function isWorkflowObservabilityActivation(value: unknown): value is WorkflowObs
 		typeof value.summary === "string" &&
 		Array.isArray(value.artifacts) &&
 		value.artifacts.every(artifact => typeof artifact === "string") &&
-		(value.verdict === undefined || typeof value.verdict === "string")
+		(value.verdict === undefined || typeof value.verdict === "string") &&
+		(value.retries === undefined ||
+			(Array.isArray(value.retries) && value.retries.every(isWorkflowObservabilityRetryHistoryEntry)))
+	);
+}
+
+function isWorkflowObservabilityRetryHistoryEntry(value: unknown): value is WorkflowActivationRetryHistoryEntry {
+	if (!isWorkflowRecord(value)) return false;
+	return (
+		typeof value.attempt === "number" &&
+		Number.isInteger(value.attempt) &&
+		typeof value.maxAttempts === "number" &&
+		Number.isInteger(value.maxAttempts) &&
+		typeof value.reason === "string" &&
+		typeof value.nextAttempt === "number" &&
+		Number.isInteger(value.nextAttempt) &&
+		typeof value.delayMs === "number" &&
+		Number.isInteger(value.delayMs)
 	);
 }
 
@@ -266,7 +309,7 @@ function renderWorkflowObservabilityProgress(index: WorkflowObservabilityIndex):
 				markdownTableCell(activation.nodeId),
 				markdownTableCell(activation.type),
 				markdownTableCell(activation.activationId),
-				markdownTableCell(compactWorkflowProgressSummary(activation.summary)),
+				markdownTableCell(compactWorkflowProgressSummary(workflowActivationProgressSummary(activation))),
 			].join(" | ")} |`,
 		);
 	}
@@ -291,6 +334,12 @@ function renderWorkflowObservabilityProgress(index: WorkflowObservabilityIndex):
 		lines.push("");
 	}
 	return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function workflowActivationProgressSummary(activation: WorkflowObservabilityActivation): string {
+	const retryCount = activation.retries?.length ?? 0;
+	if (retryCount === 0) return activation.summary;
+	return `${activation.summary} (recovered retries=${retryCount})`;
 }
 
 function lastWorkflowObservabilityTimestamp(index: WorkflowObservabilityIndex): string {
