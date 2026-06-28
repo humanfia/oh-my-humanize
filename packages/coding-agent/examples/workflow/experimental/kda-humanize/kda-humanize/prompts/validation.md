@@ -24,5 +24,12 @@ Return `promote` only when:
 Return `revise` when evidence is missing, validation failed, the candidate is
 off-scope, the comparison is inconclusive, or another candidate round is needed.
 
+Return `reject` when the candidate is terminally not promotable and more KDA
+rounds would only repeat the same blocker: for example, the nested Humanize
+handoff or candidate evidence explicitly records `completed_rejected`,
+`promotion_decision: rejected`, an exact validation-start blocker, zero project
+changes, current changed-file inventory, and rollback/no-project-rollback
+evidence. A terminal rejection is honest evidence, not a reason to loop.
+
 Write a short review first, then put exactly one token on the final non-empty
-line: `revise` or `promote`.
+line: `revise`, `promote`, or `reject`.

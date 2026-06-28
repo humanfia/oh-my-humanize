@@ -334,10 +334,14 @@ function allowedPathsFromTask(taskText) {
 	const lines = taskText.split(/\r?\n/u);
 	for (let index = 0; index < lines.length; index += 1) {
 		const trimmed = lines[index]?.trim() ?? "";
-		const match = /^(?:[-*]\s*)?(?:allowed paths?|scope fence)\s*:\s*(.+)$/iu.exec(trimmed);
+		const match = /^(?:[-*]\s*)?(?:allowed paths?|scope fence)\s*:\s*(.*)$/iu.exec(trimmed);
 		if (!match) continue;
 		const scopeText = [match[1] ?? ""];
-		for (let nextIndex = index + 1; shouldReadScopeContinuation(scopeText.at(-1) ?? "", lines[nextIndex]); nextIndex += 1) {
+		for (
+			let nextIndex = index + 1;
+			shouldReadScopeContinuation(scopeText.at(-1) ?? "", lines[nextIndex], scopeText);
+			nextIndex += 1
+		) {
 			scopeText.push(lines[nextIndex]?.trim() ?? "");
 		}
 		scopes.push(...scopeListFromText(scopeText.join(" ")));
@@ -345,13 +349,16 @@ function allowedPathsFromTask(taskText) {
 	return uniqueStrings(scopes.map(normalizeScope).filter(Boolean));
 }
 
-function shouldReadScopeContinuation(previousLine, nextLine) {
+function shouldReadScopeContinuation(previousLine, nextLine, scopeText) {
 	const next = nextLine?.trim() ?? "";
 	if (!next) return false;
-	if (!/[,;]\s*$/u.test(previousLine.trim())) return false;
 	if (next.startsWith("```")) return false;
 	if (isTaskSectionHeading(next)) return false;
 	if (/^(?:[-*]\s*)?(?:allowed paths?|scope fence)\s*:/iu.test(next)) return false;
+	const hasCurrentScopeText = scopeText.some(line => line.trim() !== "");
+	if (!hasCurrentScopeText) return true;
+	if (/^[-*]\s+/u.test(next)) return true;
+	if (!/[,;]\s*$/u.test(previousLine.trim())) return false;
 	return true;
 }
 

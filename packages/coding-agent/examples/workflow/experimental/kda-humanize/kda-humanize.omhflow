@@ -165,6 +165,7 @@ sequence:
         gates:
           - revise
           - promote
+          - reject
         fallbackVerdict: revise
       retryWhen: outputs.validateCandidate.verdict == "revise"
   - node:

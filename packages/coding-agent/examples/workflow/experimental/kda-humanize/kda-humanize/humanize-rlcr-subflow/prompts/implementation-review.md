@@ -14,6 +14,13 @@ Use:
 - `COMPLETE` when the candidate is coherent enough to move to code-review
   remediation;
 - `STOP` when the plan is unsafe, off-scope, or blocked on human input.
+- `STOP` when the latest implementation summary is a terminal rejection, such
+  as `status: "completed_rejected"` or `promotion_decision: "rejected"`, and
+  it includes exact blocker evidence, changed-file inventory, rollback notes,
+  and no project diff. A terminal rejection is a valid handoff to the outer KDA
+  flow; do not loop just to spend more time on a candidate whose validation
+  cannot start or whose promotion was explicitly rejected. Return `STOP` for
+  this terminal rejection.
 
 Write findings first, then put exactly one token on the final non-empty line:
 `CONTINUE`, `COMPLETE`, or `STOP`.

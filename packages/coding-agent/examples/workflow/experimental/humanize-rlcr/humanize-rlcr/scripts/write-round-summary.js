@@ -14,7 +14,9 @@ const parentOutputs = workflowContext.completedActivations
 	.filter(activation => parents.includes(activation.id))
 	.map(activation => activation.output)
 	.filter(output => output && typeof output === "object");
-const implementationOutput = parentOutputs.at(-1) ?? {};
+const implementationActivation = latestCompletedImplementationRound();
+const implementationOutput = implementationActivation?.output ?? parentOutputs.at(-1) ?? {};
+const implementationActivationIds = implementationActivation ? [implementationActivation.id] : parents;
 const implementationSummary =
 	typeof implementationOutput.summary === "string" ? implementationOutput.summary : "implementation round completed";
 const boundedImplementationSummary = implementationSummary.slice(0, implementationSummaryLimit);
@@ -70,7 +72,7 @@ const entry = {
 	status: "ready-for-summary-review",
 	artifactFile: roundSummaryFile,
 	summaryActivationId: workflowContext.activation.id,
-	implementationActivationIds: parents,
+	implementationActivationIds,
 	implementationSummary: boundedImplementationSummary,
 	evidence: {
 		status: boundedEvidenceValue(implementationData.status, "not-reported"),
@@ -156,4 +158,16 @@ function usesNondurableArtifactReference(text) {
 		/\b(?:validation|stdout|stderr|evidence|harness|status).{0,160}\bartifact:\/\/\d+\b/ius.test(text) ||
 		/\bartifact:\/\/\d+\b.{0,160}\b(?:validation|stdout|stderr|evidence|harness|status)\b/ius.test(text)
 	);
+}
+
+function latestCompletedImplementationRound() {
+	return [...workflowContext.completedActivations]
+		.reverse()
+		.find(
+			activation =>
+				activation &&
+				activation.status === "completed" &&
+				typeof activation.nodeId === "string" &&
+				(activation.nodeId === "implementRound" || activation.nodeId.endsWith("__implementRound")),
+		);
 }

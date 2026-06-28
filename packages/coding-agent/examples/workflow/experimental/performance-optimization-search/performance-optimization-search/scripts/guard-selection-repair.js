@@ -23,13 +23,23 @@ const positiveUnselectedBranches = branchReports.filter((report) => {
 const offBenchmarkRejectedBranches = positiveUnselectedBranches.filter((report) =>
 	benchmarkRelevanceRejected(reportEvidenceText(report, selectionRepairText)),
 );
+const benchmarkCoveredRejectedBranches = positiveUnselectedBranches.filter((report) =>
+	benchmarkCoveredLosingRejected(reportEvidenceText(report, selectionRepairText)),
+);
 const benchmarkRelevanceBlockers = [
 	...selectedBranches
 		.filter((report) => !benchmarkRelevantBranches.some((matched) => matched.name === report.name))
 		.map((report) => `${report.name} selected without benchmark relevance evidence`),
 	...positiveUnselectedBranches
-		.filter((report) => !offBenchmarkRejectedBranches.some((matched) => matched.name === report.name))
-		.map((report) => `${report.name} reported positive benchmark evidence without off-benchmark rejection`),
+		.filter(
+			(report) =>
+				!offBenchmarkRejectedBranches.some((matched) => matched.name === report.name) &&
+				!benchmarkCoveredRejectedBranches.some((matched) => matched.name === report.name),
+		)
+		.map(
+			(report) =>
+				`${report.name} reported positive benchmark evidence without off-benchmark rejection or comparative rejection evidence`,
+		),
 ];
 const validationPassed = validationCommandPassed(benchmark, selectionRepair, selectionRepairText);
 const benchmarkPassed = benchmarkCommandPassed(benchmark, selectionRepair, selectionRepairText);
@@ -48,6 +58,7 @@ await Bun.write(
 		`benchmarkRelevantBranches: ${benchmarkRelevantBranches.map((report) => report.name).join(", ") || "none"}`,
 		`positiveUnselectedBranches: ${positiveUnselectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`offBenchmarkRejectedBranches: ${offBenchmarkRejectedBranches.map((report) => report.name).join(", ") || "none"}`,
+		`benchmarkCoveredRejectedBranches: ${benchmarkCoveredRejectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`benchmarkRelevanceBlockers: ${benchmarkRelevanceBlockers.join("; ") || "none"}`,
 		`terminalArtifacts: ${terminalArtifacts.join(", ") || "none"}`,
 		`selectionRepairStatus: ${String(selectionRepair.status ?? "unknown")}`,
@@ -96,6 +107,7 @@ return {
 				benchmarkRelevantBranches: benchmarkRelevantBranches.map((report) => report.name),
 				positiveUnselectedBranches: positiveUnselectedBranches.map((report) => report.name),
 				offBenchmarkRejectedBranches: offBenchmarkRejectedBranches.map((report) => report.name),
+				benchmarkCoveredRejectedBranches: benchmarkCoveredRejectedBranches.map((report) => report.name),
 				benchmarkRelevanceBlockers,
 				hasRollbackEvidence: /\brollback\b/iu.test(joinedText),
 			},
@@ -183,6 +195,22 @@ function benchmarkRelevanceRejected(text) {
 		/\bnot\s+covered\s+by\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text) ||
 		/\b(?:task[- ]declared\s+)?benchmark(?: command)?\s+does\s+not\s+cover\b/iu.test(text) ||
 		/\boutside\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(text)
+	);
+}
+
+function benchmarkCoveredLosingRejected(text) {
+	if (!benchmarkRelevanceConfirmed(text)) return false;
+	return (
+		/\bbenchmark[- ]covered\s+rejection\s*:\s*(?:yes|true)\b/iu.test(text) ||
+		/\bcovered\s+by\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b.{0,240}\b(?:weaker|noisier|regress(?:ed|ion)|slower|less\s+stable)\b/ius.test(
+			text,
+		) ||
+		/\b(?:positive\s+benchmark|benchmark[- ]covered|covered\s+the\s+task\s+benchmark)\b.{0,240}\b(?:weaker|noisier|regress(?:ed|ion)|slower|less\s+stable)\b/ius.test(
+			text,
+		) ||
+		/\b(?:weaker|noisier|regress(?:ed|ion)|slower|less\s+stable)\b.{0,240}\b(?:selected|winner|winning|chosen|retained)\b/ius.test(
+			text,
+		)
 	);
 }
 

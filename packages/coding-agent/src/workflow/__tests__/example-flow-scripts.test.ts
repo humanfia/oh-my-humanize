@@ -5408,6 +5408,91 @@ describe("example workflow scripts", () => {
 		expect(activation?.error).toContain("off-benchmark rejection");
 	});
 
+	it("accepts benchmark-covered losing performance branches with comparative rejection evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-covered-losing-rejection-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance covered losing rejection guard",
+			"",
+			"Benchmark Command:",
+			"python -m timeit -s 'from src.click.parser import normalize' 'normalize(\"--help\")'",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_parser.py -q",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/click/parser.py`, "def normalize(value):\n    return value\n");
+		await Bun.write(`${cwd}/tests/test_parser.py`, "def test_normalize():\n    assert True\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/click/parser.py", "tests/test_parser.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/click/parser.py`, "def normalize(value):\n    return value.lstrip('-')\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching",
+				"",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: focused parser verification preserves normalize behavior",
+				"rollback evidence: rejected branches were reverted before retaining this candidate",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Algorithmic",
+				"",
+				"final-selection: no",
+				"benchmark-relevance: yes",
+				"off-benchmark: no",
+				"reported a positive benchmark-covered run, but repeat evidence regressed and was weaker than the selected caching candidate",
+				"rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# IO", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			["# Performance Selection Repair", "", "- Benchmark status: pass.", "- Validation status: pass."].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.selectionGuard).toMatchObject({
+			status: "pass",
+			positiveUnselectedBranches: ["algorithmic"],
+			benchmarkCoveredRejectedBranches: ["algorithmic"],
+		});
+	});
+
 	it("blocks positive performance selection without semantic probe evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-positive-semantic-probe-");
 		const cwd = tempDir.path();
@@ -6651,6 +6736,66 @@ describe("example workflow scripts", () => {
 		expect(context).not.toContain("only_workflow_output_evidence_changed");
 	});
 
+	it("materializes refactor migration review context from next-line allowed paths", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-migration-review-context-next-line-scope-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/typer/core.py`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Refactor Typer help dispatch helpers.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Allowed paths:",
+				"typer/, tests/test_cli/, tests/test_completion/, docs/, workflow-output/, progress.md",
+				"",
+				"Stop Conditions:",
+				"- Stop on empty loops.",
+			].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "typer/core.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/typer/core.py`, "material migration\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "prepareMigrationReviewContext",
+			scriptFileName: "prepare-review-context.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/reviewContext"],
+			initialState: {
+				task: {
+					text: await Bun.file(`${cwd}/task.md`).text(),
+				},
+			},
+		});
+
+		expect(result.scheduler.state.reviewContext).toMatchObject({
+			workspace: {
+				status: "pass",
+				allowedScopes: [
+					"typer/",
+					"tests/test_cli/",
+					"tests/test_completion/",
+					"docs/",
+					"workflow-output/",
+					"progress.md",
+				],
+			},
+		});
+		const context = await Bun.file(`${cwd}/workflow-output/refactor-migration-review-context.md`).text();
+		expect(context).toContain("## Allowed Scopes\n\n- typer/");
+	});
+
 	it("archives accepted refactor migrations with runtime activation rollback evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-refactor-migration-runtime-artifact-rollback-");
 		const cwd = tempDir.path();
@@ -6951,6 +7096,188 @@ describe("example workflow scripts", () => {
 
 		expect(prompt).toMatch(/does not\s+need completed validation evidence before implementation/u);
 		expect(prompt).toContain("concrete validation plan");
+	});
+
+	it("treats nested Humanize terminal rejection as a stop handoff", async () => {
+		const prompt = await Bun.file(`${KDA_HUMANIZE_SUBFLOW_DIR}/prompts/implementation-review.md`).text();
+
+		expect(prompt).toContain("completed_rejected");
+		expect(prompt).toContain("promotion_decision");
+		expect(prompt).toMatch(/terminal rejection[\s\S]+`STOP`/u);
+	});
+
+	it("lets KDA validation reject terminal candidates without retrying forever", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/kda-humanize/kda-humanize.omhflow`,
+		);
+		const validationNode = artifact.definition.nodes.find(node => node.id === "validateCandidate");
+		const retryEdge = artifact.definition.edges.find(
+			edge => edge.from === "validateCandidate" && edge.to === "implementCandidate",
+		);
+
+		expect(validationNode).toMatchObject({
+			gates: ["revise", "promote", "reject"],
+		});
+		expect(retryEdge?.condition?.source).toBe('outputs.validateCandidate.verdict == "revise"');
+	});
+
+	it("records KDA rejection evidence as terminal evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-kda-rejection-evidence-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const recordEvidenceCode = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/kda-humanize/kda-humanize/scripts/record-evidence.js`,
+		).text();
+		const definition: WorkflowDefinition = {
+			name: "kda-rejection-evidence-test",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{
+					id: "validateCandidate",
+					type: "script",
+					script: {
+						language: "js",
+						code: [
+							"return {",
+							"  summary: 'validation rejected terminal fallback candidate',",
+							"  data: { verdict: 'reject', reason: 'validation cannot start' },",
+							"};",
+						].join("\n"),
+					},
+					writes: ["/validationContext"],
+				},
+				{
+					id: "recordEvidence",
+					type: "script",
+					script: {
+						language: "js",
+						code: recordEvidenceCode,
+					},
+					writes: ["/evidence"],
+				},
+			],
+			edges: [{ from: "validateCandidate", to: "recordEvidence" }],
+		};
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition,
+			initialState: {
+				taskContract: [
+					"Objective:",
+					"Evaluate a candidate and reject it when validation cannot start.",
+					"",
+					"Metric:",
+					"contract validation startability",
+					"",
+					"Rollback Plan:",
+					"remove workflow evidence only",
+				].join("\n"),
+				plan: "evaluate candidate, reject when validation cannot start",
+				finalizeSummary: {
+					status: "stopped",
+					verdict: "STOP",
+					summary: "nested Humanize terminal rejection",
+				},
+				candidate: {
+					status: "completed_rejected",
+					promotion_decision: "rejected",
+					reason: "validation cannot start",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.evidence).toMatchObject({
+			status: "recorded-prompt-summary",
+			validationVerdict: "reject",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/kda-evidence.md`).text()).toContain("- Verdict: reject");
+	});
+
+	it("summarizes the implementation round rather than the intervening diff guard", async () => {
+		using tempDir = TempDir.createSync("@omh-humanize-rlcr-round-summary-source-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const writeRoundSummaryCode = await Bun.file(
+			`${import.meta.dir}/../../../examples/workflow/experimental/humanize-rlcr/humanize-rlcr/scripts/write-round-summary.js`,
+		).text();
+		const definition: WorkflowDefinition = {
+			name: "humanize-rlcr-summary-source-test",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{
+					id: "implementRound",
+					type: "script",
+					script: {
+						language: "js",
+						code: [
+							"return {",
+							"  summary: 'implementation round completed with durable evidence',",
+							"  data: {",
+							"    status: 'complete',",
+							"    changed_files: ['fastapi/encoders.py'],",
+							"    verification: ['94 passed'],",
+							"    acceptance_evidence: ['custom encoder behavior preserved'],",
+							"  },",
+							"};",
+						].join("\n"),
+					},
+					writes: ["/humanize"],
+				},
+				{
+					id: "diffDisciplineGuard",
+					type: "script",
+					script: {
+						language: "js",
+						code: "return { summary: 'diff discipline guard passed: 2 files, 30 lines', data: { verdict: 'PASS' } };",
+					},
+					writes: ["/humanize"],
+				},
+				{
+					id: "writeRoundSummary",
+					type: "script",
+					script: {
+						language: "js",
+						code: writeRoundSummaryCode,
+					},
+					writes: ["/humanize"],
+				},
+			],
+			edges: [
+				{ from: "implementRound", to: "diffDisciplineGuard" },
+				{ from: "diffDisciplineGuard", to: "writeRoundSummary" },
+			],
+		};
+
+		await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition,
+			initialState: {
+				humanize: {
+					operatorGate: {
+						recordedAtMs: Date.now(),
+					},
+					ledger: {
+						currentRound: 0,
+						rounds: [],
+					},
+				},
+			},
+		});
+
+		const summary = await Bun.file(`${cwd}/workflow-output/round-1-summary.json`).json();
+		expect(summary.entry.implementationSummary).toBe("implementation round completed with durable evidence");
+		expect(summary.entry.evidence).toMatchObject({
+			status: "complete",
+			changedFiles: "fastapi/encoders.py",
+			verification: "94 passed",
+			acceptanceDelta: "custom encoder behavior preserved",
+		});
+		expect(summary.entry.implementationActivationIds).toEqual(["activation-1"]);
 	});
 });
 
