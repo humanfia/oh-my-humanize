@@ -133,17 +133,96 @@ async function validateVerificationPreflight(command) {
 	if (requiresNodeDependencyRoot(material) && !(await directoryExists("node_modules"))) {
 		missingDependencyRoots.push("node_modules");
 	}
-	const status = missingDependencyRoots.length > 0 ? "setup-blocker" : "pass";
+	const executableCheck = await explicitExecutablePreflight(command);
+	const blockers = [
+		...missingDependencyRoots.map(root => `missing dependency root: ${root}`),
+		...(executableCheck.reason ? [executableCheck.reason] : []),
+	];
+	const status = blockers.length > 0 ? "setup-blocker" : "pass";
 	return {
 		status,
 		validationCommand: command,
+		executable: executableCheck.executable,
 		missingDependencyRoots,
+		executableCheck,
 		reason:
 			status === "setup-blocker"
-				? `validation harness requires package-manager dependency roots that are missing: ${missingDependencyRoots.join(", ")}`
-				: "validation command preflight did not find missing dependency roots",
+				? `validation command cannot start: ${blockers.join("; ")}`
+				: "validation command preflight did not find missing dependency roots or invalid explicit executables",
 		checkedAtMs: Date.now(),
 	};
+}
+
+async function explicitExecutablePreflight(command) {
+	const executable = validationExecutable(command);
+	if (!executable || !isExplicitPath(executable)) {
+		return {
+			executable,
+			status: "not-explicit-path",
+			reason: "",
+		};
+	}
+	if (await pathStatus(executable, "-d")) {
+		return {
+			executable,
+			status: "setup-blocker",
+			reason: `validation executable is a directory: ${executable}`,
+		};
+	}
+	if (!(await pathStatus(executable, "-e"))) {
+		return {
+			executable,
+			status: "setup-blocker",
+			reason: `validation executable does not exist: ${executable}`,
+		};
+	}
+	if (!(await pathStatus(executable, "-x"))) {
+		return {
+			executable,
+			status: "setup-blocker",
+			reason: `validation executable is not executable: ${executable}`,
+		};
+	}
+	return {
+		executable,
+		status: "pass",
+		reason: "",
+	};
+}
+
+function validationExecutable(command) {
+	const tokens = commandInvocationTokens(command);
+	const first = tokens[0] ?? "";
+	if (!first) return "";
+	if (/^(?:bash|sh|zsh)$/u.test(first) && tokens[1] === "-c") return first;
+	if (/^(?:bash|sh|zsh|bun|node|python|python3)$/u.test(first)) return first;
+	return first;
+}
+
+function commandInvocationTokens(command) {
+	const tokens = command.trim().split(/\s+/u).filter(Boolean).map(unquoteToken);
+	while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[0] ?? "")) tokens.shift();
+	if ((tokens[0] ?? "") === "env") {
+		tokens.shift();
+		while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[0] ?? "")) tokens.shift();
+	}
+	if ((tokens[0] ?? "") === "timeout") {
+		tokens.shift();
+		if (/^\d+[smhd]?$/iu.test(tokens[0] ?? "")) tokens.shift();
+	}
+	return tokens;
+}
+
+function isExplicitPath(executable) {
+	return executable.startsWith("/") || executable.startsWith("./") || executable.startsWith("../");
+}
+
+async function pathStatus(filePath, flag) {
+	const proc = Bun.spawn(["test", flag, filePath], {
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+	return (await proc.exited) === 0;
 }
 
 function requiresNodeDependencyRoot(material) {
@@ -163,20 +242,19 @@ async function validationCommandScriptText(command) {
 }
 
 function localValidationScriptPath(command) {
-	const tokens = command.trim().split(/\s+/u).filter(Boolean);
-	while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[0] ?? "")) tokens.shift();
-	if ((tokens[0] ?? "") === "timeout") {
-		tokens.shift();
-		if (/^\d+[smhd]?$/iu.test(tokens[0] ?? "")) tokens.shift();
-	}
+	const tokens = commandInvocationTokens(command);
 	const first = tokens[0] ?? "";
 	const second = tokens[1] ?? "";
 	const candidate = /^(?:bash|sh|zsh|bun|node)$/u.test(first) ? second : first;
-	const unquoted = candidate.replace(/^['"]|['"]$/gu, "");
+	const unquoted = unquoteToken(candidate);
 	if (!unquoted || unquoted.startsWith("-")) return "";
 	if (unquoted.startsWith("./")) return unquoted;
 	if (unquoted.startsWith("workflow-output/")) return unquoted;
 	return "";
+}
+
+function unquoteToken(token) {
+	return token.replace(/^['"]|['"]$/gu, "");
 }
 
 async function directoryExists(dirPath) {

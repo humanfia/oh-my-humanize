@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed the experimental agent-build-review-loop workflow allowing builder rounds to start when the task-declared validation command pointed at a directory or another invalid explicit executable.
 - Fixed workflow read-only workspace guards treating external monitor assignment metadata updates as project mutations; `monitor-assignment.json` is now treated as operator/runtime metadata while task inputs and project files remain guarded.
 - Fixed the experimental performance-optimization workflow treating OMH-managed isolated lane worktrees as disallowed scratch evidence; branch reports may now cite the runtime isolation worktree while extra scratch remains constrained to the task-declared run root.
 - Fixed the experimental agent-build-review-loop workflow routing reviewer protocol drift into unnecessary extra build rounds when the review summary already established completion.

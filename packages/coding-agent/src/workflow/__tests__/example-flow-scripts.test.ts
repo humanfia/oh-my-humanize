@@ -793,6 +793,43 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/initial-loop-snapshot.md`).text()).toContain("echo validate");
 	});
 
+	it("rejects directory validation executables before agent build rounds", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-directory-validation-command-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const runTmp = `${cwd}/run-tmp`;
+		await fs.mkdir(runTmp, { recursive: true });
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Reject validation commands whose executable token cannot start.",
+				"",
+				"Validation Command:",
+				`TMPDIR=${runTmp} PYTHONPATH=. ${runTmp} -m pytest tests/test_completion.py -q`,
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "initializeLoop",
+			scriptFileName: "initialize-loop.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/progress", "/runtime", "/semanticGuard"],
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "initializeLoop");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("validation executable is a directory");
+		const preflight = await Bun.file(`${cwd}/workflow-output/setup-blocker-validation-preflight.json`).json();
+		expect(preflight).toMatchObject({
+			status: "setup-blocker",
+			executable: runTmp,
+		});
+	});
+
 	it("archives rejected agent build review loops as terminal outcomes, not script failures", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-reject-archive-");
 		const cwd = tempDir.path();
