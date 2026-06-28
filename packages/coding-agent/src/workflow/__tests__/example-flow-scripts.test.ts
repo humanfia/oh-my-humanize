@@ -2425,6 +2425,71 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("lets source-change lanes with unresolved integration risk reach integration review", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-source-validation-risk-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "C429-T01-8e0528dd2-ripgrep-json-output-parallel-canary";
+
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(
+			`${cwd}/workflow-output/core-lane-${tupleId}.json`,
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementCore",
+					status: "source_change_applied",
+					validation: {
+						result: "fail",
+						evidence: "Declared validation failed in unrelated integration tests outside this lane boundary.",
+					},
+					unresolved_integration_risks: [
+						"The integration review should decide whether unrelated validation failures block promotion.",
+					],
+					hard_stop_written: false,
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/tests-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementTests", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/docs-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementDocs", status: "complete" }, null, 2)}\n`,
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "laneHardStopGuard",
+			scriptFileName: "lane-hard-stop-guard.js",
+			writes: ["/laneHardStopGuard"],
+		});
+
+		expect(result.scheduler.state.laneHardStopGuard).toMatchObject({
+			status: "continue",
+			blocking_lane_artifacts: [],
+			lane_artifacts: [
+				{
+					lane: "implementCore",
+					status: "source_change_applied",
+					validation_status: "fail",
+				},
+				{
+					lane: "implementDocs",
+					status: "complete",
+				},
+				{
+					lane: "implementTests",
+					status: "complete",
+				},
+			],
+		});
+	});
+
 	it("bounds documentation audit fan-in before consolidation", async () => {
 		using tempDir = TempDir.createSync("@omh-documentation-audit-compact-");
 		const cwd = tempDir.path();

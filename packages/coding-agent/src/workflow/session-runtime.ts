@@ -863,6 +863,7 @@ function reviewRecoveryDataHasSignal(data: unknown, gates: string[] | undefined)
 	}
 	if (data === null || typeof data !== "object" || Array.isArray(data)) return false;
 	const record = data as Record<string, unknown>;
+	if (reviewRecoveryDataHasSignal(record.result, gates)) return true;
 	if (record.overall_correctness === "correct" || record.overall_correctness === "incorrect") return true;
 	if (
 		typeof record.overall_correctness === "string" &&
@@ -884,7 +885,7 @@ function reviewRecoveryDataHasSignal(data: unknown, gates: string[] | undefined)
 
 function reviewFindingsRecoverySource(data: unknown, gates: string[] | undefined): string | undefined {
 	const record = schemaViolationRecord(data);
-	const findings = record?.findings;
+	const findings = record?.findings ?? schemaViolationRecord(record?.result)?.findings;
 	if (!Array.isArray(findings) || findings.length === 0) return undefined;
 	const summary = reviewFindingsSummary(findings);
 	if (summary === undefined) return undefined;
@@ -1086,6 +1087,18 @@ function parseReviewObject(
 	gates: string[] | undefined,
 	fallbackVerdict: string | undefined,
 ): { verdict: string; summary: string } {
+	const resultObject = reviewResultObject(parsed);
+	if (resultObject !== undefined) {
+		const nestedResult = tryParseReviewObject(
+			nodeId,
+			resultObject,
+			reviewSummaryFromObject(resultObject, fallbackSummary),
+			gates,
+			fallbackVerdict,
+		);
+		if (nestedResult !== undefined) return nestedResult;
+	}
+
 	const direct = reviewVerdictFromObject(parsed, fallbackSummary);
 	const directGate = direct === undefined ? undefined : declaredGateFor(direct.verdict, gates);
 	if (direct && (gates === undefined || directGate !== undefined)) {
@@ -1121,6 +1134,27 @@ function parseReviewObject(
 	}
 
 	throw new WorkflowNodeRuntimeError(`workflow review node "${nodeId}" must return a string verdict`);
+}
+
+function tryParseReviewObject(
+	nodeId: string,
+	parsed: Record<string, unknown>,
+	fallbackSummary: string,
+	gates: string[] | undefined,
+	fallbackVerdict: string | undefined,
+): { verdict: string; summary: string } | undefined {
+	try {
+		return parseReviewObject(nodeId, parsed, fallbackSummary, gates, fallbackVerdict);
+	} catch {
+		return undefined;
+	}
+}
+
+function reviewResultObject(parsed: Record<string, unknown>): Record<string, unknown> | undefined {
+	const result = parsed.result;
+	if (typeof result === "string") return parseJsonObject(result.trim());
+	if (result === null || typeof result !== "object" || Array.isArray(result)) return undefined;
+	return result as Record<string, unknown>;
 }
 
 function reviewVerdictFromObject(

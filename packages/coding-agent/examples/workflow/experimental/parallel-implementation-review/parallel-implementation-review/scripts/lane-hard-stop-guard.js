@@ -166,8 +166,7 @@ async function laneArtifactClassification(filePath) {
 			stringField(validation, "status") || stringField(validation, "result") || stringField(validation, "verdict"),
 		);
 		const validationExitCode = numberField(validation, "exitCode") ?? numberField(validation, "exit_code");
-		const validationRiskIsNonterminal =
-			data?.hard_stop === false && (status.startsWith("completed_with_") || status.startsWith("complete_with_"));
+		const validationRiskIsNonterminal = isNonterminalValidationRisk(data, status);
 		if (isBlockingStatus(status)) {
 			return {
 				status,
@@ -350,6 +349,27 @@ function isBlockingStatus(value) {
 
 function isPassingStatus(value) {
 	return ["complete", "completed", "continue", "pass", "passed", "ready"].includes(value);
+}
+
+function isNonterminalValidationRisk(data, status) {
+	if (!hasUnresolvedIntegrationRisks(data)) return false;
+	if (data?.hard_stop === true || data?.workflow_terminal === true) return false;
+	if (stringField(data, "terminal_scope") === "workflow") return false;
+	return isPassingStatus(status) || isNonterminalRiskStatus(status);
+}
+
+function isNonterminalRiskStatus(value) {
+	return (
+		value === "source_change_applied" ||
+		value === "patch_applied" ||
+		value.startsWith("completed_with_") ||
+		value.startsWith("complete_with_")
+	);
+}
+
+function hasUnresolvedIntegrationRisks(data) {
+	const risks = data?.unresolved_integration_risks;
+	return Array.isArray(risks) && risks.length > 0;
 }
 
 async function tupleIdFromJsonFile(filePath) {

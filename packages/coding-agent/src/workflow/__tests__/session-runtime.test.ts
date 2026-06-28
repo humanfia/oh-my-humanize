@@ -774,9 +774,11 @@ edges: []
 		const assignment = capturedRequest?.task.assignment;
 		if (assignment === undefined) throw new Error("review assignment missing");
 		expect(assignment).toContain("Workflow review adapter:");
-		expect(assignment).toContain('type: ["overall_correctness"]');
-		expect(assignment).toContain("single terminal structured result");
+		expect(assignment).toContain("one terminal `yield` tool call");
+		expect(assignment).toContain('"overall_correctness": "correct" | "incorrect"');
+		expect(assignment).toContain("Do not wrap this object in another `result` object");
 		expect(assignment).not.toContain("Use incremental `yield` sections");
+		expect(assignment).not.toContain('type: ["overall_correctness"]');
 		expect(assignment).toContain("Declared workflow gates: continue, finish");
 		expect(assignment).toContain(reviewPrompt);
 		expect(assignment.lastIndexOf("Workflow review adapter:")).toBeGreaterThan(assignment.indexOf(reviewPrompt));
@@ -826,9 +828,10 @@ edges: []
 		const assignment = capturedRequest?.task.assignment;
 		if (assignment === undefined) throw new Error("review assignment missing");
 		expect(assignment).toContain("First line must be exactly");
-		expect(assignment.lastIndexOf('type: ["confidence"]')).toBeGreaterThan(
+		expect(assignment.lastIndexOf('"confidence": 0.0-1.0')).toBeGreaterThan(
 			assignment.lastIndexOf("First line must be exactly"),
 		);
+		expect(assignment).toContain("Do not submit separate section yields");
 		expect(assignment).not.toContain("Use incremental `yield` sections");
 		expect(output.verdict).toBe("finish");
 	});
@@ -875,6 +878,50 @@ edges: []
 		expect(output.verdict).toBe("finish");
 		expect(output.summary).toContain("recovered schema_violation as verdict finish");
 		expect(output.artifacts).toEqual(["/tmp/reportReview.md", "/tmp/reportReview.jsonl"]);
+	});
+
+	it("recovers schema-invalid reviewer objects nested under result", async () => {
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
+			runAgentTask: async () => ({
+				exitCode: 1,
+				output: JSON.stringify({
+					error: "schema_violation",
+					message: "top-level reviewer fields are required",
+					missingRequired: ["overall_correctness", "explanation", "confidence"],
+					data: JSON.stringify({
+						result: {
+							overall_correctness: "correct",
+							explanation: "verdict finish\nReproduction and validation evidence are accepted.",
+							confidence: 0.86,
+						},
+					}),
+				}),
+				stderr: "schema_violation: missing required fields: overall_correctness, explanation, confidence",
+			}),
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "reportReview",
+			type: "review",
+			prompt: "Return finish only when reproduction evidence is accepted.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(output.verdict).toBe("finish");
+		expect(output.summary).toContain("recovered schema_violation as verdict finish");
+		expect(output.summary).toContain("Reproduction and validation evidence are accepted.");
 	});
 
 	it("recovers declared workflow gates placed in partial reviewer correctness fields", async () => {
