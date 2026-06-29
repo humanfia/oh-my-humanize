@@ -1,10 +1,18 @@
 const MAX_HANDOFF_BYTES = 12 * 1024;
 const RAW_PLAN_MAX_BYTES = 512 * 1024;
 const tupleId = await tupleIdFromRunArtifacts();
+if (!tupleId) {
+	throw new Error(
+		"parallel-implementation-review requires a canonical tuple id before materializing tuple-scoped scope handoff artifacts",
+	);
+}
 const suffix = tupleId ? `-${tupleId}` : "";
 const rawArtifact = `workflow-output/scope-plan-raw${suffix}.json`;
 const handoffArtifact = `workflow-output/scope-plan-handoff${suffix}.json`;
 const rawPlan = workflowContext.state?.plan ?? null;
+if (rawPlan === null || rawPlan === undefined) {
+	throw new Error("parallel-implementation-review scope plan is missing; refusing to fan out parallel lanes");
+}
 const rawPlanText = safeJsonStringify(rawPlan);
 const rawPlanForDisk = truncateUtf8Bytes(rawPlanText, RAW_PLAN_MAX_BYTES);
 

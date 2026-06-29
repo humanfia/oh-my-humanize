@@ -1753,6 +1753,46 @@ describe("example workflow scripts", () => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-markdown-contract-");
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
+		const tupleId = "P37-T01-markdown-contract";
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"# Objective",
+				"Triage and fix one reproducible bug.",
+				"",
+				"# Acceptance Criteria",
+				"- Produce a scoped patch.",
+				"",
+				"# Validation Command",
+				"echo validate",
+				"",
+				"# Lane Ownership",
+				"Core owns implementation; tests owns validation; docs owns evidence.",
+				"",
+				"# Stop Conditions",
+				"Stop on unsafe scope expansion.",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "precheckTaskContract",
+			scriptFileName: "precheck-task-contract.js",
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
+		).toBe("completed");
+		expect(result.scheduler.state.taskContract).toContain("# Validation Command");
+	});
+
+	it("fails parallel review precheck without a canonical tuple id", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-missing-tuple-id-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
 
 		await Bun.write(
 			`${cwd}/task.md`,
@@ -1781,10 +1821,32 @@ describe("example workflow scripts", () => {
 			scriptFileName: "precheck-task-contract.js",
 		});
 
-		expect(
-			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
-		).toBe("completed");
-		expect(result.scheduler.state.taskContract).toContain("# Validation Command");
+		const activation = result.scheduler.activations.find(item => item.nodeId === "precheckTaskContract");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("canonical tuple id");
+		expect(result.scheduler.state.runtime).toBeUndefined();
+	});
+
+	it("fails parallel review handoff when the scope agent did not produce a plan", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-missing-scope-plan-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "P37-T01-scope-plan-required";
+
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializePlanHandoff",
+			scriptFileName: "materialize-plan-handoff.js",
+			writes: ["/planHandoff"],
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "materializePlanHandoff");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("scope plan");
+		expect(await Bun.file(`${cwd}/workflow-output/scope-plan-handoff-${tupleId}.json`).exists()).toBe(false);
 	});
 
 	it("reuses declared validation evidence keyed by the manifest run id", async () => {

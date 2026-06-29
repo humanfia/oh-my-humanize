@@ -13,6 +13,7 @@
 - Fixed the experimental parallel implementation review guard treating ordinary tuple ids containing `final` as premature final workflow artifacts.
 - Fixed experimental KDA and parallel implementation task-contract checks rejecting normal Markdown headings unless they used colon field syntax.
 - Fixed workflow production freeze accepting JavaScript script nodes with static ESM import/export declarations that later fail at runtime.
+- Fixed experimental parallel implementation review continuing into parallel lanes without a canonical tuple id or materialized scope plan.
 
 ## [16.2.5] - 2026-06-28
 

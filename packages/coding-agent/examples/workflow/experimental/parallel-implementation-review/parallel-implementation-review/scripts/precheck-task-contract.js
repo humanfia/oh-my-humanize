@@ -11,6 +11,11 @@ if (!taskContract) {
 }
 assertTaskContract(taskContract);
 const tupleId = await tupleIdFromRunArtifacts(taskContract);
+if (!tupleId) {
+	throw new Error(
+		"parallel-implementation-review requires a canonical tuple id from monitor-assignment.json, manifest-entry.json, or task.md before lane artifacts can be emitted",
+	);
+}
 const runtimeTaskContract = taskContractWithWorkflowFinalizationRule(taskContract, tupleId);
 
 return {
