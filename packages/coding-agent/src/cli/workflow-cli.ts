@@ -7,7 +7,6 @@ import {
 	listWorkflowFlowSpecs,
 	resolveWorkflowFlowSpec,
 	uninstallWorkflowArtifact,
-	WorkflowArtifactRegistryError,
 	type WorkflowFlowSpec,
 } from "../workflow/artifact-registry";
 import type { WorkflowDefinition } from "../workflow/definition";
@@ -32,7 +31,7 @@ import {
 	type WorkflowShellScriptRequest,
 } from "../workflow/session-runtime";
 
-export type WorkflowAction = "list" | "freeze" | "start" | "install" | "uninstall";
+export type WorkflowAction = "list" | "freeze" | "start" | "install" | "uninstall" | "help";
 
 export interface WorkflowCommandArgs {
 	action: WorkflowAction;
@@ -47,6 +46,7 @@ export interface WorkflowCommandArgs {
 		maxNodeActivations?: number;
 		maxRuntimeMs?: number;
 		cwd?: string;
+		background?: boolean;
 	};
 }
 
@@ -75,7 +75,7 @@ interface WorkflowStartSignalController {
 	dispose(): void;
 }
 
-const ACTIONS = new Set<WorkflowAction>(["list", "freeze", "start", "install", "uninstall"]);
+const ACTIONS = new Set<WorkflowAction>(["list", "freeze", "start", "install", "uninstall", "help"]);
 
 export function resolveWorkflowCommandArgs(
 	actionInput: string | undefined,
@@ -100,6 +100,7 @@ export function resolveWorkflowCommandArgs(
 				: {}),
 			...(typeof flagsInput["max-runtime-ms"] === "number" ? { maxRuntimeMs: flagsInput["max-runtime-ms"] } : {}),
 			...(typeof flagsInput.cwd === "string" ? { cwd: flagsInput.cwd } : {}),
+			...(flagsInput.background === true ? { background: true } : {}),
 		},
 	};
 }
@@ -125,14 +126,12 @@ export async function runWorkflowCommand(
 			case "uninstall":
 				await handleUninstall(command);
 				return;
+			case "help":
+				handleHelp();
+				return;
 		}
 	} catch (error) {
-		if (error instanceof WorkflowArtifactRegistryError || error instanceof WorkflowPackageError) {
-			writeError(`${error.message}\n`);
-			process.exitCode = 1;
-			return;
-		}
-		throw error;
+		writeWorkflowCommandError(error);
 	}
 }
 
@@ -364,6 +363,26 @@ async function handleUninstall(command: WorkflowCommandArgs): Promise<void> {
 		return;
 	}
 	writeLine(`Uninstalled workflow flow: ${uninstalled.name}`);
+}
+
+function handleHelp(): void {
+	writeLine(`${APP_NAME} workflow - Manage and run .omhflow workflow artifacts`);
+	writeLine("");
+	writeLine(`Usage: ${APP_NAME} workflow <list|freeze|start|install|uninstall> [target] [flags]`);
+	writeLine("");
+	writeLine("Common commands:");
+	writeLine(`  ${APP_NAME} workflow list`);
+	writeLine(`  ${APP_NAME} workflow start experimental::humanize-rlcr --max-activations 1`);
+	writeLine(`  ${APP_NAME} workflow freeze experimental::humanize-rlcr --json`);
+	writeLine(`  ${APP_NAME} workflow install ./my-flow.omhflow`);
+	writeLine("");
+	writeLine(`Run ${APP_NAME} workflow --help for flags and examples.`);
+}
+
+export function writeWorkflowCommandError(error: unknown): void {
+	const message = error instanceof Error ? error.message : String(error);
+	writeError(`${message}\n`);
+	process.exitCode = 1;
 }
 
 async function loadWorkflowStartPackage(workflowPath: string): Promise<WorkflowStartPackage> {

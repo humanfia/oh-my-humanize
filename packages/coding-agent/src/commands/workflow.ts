@@ -3,9 +3,14 @@
  */
 import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
-import { resolveWorkflowCommandArgs, runWorkflowCommand, type WorkflowAction } from "../cli/workflow-cli";
+import {
+	resolveWorkflowCommandArgs,
+	runWorkflowCommand,
+	type WorkflowAction,
+	writeWorkflowCommandError,
+} from "../cli/workflow-cli";
 
-const ACTIONS: WorkflowAction[] = ["list", "freeze", "start", "install", "uninstall"];
+const ACTIONS: WorkflowAction[] = ["list", "freeze", "start", "install", "uninstall", "help"];
 
 export default class Workflow extends Command {
 	static description = "Manage and run .omhflow workflow artifacts";
@@ -38,6 +43,9 @@ export default class Workflow extends Command {
 		"max-runtime-ms": Flags.integer({
 			description: "Maximum workflow runtime in milliseconds before checkpoint stop (start)",
 		}),
+		background: Flags.boolean({
+			description: "Accepted for /workflow parity; headless starts already run without opening the TUI",
+		}),
 		cwd: Flags.string({ description: "Working directory for path resolution and headless execution" }),
 	};
 
@@ -49,8 +57,12 @@ export default class Workflow extends Command {
 	];
 
 	async run(): Promise<void> {
-		const { args, flags } = await this.parse(Workflow);
-		const targets = Array.isArray(args.targets) ? args.targets : args.targets ? [args.targets] : [];
-		await runWorkflowCommand(resolveWorkflowCommandArgs(args.action, targets, flags));
+		try {
+			const { args, flags } = await this.parse(Workflow);
+			const targets = Array.isArray(args.targets) ? args.targets : args.targets ? [args.targets] : [];
+			await runWorkflowCommand(resolveWorkflowCommandArgs(args.action, targets, flags));
+		} catch (error) {
+			writeWorkflowCommandError(error);
+		}
 	}
 }

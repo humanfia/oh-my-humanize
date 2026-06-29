@@ -68,6 +68,15 @@ describe("workflow artifact registry", () => {
 		}
 	});
 
+	it("suggests the experimental namespace when a packaged experimental short name is used", async () => {
+		await expect(resolveWorkflowFlowSpec("humanize-rlcr", { cwd: process.cwd(), flowDirs: [] })).rejects.toThrow(
+			`workflow flow "humanize-rlcr" was not found. Did you mean "experimental::humanize-rlcr"?`,
+		);
+		await expect(resolveWorkflowFlowSpec("kda-humanize", { cwd: process.cwd(), flowDirs: [] })).rejects.toThrow(
+			`workflow flow "kda-humanize" was not found. Did you mean "experimental::kda-humanize"?`,
+		);
+	});
+
 	it("keeps demos, candidates, and unverified practical flows out of named built-in resolution", async () => {
 		const nonBuiltInNames = [
 			"branch-conditional",

@@ -60,12 +60,16 @@ const RESERVED_TOP_LEVEL_WORDS = new Map<string, string>([
 		'`omh extensions` is not a management command. Use `omh plugin list` / `omh plugin install`, or run `omh launch extensions` if you meant to send "extensions" as a prompt.',
 	],
 	[
+		"workflows",
+		'`omh workflows` is not a command. Use `omh workflow list`, `omh workflow --help`, or run `omh launch workflows` if you meant to send "workflows" as a prompt.',
+	],
+	[
 		"list",
-		'`omp list` is not a top-level command. Use `omp plugin list` to list installed plugins, or run `omp launch list` if you meant to send "list" as a prompt.',
+		'`omh list` is not a top-level command. Use `omh plugin list` to list installed plugins, or run `omh launch list` if you meant to send "list" as a prompt.',
 	],
 	[
 		"remove",
-		'`omp remove` is not a top-level command. Use `omp plugin uninstall <name>` to remove a plugin, or run `omp launch remove` if you meant to send "remove" as a prompt.',
+		'`omh remove` is not a top-level command. Use `omh plugin uninstall <name>` to remove a plugin, or run `omh launch remove` if you meant to send "remove" as a prompt.',
 	],
 ]);
 

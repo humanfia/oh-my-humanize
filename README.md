@@ -25,6 +25,9 @@ and supervising long-running agentic development flows.
 
 ### 1. Install `omh`
 
+Current source installs need `git`, Bun, Rust/Cargo, and native build tools; the
+script installs Bun if needed and tells you what else is missing.
+
 macOS or Linux:
 
 ```sh
@@ -115,14 +118,19 @@ OMH-specific distribution channels are published.
 curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh
 ```
 
+Until OMH publishes prebuilt release binaries, the installer uses the source
+path. Fresh machines need `git`, Bun 1.3.14+, Rust/Cargo, and normal native
+build tools (`build-essential` on Debian/Ubuntu, Xcode Command Line Tools on
+macOS, or the distro equivalent). If Bun is missing, the installer installs it.
+
 **Windows (PowerShell)**
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1)))
 ```
 
-For source installs, use Bun ≥ 1.3.14. The installed binary exposes `omh` as the
-primary command.
+The installed launcher exposes `omh` as the primary command. `omp` remains as a
+compatibility alias.
 
 ### Shell completions
 

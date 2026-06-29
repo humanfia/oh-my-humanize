@@ -18,6 +18,7 @@ $ErrorActionPreference = "Stop"
 $Repo = "humanfia/oh-my-humanize"
 $DefaultRef = if ($env:OMH_INSTALL_REF) { $env:OMH_INSTALL_REF } else { "main" }
 $InstallDir = if ($env:OMH_INSTALL_DIR) { $env:OMH_INSTALL_DIR } elseif ($env:PI_INSTALL_DIR) { $env:PI_INSTALL_DIR } else { "$env:LOCALAPPDATA\omh" }
+$SourceRoot = if ($env:OMH_SOURCE_ROOT) { $env:OMH_SOURCE_ROOT } elseif ($env:PI_SOURCE_ROOT) { $env:PI_SOURCE_ROOT } else { "$env:LOCALAPPDATA\omh\source" }
 $BinaryName = "omh-windows-x64.exe"
 $MinimumBunVersion = "1.3.14"
 
@@ -81,6 +82,47 @@ function Test-GitLfsInstalled {
     } catch {
         return $false
     }
+}
+
+function Test-CargoInstalled {
+    try {
+        $null = Get-Command cargo -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Assert-SourceBuildTools {
+    if (-not (Test-CargoInstalled)) {
+        throw "Rust/cargo is required for OMH source installs because the local native addon is built from source. Install Rust from https://rustup.rs/ and re-run this installer. If you want a no-build install, use -Binary after OMH binary releases are published."
+    }
+}
+
+function Get-SafePathSegment {
+    param([string]$Value)
+    return ($Value -replace '[^A-Za-z0-9._-]', '-')
+}
+
+function Write-SourceLauncher {
+    param(
+        [string]$Name,
+        [string]$SourceDir
+    )
+
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $cli = Join-Path $SourceDir "packages\coding-agent\src\cli.ts"
+    $preload = Join-Path $SourceDir "packages\coding-agent\scripts\omp.ts"
+    $launcherDir = Join-Path $env:USERPROFILE ".omp\.dev-cwd"
+    $cmdPath = Join-Path $InstallDir "$Name.cmd"
+    $cmd = @"
+@echo off
+set "OMP_LAUNCH_CWD=%CD%"
+if not exist "$launcherDir" mkdir "$launcherDir"
+cd /d "$launcherDir"
+bun --preload "$preload" "$cli" %*
+"@
+    Set-Content -Path $cmdPath -Value $cmd -Encoding ASCII
 }
 
 function Find-BashShell {
@@ -183,9 +225,11 @@ function Install-ViaBun {
     if (-not (Test-GitInstalled)) {
         throw "git is required when installing OMH from source"
     }
+    Assert-SourceBuildTools
 
     $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("omh-install-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
+    $movedSource = $false
 
     try {
         $repoUrl = "https://github.com/$Repo.git"
@@ -222,16 +266,42 @@ function Install-ViaBun {
             throw "Expected package at $packagePath"
         }
 
-        bun install -g $packagePath
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install from $packagePath via bun"
+        Push-Location $tmpRoot
+        try {
+            bun install
+            if ($LASTEXITCODE -ne 0) {
+                throw "bun install failed"
+            }
+            bun run build:native
+            if ($LASTEXITCODE -ne 0) {
+                throw "native build failed"
+            }
+        } finally {
+            Pop-Location
         }
+
+        $sourceName = Get-SafePathSegment $installRef
+        $targetSourceDir = if ($env:OMH_INSTALL_SOURCE_DIR) { $env:OMH_INSTALL_SOURCE_DIR } else { Join-Path $SourceRoot $sourceName }
+        $stagedSourceDir = "$targetSourceDir.new.$PID"
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $targetSourceDir) | Out-Null
+        Remove-Item -Recurse -Force $stagedSourceDir -ErrorAction SilentlyContinue
+        Move-Item -Force $tmpRoot $stagedSourceDir
+        $movedSource = $true
+        Remove-Item -Recurse -Force $targetSourceDir -ErrorAction SilentlyContinue
+        Move-Item -Force $stagedSourceDir $targetSourceDir
+
+        Write-SourceLauncher "omh" $targetSourceDir
+        Write-SourceLauncher "omp" $targetSourceDir
     } finally {
-        Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue
+        if (-not $movedSource) {
+            Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue
+        }
     }
 
     Write-Host ""
     Write-Host "✓ Installed omh from $Repo@$installRef via bun" -ForegroundColor Green
+    Write-Host "Source: $targetSourceDir"
+    Write-Host "Launcher: $(Join-Path $InstallDir "omh.cmd")"
 
     Configure-BashShell
 

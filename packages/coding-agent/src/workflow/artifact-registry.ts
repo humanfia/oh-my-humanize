@@ -109,8 +109,10 @@ export async function resolveWorkflowFlowSpec(
 	}
 	if (namedCandidates[0] !== undefined) return namedCandidates[0];
 
+	const experimentalSuggestion = await experimentalNameSuggestion(experimentalRoot, input);
+	const suggestion = experimentalSuggestion !== undefined ? ` Did you mean "${experimentalSuggestion}"?` : "";
 	throw new WorkflowArtifactRegistryError(
-		`workflow flow "${input}" was not found. Use a path, a verified built-in flow name, or add a .omhflow artifact to ${OMHFLOW_DIR_ENV}.`,
+		`workflow flow "${input}" was not found.${suggestion} Use a path, a verified built-in flow name, ${EXPERIMENTAL_WORKFLOW_PREFIX}<name>, or add a .omhflow artifact to ${OMHFLOW_DIR_ENV}.`,
 	);
 }
 
@@ -330,6 +332,18 @@ function experimentalWorkflowName(input: string): string | undefined {
 	if (!input.startsWith(EXPERIMENTAL_WORKFLOW_PREFIX)) return undefined;
 	const name = input.slice(EXPERIMENTAL_WORKFLOW_PREFIX.length);
 	return name.length > 0 ? name : undefined;
+}
+
+async function experimentalNameSuggestion(root: string, input: string): Promise<string | undefined> {
+	if (input.includes(":") || input.includes("/") || input.includes("\\")) return undefined;
+	try {
+		const candidate = await firstNamedFlowCandidate(root, input, "builtin-experimental", {
+			displayNamePrefix: EXPERIMENTAL_WORKFLOW_PREFIX,
+		});
+		return candidate?.name;
+	} catch {
+		return undefined;
+	}
 }
 
 async function removeEmptyInstallContainer(root: string, flowPath: string): Promise<void> {

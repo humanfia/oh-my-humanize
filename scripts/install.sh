@@ -12,7 +12,8 @@ set -e
 
 REPO="humanfia/oh-my-humanize"
 DEFAULT_REF="${OMH_INSTALL_REF:-main}"
-INSTALL_DIR="${OMH_INSTALL_DIR:-${PI_INSTALL_DIR:-$HOME/.local/bin}}"
+INSTALL_DIR="${OMH_INSTALL_DIR:-${PI_INSTALL_DIR:-$HOME/.bun/bin}}"
+SOURCE_ROOT="${OMH_SOURCE_ROOT:-${PI_SOURCE_ROOT:-$HOME/.local/share/omh/source}}"
 MIN_BUN_VERSION="1.3.14"
 
 # Parse arguments
@@ -149,6 +150,33 @@ has_git_lfs() {
     command -v git-lfs >/dev/null 2>&1
 }
 
+has_cargo() {
+    command -v cargo >/dev/null 2>&1
+}
+
+has_c_compiler() {
+    command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1
+}
+
+require_source_build_tools() {
+    if ! has_cargo; then
+        echo "Rust/cargo is required for OMH source installs because the local native addon is built from source."
+        echo "Install Rust with rustup, then re-run this installer: https://rustup.rs/"
+        echo "If you want a no-build install, use --binary after OMH binary releases are published."
+        exit 1
+    fi
+    if ! has_c_compiler; then
+        echo "A C compiler/build toolchain is required for OMH source installs."
+        echo "Install your platform build tools, then re-run this installer."
+        echo "Examples: apt install build-essential, xcode-select --install, or your distro equivalent."
+        exit 1
+    fi
+}
+
+safe_path_segment() {
+    printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/-/g'
+}
+
 # Install via bun
 install_via_bun() {
     install_ref="${REF:-$DEFAULT_REF}"
@@ -157,9 +185,11 @@ install_via_bun() {
         echo "git is required when installing OMH from source"
         exit 1
     fi
+    require_source_build_tools
 
     TMP_DIR="$(mktemp -d)"
-    trap 'rm -rf "$TMP_DIR"' EXIT
+    STAGED_SOURCE_DIR=""
+    trap 'rm -rf "$TMP_DIR"; if [ -n "$STAGED_SOURCE_DIR" ]; then rm -rf "$STAGED_SOURCE_DIR"; fi' EXIT
 
     if git clone --depth 1 --branch "$install_ref" "https://github.com/${REPO}.git" "$TMP_DIR" >/dev/null 2>&1; then
         :
@@ -178,12 +208,29 @@ install_via_bun() {
         exit 1
     fi
 
-    bun install -g "$TMP_DIR/packages/coding-agent" || {
-        echo "Failed to install from source"
+    (cd "$TMP_DIR" && bun install && bun run build:native) || {
+        echo "Failed to build OMH from source"
         exit 1
     }
+
+    source_name="$(safe_path_segment "$install_ref")"
+    target_source_dir="${OMH_INSTALL_SOURCE_DIR:-$SOURCE_ROOT/$source_name}"
+    STAGED_SOURCE_DIR="${target_source_dir}.new.$$"
+    mkdir -p "$(dirname "$target_source_dir")" "$INSTALL_DIR"
+    rm -rf "$STAGED_SOURCE_DIR"
+    mv "$TMP_DIR" "$STAGED_SOURCE_DIR"
+    TMP_DIR=""
+    rm -rf "$target_source_dir"
+    mv "$STAGED_SOURCE_DIR" "$target_source_dir"
+    STAGED_SOURCE_DIR=""
+
+    launcher="${target_source_dir}/packages/coding-agent/scripts/omp"
+    ln -sfn "$launcher" "${INSTALL_DIR}/omh"
+    ln -sfn "$launcher" "${INSTALL_DIR}/omp"
     echo ""
     echo "✓ Installed omh from ${REPO}@${install_ref} via bun"
+    echo "Source: ${target_source_dir}"
+    echo "Launcher: ${INSTALL_DIR}/omh"
     show_omh_path_hint
 }
 
