@@ -5,8 +5,8 @@ import type { WorkflowCheckpointWorkspaceSnapshot } from "./lifecycle";
 import type { WorkflowReviewNodeOutput } from "./node-runtime";
 import type { WorkflowActivationOutput, WorkflowActivationRetryHistoryEntry } from "./state";
 
-const WORKFLOW_OBSERVABILITY_INDEX_PATH = "workflow-output/omh-runtime/observability.json";
-const WORKFLOW_OBSERVABILITY_PROGRESS_PATH = "workflow-output/omh-runtime/progress.md";
+export const WORKFLOW_OBSERVABILITY_INDEX_PATH = "workflow-output/omh-runtime/observability.json";
+export const WORKFLOW_OBSERVABILITY_PROGRESS_PATH = "workflow-output/omh-runtime/progress.md";
 const WORKFLOW_OBSERVABILITY_ARTIFACTS_PATH = "workflow-output/omh-runtime/artifacts";
 const PROGRESS_SUMMARY_MAX_CHARS = 140;
 

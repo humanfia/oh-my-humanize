@@ -181,6 +181,44 @@ describe("workflow CLI", () => {
 		expect(result.runs[0]?.stateKeys).toEqual(["message"]);
 	});
 
+	it("includes failed activation diagnostics in headless workflow JSON", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-failed-diagnostics-");
+		const root = tempDir.path();
+		await Bun.write(`${root}/failed-diagnostics.omhflow`, workflowFailedDiagnosticsFlow());
+		await Bun.write(`${root}/failed-diagnostics/scripts/fail.sh`, workflowFailedDiagnosticsScript());
+		const output: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+
+		await runWorkflowCommand({
+			action: "start",
+			args: [`${root}/failed-diagnostics.omhflow`],
+			flags: {
+				cwd: root,
+				json: true,
+				runId: "failed-diagnostics-run",
+			},
+		});
+
+		const result = JSON.parse(output.join("").trim()) as {
+			run: { status: string; failed: number };
+			failedActivations?: Array<{ id: string; nodeId: string; error: string }>;
+			diagnostics?: { progressPath: string; observabilityPath: string };
+		};
+		expect(result.run).toMatchObject({ status: "failed", failed: 1 });
+		expect(result.failedActivations?.[0]).toEqual({
+			id: "activation-1",
+			nodeId: "fail",
+			error: 'workflow script node "fail" failed: boom',
+		});
+		expect(result.diagnostics).toEqual({
+			progressPath: path.join(root, "workflow-output/omh-runtime/progress.md"),
+			observabilityPath: path.join(root, "workflow-output/omh-runtime/observability.json"),
+		});
+	});
+
 	it("disables Python user-site pollution for headless shell script nodes", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-python-env-");
 		const root = tempDir.path();
@@ -401,6 +439,43 @@ function workflowResourceSmokeScript(): string {
 		'message=$(cat "$OMP_WORKFLOW_RESOURCE_DIR/data/message.txt")',
 		'printf \'{"summary":"resource observed","statePatch":[{"op":"set","path":"/message","value":"%s"}]}\\n\' "$message"',
 	].join("\n");
+}
+
+function workflowFailedDiagnosticsFlow(): string {
+	return [
+		"---",
+		"name: failed-diagnostics",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: failed-diagnostics",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# Failed diagnostics smoke",
+		"",
+		"```yaml workflow",
+		"resources:",
+		"  - path: scripts/fail.sh",
+		"    kind: script",
+		"sequence:",
+		"  - node:",
+		"      id: fail",
+		"      type: script",
+		"      script:",
+		"        language: sh",
+		"        file: scripts/fail.sh",
+		"```",
+	].join("\n");
+}
+
+function workflowFailedDiagnosticsScript(): string {
+	return ["#!/bin/sh", "set -eu", "printf 'boom\\n' >&2", "exit 7"].join("\n");
 }
 
 function workflowPythonEnvSmokeFlow(): string {

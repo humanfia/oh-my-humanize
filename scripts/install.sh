@@ -12,7 +12,27 @@ set -e
 
 REPO="humanfia/oh-my-humanize"
 DEFAULT_REF="${OMH_INSTALL_REF:-main}"
-INSTALL_DIR="${OMH_INSTALL_DIR:-${PI_INSTALL_DIR:-$HOME/.bun/bin}}"
+DEFAULT_INSTALL_DIR="$HOME/.bun/bin"
+case ":$PATH:" in
+    *":$DEFAULT_INSTALL_DIR:"*)
+        ;;
+    *)
+        if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+            DEFAULT_INSTALL_DIR="/usr/local/bin"
+        else
+            old_ifs="$IFS"
+            IFS=":"
+            for path_dir in $PATH; do
+                if [ -n "$path_dir" ] && [ -d "$path_dir" ] && [ -w "$path_dir" ]; then
+                    DEFAULT_INSTALL_DIR="$path_dir"
+                    break
+                fi
+            done
+            IFS="$old_ifs"
+        fi
+        ;;
+esac
+INSTALL_DIR="${OMH_INSTALL_DIR:-${PI_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}}"
 SOURCE_ROOT="${OMH_SOURCE_ROOT:-${PI_SOURCE_ROOT:-$HOME/.local/share/omh/source}}"
 MIN_BUN_VERSION="1.3.14"
 
@@ -128,7 +148,7 @@ show_omh_path_hint() {
     fi
 
     echo "Installed omh, but it is not on PATH yet."
-    echo 'Add Bun global bin to PATH, then run omh: export PATH="$HOME/.bun/bin:$PATH"'
+    echo "Add the install directory to PATH, then run omh: export PATH=\"$INSTALL_DIR:\$PATH\""
 }
 
 # Install bun

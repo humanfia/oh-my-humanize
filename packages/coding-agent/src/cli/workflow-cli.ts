@@ -19,6 +19,7 @@ import {
 	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
 } from "../workflow/model-env";
+import { WORKFLOW_OBSERVABILITY_INDEX_PATH, WORKFLOW_OBSERVABILITY_PROGRESS_PATH } from "../workflow/observability";
 import { loadWorkflowArtifact, WorkflowPackageError } from "../workflow/package-loader";
 import { reconstructWorkflowRuns, type WorkflowRunStoreHost } from "../workflow/run-store";
 import { runWorkflow } from "../workflow/runner";
@@ -254,7 +255,8 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 	});
 	const runs = reconstructWorkflowRuns(host.getBranch());
 	const families = reconstructWorkflowFamilies(host.getBranch());
-	const failed = result.scheduler.activations.find(activation => activation.status === "failed");
+	const failedActivations = result.scheduler.activations.filter(activation => activation.status === "failed");
+	const failed = failedActivations[0];
 	const lifecycleAttempt =
 		attemptId === undefined
 			? undefined
@@ -276,6 +278,21 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 				frontier: result.scheduler.frontierNodeIds,
 				maxRuntimeMs: command.flags.maxRuntimeMs ?? DEFAULT_WORKFLOW_MAX_RUNTIME_MS,
 			},
+			failedActivations:
+				failedActivations.length > 0
+					? failedActivations.map(activation => ({
+							id: activation.id,
+							nodeId: activation.nodeId,
+							error: activation.error ?? activation.reason ?? "workflow activation failed",
+						}))
+					: undefined,
+			diagnostics:
+				failedActivations.length > 0
+					? {
+							progressPath: path.join(cwd, WORKFLOW_OBSERVABILITY_PROGRESS_PATH),
+							observabilityPath: path.join(cwd, WORKFLOW_OBSERVABILITY_INDEX_PATH),
+						}
+					: undefined,
 			families: families.map(family => ({
 				id: family.id,
 				freezes: family.freezes.map(freeze => ({
@@ -316,6 +333,15 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 	);
 	if (result.scheduler.frontierNodeIds.length > 0) {
 		writeLine(`Frontier: ${result.scheduler.frontierNodeIds.join(", ")}`);
+	}
+	if (failedActivations.length > 0) {
+		for (const activation of failedActivations) {
+			writeLine(
+				`Failed activation: ${activation.nodeId} (${activation.id}) - ${activation.error ?? activation.reason ?? "workflow activation failed"}`,
+			);
+		}
+		writeLine(`Progress: ${path.join(cwd, WORKFLOW_OBSERVABILITY_PROGRESS_PATH)}`);
+		writeLine(`Observability: ${path.join(cwd, WORKFLOW_OBSERVABILITY_INDEX_PATH)}`);
 	}
 }
 
