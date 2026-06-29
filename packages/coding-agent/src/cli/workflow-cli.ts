@@ -161,7 +161,7 @@ async function handleList(command: WorkflowCommandArgs): Promise<void> {
 	}
 	writeLine("Workflow flows:");
 	for (const flow of flows) {
-		writeLine(`- ${flow.name} ${dim(`(${flow.source})`)} ${flow.path}`);
+		writeLine(`- ${flow.name} ${dim(`(${flow.source})`)}`);
 	}
 }
 
@@ -381,8 +381,21 @@ function handleHelp(): void {
 
 export function writeWorkflowCommandError(error: unknown): void {
 	const message = error instanceof Error ? error.message : String(error);
-	writeError(`${message}\n`);
+	writeError(`${withWorkflowCommandRecoveryHint(message)}\n`);
 	process.exitCode = 1;
+}
+
+function withWorkflowCommandRecoveryHint(message: string): string {
+	if (message.startsWith("Expected action to be one of:")) {
+		return `${message}\nHeadless workflow commands support list, freeze, start, install, and uninstall. Run ${APP_NAME} workflow help.`;
+	}
+	if (message.startsWith("Unknown workflow command: run")) {
+		return `${message}\nDid you mean ${APP_NAME} workflow start? Run ${APP_NAME} workflow help.`;
+	}
+	if (message.startsWith("Unknown workflow command:")) {
+		return `${message}\nRun ${APP_NAME} workflow help for supported commands.`;
+	}
+	return message;
 }
 
 async function loadWorkflowStartPackage(workflowPath: string): Promise<WorkflowStartPackage> {

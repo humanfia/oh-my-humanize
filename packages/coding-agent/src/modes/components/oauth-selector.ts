@@ -340,7 +340,9 @@ export class OAuthSelectorComponent extends Container {
 					? this.#mode === "login"
 						? "No OAuth providers available"
 						: "No stored provider credentials to log out"
-					: "No matching providers";
+					: this.#searchQuery.trim().startsWith("/")
+						? "Setup is active; press Esc first, then run /workflow help"
+						: "No matching providers";
 			this.#listContainer.addChild(new TruncatedText(theme.fg("muted", `  ${message}`), 0, 0));
 		}
 		if (this.#statusMessage) {

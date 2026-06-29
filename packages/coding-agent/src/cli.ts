@@ -47,6 +47,18 @@ async function showHelp(config: CliConfig): Promise<void> {
 	const { renderRootHelp } = await import("@oh-my-pi/pi-utils/cli");
 	const { getExtraHelpText } = await import("./cli/args");
 	renderRootHelp(config);
+	process.stdout.write(
+		[
+			"",
+			"WORKFLOW FIRST STEPS",
+			"  omh workflow help",
+			"  omh workflow list",
+			"  omh workflow start experimental::humanize-rlcr --max-activations 1",
+			"  omh",
+			"    Then type /workflow help in the TUI.",
+			"",
+		].join("\n"),
+	);
 	const extra = getExtraHelpText();
 	if (extra.trim().length > 0) {
 		process.stdout.write(`\n${extra}\n`);

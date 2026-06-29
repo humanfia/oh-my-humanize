@@ -49,6 +49,25 @@ describe("OAuthSelectorComponent", () => {
 		expect(selected).toEqual([target.id]);
 	});
 
+	it("guides slash-command input back to the TUI after setup is skipped", () => {
+		const component = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			() => {},
+			() => {},
+		);
+
+		for (const char of "/workflow help") {
+			component.handleInput(char);
+		}
+
+		const rendered = component
+			.render(80)
+			.map(line => Bun.stripANSI(line))
+			.join("\n");
+		expect(rendered).toContain("Setup is active; press Esc first, then run /workflow help");
+	});
+
 	it("does not offer env-only providers as logout targets", () => {
 		const selected: string[] = [];
 		const component = new OAuthSelectorComponent(

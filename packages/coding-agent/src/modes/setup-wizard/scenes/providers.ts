@@ -12,7 +12,7 @@ import { WebSearchTab } from "./web-search";
  */
 class ProvidersSceneController implements SetupSceneController {
 	title = "Set up your providers";
-	subtitle = "Sign in and pick a web search provider. Press Esc when you're done.";
+	subtitle = "Sign in or press Esc to skip setup and use /workflow help.";
 
 	#tabs: SetupTab[];
 	#tabBar: TabBar;

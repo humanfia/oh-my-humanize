@@ -71,14 +71,22 @@ export async function resolveWorkflowFlowSpec(
 	options: WorkflowArtifactRegistryOptions = {},
 ): Promise<WorkflowFlowSpec> {
 	const cwd = path.resolve(options.cwd ?? process.cwd());
+	const builtinRoot = options.builtinRoot ?? getBuiltinWorkflowRoot();
+	const experimentalRoot = options.builtinExperimentalRoot ?? getBuiltinExperimentalWorkflowRoot(builtinRoot);
+	const nearMissExperimentalName = nearMissExperimentalWorkflowName(input);
+	if (nearMissExperimentalName !== undefined) {
+		const suggestion = `${EXPERIMENTAL_WORKFLOW_PREFIX}${nearMissExperimentalName}`;
+		throw new WorkflowArtifactRegistryError(
+			`workflow flow "${input}" was not found. Did you mean "${suggestion}"? Use ${EXPERIMENTAL_WORKFLOW_PREFIX}<name> for packaged experimental flows.`,
+		);
+	}
+
 	const expandedInput = expandHome(input);
 	const pathCandidate = path.isAbsolute(expandedInput) ? expandedInput : path.resolve(cwd, expandedInput);
 	if (looksLikeWorkflowPath(input) || (await pathExists(pathCandidate))) {
 		return { kind: "path", input, path: pathCandidate };
 	}
 
-	const builtinRoot = options.builtinRoot ?? getBuiltinWorkflowRoot();
-	const experimentalRoot = options.builtinExperimentalRoot ?? getBuiltinExperimentalWorkflowRoot(builtinRoot);
 	const experimentalName = experimentalWorkflowName(input);
 	if (experimentalName !== undefined) {
 		const experimentalCandidates = await namedFlowCandidates(
@@ -332,6 +340,23 @@ function experimentalWorkflowName(input: string): string | undefined {
 	if (!input.startsWith(EXPERIMENTAL_WORKFLOW_PREFIX)) return undefined;
 	const name = input.slice(EXPERIMENTAL_WORKFLOW_PREFIX.length);
 	return name.length > 0 ? name : undefined;
+}
+
+function nearMissExperimentalWorkflowName(input: string): string | undefined {
+	for (const prefix of ["experimental:", "experimental/"]) {
+		if (!input.startsWith(prefix)) continue;
+		const name = input.slice(prefix.length);
+		return name.length > 0 && safeFlowNameOrNull(name) !== null ? name : undefined;
+	}
+	return undefined;
+}
+
+function safeFlowNameOrNull(input: string): string | null {
+	try {
+		return safeFlowName(input);
+	} catch {
+		return null;
+	}
 }
 
 async function experimentalNameSuggestion(root: string, input: string): Promise<string | undefined> {

@@ -96,6 +96,25 @@ describe("workflow CLI", () => {
 		expect(errorOutput).not.toContain("WorkflowPackageError");
 	});
 
+	it("lists workflow names without long artifact paths by default", async () => {
+		const stdout: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			stdout.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+
+		await runWorkflowCommand({
+			action: "list",
+			args: [],
+			flags: {},
+		});
+
+		const output = stdout.join("");
+		expect(output).toContain("experimental::humanize-rlcr");
+		expect(output).not.toContain("/examples/workflow/");
+		expect(output).not.toContain("\\examples\\workflow\\");
+	});
+
 	it("rejects headless starts from non-artifact workflow packages", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-start-artifact-");
 		const root = tempDir.path();

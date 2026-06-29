@@ -77,6 +77,15 @@ describe("workflow artifact registry", () => {
 		);
 	});
 
+	it("suggests the double-colon experimental namespace for common near-miss spellings", async () => {
+		await expect(
+			resolveWorkflowFlowSpec("experimental:humanize-rlcr", { cwd: process.cwd(), flowDirs: [] }),
+		).rejects.toThrow(`Did you mean "experimental::humanize-rlcr"?`);
+		await expect(
+			resolveWorkflowFlowSpec("experimental/humanize-rlcr", { cwd: process.cwd(), flowDirs: [] }),
+		).rejects.toThrow(`Did you mean "experimental::humanize-rlcr"?`);
+	});
+
 	it("keeps demos, candidates, and unverified practical flows out of named built-in resolution", async () => {
 		const nonBuiltInNames = [
 			"branch-conditional",

@@ -136,6 +136,7 @@ export class SignInTab implements SetupTab {
 			lines.push(theme.bold(`Signing in to ${this.#loggingInProvider}`));
 		} else {
 			lines.push(theme.fg("muted", "Pick a provider to sign in — you can connect more than one."), "");
+			lines.push(theme.fg("dim", "Workflow inspection can skip this: press Esc, then run /workflow help."), "");
 			this.#selectorRowStart = lines.length;
 			lines.push(...this.#selector.render(width));
 		}

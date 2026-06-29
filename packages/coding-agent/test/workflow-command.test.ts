@@ -86,6 +86,30 @@ describe("workflow command user-facing errors", () => {
 		expect(output).not.toContain("packages/utils/src/cli.ts");
 		expect(output).not.toContain("workflow-cli.ts");
 	});
+
+	test("prints unsupported action recovery hints without a source stack trace", async () => {
+		const originalExitCode = process.exitCode;
+		const stderr: string[] = [];
+		vi.spyOn(process.stderr, "write").mockImplementation(chunk => {
+			stderr.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+		process.exitCode = undefined;
+		try {
+			await new Workflow(["graph"], {
+				bin: "omh",
+				version: "test",
+				commands: new Map([["workflow", Workflow]]),
+			}).run();
+		} finally {
+			process.exitCode = originalExitCode ?? 0;
+		}
+
+		const output = stderr.join("");
+		expect(output).toContain("Headless workflow commands support list, freeze, start, install, and uninstall.");
+		expect(output).toContain("Run omh workflow help.");
+		expect(output).not.toContain("packages/utils/src/cli.ts");
+	});
 });
 
 describe("resolveWorkflowCommandArgs", () => {
