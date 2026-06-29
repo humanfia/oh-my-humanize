@@ -553,6 +553,69 @@ edges:
 		]);
 	});
 
+	it("starts TUI workflow artifacts in the background with generated lifecycle ids by default", async () => {
+		const dir = await createTempDir();
+		await fs.mkdir(path.join(dir, "tui-default-background"), { recursive: true });
+		const flowPath = path.join(dir, "tui-default-background.omhflow");
+		await Bun.write(
+			flowPath,
+			`---
+name: tui-default-background
+version: 1
+schema: omhflow/v1
+checkpoint:
+  stopDeadlineMs: 50
+changePolicy:
+  agentsCanPropose: true
+  humansCanApprove: true
+---
+# TUI Default Background
+
+\`\`\`yaml workflow
+name: tui-default-background
+version: 1
+nodes:
+  build:
+    type: script
+    script:
+      language: js
+      inline: |
+        return { summary: "built" };
+edges: []
+\`\`\`
+`,
+		);
+		const entries: CapturedEntry[] = [];
+		const graphs: unknown[] = [];
+		const calls: string[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				calls.push(input.node.id);
+				return { summary: `ran ${input.node.id}` };
+			},
+		};
+		const { output, runtime } = createRuntime(entries, runtimeHost, {
+			availableModels: [openAiModel],
+			activeModel: openAiModel,
+		});
+		const runtimeWithGraph = {
+			...runtime,
+			outputWorkflowGraph: (view: unknown) => {
+				graphs.push(view);
+			},
+		};
+
+		const result = await executeAcpBuiltinSlashCommand(`/workflow start ${flowPath}`, runtimeWithGraph);
+
+		expect(result).toEqual({ consumed: true });
+		expect(output.some(entry => entry.startsWith("Workflow background attempt started: workflow-"))).toBe(true);
+		const family = reconstructWorkflowFamilies(entries)[0];
+		expect(family?.id).toMatch(/^workflow-[^:]+:family$/);
+		expect(family?.attempts[0]?.id).toBe(`${family?.id.replace(/:family$/u, "")}:attempt-1`);
+		expect(graphs.length).toBeGreaterThan(0);
+		expect(calls).toEqual(["build"]);
+	});
+
 	it("rejects workflow starts from non-artifact workflow packages", async () => {
 		const dir = await createTempDir();
 		await Bun.write(
@@ -1636,6 +1699,17 @@ edges: []
 		).toEqual({ consumed: true });
 		expect(missingRuntime.output.at(-1)).toContain('workflow flow "humanize-rlcr" was not found');
 		expect(reconstructWorkflowFamilies(missingEntries)).toEqual([]);
+
+		const experimentalEntries: CapturedEntry[] = [];
+		const experimentalRuntime = createRuntime(experimentalEntries);
+		expect(
+			await executeAcpBuiltinSlashCommand(
+				"/workflow freeze experimental::humanize-rlcr --family-id family-experimental-humanize",
+				experimentalRuntime.runtime,
+			),
+		).toEqual({ consumed: true });
+		const experimentalFreeze = reconstructWorkflowFamilies(experimentalEntries)[0]?.freezes[0];
+		expect(experimentalFreeze?.flowPath.endsWith("experimental/humanize-rlcr/humanize-rlcr.omhflow")).toBeTrue();
 
 		const dir = await createTempDir();
 		const flowPath = path.join(dir, "release.omhflow");

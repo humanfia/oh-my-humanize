@@ -6,6 +6,9 @@ import { freezeWorkflowArtifact } from "./freeze";
 import { loadWorkflowArtifact } from "./package-loader";
 
 export const OMHFLOW_DIR_ENV = "OMHFLOW_DIR";
+export const EXPERIMENTAL_WORKFLOW_PREFIX = "experimental::";
+
+type WorkflowFlowSource = "builtin" | "builtin-experimental" | "omhflow-dir";
 
 export type WorkflowFlowSpec =
 	| { kind: "path"; input: string; path: string }
@@ -15,7 +18,7 @@ export type WorkflowFlowSpec =
 			name: string;
 			path: string;
 			root: string;
-			source: "builtin" | "omhflow-dir";
+			source: WorkflowFlowSource;
 	  };
 
 export interface WorkflowArtifactRegistryOptions {
@@ -23,6 +26,7 @@ export interface WorkflowArtifactRegistryOptions {
 	env?: Record<string, string | undefined>;
 	flowDirs?: string[];
 	builtinRoot?: string;
+	builtinExperimentalRoot?: string;
 }
 
 export interface InstalledWorkflowArtifact {
@@ -40,7 +44,11 @@ export class WorkflowArtifactRegistryError extends Error {
 }
 
 export function getBuiltinWorkflowRoot(): string {
-	return path.join(getPackageDir() ?? path.resolve(import.meta.dir, "../.."), "examples", "workflows");
+	return path.join(getPackageDir() ?? path.resolve(import.meta.dir, "../.."), "examples", "workflow");
+}
+
+export function getBuiltinExperimentalWorkflowRoot(builtinRoot = getBuiltinWorkflowRoot()): string {
+	return path.join(builtinRoot, "experimental");
 }
 
 export function getDefaultInstalledWorkflowRoot(): string {
@@ -69,8 +77,27 @@ export async function resolveWorkflowFlowSpec(
 		return { kind: "path", input, path: pathCandidate };
 	}
 
+	const builtinRoot = options.builtinRoot ?? getBuiltinWorkflowRoot();
+	const experimentalRoot = options.builtinExperimentalRoot ?? getBuiltinExperimentalWorkflowRoot(builtinRoot);
+	const experimentalName = experimentalWorkflowName(input);
+	if (experimentalName !== undefined) {
+		const experimentalCandidates = await namedFlowCandidates(
+			experimentalRoot,
+			experimentalName,
+			"builtin-experimental",
+			{
+				displayNamePrefix: EXPERIMENTAL_WORKFLOW_PREFIX,
+				input,
+			},
+		);
+		if (experimentalCandidates[0] !== undefined) return experimentalCandidates[0];
+		throw new WorkflowArtifactRegistryError(
+			`workflow flow "${input}" was not found. Use a path, a verified built-in flow name, ${EXPERIMENTAL_WORKFLOW_PREFIX}<name>, or add a .omhflow artifact to ${OMHFLOW_DIR_ENV}.`,
+		);
+	}
+
 	const namedCandidates = [
-		...(await namedFlowCandidates(options.builtinRoot ?? getBuiltinWorkflowRoot(), input, "builtin")),
+		...(await namedFlowCandidates(builtinRoot, input, "builtin")),
 		...(await externalNamedFlowCandidates(input, workflowFlowDirs(options))),
 	];
 	if (namedCandidates.length > 1) {
@@ -90,10 +117,15 @@ export async function resolveWorkflowFlowSpec(
 export async function listWorkflowFlowSpecs(
 	options: WorkflowArtifactRegistryOptions = {},
 ): Promise<Extract<WorkflowFlowSpec, { kind: "named" }>[]> {
-	const builtin = await listNamedFlowRoot(options.builtinRoot ?? getBuiltinWorkflowRoot(), "builtin");
+	const builtinRoot = options.builtinRoot ?? getBuiltinWorkflowRoot();
+	const experimentalRoot = options.builtinExperimentalRoot ?? getBuiltinExperimentalWorkflowRoot(builtinRoot);
+	const builtin = await listNamedFlowRoot(builtinRoot, "builtin");
+	const experimental = await listNamedFlowRoot(experimentalRoot, "builtin-experimental", {
+		displayNamePrefix: EXPERIMENTAL_WORKFLOW_PREFIX,
+	});
 	const externalRoots = workflowFlowDirs(options);
 	const externalGroups = await Promise.all(externalRoots.map(root => listNamedFlowRoot(root, "omhflow-dir")));
-	return [...builtin, ...externalGroups.flat()].sort((left, right) =>
+	return [...builtin, ...experimental, ...externalGroups.flat()].sort((left, right) =>
 		left.source === right.source ? left.name.localeCompare(right.name) : left.source.localeCompare(right.source),
 	);
 }
@@ -129,6 +161,26 @@ export async function uninstallWorkflowArtifact(
 	nameInput: string,
 	options: WorkflowArtifactRegistryOptions = {},
 ): Promise<InstalledWorkflowArtifact> {
+	const builtinRoot = options.builtinRoot ?? getBuiltinWorkflowRoot();
+	const experimentalRoot = options.builtinExperimentalRoot ?? getBuiltinExperimentalWorkflowRoot(builtinRoot);
+	const experimentalName = experimentalWorkflowName(nameInput);
+	if (experimentalName !== undefined) {
+		const builtinExperimental = await firstNamedFlowCandidate(
+			experimentalRoot,
+			experimentalName,
+			"builtin-experimental",
+			{
+				displayNamePrefix: EXPERIMENTAL_WORKFLOW_PREFIX,
+				input: nameInput,
+			},
+		);
+		if (builtinExperimental !== undefined) {
+			throw new WorkflowArtifactRegistryError(
+				`built-in experimental workflow flow "${nameInput}" cannot be uninstalled`,
+			);
+		}
+		throw new WorkflowArtifactRegistryError(`installed workflow flow "${nameInput}" was not found`);
+	}
 	const name = safeFlowName(nameInput);
 	const external = await externalNamedFlowCandidates(name, workflowFlowDirs(options));
 	if (external.length > 1) {
@@ -138,7 +190,7 @@ export async function uninstallWorkflowArtifact(
 	}
 	const match = external[0];
 	if (match === undefined) {
-		const builtin = await firstNamedFlowCandidate(options.builtinRoot ?? getBuiltinWorkflowRoot(), name, "builtin");
+		const builtin = await firstNamedFlowCandidate(builtinRoot, name, "builtin");
 		if (builtin !== undefined) {
 			throw new WorkflowArtifactRegistryError(`built-in workflow flow "${name}" cannot be uninstalled`);
 		}
@@ -163,9 +215,10 @@ function looksLikeWorkflowPath(input: string): boolean {
 async function firstNamedFlowCandidate(
 	root: string,
 	name: string,
-	source: "builtin" | "omhflow-dir",
+	source: WorkflowFlowSource,
+	options: NamedFlowCandidateOptions = {},
 ): Promise<Extract<WorkflowFlowSpec, { kind: "named" }> | undefined> {
-	const candidates = await namedFlowCandidates(root, name, source);
+	const candidates = await namedFlowCandidates(root, name, source, options);
 	return candidates[0];
 }
 
@@ -180,22 +233,26 @@ async function externalNamedFlowCandidates(
 async function namedFlowCandidates(
 	rootInput: string,
 	name: string,
-	source: "builtin" | "omhflow-dir",
+	source: WorkflowFlowSource,
+	options: NamedFlowCandidateOptions = {},
 ): Promise<Extract<WorkflowFlowSpec, { kind: "named" }>[]> {
 	const root = path.resolve(expandHome(rootInput));
 	const safeName = safeFlowName(name);
+	const displayName = `${options.displayNamePrefix ?? ""}${safeName}`;
+	const input = options.input ?? displayName;
 	const candidates = [path.join(root, `${safeName}.omhflow`), path.join(root, safeName, `${safeName}.omhflow`)];
 	const matches: Extract<WorkflowFlowSpec, { kind: "named" }>[] = [];
 	for (const candidate of candidates) {
 		if (!(await pathExists(candidate))) continue;
-		matches.push({ kind: "named", input: name, name: safeName, path: candidate, root, source });
+		matches.push({ kind: "named", input, name: displayName, path: candidate, root, source });
 	}
 	return matches;
 }
 
 async function listNamedFlowRoot(
 	rootInput: string,
-	source: "builtin" | "omhflow-dir",
+	source: WorkflowFlowSource,
+	options: NamedFlowCandidateOptions = {},
 ): Promise<Extract<WorkflowFlowSpec, { kind: "named" }>[]> {
 	const root = path.resolve(expandHome(rootInput));
 	let entries: string[];
@@ -210,7 +267,7 @@ async function listNamedFlowRoot(
 		const name = path.extname(entry) === ".omhflow" ? path.basename(entry, ".omhflow") : entry;
 		let candidates: Extract<WorkflowFlowSpec, { kind: "named" }>[];
 		try {
-			candidates = await namedFlowCandidates(root, name, source);
+			candidates = await namedFlowCandidates(root, name, source, options);
 		} catch {
 			continue;
 		}
@@ -262,6 +319,17 @@ function safeFlowName(input: string): string {
 		throw new WorkflowArtifactRegistryError(`workflow flow name must be a safe path segment: ${input}`);
 	}
 	return input;
+}
+
+interface NamedFlowCandidateOptions {
+	displayNamePrefix?: string;
+	input?: string;
+}
+
+function experimentalWorkflowName(input: string): string | undefined {
+	if (!input.startsWith(EXPERIMENTAL_WORKFLOW_PREFIX)) return undefined;
+	const name = input.slice(EXPERIMENTAL_WORKFLOW_PREFIX.length);
+	return name.length > 0 ? name : undefined;
 }
 
 async function removeEmptyInstallContainer(root: string, flowPath: string): Promise<void> {

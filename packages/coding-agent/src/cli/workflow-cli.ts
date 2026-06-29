@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { getProjectDir } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
 import { buildWorkflowShellEnvironment } from "../exec/shell-environment-policy";
 import type { CustomEntry, SessionEntry } from "../session/session-entries";
 import {
@@ -551,7 +551,7 @@ function formatConsoleArgument(value: unknown): string {
 
 function requiredArg(command: WorkflowCommandArgs, usage: string): string {
 	const value = command.args[0];
-	if (!value) throw new Error(`Usage: omp workflow ${usage}`);
+	if (!value) throw new Error(`Usage: ${APP_NAME} workflow ${usage}`);
 	return value;
 }
 

@@ -36,10 +36,15 @@ resources. Resource paths inside the flow resolve from that same-name directory.
   In OMH terms, long-running means more than eight hours for a Project x Flow x
   Task run. One audited eight-hour run is useful candidate evidence, but it is
   not enough to prove a flow is generic and practical enough to ship.
-- **Flow candidates** are promising practical workflows that still need
-  long-running evidence or design hardening. Keep them outside the package and
-  load them through `OMHFLOW_DIR` or an explicit `.omhflow` path. Candidate
-  status is not a failure; it is the evidence-gathering stage before promotion.
+- **Experimental flows** are packaged practical candidates that still need
+  long-running evidence or design hardening. They are addressed with the
+  explicit `experimental::` namespace, for example
+  `experimental::humanize-rlcr`, so users do not mistake them for stable
+  built-ins.
+- **External flow candidates** are promising practical workflows outside the
+  package. Load them through `OMHFLOW_DIR` or an explicit `.omhflow` path.
+  Candidate status is not a failure; it is the evidence-gathering stage before
+  promotion.
 - **Flow demos** are teaching artifacts, control-flow probes, UI fixtures, or
   seed-project examples. They may be executable and useful, but they are not
   advertised as practical out-of-the-box development workflows.
@@ -50,14 +55,14 @@ artifacts, and avoid bundled seed-project assumptions. A flow tied to a concrete
 seed project, fixture, or demo workspace must stay a demo or be split into a
 generic structure plus a separate demo binding.
 
-At the moment, the packaged built-in practical set is empty until candidates
-earn stable long-running evidence in more than one Project x Flow x Task
-context. During development, candidates such as Humanize RLCR or KDA-style
-Humanize composition can still be exercised through `OMHFLOW_DIR`:
+At the moment, the stable built-in practical set is empty until candidates earn
+stable long-running evidence in more than one Project x Flow x Task context.
+Packaged experimental flows such as Humanize RLCR or KDA-style Humanize
+composition can be exercised without `OMHFLOW_DIR`:
 
 ```sh
-export OMHFLOW_DIR="$PWD/temp/candidate-flows"
 omh workflow list
+omh workflow start experimental::humanize-rlcr --max-activations 1
 ```
 
 The built-in set should remain intentionally small and evidence-backed.
@@ -95,12 +100,11 @@ and external flows.
 
 ## Humanize RLCR Candidate Workflow
 
-Use the `humanize-rlcr` candidate when a task needs iterative implementation
-with explicit review gates. The flow models plan compliance, a human
-understanding gate, implementation/review looping, code-review cleanup, and
-final alignment. Until it has stable long-running evidence, load it as an
-external candidate through `OMHFLOW_DIR` or an explicit artifact path rather
-than treating it as a packaged built-in.
+Use the `experimental::humanize-rlcr` flow when a task needs iterative
+implementation with explicit review gates. The flow models plan compliance, a
+human understanding gate, implementation/review looping, code-review cleanup,
+and final alignment. The `experimental::` prefix is required because this is a
+packaged experimental candidate, not a stable built-in.
 
 Prepare a project directory with a task brief:
 
@@ -116,7 +120,6 @@ EOF
 Launch the TUI from the project directory:
 
 ```sh
-export OMHFLOW_DIR=/path/to/candidate-flows
 omh
 ```
 
@@ -124,10 +127,14 @@ Start the flow interactively so the operator can observe the graph, answer the
 human gate, interrupt agents, or approve changes:
 
 ```text
-/workflow start humanize-rlcr --family-id demo-humanize --background
-/workflow graph --family-id demo-humanize
-/workflow manager --family-id demo-humanize
+/workflow start experimental::humanize-rlcr
+/workflow graph
+/workflow manager
 ```
+
+In the TUI, `/workflow start` defaults to a background attempt with generated
+run/family ids so the dashboard remains interactive. Pass `--family-id` only
+when you want a stable operator-selected id.
 
 Production workflow starts and restarts have a default max runtime of five days.
 When that deadline elapses, `omh` stops scheduling new nodes, aborts in-flight
@@ -153,7 +160,7 @@ activation so the headless command verifies resolution, freeze, and runtime
 wiring without trying to answer the human gate:
 
 ```sh
-OMHFLOW_DIR=/path/to/candidate-flows omh workflow start humanize-rlcr \
+omh workflow start experimental::humanize-rlcr \
   --cwd "$PWD" \
   --run-id demo-humanize-smoke \
   --max-activations 1 \
@@ -185,16 +192,15 @@ EOF
 Launch the TUI from the project directory:
 
 ```sh
-export OMHFLOW_DIR=/path/to/candidate-flows
 omh
 ```
 
 Run it in the TUI:
 
 ```text
-/workflow start kda-humanize --family-id demo-kda --background
-/workflow graph --family-id demo-kda
-/workflow manager --family-id demo-kda
+/workflow start experimental::kda-humanize
+/workflow graph
+/workflow manager
 ```
 
 The resident graph should show the imported Humanize subflow as a function-like
@@ -210,8 +216,8 @@ still become TUI-first once the imported Humanize subflow reaches its human
 understanding gate:
 
 ```sh
-OMHFLOW_DIR=/path/to/candidate-flows omh workflow freeze kda-humanize --json
-OMHFLOW_DIR=/path/to/candidate-flows omh workflow start kda-humanize --json --max-activations 1
+omh workflow freeze experimental::kda-humanize --json
+omh workflow start experimental::kda-humanize --json --max-activations 1
 ```
 
 ## Interactive Use
@@ -315,10 +321,10 @@ Use `omh workflow` for scripting, CI-style checks, or deterministic workflow
 smoke runs without opening the TUI.
 
 ```sh
-OMHFLOW_DIR=/path/to/candidate-flows omh workflow freeze humanize-rlcr
+omh workflow freeze experimental::humanize-rlcr
 omh workflow start ./my-flow.omhflow --run-id run-1 --max-activations 20
-OMHFLOW_DIR=/path/to/candidate-flows omh workflow start humanize-rlcr --json --max-activations 1
-OMHFLOW_DIR=/path/to/candidate-flows omh workflow start humanize-rlcr --json --max-runtime-ms 60000
+omh workflow start experimental::humanize-rlcr --json --max-activations 1
+omh workflow start experimental::humanize-rlcr --json --max-runtime-ms 60000
 ```
 
 Headless workflow runs reuse the existing `omh` runtime boundary. Shell and JS

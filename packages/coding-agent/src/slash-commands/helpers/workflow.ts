@@ -444,7 +444,9 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 					runtimeBindingSnapshot,
 				} satisfies WorkflowRunnerLifecycleOptions)
 			: undefined;
-	if (parsed.background && lifecycle === undefined) {
+	const runInBackground =
+		parsed.background === true || (parsed.background === undefined && runtime.outputWorkflowGraph !== undefined);
+	if (runInBackground && lifecycle === undefined) {
 		return usage("Workflow background start requires a frozen .omhflow artifact.", runtime);
 	}
 	const stopController = lifecycle !== undefined ? new AbortController() : undefined;
@@ -475,7 +477,7 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 	});
 	if (stopController !== undefined && nodeAbortController !== undefined && lifecycle !== undefined) {
 		const attemptId = lifecycle.attemptId;
-		const failureLabel = parsed.background ? "Workflow background attempt failed" : "Workflow attempt failed";
+		const failureLabel = runInBackground ? "Workflow background attempt failed" : "Workflow attempt failed";
 		const active: ActiveWorkflowAttempt = {
 			attemptId,
 			familyId: lifecycle.familyId,
@@ -494,7 +496,7 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 		};
 		registerActiveWorkflowAttempt(runtime, active);
 		watchWorkflowAttemptCompletion(runtime, active);
-		if (parsed.background) {
+		if (runInBackground) {
 			await flushWorkflowLifecycle(runtime);
 			await runtime.output(`Workflow background attempt started: ${attemptId}`);
 			const family = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
@@ -2412,7 +2414,8 @@ function formatWorkflowHelp(): string {
 		"Workflow help",
 		"",
 		"Common paths:",
-		"- Start: /workflow start <flow-or-path> --background [--unattended]",
+		"- Start: /workflow start <flow-or-path> [--unattended]",
+		"- TUI starts run in the background by default; text/headless starts run in the foreground unless --background is passed.",
 		"- Unattended start rejects human checkpoints before launch.",
 		"- Monitor: /workflow status, /workflow graph, /workflow dashboard status",
 		"- Screen space: /workflow dashboard collapse, /workflow dashboard compact, /workflow dashboard show",

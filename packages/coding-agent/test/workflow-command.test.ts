@@ -24,13 +24,13 @@ describe("workflow command is registered as a top-level subcommand", () => {
 		});
 	});
 
-	test("help examples keep unverified candidate flows out of built-in examples", () => {
+	test("help examples expose packaged experimental flows with an explicit namespace", () => {
 		const examples = Workflow.examples.join("\n");
 
 		expect(examples).not.toContain("Start a flow by built-in name");
 		expect(examples).not.toContain("\n  omp workflow start humanize-rlcr");
-		expect(examples).toContain("OMHFLOW_DIR=./candidate-flows omp workflow start humanize-rlcr");
-		expect(examples).toContain("OMHFLOW_DIR");
+		expect(examples).toContain("omh workflow start experimental::humanize-rlcr");
+		expect(examples).toContain("experimental::");
 	});
 });
 

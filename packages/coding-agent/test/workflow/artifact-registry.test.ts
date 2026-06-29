@@ -24,10 +24,38 @@ afterEach(async () => {
 });
 
 describe("workflow artifact registry", () => {
-	it("ships no named built-in flows until they have stable long-running evidence", async () => {
+	it("lists packaged experimental flows only under the experimental namespace", async () => {
 		const listed = await listWorkflowFlowSpecs({ cwd: process.cwd(), flowDirs: [] });
+		const listedByName = new Map(listed.map(flow => [flow.name, flow]));
 
-		expect(listed).toEqual([]);
+		expect(listedByName.get("experimental::humanize-rlcr")).toMatchObject({
+			name: "experimental::humanize-rlcr",
+			source: "builtin-experimental",
+		});
+		expect(listedByName.get("experimental::kda-humanize")).toMatchObject({
+			name: "experimental::kda-humanize",
+			source: "builtin-experimental",
+		});
+		expect(listedByName.has("humanize-rlcr")).toBe(false);
+		expect(listedByName.has("kda-humanize")).toBe(false);
+	});
+
+	it("resolves packaged experimental flows by namespace without OMHFLOW_DIR", async () => {
+		const spec = await resolveWorkflowFlowSpec("experimental::humanize-rlcr", {
+			cwd: process.cwd(),
+			flowDirs: [],
+		});
+
+		expect(spec).toMatchObject({
+			kind: "named",
+			input: "experimental::humanize-rlcr",
+			name: "experimental::humanize-rlcr",
+			source: "builtin-experimental",
+		});
+		expect(spec.path.endsWith("examples/workflow/experimental/humanize-rlcr/humanize-rlcr.omhflow")).toBe(true);
+	});
+
+	it("keeps experimental flows out of stable built-in short-name resolution", async () => {
 		for (const name of [
 			"humanize-rlcr",
 			"kda-humanize",
@@ -157,6 +185,14 @@ describe("workflow artifact registry", () => {
 		await expect(uninstallWorkflowArtifact("humanize-rlcr", { flowDirs: [installRoot] })).rejects.toThrow(
 			'installed workflow flow "humanize-rlcr" was not found',
 		);
+	});
+
+	it("does not uninstall packaged experimental flows", async () => {
+		const installRoot = await createTempDir();
+
+		await expect(
+			uninstallWorkflowArtifact("experimental::humanize-rlcr", { flowDirs: [installRoot] }),
+		).rejects.toThrow('built-in experimental workflow flow "experimental::humanize-rlcr" cannot be uninstalled');
 	});
 });
 

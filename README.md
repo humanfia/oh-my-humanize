@@ -63,8 +63,8 @@ changes while the work runs.
 If you already have a workflow artifact or installed workflow, run it directly:
 
 ```text
-/workflow start ./my-flow.omhflow --background
-/workflow start humanize-rlcr --background
+/workflow start ./my-flow.omhflow
+/workflow start experimental::humanize-rlcr
 /workflow dashboard compact
 ```
 
@@ -522,7 +522,7 @@ bun setup
 bun dev
 ```
 
-`bun setup` installs Bun workspaces and builds the local native addon package. Re-run `bun run build:native` after changing Rust crates or `packages/natives`.
+`bun setup` installs Bun workspaces, builds the local native addon package, and links the source launcher as `omh` and `omp` in Bun's global bin directory. Re-run `bun run build:native` after changing Rust crates or `packages/natives`.
 
 For a non-interactive smoke check:
 

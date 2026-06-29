@@ -94,7 +94,7 @@
   },
   "overrides": {},
   "scripts": {
-    "setup": "bun install && bun run build:native && bun --cwd=packages/coding-agent link && ln -sfn \"$(pwd)/packages/coding-agent/scripts/omp\" \"$(bun pm -g bin)/omh\" && ln -sfn \"$(pwd)/packages/coding-agent/scripts/omp\" \"$(bun pm -g bin)/omp\"",
+    "setup": "bun scripts/setup-dev.ts",
     "dev": "bun --cwd=packages/coding-agent src/cli.ts",
     "dev:timing": "PI_TIMING=x bun --cwd=packages/coding-agent --preload ../utils/src/module-timer.ts src/cli.ts",
     "stats": "bun --cwd=packages/coding-agent src/cli.ts stats",
@@ -107,7 +107,7 @@
     "build:native": "bun --cwd=packages/natives run build",
     "test": "bun run --parallel test:ts test:rs",
     "test:ts": "GITHUB_ACTIONS= bun run --workspaces --if-present test -- --only-failures && bun run test:scripts",
-    "test:scripts": "bun test scripts/ci-concurrency.test.ts scripts/ci-release-notes.test.ts",
+    "test:scripts": "bun test scripts/ci-concurrency.test.ts scripts/ci-release-notes.test.ts scripts/setup-dev.test.ts",
     "test:rs": "bun scripts/run-rs-task.ts test:rs",
     "check": "bun run --parallel check:ts check:rs",
     "check:ts": "bun run check:tools && bun run --workspaces --if-present check",
