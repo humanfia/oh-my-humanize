@@ -21,7 +21,61 @@ and supervising long-running agentic development flows.
 
 **40+** providers · **32** built-in tools · **14** lsp ops · **28** dap ops · **~55k** lines of Rust core.
 
-## Workflow Orchestration
+## Quick Start: Run a Workflow
+
+### 1. Install `omh`
+
+macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh -s -- --source --ref main
+which omh
+```
+
+Windows PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Source -Ref main
+Get-Command omh
+```
+
+### 2. Ask `omh` to use a workflow
+
+Open the TUI in your project:
+
+```sh
+cd /path/to/your/project
+omh
+```
+
+Then send a workflow request with `/omh`. You can name a built-in or
+experimental workflow, ask `omh` to design one, or ask for adaptive workflow
+changes while the work runs.
+
+```text
+/omh I want to optimize GPU performance. Use the kda-humanize workflow if it fits.
+
+/omh I need a beautiful PPT. Design an iterative visual-review workflow and deliver a PDF.
+
+/omh I need to build a large codebase from scratch: <requirements>. Use or design a workflow, and consider adaptive workflow changes.
+```
+
+If you already have a workflow artifact or installed workflow, run it directly:
+
+```text
+/workflow start ./my-flow.omhflow --background
+/workflow start humanize-rlcr --background
+/workflow dashboard compact
+```
+
+Headless starts are available for scripts and CI:
+
+```sh
+omh workflow list
+omh workflow start ./my-flow.omhflow --max-activations 1 --json
+```
+
+## Workflow Orchestration: Advanced
 
 `/workflow` turns omh into an interactive agentic workflow runner: freeze a
 distributable `.omhflow + resources` artifact, run it with a live TUI graph,
