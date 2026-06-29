@@ -37,6 +37,8 @@ stateSchema:
 resources:
   - path: scripts/precheck-task-contract.js
     kind: script
+  - path: scripts/materialize-dependency-map.js
+    kind: script
   - path: scripts/enforce-compatibility-gate.js
     kind: script
   - path: scripts/run-migration-validation.js
@@ -88,6 +90,12 @@ sequence:
           bindings:
             task:
               state: /task
+  - node:
+      id: materializeDependencyMap
+      type: script
+      script:
+        language: js
+        file: scripts/materialize-dependency-map.js
       writes:
         - /dependencyMap
   - node:

@@ -40,6 +40,8 @@ resources:
     kind: script
   - path: scripts/capture-baseline.js
     kind: script
+  - path: scripts/materialize-hypotheses.js
+    kind: script
   - path: scripts/run-benchmark-validation.js
     kind: script
   - path: scripts/guard-selection-repair.js
@@ -109,6 +111,12 @@ sequence:
                       state: /baseline
                     review:
                       state: /review
+          - node:
+              id: materializeHypotheses
+              type: script
+              script:
+                language: js
+                file: scripts/materialize-hypotheses.js
               writes:
                 - /hypotheses
           - parallel:

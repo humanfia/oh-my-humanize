@@ -240,6 +240,7 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 		startNodeId,
 		...(startNodeIds.length > 1 ? { startNodeIds } : {}),
 		runtimeHost,
+		workspaceRoot: cwd,
 		packageRoot: pkg.rootPath,
 		...(pkg.freeze !== undefined ? { frozenResources: pkg.freeze.resourceSnapshots } : {}),
 		...(command.flags.maxActivations !== undefined ? { maxActivations: command.flags.maxActivations } : {}),
@@ -266,6 +267,7 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 		: lifecycleAttempt?.status === "stopped" || result.scheduler.limitReached
 			? "stopped"
 			: "completed";
+	if (status === "failed") process.exitCode = 1;
 	if (command.flags.json) {
 		writeJson({
 			flow: flowSpecJson(spec),

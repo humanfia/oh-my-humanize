@@ -4114,6 +4114,138 @@ describe("example workflow scripts", () => {
 		).toContain("archive a rejected no-win result");
 	});
 
+	it("materializes performance hypothesis summaries before branch fanout", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-hypotheses-materialized-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const materializer = await Bun.file(`${PERFORMANCE_OPTIMIZATION_SCRIPT_DIR}/materialize-hypotheses.js`).text();
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "performance-hypotheses-materializer-test",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "planHypotheses",
+						type: "script",
+						script: {
+							language: "js",
+							code: 'return { summary: "Algorithmic branch: inspect numeric coercion. Caching branch: likely no-win." };',
+						},
+					},
+					{
+						id: "materializeHypotheses",
+						type: "script",
+						script: {
+							language: "js",
+							code: materializer,
+						},
+						writes: ["/hypotheses"],
+					},
+				],
+				edges: [{ from: "planHypotheses", to: "materializeHypotheses" }],
+			},
+		});
+
+		expect(result.scheduler.state.hypotheses).toMatchObject({
+			status: "materialized",
+			producer_node: "materializeHypotheses",
+			source_node: "planHypotheses",
+			summary: expect.stringContaining("Algorithmic branch"),
+		});
+	});
+
+	it("materializes refactor dependency maps before compatibility design", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-dependency-map-materialized-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const materializer = await Bun.file(`${REFACTOR_MIGRATION_SCRIPT_DIR}/materialize-dependency-map.js`).text();
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "refactor-dependency-map-materializer-test",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "mapDependencies",
+						type: "script",
+						script: {
+							language: "js",
+							code: 'return { summary: "Inventory: renderer imports legacyCanvas; tests touch public API." };',
+						},
+					},
+					{
+						id: "materializeDependencyMap",
+						type: "script",
+						script: {
+							language: "js",
+							code: materializer,
+						},
+						writes: ["/dependencyMap"],
+					},
+				],
+				edges: [{ from: "mapDependencies", to: "materializeDependencyMap" }],
+			},
+		});
+
+		expect(result.scheduler.state.dependencyMap).toMatchObject({
+			status: "dependency_map_materialized",
+			producer_node: "materializeDependencyMap",
+			source_node: "mapDependencies",
+			summary: expect.stringContaining("renderer imports legacyCanvas"),
+		});
+	});
+
+	it("materializes research claims before evidence guards", async () => {
+		using tempDir = TempDir.createSync("@omh-research-claim-materialized-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const materializer = await Bun.file(`${RESEARCH_REPRODUCTION_SCRIPT_DIR}/materialize-claim.js`).text();
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "research-claim-materializer-test",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "extractClaim",
+						type: "script",
+						script: {
+							language: "js",
+							code: 'return { summary: "Claim: normalization preserves invalid UTF-8 byte boundaries." };',
+						},
+					},
+					{
+						id: "materializeClaim",
+						type: "script",
+						script: {
+							language: "js",
+							code: materializer,
+						},
+						writes: ["/claim"],
+					},
+				],
+				edges: [{ from: "extractClaim", to: "materializeClaim" }],
+			},
+		});
+
+		expect(result.scheduler.state.claim).toMatchObject({
+			status: "claim_materialized",
+			producer_node: "materializeClaim",
+			source_node: "extractClaim",
+			summary: expect.stringContaining("invalid UTF-8"),
+		});
+	});
+
 	it("keeps performance parallel lanes lane-local until selection applies a candidate", async () => {
 		const optimizationPrompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/optimization.md`,

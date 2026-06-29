@@ -29,7 +29,7 @@ import {
 import { diagnoseWorkflowLiveness } from "./liveness";
 import { resolveWorkflowNodeModel, type WorkflowModelResolutionAudit } from "./model-resolution";
 import { executeWorkflowNode, type WorkflowNodeRuntimeHost, workflowNodeAbortedErrorReason } from "./node-runtime";
-import { recordWorkflowCheckpointObservability } from "./observability";
+import { reconcileWorkflowSchedulerFailureObservability, recordWorkflowCheckpointObservability } from "./observability";
 import {
 	resolveWorkflowPrompt,
 	type WorkflowActivationInputSnapshot,
@@ -147,6 +147,11 @@ export async function runWorkflow(options: WorkflowRunnerOptions): Promise<Workf
 			executeNode: async (activation, node, context) =>
 				executeAndPersistActivation(options, run, activation, node, context, resourceDir),
 		});
+		await reconcileWorkflowSchedulerFailureObservability(
+			options.workspaceRoot,
+			options.definition.nodes,
+			scheduler.activations,
+		);
 		await finishLifecycleAttempt(options, scheduler, runtimeSignal.signal);
 		return { run, scheduler };
 	} finally {

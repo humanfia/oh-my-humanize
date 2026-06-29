@@ -230,16 +230,22 @@ describe("workflow CLI", () => {
 			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
 			return true;
 		});
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
 
-		await runWorkflowCommand({
-			action: "start",
-			args: [`${root}/failed-diagnostics.omhflow`],
-			flags: {
-				cwd: root,
-				json: true,
-				runId: "failed-diagnostics-run",
-			},
-		});
+		try {
+			await runWorkflowCommand({
+				action: "start",
+				args: [`${root}/failed-diagnostics.omhflow`],
+				flags: {
+					cwd: root,
+					json: true,
+					runId: "failed-diagnostics-run",
+				},
+			});
+		} finally {
+			process.exitCode = originalExitCode ?? 0;
+		}
 
 		const result = JSON.parse(output.join("").trim()) as {
 			run: { status: string; failed: number };
@@ -256,6 +262,52 @@ describe("workflow CLI", () => {
 			progressPath: path.join(root, "workflow-output/omh-runtime/progress.md"),
 			observabilityPath: path.join(root, "workflow-output/omh-runtime/observability.json"),
 		});
+	});
+
+	it("exits nonzero and records observability for prompt binding failures", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-binding-diagnostics-");
+		const root = tempDir.path();
+		await Bun.write(`${root}/binding-diagnostics.omhflow`, workflowBindingDiagnosticsFlow());
+		await Bun.write(`${root}/binding-diagnostics/prompts/needs-binding.md`, "Missing value: {{missingValue}}\n");
+		const output: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+		const originalExitCode = process.exitCode;
+		let observedExitCode: string | number | undefined;
+		process.exitCode = undefined;
+		try {
+			await runWorkflowCommand({
+				action: "start",
+				args: [`${root}/binding-diagnostics.omhflow`],
+				flags: {
+					cwd: root,
+					json: true,
+					runId: "binding-diagnostics-run",
+				},
+			});
+			observedExitCode = process.exitCode;
+		} finally {
+			process.exitCode = originalExitCode ?? 0;
+		}
+
+		const result = JSON.parse(output.join("").trim()) as {
+			run: { status: string; failed: number };
+			failedActivations?: Array<{ id: string; nodeId: string; error: string }>;
+		};
+		expect(Number(observedExitCode)).toBe(1);
+		expect(result.run).toMatchObject({ status: "failed", failed: 1 });
+		expect(result.failedActivations?.[0]?.nodeId).toBe("needsBinding");
+		const observability = await Bun.file(`${root}/workflow-output/omh-runtime/observability.json`).json();
+		expect(observability.activations).toEqual([
+			expect.objectContaining({
+				activationId: "activation-1",
+				nodeId: "needsBinding",
+				status: "failed",
+				error: expect.stringContaining("missingValue"),
+			}),
+		]);
 	});
 
 	it("disables Python user-site pollution for headless shell script nodes", async () => {
@@ -515,6 +567,43 @@ function workflowFailedDiagnosticsFlow(): string {
 
 function workflowFailedDiagnosticsScript(): string {
 	return ["#!/bin/sh", "set -eu", "printf 'boom\\n' >&2", "exit 7"].join("\n");
+}
+
+function workflowBindingDiagnosticsFlow(): string {
+	return [
+		"---",
+		"name: binding-diagnostics",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: binding-diagnostics",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# Binding diagnostics smoke",
+		"",
+		"```yaml workflow",
+		"resources:",
+		"  - path: prompts/needs-binding.md",
+		"    kind: prompt",
+		"sequence:",
+		"  - node:",
+		"      id: needsBinding",
+		"      type: agent",
+		"      agent: task",
+		"      prompt:",
+		"        template:",
+		"          file: prompts/needs-binding.md",
+		"          bindings:",
+		"            missingValue:",
+		"              state: /missingValue",
+		"```",
+	].join("\n");
 }
 
 function workflowJsModuleScriptFlow(): string {

@@ -3,6 +3,7 @@ import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { WorkflowNode } from "./definition";
 import type { WorkflowCheckpointWorkspaceSnapshot } from "./lifecycle";
 import type { WorkflowReviewNodeOutput } from "./node-runtime";
+import type { WorkflowActivation } from "./scheduler";
 import type { WorkflowActivationOutput, WorkflowActivationRetryHistoryEntry } from "./state";
 
 export const WORKFLOW_OBSERVABILITY_INDEX_PATH = "workflow-output/omh-runtime/observability.json";
@@ -81,6 +82,27 @@ export async function recordWorkflowActivationFailureObservability(
 	error: unknown,
 ): Promise<void> {
 	await record(workflowObservabilityFailedActivation(node, activationId, error));
+}
+
+export async function reconcileWorkflowSchedulerFailureObservability(
+	cwd: string | undefined,
+	nodes: WorkflowNode[],
+	activations: WorkflowActivation[],
+): Promise<void> {
+	if (cwd === undefined) return;
+	const failedActivations = activations.filter(activation => activation.status === "failed");
+	if (failedActivations.length === 0) return;
+	const nodesById = new Map(nodes.map(node => [node.id, node]));
+	const index = workflowObservabilityIndices.get(cwd) ?? emptyWorkflowObservabilityIndex();
+	for (const activation of failedActivations) {
+		const node = nodesById.get(activation.nodeId);
+		if (node === undefined) continue;
+		await writeWorkflowObservabilityEvent(
+			cwd,
+			index,
+			workflowObservabilityFailedActivation(node, activation.id, activation.error ?? activation.reason),
+		);
+	}
 }
 
 export async function recordWorkflowCheckpointObservability(

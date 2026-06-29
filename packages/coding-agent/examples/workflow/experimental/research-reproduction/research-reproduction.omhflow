@@ -39,6 +39,8 @@ resources:
     kind: script
   - path: scripts/run-setup.js
     kind: script
+  - path: scripts/materialize-claim.js
+    kind: script
   - path: scripts/guard-claim-evidence.js
     kind: script
   - path: scripts/run-reproduction.js
@@ -83,6 +85,11 @@ nodes:
             inline: extract claim
           task:
             state: /task
+  - id: materializeClaim
+    type: script
+    script:
+      language: js
+      file: scripts/materialize-claim.js
     writes:
       - /claim
   - id: guardClaimEvidence
@@ -228,6 +235,8 @@ edges:
   - from: precheckTaskContract
     to: extractClaim
   - from: extractClaim
+    to: materializeClaim
+  - from: materializeClaim
     to: guardClaimEvidence
   - from: guardClaimEvidence
     to: setupExperiment
