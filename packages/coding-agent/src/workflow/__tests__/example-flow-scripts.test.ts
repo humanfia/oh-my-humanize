@@ -16,6 +16,7 @@ const DOCUMENTATION_AUDIT_SCRIPT_DIR = `${import.meta.dir}/../../../examples/wor
 const PERFORMANCE_OPTIMIZATION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/scripts`;
 const REFACTOR_MIGRATION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/refactor-migration-plan/refactor-migration-plan/scripts`;
 const TEST_GENERATION_HARDENING_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/test-generation-hardening/test-generation-hardening`;
+const KDA_HUMANIZE_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/kda-humanize/kda-humanize/scripts`;
 const KDA_HUMANIZE_SUBFLOW_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/kda-humanize/kda-humanize/humanize-rlcr-subflow`;
 const AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/agent-build-review-loop/agent-build-review-loop/scripts`;
 const RESEARCH_REPRODUCTION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction/scripts`;
@@ -1746,6 +1747,44 @@ describe("example workflow scripts", () => {
 		expect(result.scheduler.state.taskContract).toContain(
 			"Every lane-authored tuple-scoped artifact must use the exact Canonical tuple id above",
 		);
+	});
+
+	it("accepts Markdown headings in parallel review task contracts", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-markdown-contract-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"# Objective",
+				"Triage and fix one reproducible bug.",
+				"",
+				"# Acceptance Criteria",
+				"- Produce a scoped patch.",
+				"",
+				"# Validation Command",
+				"echo validate",
+				"",
+				"# Lane Ownership",
+				"Core owns implementation; tests owns validation; docs owns evidence.",
+				"",
+				"# Stop Conditions",
+				"Stop on unsafe scope expansion.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "precheckTaskContract",
+			scriptFileName: "precheck-task-contract.js",
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
+		).toBe("completed");
+		expect(result.scheduler.state.taskContract).toContain("# Validation Command");
 	});
 
 	it("reuses declared validation evidence keyed by the manifest run id", async () => {
@@ -7499,6 +7538,46 @@ describe("example workflow scripts", () => {
 			verdict: "FAIL_RELEVANCE",
 		});
 		expect(await Bun.file(`${cwd}/workflow-output/humanize-stop-summary.md`).text()).toContain("FAIL_RELEVANCE");
+	});
+
+	it("accepts Markdown headings in KDA task contracts", async () => {
+		using tempDir = TempDir.createSync("@omh-kda-humanize-markdown-contract-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"# Objective",
+				"Evaluate a candidate improvement on a real project.",
+				"",
+				"# Acceptance Criteria",
+				"- Produce a reviewable project change or terminal rejection evidence.",
+				"",
+				"# Validation Command",
+				"echo validate",
+				"",
+				"# Stop Conditions",
+				"Stop when validation cannot run.",
+				"",
+				"# Rollback Plan",
+				"Revert the candidate patch.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "loadTaskContract",
+			scriptFileName: "load-task-contract.js",
+			scriptDir: KDA_HUMANIZE_SCRIPT_DIR,
+			writes: ["/taskContract", "/kda/runtime"],
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "loadTaskContract")?.status).toBe(
+			"completed",
+		);
+		expect(result.scheduler.state.taskContract).toContain("# Rollback Plan");
 	});
 
 	it("does not require completed validation evidence before Humanize accepts an executable KDA plan", async () => {

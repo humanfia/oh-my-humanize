@@ -11,6 +11,7 @@
 - Fixed Humanize RLCR requiring lowercase `task.md` even when a project already provides `TASK.md`.
 - Fixed workflow human checkpoints defaulting to stop in the interactive selector, aligning the default with the proceed path while keeping stop and checkpoint explicit.
 - Fixed the experimental parallel implementation review guard treating ordinary tuple ids containing `final` as premature final workflow artifacts.
+- Fixed experimental KDA and parallel implementation task-contract checks rejecting normal Markdown headings unless they used colon field syntax.
 
 ## [16.2.5] - 2026-06-28
 

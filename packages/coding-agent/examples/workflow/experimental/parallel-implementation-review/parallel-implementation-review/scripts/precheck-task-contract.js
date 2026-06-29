@@ -99,6 +99,6 @@ function normalizeTupleId(value) {
 function hasHeadingOrField(text, label) {
 	const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const pattern = new RegExp(`(^|\\n)\\s*(?:#+\\s*)?${escaped}\\s*:`, "iu");
-	const headingPattern = new RegExp(`(^|\\n)\\s*#+\\s*${escaped}\\s*$`, "iu");
+	const headingPattern = new RegExp(`^\\s*#+\\s*${escaped}\\s*$`, "imu");
 	return pattern.test(text) || headingPattern.test(text);
 }
