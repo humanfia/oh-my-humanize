@@ -4,9 +4,8 @@
 # Or with options:
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Source
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Binary
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Source -Ref v3.20.1
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Source -Ref main
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Binary -Ref v3.20.1
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Source -Ref <branch-tag-or-commit>
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Binary -Ref <release-tag>
 
 param(
     [switch]$Source,
@@ -17,7 +16,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Repo = "humanfia/oh-my-humanize"
-$Package = "@oh-my-pi/pi-coding-agent"
+$DefaultRef = if ($env:OMH_INSTALL_REF) { $env:OMH_INSTALL_REF } else { "main" }
 $InstallDir = if ($env:OMH_INSTALL_DIR) { $env:OMH_INSTALL_DIR } elseif ($env:PI_INSTALL_DIR) { $env:PI_INSTALL_DIR } else { "$env:LOCALAPPDATA\omh" }
 $BinaryName = "omh-windows-x64.exe"
 $MinimumBunVersion = "1.3.14"
@@ -168,71 +167,75 @@ function Install-Bun {
     Assert-BunVersion $MinimumBunVersion
 }
 
+function Show-OmhPathHint {
+    try {
+        $command = Get-Command omh -ErrorAction Stop
+        Write-Host "Run 'omh' to get started: $($command.Source)"
+    } catch {
+        Write-Host "Installed omh, but it is not on PATH yet." -ForegroundColor Yellow
+        Write-Host "Add Bun's global bin to PATH, then run omh." -ForegroundColor Yellow
+    }
+}
+
 function Install-ViaBun {
-    Write-Host "Installing via bun..."
-    if ($Ref) {
-        if (-not (Test-GitInstalled)) {
-            throw "git is required for -Ref when installing from source"
-        }
+    $installRef = if ($Ref) { $Ref } else { $DefaultRef }
+    Write-Host "Installing OMH from $Repo@$installRef via bun..."
+    if (-not (Test-GitInstalled)) {
+        throw "git is required when installing OMH from source"
+    }
 
-        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("omh-install-" + [System.Guid]::NewGuid().ToString("N"))
-        New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
+    $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("omh-install-" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 
+    try {
+        $repoUrl = "https://github.com/$Repo.git"
+        $cloneOk = $false
         try {
-            $repoUrl = "https://github.com/$Repo.git"
+            git clone --depth 1 --branch $installRef $repoUrl $tmpRoot | Out-Null
+            $cloneOk = $true
+        } catch {
             $cloneOk = $false
+        }
+
+        if (-not $cloneOk) {
+            git clone $repoUrl $tmpRoot | Out-Null
+            Push-Location $tmpRoot
             try {
-                git clone --depth 1 --branch $Ref $repoUrl $tmpRoot | Out-Null
-                $cloneOk = $true
-            } catch {
-                $cloneOk = $false
+                git checkout $installRef | Out-Null
+            } finally {
+                Pop-Location
             }
-
-            if (-not $cloneOk) {
-                git clone $repoUrl $tmpRoot | Out-Null
-                Push-Location $tmpRoot
-                try {
-                    git checkout $Ref | Out-Null
-                } finally {
-                    Pop-Location
-                }
-            }
-
-            # Pull LFS files
-            if (Test-GitLfsInstalled) {
-                Push-Location $tmpRoot
-                try {
-                    git lfs pull | Out-Null
-                } finally {
-                    Pop-Location
-                }
-            }
-
-            $packagePath = Join-Path $tmpRoot "packages\coding-agent"
-            if (-not (Test-Path $packagePath)) {
-                throw "Expected package at $packagePath"
-            }
-
-            bun install -g $packagePath
-            if ($LASTEXITCODE -ne 0) {
-                throw "Failed to install from $packagePath via bun"
-            }
-        } finally {
-            Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue
         }
-    } else {
-        bun install -g $Package
+
+        # Pull LFS files
+        if (Test-GitLfsInstalled) {
+            Push-Location $tmpRoot
+            try {
+                git lfs pull | Out-Null
+            } finally {
+                Pop-Location
+            }
+        }
+
+        $packagePath = Join-Path $tmpRoot "packages\coding-agent"
+        if (-not (Test-Path $packagePath)) {
+            throw "Expected package at $packagePath"
+        }
+
+        bun install -g $packagePath
         if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install $Package via bun"
+            throw "Failed to install from $packagePath via bun"
         }
+    } finally {
+        Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue
     }
 
     Write-Host ""
-    Write-Host "✓ Installed omh via bun" -ForegroundColor Green
+    Write-Host "✓ Installed omh from $Repo@$installRef via bun" -ForegroundColor Green
 
     Configure-BashShell
 
-    Write-Host "Run 'omh' to get started!"
+    Show-OmhPathHint
 }
 
 function Install-Binary {
@@ -298,11 +301,11 @@ if ($Source) {
 } elseif ($Binary) {
     Install-Binary
 } else {
-    # Default: use bun if available, otherwise binary
-    if (Test-BunInstalled) {
-        Assert-BunVersion $MinimumBunVersion
-        Install-ViaBun
-    } else {
-        Install-Binary
+    # Default: install current OMH source from main so one-line installs do not
+    # depend on an npm package with the old project name.
+    if (-not (Test-BunInstalled)) {
+        Install-Bun
     }
+    Assert-BunVersion $MinimumBunVersion
+    Install-ViaBun
 }

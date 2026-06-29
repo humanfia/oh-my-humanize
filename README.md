@@ -28,14 +28,14 @@ and supervising long-running agentic development flows.
 macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh -s -- --source --ref main
+curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh
 which omh
 ```
 
 Windows PowerShell:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Source -Ref main
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1)))
 Get-Command omh
 ```
 
@@ -112,13 +112,13 @@ OMH-specific distribution channels are published.
 **macOS · Linux**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh -s -- --source --ref main
+curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1))) -Source -Ref main
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.ps1)))
 ```
 
 For source installs, use Bun ≥ 1.3.14. The installed binary exposes `omh` as the

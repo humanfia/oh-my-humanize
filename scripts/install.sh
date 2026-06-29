@@ -5,13 +5,13 @@ set -e
 # Usage: curl -fsSL https://raw.githubusercontent.com/humanfia/oh-my-humanize/main/scripts/install.sh | sh
 #
 # Options:
-#   --source       Install via bun (installs bun if needed)
-#   --binary       Always install prebuilt binary
+#   --source       Install from source via bun (default; installs bun if needed)
+#   --binary       Install prebuilt binary from GitHub releases
 #   --ref <ref>    Install specific tag/commit/branch
 #   -r <ref>       Shorthand for --ref
 
 REPO="humanfia/oh-my-humanize"
-PACKAGE="@oh-my-pi/pi-coding-agent"
+DEFAULT_REF="${OMH_INSTALL_REF:-main}"
 INSTALL_DIR="${OMH_INSTALL_DIR:-${PI_INSTALL_DIR:-$HOME/.local/bin}}"
 MIN_BUN_VERSION="1.3.14"
 
@@ -120,6 +120,16 @@ has_git() {
     command -v git >/dev/null 2>&1
 }
 
+show_omh_path_hint() {
+    if command -v omh >/dev/null 2>&1; then
+        echo "Run 'omh' to get started: $(command -v omh)"
+        return
+    fi
+
+    echo "Installed omh, but it is not on PATH yet."
+    echo 'Add Bun global bin to PATH, then run omh: export PATH="$HOME/.bun/bin:$PATH"'
+}
+
 # Install bun
 install_bun() {
     echo "Installing bun..."
@@ -141,46 +151,40 @@ has_git_lfs() {
 
 # Install via bun
 install_via_bun() {
-    echo "Installing via bun..."
-    if [ -n "$REF" ]; then
-        if ! has_git; then
-            echo "git is required for --ref when installing from source"
-            exit 1
-        fi
-
-        TMP_DIR="$(mktemp -d)"
-        trap 'rm -rf "$TMP_DIR"' EXIT
-
-        if git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$TMP_DIR" >/dev/null 2>&1; then
-            :
-        else
-            git clone "https://github.com/${REPO}.git" "$TMP_DIR"
-            (cd "$TMP_DIR" && git checkout "$REF")
-        fi
-
-        # Pull LFS files
-        if has_git_lfs; then
-            (cd "$TMP_DIR" && git lfs pull)
-        fi
-
-        if [ ! -d "$TMP_DIR/packages/coding-agent" ]; then
-            echo "Expected package at ${TMP_DIR}/packages/coding-agent"
-            exit 1
-        fi
-
-        bun install -g "$TMP_DIR/packages/coding-agent" || {
-            echo "Failed to install from source"
-            exit 1
-        }
-    else
-        bun install -g "$PACKAGE" || {
-            echo "Failed to install $PACKAGE"
-            exit 1
-        }
+    install_ref="${REF:-$DEFAULT_REF}"
+    echo "Installing OMH from ${REPO}@${install_ref} via bun..."
+    if ! has_git; then
+        echo "git is required when installing OMH from source"
+        exit 1
     fi
+
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+
+    if git clone --depth 1 --branch "$install_ref" "https://github.com/${REPO}.git" "$TMP_DIR" >/dev/null 2>&1; then
+        :
+    else
+        git clone "https://github.com/${REPO}.git" "$TMP_DIR"
+        (cd "$TMP_DIR" && git checkout "$install_ref")
+    fi
+
+    # Pull LFS files
+    if has_git_lfs; then
+        (cd "$TMP_DIR" && git lfs pull)
+    fi
+
+    if [ ! -d "$TMP_DIR/packages/coding-agent" ]; then
+        echo "Expected package at ${TMP_DIR}/packages/coding-agent"
+        exit 1
+    fi
+
+    bun install -g "$TMP_DIR/packages/coding-agent" || {
+        echo "Failed to install from source"
+        exit 1
+    }
     echo ""
-    echo "✓ Installed omh via bun"
-    echo "Run 'omh' to get started!"
+    echo "✓ Installed omh from ${REPO}@${install_ref} via bun"
+    show_omh_path_hint
 }
 
 # Install binary from GitHub releases
@@ -254,12 +258,12 @@ case "$MODE" in
         install_binary
         ;;
     *)
-        # Default: use bun if available, otherwise binary
-        if has_bun; then
-            require_bun_version
-            install_via_bun
-        else
-            install_binary
+        # Default: install current OMH source from main so one-line installs do not
+        # depend on an npm package with the old project name.
+        if ! has_bun; then
+            install_bun
         fi
+        require_bun_version
+        install_via_bun
         ;;
 esac
