@@ -29,6 +29,9 @@ describe("workflow command is registered as a top-level subcommand", () => {
 		expect(resolveCliArgv(["workflows"])).toEqual({
 			error: '`omh workflows` is not a command. Use `omh workflow list`, `omh workflow --help`, or run `omh launch workflows` if you meant to send "workflows" as a prompt.',
 		});
+		expect(resolveCliArgv(["workflows", "list"])).toEqual({
+			error: '`omh workflows` is not a command. Use `omh workflow list`, `omh workflow --help`, or run `omh launch workflows` if you meant to send "workflows" as a prompt.',
+		});
 	});
 
 	test("help examples expose packaged experimental flows with an explicit namespace", () => {

@@ -74,7 +74,9 @@ const RESERVED_TOP_LEVEL_WORDS = new Map<string, string>([
 ]);
 
 export function reservedTopLevelWordMessage(first: string | undefined, argc = 1): string | undefined {
-	if (argc !== 1 || !first || first.startsWith("-") || first.startsWith("@")) return undefined;
+	if (!first || first.startsWith("-") || first.startsWith("@")) return undefined;
+	if (first === "workflows") return RESERVED_TOP_LEVEL_WORDS.get(first);
+	if (argc !== 1) return undefined;
 	return RESERVED_TOP_LEVEL_WORDS.get(first);
 }
 
