@@ -177,7 +177,34 @@ function reportEvidenceText(report, repairText) {
 		.split(/\r?\n/u)
 		.filter((line) => namePattern.test(line) || line.includes(report.file))
 		.join("\n");
-	return `${report.text}\n${repairLines}`;
+	const repairSection = branchRepairSection(repairText, report.name);
+	return `${report.text}\n${repairLines}\n${repairSection}`;
+}
+
+function branchRepairSection(text, branchName) {
+	const lines = text.split(/\r?\n/u);
+	const branchHeaderPattern = new RegExp(String.raw`^-\s+.*\b${escapeRegExp(branchName)}\b`, "iu");
+	const otherBranchHeaderPattern = new RegExp(
+		String.raw`^-\s+.*\b(?:${["algorithmic", "caching", "io", "no-win"].filter((name) => name !== branchName).map(escapeRegExp).join("|")})\b`,
+		"iu",
+	);
+	const section = [];
+	let collecting = false;
+	for (const line of lines) {
+		if (branchHeaderPattern.test(line)) {
+			collecting = true;
+			section.push(line);
+			continue;
+		}
+		if (!collecting) continue;
+		if (/^##\s+/u.test(line) || otherBranchHeaderPattern.test(line)) break;
+		if (line.trim() === "" || /^\s{2,}-\s+/u.test(line) || !/^\s*-\s+\S/u.test(line)) {
+			section.push(line);
+			continue;
+		}
+		break;
+	}
+	return section.join("\n");
 }
 
 function benchmarkRelevanceConfirmed(text) {
@@ -217,6 +244,7 @@ function benchmarkCoveredLosingRejected(text) {
 function hasPositiveBenchmarkEvidence(text) {
 	if (
 		/\bno\s+(?:measured\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text) ||
+		/\bno\s+positive\s+benchmark\s+(?:movement|result|candidate|optimization)\b/iu.test(text) ||
 		/\bno\s+stable\s+positive\s+result\b/iu.test(text) ||
 		/\bwithout\s+(?:a\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text)
 	) {

@@ -11,7 +11,7 @@ const selectionRepair = {
 	text,
 	benchmark: commandEvidence(text, "benchmark"),
 	validation: commandEvidence(text, "validation"),
-	selectedBranch: selectionValue(text, "Selected positive optimization branch"),
+	selectedBranch: selectionValue(text, ["Selected branch", "Selected positive optimization branch"]),
 	noWinBranch: selectionValue(text, "No-win branch"),
 };
 
@@ -39,7 +39,7 @@ async function readRequiredText(filePath) {
 }
 
 function commandEvidence(report, commandName) {
-	const lines = report.split(/\r?\n/u).filter((line) => commandLineMatches(line, commandName));
+	const lines = commandEvidenceLines(report, commandName);
 	const evidence = {
 		status: "unknown",
 	};
@@ -50,6 +50,21 @@ function commandEvidence(report, commandName) {
 		if (exitCode !== undefined) evidence.exitCode = exitCode;
 	}
 	return evidence;
+}
+
+function commandEvidenceLines(report, commandName) {
+	const lines = report.split(/\r?\n/u);
+	const evidenceLines = [];
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index] ?? "";
+		if (!commandLineMatches(line, commandName)) continue;
+		evidenceLines.push(line);
+		for (const nextLine of lines.slice(index + 1, index + 5)) {
+			if (/^\s*-\s+\w+(?: command)?:/iu.test(nextLine) && !/\bstatus\s*:/iu.test(nextLine)) break;
+			evidenceLines.push(nextLine);
+		}
+	}
+	return evidenceLines;
 }
 
 function commandLineMatches(line, commandName) {
@@ -71,11 +86,14 @@ function exitCodeFromLine(line) {
 	return Number(match[1]);
 }
 
-function selectionValue(report, label) {
-	const pattern = new RegExp(String.raw`\b${escapeRegExp(label)}\s*:\s*([^.\n]+)`, "iu");
-	const match = pattern.exec(report);
-	if (!match) return "unknown";
-	return stripMarkdown(match[1] ?? "").trim() || "unknown";
+function selectionValue(report, labels) {
+	const labelList = Array.isArray(labels) ? labels : [labels];
+	for (const label of labelList) {
+		const pattern = new RegExp(String.raw`\b${escapeRegExp(label)}\s*:\s*([^.\n]+)`, "iu");
+		const match = pattern.exec(report);
+		if (match) return stripMarkdown(match[1] ?? "").trim() || "unknown";
+	}
+	return "unknown";
 }
 
 function stripMarkdown(value) {

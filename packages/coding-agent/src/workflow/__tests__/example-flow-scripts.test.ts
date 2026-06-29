@@ -6203,6 +6203,140 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("accepts sectioned performance repair rejection evidence after materialization", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-sectioned-repair-guard-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance-aware refactor with regression checks",
+			"",
+			"Benchmark Command:",
+			"cat fixtures/large.txt fixtures/large.txt | cargo run --release --quiet",
+			"",
+			"Validation Command:",
+			"cargo test && printf 'alpha beta\\ngamma\\n' | cargo run --quiet | grep ^3",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/main.rs`, "fn main() {}\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/main.rs", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Algorithmic",
+				"",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: CLI ASCII and Unicode probes passed",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching",
+				"",
+				"final-selection: no",
+				"positive benchmark-like result: yes",
+				"rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			[
+				"# IO",
+				"",
+				"final-selection: no",
+				"no positive benchmark result; correctness-only median matched the IO candidate median",
+				"rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"## Current benchmark and validation status",
+				"",
+				"- Validation command: `cargo test && printf 'alpha beta\\ngamma\\n' | cargo run --quiet | grep ^3`",
+				"  - Status: pass, exit code 0.",
+				"- Benchmark command: `cat fixtures/large.txt fixtures/large.txt | cargo run --release --quiet`",
+				"  - Status: pass, exit code 0.",
+				"",
+				"## Terminal selection",
+				"",
+				"- Selected branch: algorithmic.",
+				"- No-win branch: none for the terminal project.",
+				"",
+				"## Benchmark relevance and branch rejection evidence",
+				"",
+				"- Selected algorithmic benchmark-relevance: yes.",
+				"  - The task benchmark exercises the retained ASCII byte-scanner path.",
+				"- Caching rejection:",
+				"  - final-selection: no.",
+				"  - positive benchmark-like result: yes.",
+				"  - benchmark-relevance: yes; off-benchmark: no.",
+				"  - Explicit rejection reason: weaker than the retained benchmark-covered algorithmic candidate.",
+				"- IO rejection:",
+				"  - final-selection: no.",
+				"  - benchmark-relevance: yes; off-benchmark: no.",
+				"  - Explicit rejection reason: no positive benchmark result.",
+			].join("\n"),
+		);
+
+		const materialized = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeSelectionRepair",
+			scriptFileName: "materialize-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionRepair"],
+		});
+
+		expect(materialized.scheduler.state.selectionRepair).toMatchObject({
+			benchmark: { status: "pass", exitCode: 0 },
+			validation: { status: "pass", exitCode: 0 },
+			selectedBranch: "algorithmic",
+			noWinBranch: "none for the terminal project",
+		});
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: materialized.scheduler.state.selectionRepair,
+			},
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "guardSelectionRepair");
+		expect(activation?.error).toBeUndefined();
+		expect(activation?.status).toBe("completed");
+		expect(result.scheduler.state.selectionGuard).toMatchObject({
+			status: "pass",
+			benchmarkPassed: true,
+			validationPassed: true,
+			positiveUnselectedBranches: ["caching"],
+			benchmarkCoveredRejectedBranches: ["caching"],
+			benchmarkRelevanceBlockers: [],
+		});
+	});
+
 	it("finalizes benchmark-covered losing performance branches with comparative rejection evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-finalize-covered-losing-rejection-");
 		const cwd = tempDir.path();
