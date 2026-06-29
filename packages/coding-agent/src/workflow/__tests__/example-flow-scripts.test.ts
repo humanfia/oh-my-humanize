@@ -6471,6 +6471,137 @@ describe("example workflow scripts", () => {
 		expect(selectionGuard.benchmarkRelevanceBlockers).toEqual([]);
 	});
 
+	it("accepts repair rerun validation evidence and counts untracked retained files", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-repair-rerun-validation-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance-aware refactor with regression checks",
+			"",
+			"Benchmark Command:",
+			"cat fixtures/large.txt fixtures/large.txt | cargo run --release --quiet",
+			"",
+			"Validation Command:",
+			"cargo test && printf 'alpha beta\\ngamma\\n' | cargo run --quiet | grep '^3$'",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/main.rs`, "fn main() {}\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/main.rs", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			`${cwd}/src/main.rs`,
+			[
+				"use std::io::{self, Read};",
+				"use rust_word_counter::count_words;",
+				"fn main() {",
+				"\tlet mut text = String::new();",
+				"\tio::stdin().read_to_string(&mut text).unwrap();",
+				'\tprintln!("{}", count_words(&text));',
+				"}",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/src/lib.rs`,
+			[
+				"pub fn count_words(input: &str) -> usize {",
+				"\tif input.is_ascii() {",
+				"\t\tinput.split_ascii_whitespace().count()",
+				"\t} else {",
+				"\t\tinput.split_whitespace().count()",
+				"\t}",
+				"}",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Performance algorithmic Branch",
+				"",
+				"- final-selection: yes",
+				"- no-win-result: no",
+				"- benchmark-relevance: yes",
+				"- semantic-probe: yes",
+				"- semantic probe evidence: ASCII fast path and Unicode fallback passed.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			["# Performance caching Branch", "", "- final-selection: no", "- rollback evidence: no retained changes"].join(
+				"\n",
+			),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			["# Performance io Branch", "", "- final-selection: no", "- rollback evidence: no retained changes"].join(
+				"\n",
+			),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"## Current status",
+				"",
+				"- Selected branch: algorithmic.",
+				"- Declared validation command: `cargo test && printf 'alpha beta\\ngamma\\n' | cargo run --quiet | grep '^3$'`.",
+				"  - Repair rerun result: exit 0; output included `cargo test: 4 passed` and `3`.",
+				"- Declared benchmark command: `cat fixtures/large.txt fixtures/large.txt | cargo run --release --quiet`.",
+				"  - Repair rerun result: exit 0; stdout `144000`.",
+				"",
+				"## Selected algorithmic branch",
+				"",
+				"- Final marker: `final-selection: yes`.",
+				"- Benchmark relevance: yes. The task benchmark covers the retained ASCII fast path.",
+				"- Semantic probe: yes.",
+			].join("\n"),
+		);
+
+		const materialized = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeSelectionRepair",
+			scriptFileName: "materialize-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionRepair"],
+		});
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: materialized.scheduler.state.selectionRepair,
+			},
+		});
+
+		const selectionGuard = expectRecord(result.scheduler.state.selectionGuard, "selectionGuard");
+		expect(materialized.scheduler.state.selectionRepair).toMatchObject({
+			benchmark: { status: "pass", exitCode: 0 },
+			validation: { status: "pass", exitCode: 0 },
+		});
+		expect(selectionGuard.status).toBe("pass");
+		expect(selectionGuard.validationPassed).toBe(true);
+		expect(selectionGuard.projectChangedFiles).toEqual(["src/main.rs", "src/lib.rs"]);
+	});
+
 	it("finalizes benchmark-covered losing performance branches with comparative rejection evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-finalize-covered-losing-rejection-");
 		const cwd = tempDir.path();

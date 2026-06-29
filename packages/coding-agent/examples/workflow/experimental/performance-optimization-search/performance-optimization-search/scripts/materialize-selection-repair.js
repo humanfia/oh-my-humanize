@@ -74,7 +74,10 @@ function commandEvidenceLines(report, commandName) {
 }
 
 function commandLineMatches(line, commandName) {
-	const pattern = commandName === "benchmark" ? /\bbenchmark(?: command)?\b/iu : /\bvalidation(?: command)?\b/iu;
+	const pattern =
+		commandName === "benchmark"
+			? /\b(?:declared\s+)?benchmark(?: command)?\b/iu
+			: /\b(?:declared\s+)?validation(?: command)?\b/iu;
 	return pattern.test(line);
 }
 
@@ -87,7 +90,7 @@ function statusFromLine(line) {
 }
 
 function exitCodeFromLine(line) {
-	const match = /\b(?:exited|exit code)\s*:?\s*(?:code\s*)?(\d+)\b/iu.exec(line);
+	const match = /\b(?:exited|exit code|exit)\s*:?\s*(?:code\s*)?(\d+)\b/iu.exec(line);
 	if (!match) return undefined;
 	return Number(match[1]);
 }

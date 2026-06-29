@@ -5,7 +5,7 @@ const selectionRepair = state.selectionRepair && typeof state.selectionRepair ==
 const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
 
 const terminalArtifacts = await findPrematureTerminalArtifacts();
-const changedFiles = await gitDiffHeadChangedFiles();
+const changedFiles = await gitStatusHeadChangedFiles();
 const projectChangedFiles = changedFiles.filter((file) => !file.startsWith("workflow-output/") && file !== "task.md");
 const branchReports = await readBranchReports();
 const joinedText = branchReports.map((report) => report.text).join("\n");
@@ -143,8 +143,8 @@ async function workflowOutputFiles() {
 		.filter(Boolean);
 }
 
-async function gitDiffHeadChangedFiles() {
-	const proc = Bun.spawn(["git", "diff", "HEAD", "--name-only"], {
+async function gitStatusHeadChangedFiles() {
+	const proc = Bun.spawn(["git", "status", "--porcelain", "--untracked-files=all"], {
 		cwd: process.cwd(),
 		stdout: "pipe",
 		stderr: "pipe",
@@ -154,11 +154,23 @@ async function gitDiffHeadChangedFiles() {
 		new Response(proc.stderr).text(),
 		proc.exited,
 	]);
-	if (exitCode !== 0) throw new Error(`git diff HEAD failed: ${stderr.trim() || stdout.trim()}`);
+	if (exitCode !== 0) throw new Error(`git status failed: ${stderr.trim() || stdout.trim()}`);
 	return stdout
 		.split(/\r?\n/u)
-		.map((line) => line.trim())
+		.flatMap(statusLineFiles)
 		.filter(Boolean);
+}
+
+function statusLineFiles(line) {
+	if (line.trim() === "") return [];
+	const status = line.slice(0, 2);
+	const body = line.slice(3).trim();
+	if (body === "") return [];
+	if (status[0] === "R" || status[0] === "C") {
+		const paths = body.split(/\s+->\s+/u).map((file) => file.trim()).filter(Boolean);
+		return paths.length > 0 ? [paths[paths.length - 1]] : [];
+	}
+	return [body];
 }
 
 async function readBranchReports() {
