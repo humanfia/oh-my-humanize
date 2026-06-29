@@ -87,6 +87,7 @@ sequence:
         - /task
       writes:
         - /baseline
+        - /task/sharedProjectFilesBeforeBranches
   - template:
       kind: retry_until
       body:

@@ -3988,6 +3988,43 @@ describe("example workflow scripts", () => {
 		expect(evidence).toContain("missing dependency");
 	});
 
+	it("records shared project files after successful performance baseline as the pre-branch snapshot", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-baseline-snapshot-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(`${cwd}/task.md`, "Benchmark Command:\necho benchmark\n\nValidation Command:\necho validation\n");
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "captureBaseline",
+			scriptFileName: "capture-baseline.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/baseline", "/task/sharedProjectFilesBeforeBranches"],
+			initialState: {
+				task: {
+					baselineCommand:
+						"bash -lc 'set -euo pipefail; printf generated > Cargo.lock; mkdir -p target/debug; printf build > target/debug/build-output'",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.baseline).toMatchObject({
+			status: "pass",
+			exitCode: 0,
+		});
+		expect(result.scheduler.state.task).toMatchObject({
+			sharedProjectFilesBeforeBranches: ["Cargo.lock", "target/debug/build-output"],
+		});
+	});
+
 	it("materializes performance scratch root into task state before branch agents run", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-scratch-root-precheck-");
 		const cwd = tempDir.path();
@@ -4381,6 +4418,92 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain(
 			"Parallel Lane Isolation Violation",
 		);
+	});
+
+	it("allows recorded pre-branch shared command artifacts before performance benchmark joins", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-prebranch-artifacts-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const preBranchArtifacts = ["TASK.md", "Cargo.lock", "target/debug/build-output"];
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/TASK.md`, "operator-visible task mirror\n");
+		await Bun.write(`${cwd}/Cargo.lock`, "generated lockfile\n");
+		await Bun.write(`${cwd}/target/debug/build-output`, "shared pre-branch build cache\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+					sharedProjectFilesBeforeBranches: preBranchArtifacts,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "pass",
+			benchmarkExitCode: 0,
+			validationExitCode: 0,
+		});
+		expect(result.scheduler.state.benchmark).not.toHaveProperty("isolationViolation");
+	});
+
+	it("blocks performance benchmark joins when shared project edits are newer than the pre-branch snapshot", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-postbranch-artifacts-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/Cargo.lock`, "generated lockfile\n");
+		await Bun.write(`${cwd}/src.txt`, "candidate leaked into shared workspace\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+					sharedProjectFilesBeforeBranches: ["Cargo.lock"],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "fail",
+			isolationViolation: true,
+			projectChangedFiles: ["src.txt"],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain("- src.txt");
 	});
 
 	it("blocks performance benchmark joins when branches mutate shared git worktree metadata", async () => {

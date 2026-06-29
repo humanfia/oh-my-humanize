@@ -7,6 +7,7 @@ if (typeof command !== "string" || command.trim() === "") {
 const result = await runShell(command);
 const outputPath = "workflow-output/performance-baseline.md";
 await Bun.write(outputPath, evidenceMarkdown("Baseline", command, result));
+const sharedProjectFilesBeforeBranches = await changedProjectFiles();
 
 if (result.exitCode !== 0) {
 	throw new Error(
@@ -16,7 +17,7 @@ if (result.exitCode !== 0) {
 
 return {
 	summary: `captured performance baseline; exit=${result.exitCode}`,
-	data: result,
+	data: { ...result, sharedProjectFilesBeforeBranches },
 	statePatch: [
 		{
 			op: "set",
@@ -28,8 +29,60 @@ return {
 				status: result.exitCode === 0 ? "pass" : "fail",
 			},
 		},
+		{
+			op: "set",
+			path: "/task/sharedProjectFilesBeforeBranches",
+			value: sharedProjectFilesBeforeBranches,
+		},
 	],
 };
+
+async function changedProjectFiles() {
+	const proc = Bun.spawn(["git", "status", "--porcelain=v1", "--untracked-files=all"], {
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`git status failed after performance baseline: ${stderr.trim() || stdout.trim()}`);
+	}
+	return stdout
+		.split(/\r?\n/u)
+		.map((line) => statusPath(line))
+		.filter((filePath) => filePath && !isAllowedWorkflowMetadataPath(filePath))
+		.sort();
+}
+
+function statusPath(line) {
+	if (line.length < 4) return "";
+	const rawPath = line.slice(3).trim();
+	const renamePath = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1)?.trim() : rawPath;
+	return unquoteStatusPath(renamePath ?? "");
+}
+
+function unquoteStatusPath(filePath) {
+	if (!filePath.startsWith("\"") || !filePath.endsWith("\"")) return filePath;
+	try {
+		return JSON.parse(filePath);
+	} catch {
+		return filePath.slice(1, -1);
+	}
+}
+
+function isAllowedWorkflowMetadataPath(filePath) {
+	return (
+		filePath.startsWith("workflow-output/") ||
+		filePath === "task.md" ||
+		filePath === "manifest-entry.json" ||
+		filePath === "monitor-assignment.json" ||
+		filePath === "progress.md"
+	);
+}
 
 async function runShell(command) {
 	const proc = Bun.spawn(["sh", "-c", command], {

@@ -10,7 +10,7 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 
 await materializeBranchStateReports(workflowContext.state);
 
-const projectChangedFiles = await changedProjectFiles();
+const projectChangedFiles = projectFilesChangedAfterBranchStart(await changedProjectFiles(), task);
 if (projectChangedFiles.length > 0) {
 	const outputPath = "workflow-output/performance-benchmark.md";
 	await Bun.write(outputPath, isolationViolationMarkdown(projectChangedFiles));
@@ -273,6 +273,17 @@ async function changedProjectFiles() {
 		.split(/\r?\n/u)
 		.map((line) => statusPath(line))
 		.filter((filePath) => filePath && !isAllowedWorkflowMetadataPath(filePath));
+}
+
+function projectFilesChangedAfterBranchStart(currentFiles, task) {
+	const preBranchFiles = new Set(sharedProjectFilesBeforeBranches(task));
+	return currentFiles.filter(filePath => !preBranchFiles.has(filePath));
+}
+
+function sharedProjectFilesBeforeBranches(task) {
+	const value = task?.sharedProjectFilesBeforeBranches;
+	if (!Array.isArray(value)) return [];
+	return value.filter(filePath => typeof filePath === "string" && filePath.trim() !== "");
 }
 
 function statusPath(line) {
