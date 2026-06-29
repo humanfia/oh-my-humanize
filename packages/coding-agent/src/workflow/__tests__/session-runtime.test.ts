@@ -298,6 +298,43 @@ edges: []
 		expect(calls).toBe(1);
 	});
 
+	it("records failed agent nodes in workflow observability", async () => {
+		using tempDir = TempDir.createSync("@omh-workflow-failed-observability-");
+		const cwd = tempDir.path();
+		const host = createSessionWorkflowRuntimeHost({
+			cwd,
+			runAgentTask: async () => ({
+				exitCode: 1,
+				output: "",
+				error: "candidate branch failed before writing evidence",
+			}),
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "tryCandidate", type: "agent", prompt: "Try a candidate branch." };
+		await expect(
+			host.runAgentNode({
+				node,
+				activation: workflowActivation(node.id),
+				agent: "builder",
+				prompt: node.prompt,
+			}),
+		).rejects.toThrow('workflow agent node "tryCandidate" failed: candidate branch failed before writing evidence');
+
+		const observability = await Bun.file(`${cwd}/workflow-output/omh-runtime/observability.json`).json();
+		expect(observability.activations[0]).toMatchObject({
+			activationId: "tryCandidate:activation-1",
+			nodeId: "tryCandidate",
+			type: "agent",
+			status: "failed",
+			error: 'workflow agent node "tryCandidate" failed: candidate branch failed before writing evidence',
+		});
+		const progress = await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text();
+		expect(progress).toContain("Failed activations: 1");
+		expect(progress).toContain("tryCandidate");
+		expect(progress).toContain("candidate branch failed before writing evidence");
+	});
+
 	it("writes a project-local workflow observability index for completed agent nodes", async () => {
 		using tempDir = TempDir.createSync("@omh-workflow-observability-");
 		const cwd = tempDir.path();

@@ -234,7 +234,7 @@ async function reservedFinalArtifactFiles(tupleId) {
 		for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
 			if (filePath.startsWith("workflow-output/tmp/")) continue;
 			if (filePath.startsWith("workflow-output/quarantined-premature-final-artifacts/")) continue;
-			if (!isReservedFinalArtifact(filePath)) continue;
+			if (!isReservedFinalArtifact(filePath, tupleId)) continue;
 			if (tupleId && hasOtherTupleId(filePath, tupleId)) continue;
 			files.push(filePath);
 		}
@@ -255,9 +255,13 @@ async function quarantineReservedFinalArtifacts(files) {
 	return preserved;
 }
 
-function isReservedFinalArtifact(filePath) {
-	if (/(^|\/)final-rollback-coverage[^/]*\.(?:json|md|txt)$/iu.test(filePath)) return false;
-	return /(^|\/)(?:(?:strong-review|promotion-decision)[^/]*|[^/]*final-[^/]*)\.(?:json|md|txt)$/iu.test(filePath);
+function isReservedFinalArtifact(filePath, tupleId) {
+	const basename = artifactBasename(filePath);
+	const checkedName = tupleId ? basename.replaceAll(tupleId, "<tuple>") : basename;
+	if (/^final-rollback-coverage[^/]*\.(?:json|md|txt)$/iu.test(checkedName)) return false;
+	return /^(?:(?:strong-review|promotion-decision)[^/]*|final[-_][^/]*|[^/]*-final-[^/]*)\.(?:json|md|txt)$/iu.test(
+		checkedName,
+	);
 }
 
 function hasOtherTupleId(filePath, tupleId) {

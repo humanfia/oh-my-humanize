@@ -5,6 +5,8 @@
 ### Fixed
 
 - Fixed experimental workflow archive scripts accepting manually reconstructed output without required scheduler lineage, so partial agent runs fail closed instead of looking like completed workflow evidence.
+- Fixed workflow observability omitting failed node activations, so failed agent/review/script/human nodes now persist their node id, activation id, and error in `workflow-output/omh-runtime`.
+- Fixed the experimental parallel implementation review guard treating ordinary tuple ids containing `final` as premature final workflow artifacts.
 
 ## [16.2.5] - 2026-06-28
 

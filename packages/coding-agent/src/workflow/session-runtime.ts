@@ -1,11 +1,16 @@
 import { extractRetryHint, prompt as promptTemplate } from "@oh-my-pi/pi-utils";
 import workflowReviewNodeAdapterPrompt from "../prompts/system/workflow-review-node-adapter.md" with { type: "text" };
 import { workflowAgentTaskIdForNode } from "./agent-task-id";
-import type { WorkflowScriptLanguage } from "./definition";
+import type { WorkflowNode, WorkflowScriptLanguage } from "./definition";
 import { formatWorkflowAgentWorkItemLabel } from "./display";
 import type { WorkflowNodeRuntimeHost, WorkflowReviewNodeOutput, WorkflowScriptContext } from "./node-runtime";
 import { WorkflowNodeRuntimeError } from "./node-runtime";
-import { createWorkflowObservabilityRecorder, recordWorkflowActivationObservability } from "./observability";
+import {
+	createWorkflowObservabilityRecorder,
+	recordWorkflowActivationFailureObservability,
+	recordWorkflowActivationObservability,
+	type WorkflowObservabilityRecorder,
+} from "./observability";
 import {
 	DEFAULT_WORKFLOW_MAX_SUMMARY_BYTES,
 	validateWorkflowActivationOutput,
@@ -158,84 +163,123 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			if (input.signal !== undefined) {
 				request.signal = input.signal;
 			}
-			const result = await runAgentTaskWithTransientRetry(options, request);
-			const output = activationOutputFromTaskResult(input.node.id, result);
-			await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
-			return output;
+			try {
+				const result = await runAgentTaskWithTransientRetry(options, request);
+				const output = activationOutputFromTaskResult(input.node.id, result);
+				await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
+				return output;
+			} catch (error) {
+				await recordWorkflowActivationFailure(recordObservability, input.node, input.activation.id, error);
+				throw error;
+			}
 		},
 		runScriptNode: async input => {
-			const code = input.script?.trim();
-			if (!code) {
-				throw new WorkflowNodeRuntimeError(`workflow script node "${input.node.id}" must define script code`);
+			try {
+				const code = input.script?.trim();
+				if (!code) {
+					throw new WorkflowNodeRuntimeError(`workflow script node "${input.node.id}" must define script code`);
+				}
+				const language = input.scriptLanguage ?? "js";
+				const result =
+					language === "sh"
+						? await runShellWorkflowScript(input.node.id, code, input, options)
+						: await runEvalWorkflowScript(input.node.id, code, input, options);
+				if (result.exitCode !== 0) {
+					const reason = result.error || `exit code ${result.exitCode}`;
+					throw new WorkflowNodeRuntimeError(`workflow script node "${input.node.id}" failed: ${reason}`);
+				}
+				const output = activationOutputFromScriptResult(input.node.id, result);
+				await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
+				return output;
+			} catch (error) {
+				await recordWorkflowActivationFailure(recordObservability, input.node, input.activation.id, error);
+				throw error;
 			}
-			const language = input.scriptLanguage ?? "js";
-			const result =
-				language === "sh"
-					? await runShellWorkflowScript(input.node.id, code, input, options)
-					: await runEvalWorkflowScript(input.node.id, code, input, options);
-			if (result.exitCode !== 0) {
-				const reason = result.error || `exit code ${result.exitCode}`;
-				throw new WorkflowNodeRuntimeError(`workflow script node "${input.node.id}" failed: ${reason}`);
-			}
-			const output = activationOutputFromScriptResult(input.node.id, result);
-			await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
-			return output;
 		},
 		runHumanNode: async input => {
-			if (!options.runHumanInput) {
-				throw new WorkflowNodeRuntimeError(`workflow human node "${input.node.id}" requires a human input adapter`);
+			try {
+				if (!options.runHumanInput) {
+					throw new WorkflowNodeRuntimeError(
+						`workflow human node "${input.node.id}" requires a human input adapter`,
+					);
+				}
+				const question = input.prompt?.trim();
+				if (!question) {
+					throw new WorkflowNodeRuntimeError(
+						`workflow human node "${input.node.id}" must define a question prompt`,
+					);
+				}
+				const request: WorkflowHumanInputRequest = {
+					activationId: input.activation.id,
+					nodeId: input.node.id,
+					question,
+				};
+				if (input.signal !== undefined) request.signal = input.signal;
+				const result = await options.runHumanInput(request);
+				const output = activationOutputFromHumanInputResult({ ...result, question });
+				await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
+				return output;
+			} catch (error) {
+				await recordWorkflowActivationFailure(recordObservability, input.node, input.activation.id, error);
+				throw error;
 			}
-			const question = input.prompt?.trim();
-			if (!question) {
-				throw new WorkflowNodeRuntimeError(`workflow human node "${input.node.id}" must define a question prompt`);
-			}
-			const request: WorkflowHumanInputRequest = {
-				activationId: input.activation.id,
-				nodeId: input.node.id,
-				question,
-			};
-			if (input.signal !== undefined) request.signal = input.signal;
-			const result = await options.runHumanInput(request);
-			const output = activationOutputFromHumanInputResult({ ...result, question });
-			await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
-			return output;
 		},
 		runReviewNode: async input => {
-			if (!options.runAgentTask) {
-				throw new WorkflowNodeRuntimeError(
-					`workflow review node "${input.node.id}" requires a review runtime adapter`,
-				);
+			try {
+				if (!options.runAgentTask) {
+					throw new WorkflowNodeRuntimeError(
+						`workflow review node "${input.node.id}" requires a review runtime adapter`,
+					);
+				}
+				const assignment = input.prompt?.trim();
+				if (!assignment) {
+					throw new WorkflowNodeRuntimeError(
+						`workflow review node "${input.node.id}" must define a review prompt`,
+					);
+				}
+				const taskLabel = formatWorkflowAgentWorkItemLabel(input.node);
+				const request: WorkflowAgentTaskRequest = {
+					agent: input.agent ?? "reviewer",
+					activationId: input.activation.id,
+					nodeId: input.node.id,
+					task: {
+						id: workflowAgentTaskIdForNode(input.node.id),
+						description: taskLabel,
+						role: taskLabel,
+						assignment: workflowReviewNodeAssignment(assignment, input.gates, input.fallbackVerdict),
+					},
+				};
+				applyWorkflowNodeIsolation(request, input.node);
+				if (input.modelOverride !== undefined) {
+					request.modelOverride = input.modelOverride;
+					request.modelOverrideAuthFallback = false;
+				}
+				if (input.signal !== undefined) {
+					request.signal = input.signal;
+				}
+				const result = await runAgentTaskWithTransientRetry(options, request, workflowReviewTaskReasonIsRetryable);
+				const output = reviewOutputFromTaskResult(input.node.id, result, input.gates, input.fallbackVerdict);
+				await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
+				return output;
+			} catch (error) {
+				await recordWorkflowActivationFailure(recordObservability, input.node, input.activation.id, error);
+				throw error;
 			}
-			const assignment = input.prompt?.trim();
-			if (!assignment) {
-				throw new WorkflowNodeRuntimeError(`workflow review node "${input.node.id}" must define a review prompt`);
-			}
-			const taskLabel = formatWorkflowAgentWorkItemLabel(input.node);
-			const request: WorkflowAgentTaskRequest = {
-				agent: input.agent ?? "reviewer",
-				activationId: input.activation.id,
-				nodeId: input.node.id,
-				task: {
-					id: workflowAgentTaskIdForNode(input.node.id),
-					description: taskLabel,
-					role: taskLabel,
-					assignment: workflowReviewNodeAssignment(assignment, input.gates, input.fallbackVerdict),
-				},
-			};
-			applyWorkflowNodeIsolation(request, input.node);
-			if (input.modelOverride !== undefined) {
-				request.modelOverride = input.modelOverride;
-				request.modelOverrideAuthFallback = false;
-			}
-			if (input.signal !== undefined) {
-				request.signal = input.signal;
-			}
-			const result = await runAgentTaskWithTransientRetry(options, request, workflowReviewTaskReasonIsRetryable);
-			const output = reviewOutputFromTaskResult(input.node.id, result, input.gates, input.fallbackVerdict);
-			await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
-			return output;
 		},
 	};
+}
+
+async function recordWorkflowActivationFailure(
+	record: WorkflowObservabilityRecorder,
+	node: WorkflowNode,
+	activationId: string,
+	error: unknown,
+): Promise<void> {
+	try {
+		await recordWorkflowActivationFailureObservability(record, node, activationId, error);
+	} catch {
+		// Failure observability must never mask the workflow node's original error.
+	}
 }
 
 function workflowReviewNodeAssignment(

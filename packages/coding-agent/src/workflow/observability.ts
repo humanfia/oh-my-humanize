@@ -23,10 +23,11 @@ interface WorkflowObservabilityActivation {
 	activationId: string;
 	nodeId: string;
 	type: WorkflowNode["type"];
-	status: "completed";
+	status: "completed" | "failed";
 	summary: string;
 	artifacts: string[];
 	verdict?: string;
+	error?: string;
 	retries?: WorkflowActivationRetryHistoryEntry[];
 }
 
@@ -73,6 +74,15 @@ export async function recordWorkflowActivationObservability(
 	await record(workflowObservabilityActivation(node, activationId, output));
 }
 
+export async function recordWorkflowActivationFailureObservability(
+	record: WorkflowObservabilityRecorder,
+	node: WorkflowNode,
+	activationId: string,
+	error: unknown,
+): Promise<void> {
+	await record(workflowObservabilityFailedActivation(node, activationId, error));
+}
+
 export async function recordWorkflowCheckpointObservability(
 	cwd: string | undefined,
 	options: RecordWorkflowCheckpointObservabilityOptions,
@@ -113,6 +123,31 @@ function workflowObservabilityActivation(
 	const retries = workflowObservabilityRetryHistory(output);
 	if (retries.length > 0) event.retries = retries;
 	return event;
+}
+
+function workflowObservabilityFailedActivation(
+	node: WorkflowNode,
+	activationId: string,
+	error: unknown,
+): WorkflowObservabilityActivation {
+	const message = workflowObservabilityErrorMessage(error);
+	return {
+		ts: new Date().toISOString(),
+		activationId,
+		nodeId: node.id,
+		type: node.type,
+		status: "failed",
+		summary: message,
+		error: message,
+		artifacts: [],
+	};
+}
+
+function workflowObservabilityErrorMessage(error: unknown): string {
+	if (error instanceof Error && error.message.trim().length > 0) return error.message.trim();
+	if (typeof error === "string" && error.trim().length > 0) return error.trim();
+	if (error !== undefined && error !== null) return String(error);
+	return "workflow activation failed";
 }
 
 function workflowObservabilityRetryHistory(
@@ -246,11 +281,14 @@ function emptyWorkflowObservabilityIndex(): WorkflowObservabilityIndex {
 }
 
 function renderWorkflowObservabilityProgress(index: WorkflowObservabilityIndex): string {
+	const completedActivations = index.activations.filter(activation => activation.status === "completed");
+	const failedActivations = index.activations.filter(activation => activation.status === "failed");
 	const lines = [
 		"# OMH Workflow Progress",
 		"",
 		`Last updated: ${lastWorkflowObservabilityTimestamp(index)}`,
-		`Completed activations: ${index.activations.length}`,
+		`Completed activations: ${completedActivations.length}`,
+		`Failed activations: ${failedActivations.length}`,
 		`Lifecycle events: ${index.lifecycle.length}`,
 		"",
 		"## Completed Activations",
@@ -258,7 +296,7 @@ function renderWorkflowObservabilityProgress(index: WorkflowObservabilityIndex):
 		"| # | Node | Type | Activation | Summary |",
 		"| - | - | - | - | - |",
 	];
-	for (const [indexValue, activation] of index.activations.entries()) {
+	for (const [indexValue, activation] of completedActivations.entries()) {
 		lines.push(
 			`| ${[
 				String(indexValue + 1),
@@ -268,6 +306,20 @@ function renderWorkflowObservabilityProgress(index: WorkflowObservabilityIndex):
 				markdownTableCell(compactWorkflowProgressSummary(workflowActivationProgressSummary(activation))),
 			].join(" | ")} |`,
 		);
+	}
+	if (failedActivations.length > 0) {
+		lines.push("", "## Failed Activations", "", "| # | Node | Type | Activation | Error |", "| - | - | - | - | - |");
+		for (const [indexValue, activation] of failedActivations.entries()) {
+			lines.push(
+				`| ${[
+					String(indexValue + 1),
+					markdownTableCell(activation.nodeId),
+					markdownTableCell(activation.type),
+					markdownTableCell(activation.activationId),
+					markdownTableCell(compactWorkflowProgressSummary(activation.error ?? activation.summary)),
+				].join(" | ")} |`,
+			);
+		}
 	}
 	lines.push("", "## Lifecycle Events", "", "| # | Event | Attempt | Summary |", "| - | - | - | - |");
 	for (const [indexValue, event] of index.lifecycle.entries()) {

@@ -2479,6 +2479,49 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("does not quarantine lane evidence only because the tuple id contains final", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-final-word-tuple-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "omhb0026-log-pattern-auditor-warnings-mode-final";
+
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(
+			`${cwd}/workflow-output/core-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementCore", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/tests-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementTests", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/docs-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementDocs", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(`${cwd}/workflow-output/core-attempt-warnings-${tupleId}-stdout.txt`, "2:WARN retry\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "laneHardStopGuard",
+			scriptFileName: "lane-hard-stop-guard.js",
+			writes: ["/laneHardStopGuard"],
+		});
+
+		expect(result.scheduler.state.laneHardStopGuard).toMatchObject({
+			status: "continue",
+			reserved_final_artifacts: [],
+			quarantined_reserved_final_artifacts: [],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/core-attempt-warnings-${tupleId}-stdout.txt`).text()).toBe(
+			"2:WARN retry\n",
+		);
+		expect(await Bun.file(`${cwd}/workflow-output/lane-hard-stop-guard-${tupleId}.json`).json()).toMatchObject({
+			status: "continue",
+			reserved_final_artifacts: [],
+		});
+	});
+
 	it("lets source-change lanes with unresolved integration risk reach integration review", async () => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-source-validation-risk-");
 		const cwd = tempDir.path();
