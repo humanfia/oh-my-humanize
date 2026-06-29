@@ -59,7 +59,7 @@ function commandEvidenceLines(report, commandName) {
 		const line = lines[index] ?? "";
 		if (!commandLineMatches(line, commandName)) continue;
 		evidenceLines.push(line);
-		for (const nextLine of lines.slice(index + 1, index + 5)) {
+		for (const nextLine of lines.slice(index + 1)) {
 			if (/^##\s+/u.test(nextLine)) break;
 			if (
 				/\b(?:benchmark|validation)(?: command)?\s*:/iu.test(nextLine) &&
