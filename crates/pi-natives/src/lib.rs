@@ -93,9 +93,10 @@ fn desired_worker_threads() -> usize {
 /// `Builder::build()` for a multi-thread runtime spawns every worker eagerly
 /// and **panics** (not `Err`) when Windows refuses one — on a
 /// memory-constrained host (tiny pagefile / commit limit, `os error 1455`) that
-/// aborts the whole process at addon load before any JS error can surface. The
-/// release profile is `panic = "abort"`, so the panic can't even be caught. We
-/// instead pre-flight with `std::thread::Builder::spawn`, which returns an
+/// aborts the whole process at addon load before any JS error can surface — and
+/// a panic thrown that deep in runtime construction is not something we can
+/// usefully catch and recover from at module-init time. We instead pre-flight
+/// with `std::thread::Builder::spawn`, which returns an
 /// `io::Result`, holding each probe thread alive (so their stacks are committed
 /// concurrently, matching how real workers coexist) until we know the safe
 /// count. Probe threads use the std default stack, exactly like Tokio's workers
@@ -172,7 +173,7 @@ fn create_windows_napi_tokio_runtime() -> Option<tokio::runtime::Runtime> {
 /// MUST stay in sync with `VERSION_SENTINEL_EXPORT` in
 /// `packages/natives/native/index.js` (which derives the name from
 /// `package.json#version`).
-#[napi(js_name = "__piNativesV16_2_2")]
+#[napi(js_name = "__piNativesV16_2_5")]
 pub const fn pi_natives_version_sentinel() {}
 
 /// Native module entry point: install crash diagnostics before any tool can

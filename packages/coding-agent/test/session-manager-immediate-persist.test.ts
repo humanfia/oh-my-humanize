@@ -46,7 +46,8 @@ function readJsonl(file: string): Array<Record<string, unknown>> {
 		.trimEnd()
 		.split("\n")
 		.filter(Boolean)
-		.map(line => JSON.parse(line) as Record<string, unknown>);
+		.map(line => JSON.parse(line) as Record<string, unknown>)
+		.filter(entry => entry.type !== "title");
 }
 
 class DelayedAtomicStorage extends FileSessionStorage {

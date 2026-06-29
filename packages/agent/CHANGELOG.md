@@ -6,6 +6,20 @@
 
 - Added terminal tool results so final-result tools can end an agent loop cleanly
   without synthesizing an aborted assistant message.
+## [16.2.4] - 2026-06-28
+
+### Changed
+
+- Improved the reliability of remote compaction by introducing transient error retries, configurable timeouts, and immediate termination upon user-initiated aborts.
+
+### Fixed
+
+- Fixed an issue where assistant responses and encrypted reasoning could be lost during local history trimming prior to remote compaction.
+- Fixed type compatibility for hosts with title audit entries by adding support for `title_change` session metadata.
+- Fixed an issue where transient stream read failures after a completed tool call were treated as terminal errors, allowing the agent to successfully execute the tool and continue the turn.
+
+## [16.2.3] - 2026-06-28
+
 ### Changed
 
 - Enabled V2 streaming remote compaction by default for compatible AI and OpenAI-compatible models, which forwards full conversation history to the provider and supports session routing, prompt caching, provider-native tool history replay, transient error retries, and configurable timeouts.

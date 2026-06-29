@@ -5,6 +5,8 @@
 ### Changed
 
 - Changed package metadata links from the old Oh My Pi site/repository to the OMH site/repository.
+## [16.2.3] - 2026-06-28
+
 ### Added
 
 - Support for parsing named advisor transcripts using the `__advisor.<slug>.jsonl` naming convention.

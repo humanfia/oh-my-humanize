@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [16.2.5] - 2026-06-28
+
+### Changed
+
+- Status line now collapses a linked git worktree path to the project name with a worktree icon, leaving the git segment to show the branch once instead of repeating it in the path.
+
+### Fixed
+
+- Fixed Ollama and llama.cpp discovery overestimating local context windows by using model training metadata instead of the runtime `num_ctx` / `n_ctx`, which could let compaction retry prompts that llama.cpp rejects as over context. ([#3752](https://github.com/can1357/oh-my-pi/issues/3752))
+- Fixed recoverable context-overflow compaction keeping the failed assistant error turn in visible session history after scheduling the retry. ([#3747](https://github.com/can1357/oh-my-pi/issues/3747))
+- Fixed editing a file read from outside the workspace (e.g. `~/.claude/settings.json`) failing with "File not found": the read snapshot header now carries the full out-of-workspace path so the edit resolves it directly instead of against the working directory.
+- Fixed subagents spawned with an output schema (`agent(..., schema=...)`, `task` with structured output) failing with `schema_violation: missing required fields` since the typed-yield rework: a `type: "result"` finalize carrying the full object was assembled as a section named `result`, nesting the payload one level deep. String-typed yields are now treated as terminal finalizers (their data is the complete result), only array-typed yields form accumulating sections, and a data-less finalize keeps accumulated sections instead of collapsing to the last assistant turn.
+- Fixed the per-provider concurrency cap (e.g. `providers.ollama-cloud.maxConcurrency`) bracketing the whole subagent lifecycle, which deadlocked any spawn tree wider than the cap because parents held every slot while waiting for children queued on the same cap. The semaphore now wraps each provider HTTP request, so a parent's slot frees between turns and child subagents can acquire while their parent's tool calls are running. ([#3749](https://github.com/can1357/oh-my-pi/issues/3749))
+- Fixed Ctrl+Q / Ctrl+Enter follow-up submissions sending the literal `[Paste #N]` marker instead of the expanded paste body ([#3737](https://github.com/can1357/oh-my-pi/issues/3737)).
+
+## [16.2.4] - 2026-06-28
+
+### Fixed
+
+- Fixed todo-reminder HUD rendering outside durable chat history while preserving native collapsing and auto-clear behavior.
+- Fixed goal-mode continuations losing track of persisted todo progress, ensuring autonomous goal turns reconcile stale in-progress items before moving to subsequent tasks.
+- Fixed the /move <dir> command to correctly relocate the current session and its artifacts to the target directory, allowing /resume to work seamlessly from the new location.
+- Fixed omp update leaving behind stale Bun install-cache directories for globally installed packages.
+- Fixed a reconnection loop issue in /collab sessions caused by oversized entries (such as large tool outputs) by truncating replicated payloads that exceed 1 MB.
+- Fixed autolearn and local memory writes mutating Anthropic prompt-cache prefixes mid-session, ensuring prompt injections remain session-stable.
+
+## [16.2.3] - 2026-06-28
+
 ### Added
 
 - Added support for multiple configurable advisors via WATCHDOG.yml/WATCHDOG.yaml files, allowing per-advisor models, tool subsets, and instructions.
@@ -16,6 +44,7 @@
 
 ### Changed
 
+- Reduced session file size by removing redundant thinking signatures already present in payloads
 - Advisors can now be granted any built-in agent tool (including edit, write, and bash), removing the previous read-only restriction.
 - Improved the debug log and raw SSE stream viewers with a wider, bordered overlay, clearer status indicators, dynamic layouts, and mouse support for scrolling and interaction.
 - Updated the idle recap feature to use an LLM-generated summary of where things stand (anchored by the live goal and active todo task) instead of a static status line.
@@ -75,6 +104,10 @@
 - Fixed the time_spent status-line segment ticking continuously during idle sessions by ensuring it only accumulates active agent execution windows and resets correctly across session switches.
 - Fixed expanded pending SSH previews committing provisional rows to native scrollback before the final result render.
 - Fixed ssh:// rejecting POSIX-capable remotes whose login-shell classification was ambiguous by verifying a working transfer shell directly and gating transfers on that capability.
+
+### Removed
+
+- Removed history URI support for reading agent transcripts
 
 ## [16.2.2] - 2026-06-27
 

@@ -57,7 +57,6 @@ import { ToolAbortError } from "../tools/tool-errors";
 import type { EventBus } from "../utils/event-bus";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
-import { Semaphore } from "./parallel";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import {
 	type AgentDefinition,
@@ -74,8 +73,10 @@ import {
 	type TaskToolDetails,
 	type YieldItem,
 } from "./types";
+import { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
 
 export type { YieldItem } from "./types";
+export { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
 
 const MCP_CALL_TIMEOUT_MS = 60_000;
 
@@ -209,51 +210,6 @@ function isolateExactSubagentModelOverrideFallbacks(args: {
 	if (modelPatterns.length !== 1) return;
 	args.settings.override("retry.modelFallback", false);
 	args.settings.override("retry.fallbackChains", {});
-}
-
-const PROVIDER_MAX_CONCURRENCY_SETTINGS: Record<string, SettingPath> = {
-	"ollama-cloud": "providers.ollama-cloud.maxConcurrency",
-};
-
-interface ProviderSemaphoreEntry {
-	limit: number;
-	semaphore: Semaphore;
-}
-
-const providerSemaphores = new Map<string, ProviderSemaphoreEntry>();
-
-/**
- * Resolve the configured concurrency ceiling for a provider, or `undefined`
- * when the provider has no cap concept at all. A configured value `<= 0` means
- * "unlimited" and maps to `Infinity` — still a tracked ceiling, so every run
- * holds a slot and a later finite resize counts work started while unlimited.
- */
-function getProviderConcurrencyLimit(settings: Settings, provider: string): number | undefined {
-	const settingPath = PROVIDER_MAX_CONCURRENCY_SETTINGS[provider];
-	if (!settingPath) return undefined;
-	const raw = settings.get(settingPath);
-	const limit = Number.isFinite(raw) ? Math.trunc(raw) : 0;
-	return limit > 0 ? limit : Number.POSITIVE_INFINITY;
-}
-
-function getProviderSemaphore(settings: Settings, provider: string): Semaphore | undefined {
-	const limit = getProviderConcurrencyLimit(settings, provider);
-	if (limit === undefined) return undefined;
-	// Always hand out (and acquire on) the single shared limiter, even when
-	// unlimited (Infinity). Resizing it in place — rather than replacing it —
-	// keeps every in-flight slot counted, so a runtime or mixed limit change can
-	// never push concurrency past the cap (issue #3464 review feedback).
-	const existing = providerSemaphores.get(provider);
-	if (existing) {
-		if (existing.limit !== limit) {
-			existing.limit = limit;
-			existing.semaphore.resize(limit);
-		}
-		return existing.semaphore;
-	}
-	const semaphore = new Semaphore(limit);
-	providerSemaphores.set(provider, { limit, semaphore });
-	return semaphore;
 }
 
 function renderIrcPeerRoster(selfId: string): string {
@@ -547,215 +503,6 @@ function resolveFallbackCompletion(rawOutput: string, outputSchema: unknown): { 
 	if (error) return null;
 	if (validator && !validator.validate(candidate).success) return null;
 	return { data: candidate };
-}
-
-interface AssembledYieldResult {
-	data: unknown;
-	schemaOverridden: boolean;
-	rawText: boolean;
-	missingData: boolean;
-}
-
-function isIncrementalYieldType(type: YieldItem["type"]): type is string[] {
-	return Array.isArray(type) && type.length > 0;
-}
-
-function isTerminalResultYieldType(type: YieldItem["type"]): boolean {
-	return typeof type === "string" && type.trim().toLowerCase() === "result";
-}
-
-function getYieldLabels(type: YieldItem["type"]): string[] {
-	if (typeof type === "string") {
-		const label = type.trim();
-		return label ? [label] : [];
-	}
-	if (!Array.isArray(type)) return [];
-	const labels: string[] = [];
-	for (const value of type) {
-		if (typeof value !== "string") continue;
-		const label = value.trim();
-		if (label) labels.push(label);
-	}
-	return labels;
-}
-
-function resolveYieldPayload(
-	item: YieldItem,
-	lastAssistantText: string | undefined,
-	labels: string[],
-): { value: unknown; fromLastAssistantText: boolean; missingData: boolean } {
-	const hasData = item.data !== undefined;
-	const shouldUseLastTurn = item.useLastTurn === true || (labels.length > 0 && !hasData);
-	if (shouldUseLastTurn && lastAssistantText !== undefined) {
-		return {
-			value: lastAssistantText,
-			fromLastAssistantText: true,
-			missingData: lastAssistantText.length === 0,
-		};
-	}
-	return {
-		value: item.data,
-		fromLastAssistantText: false,
-		missingData: item.data === undefined || item.data === null,
-	};
-}
-
-function appendYieldSection(
-	sections: Record<string, unknown>,
-	sectionCounts: Map<string, number>,
-	label: string,
-	value: unknown,
-	forceArray: boolean,
-): void {
-	const count = sectionCounts.get(label) ?? 0;
-	const existing = sections[label];
-	if (count === 0) {
-		sections[label] = forceArray ? [value] : value;
-	} else if (Array.isArray(existing)) {
-		existing.push(value);
-	} else {
-		sections[label] = [existing, value];
-	}
-	sectionCounts.set(label, count + 1);
-}
-
-/** True when `value` is a JSON-schema node whose instances are arrays. */
-function isArrayTypedSchema(value: unknown): boolean {
-	if (value === null || typeof value !== "object") return false;
-	const record = value as Record<string, unknown>;
-	if (record.type === "array") return true;
-	if (Array.isArray(record.type) && record.type.includes("array")) return true;
-	for (const key of ["anyOf", "oneOf", "allOf"] as const) {
-		const variants = record[key];
-		if (Array.isArray(variants) && variants.some(isArrayTypedSchema)) return true;
-	}
-	return false;
-}
-
-/**
- * Top-level output-schema property names declared as arrays (JTD `elements` →
- * JSON `type: "array"`). An incremental yield section for such a label
- * accumulates into a list even when the agent emits exactly one — otherwise a
- * single `type: ["findings"]` yield would assemble as a bare object and fail
- * array-typed schema validation.
- */
-function arrayValuedLabels(outputSchema: unknown): ReadonlySet<string> {
-	const labels = new Set<string>();
-	// Use the JTD-converted JSON Schema (matches what validation runs against):
-	// JTD `optionalProperties.findings.elements` becomes `properties.findings`
-	// with `type: "array"`, which raw `normalizeSchema` would not expose.
-	const { jsonSchema } = buildOutputValidator(outputSchema);
-	if (jsonSchema === undefined) return labels;
-	const properties = jsonSchema.properties;
-	if (properties === null || typeof properties !== "object") return labels;
-	const propRecord = properties as Record<string, unknown>;
-	for (const key in propRecord) {
-		if (isArrayTypedSchema(propRecord[key])) labels.add(key);
-	}
-	return labels;
-}
-
-/**
- * Assemble typed yield calls into the final payload consumed by schema validation.
- *
- * A non-empty array `type` contributes an incremental section and never decides
- * termination by itself. A string `type` with omitted `data` makes the last
- * assistant turn the raw terminal result. `type: "result"` is the explicit
- * terminal result transport and contributes its payload directly. Other
- * string-typed yields contribute the terminal labelled section. Untyped
- * terminal yields keep the historical "last yield wins" behavior unless no
- * terminal yield exists, in which case accumulated typed sections finalize on
- * idle.
- */
-export function assembleYieldResult(
-	yieldItems: YieldItem[],
-	lastAssistantText?: string,
-	arrayLabels?: ReadonlySet<string>,
-): AssembledYieldResult | undefined {
-	if (yieldItems.length === 0) return undefined;
-	let terminalItem: YieldItem | undefined;
-	for (let index = yieldItems.length - 1; index >= 0; index--) {
-		const item = yieldItems[index];
-		if (!item) continue;
-		if (!isIncrementalYieldType(item.type)) {
-			terminalItem = item;
-			break;
-		}
-	}
-	let hasTypedSections = false;
-	for (const item of yieldItems) {
-		if (getYieldLabels(item.type).length > 0) {
-			hasTypedSections = true;
-			break;
-		}
-	}
-	if (terminalItem && isTerminalResultYieldType(terminalItem.type)) {
-		const resolved = resolveYieldPayload(terminalItem, lastAssistantText, []);
-		return {
-			data: resolved.value,
-			schemaOverridden: terminalItem.schemaOverridden === true,
-			rawText: resolved.fromLastAssistantText && typeof resolved.value === "string",
-			missingData: resolved.missingData,
-		};
-	}
-	if (terminalItem && typeof terminalItem.type === "string" && terminalItem.data === undefined) {
-		const resolved = resolveYieldPayload(terminalItem, lastAssistantText, getYieldLabels(terminalItem.type));
-		return {
-			data: resolved.value,
-			schemaOverridden: terminalItem.schemaOverridden === true,
-			rawText: resolved.fromLastAssistantText && typeof resolved.value === "string",
-			missingData: resolved.missingData,
-		};
-	}
-	if (!hasTypedSections && terminalItem) {
-		const resolved = resolveYieldPayload(terminalItem, lastAssistantText, []);
-		return {
-			data: resolved.value,
-			schemaOverridden: terminalItem.schemaOverridden === true,
-			rawText: resolved.fromLastAssistantText && typeof resolved.value === "string",
-			missingData: resolved.missingData,
-		};
-	}
-
-	const sections: Record<string, unknown> = {};
-	const sectionCounts = new Map<string, number>();
-	let schemaOverridden = false;
-	let missingData = false;
-	let hasSections = false;
-
-	for (const item of yieldItems) {
-		if (item.status === "aborted") continue;
-		schemaOverridden ||= item.schemaOverridden === true;
-		const labels = getYieldLabels(item.type);
-		if (labels.length === 0) continue;
-		const resolved = resolveYieldPayload(item, lastAssistantText, labels);
-		missingData ||= resolved.missingData;
-		const incremental = isIncrementalYieldType(item.type);
-		for (const label of labels) {
-			appendYieldSection(
-				sections,
-				sectionCounts,
-				label,
-				resolved.value,
-				incremental && (arrayLabels?.has(label) ?? false),
-			);
-			hasSections = true;
-		}
-		if (!isIncrementalYieldType(item.type)) break;
-	}
-
-	if (hasSections) {
-		return { data: sections, schemaOverridden, rawText: false, missingData };
-	}
-
-	if (!terminalItem) return undefined;
-	const resolved = resolveYieldPayload(terminalItem, lastAssistantText, []);
-	return {
-		data: resolved.value,
-		schemaOverridden: terminalItem.schemaOverridden === true,
-		rawText: resolved.fromLastAssistantText && typeof resolved.value === "string",
-		missingData: resolved.missingData,
-	};
 }
 
 interface FinalizeSubprocessOutputArgs {
@@ -2313,8 +2060,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		let sessionOpenedAt: number | undefined;
 		let sessionCreatedAt: number | undefined;
 		let readyAt: number | undefined;
-		let providerSemaphore: Semaphore | undefined;
-		let providerSemaphoreAcquired = false;
 
 		try {
 			checkAbort();
@@ -2383,13 +2128,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				? resolvedThinkingLevel
 				: (thinkingLevel ?? resolvedThinkingLevel);
 			resolvedAt = performance.now();
-			if (model) {
-				providerSemaphore = getProviderSemaphore(settings, model.provider);
-				if (providerSemaphore) {
-					await providerSemaphore.acquire(abortSignal);
-					providerSemaphoreAcquired = true;
-				}
-			}
 
 			const effectiveCwd = worktree ?? cwd;
 			const sessionManager = sessionFile
@@ -2690,10 +2428,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				}
 				if (exitCode === 0) exitCode = 1;
 			}
-			if (providerSemaphoreAcquired) {
-				providerSemaphore?.release();
-				providerSemaphoreAcquired = false;
-			}
 			sessionAbortController.abort();
 			try {
 				await untilAborted(AbortSignal.timeout(5000), () => monitor.waitForActiveSessionAbort());
@@ -2724,9 +2458,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		}
 
 		// Launch-latency breakdown (subagent invocation → first chat dispatch).
-		// Phase deltas are performance.now() spans; the semaphore brackets use the
-		// Date.now epochs captured by the spawn site (invokedAt before acquire,
-		// acquiredAt after) so queue wait and pre-run setup are reported apart.
+		// Phase deltas are performance.now() spans; the task-tool concurrency
+		// brackets use the Date.now epochs captured by the spawn site
+		// (invokedAt before acquire, acquiredAt after) so queue wait and
+		// pre-run setup are reported apart.
 		const span = (from: number | undefined, to: number | undefined): number | undefined =>
 			from !== undefined && to !== undefined ? Math.round(to - from) : undefined;
 		const queueMs =

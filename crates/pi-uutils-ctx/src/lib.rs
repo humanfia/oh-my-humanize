@@ -15,7 +15,7 @@
 //! stay isolated), runs the utility, then tears the context down.
 
 use std::{
-	cell::RefCell,
+	cell::{Cell, RefCell},
 	collections::HashMap,
 	io::{self, Read, Write},
 	path::{Path, PathBuf},
@@ -44,6 +44,11 @@ struct Ctx {
 
 thread_local! {
 	static CTX: RefCell<Option<Ctx>> = const { RefCell::new(None) };
+	/// Borrow-free count of active [`scope`] frames on this thread. The native
+	/// crash hook reads this from inside a panic (see [`is_active`]); a `Cell`
+	/// is used because the panicking code may already hold `CTX`'s `RefCell`
+	/// borrow, and a second `RefCell` read there would panic again and abort.
+	static SCOPE_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
 /// I/O streams, working directory, environment, and cancel flag for a single
@@ -83,6 +88,7 @@ pub fn scope<R>(io: ScopeIo, f: impl FnOnce() -> R) -> R {
 			CTX.with(|c| {
 				*c.borrow_mut() = self.prev.take();
 			});
+			SCOPE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
 		}
 	}
 
@@ -99,9 +105,25 @@ pub fn scope<R>(io: ScopeIo, f: impl FnOnce() -> R) -> R {
 			exit_code:             0,
 		})
 	});
+	SCOPE_DEPTH.with(|d| d.set(d.get() + 1));
 	let _guard = Guard { prev };
 	f()
 }
+
+/// Whether a uutils scope is active on the current thread.
+///
+/// The native crash hook consults this from inside a panic: a panic raised
+/// while a scope is active is, by construction, about to be caught at the
+/// uutils boundary (see `run_uutil` in pi-shell's `coreutils`), so the hook
+/// treats it as recoverable and keeps it out of the user-facing crash report.
+/// Reads the borrow-free [`SCOPE_DEPTH`] counter rather than `CTX`, because the
+/// panicking code may already hold `CTX`'s borrow — a `RefCell` read there
+/// would panic inside the panic hook and abort the process.
+#[must_use]
+pub fn is_active() -> bool {
+	SCOPE_DEPTH.with(|d| d.get() > 0)
+}
+
 /// Returns the exit code accumulated via [`set_exit_code`] during the current
 /// scope (0 when none was set or no context is installed).
 pub fn exit_code() -> i32 {
@@ -269,4 +291,67 @@ pub fn stderr() -> CtxStderr {
 #[must_use]
 pub fn stdin() -> CtxStdin {
 	CtxStdin
+}
+
+/// Generate the usage string for clap without evaluating argv-dependent
+/// statics.
+///
+/// This is a panic-safe, argv-independent replacement for
+/// `uucore::format_usage`. It indents all but the first line by 7 spaces to
+/// align with clap's "Usage: " prefix. Callers must provide explicit usage
+/// strings (with actual command names) and avoid `{}` placeholders.
+#[must_use]
+pub fn format_usage(s: &str) -> String {
+	debug_assert!(
+		!s.contains("{}"),
+		"format_usage shim does not support placeholder '{{}}' - use explicit command names instead"
+	);
+	s.replace('\n', "\n       ")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_format_usage_indentation() {
+		let usage = "cat [OPTION]... [FILE]...\nSome descriptive text\nAnother line";
+		let formatted = format_usage(usage);
+		assert_eq!(
+			formatted,
+			"cat [OPTION]... [FILE]...\n       Some descriptive text\n       Another line"
+		);
+	}
+
+	#[test]
+	fn test_format_usage_empty() {
+		let formatted = format_usage("");
+		assert_eq!(formatted, "");
+	}
+
+	fn empty_io() -> ScopeIo {
+		ScopeIo {
+			stdin:                 Box::new(io::empty()),
+			stdin_fd:              None,
+			stdin_is_search_input: false,
+			stdout:                Box::new(io::sink()),
+			stderr:                Box::new(io::sink()),
+			cwd:                   PathBuf::from("."),
+			env:                   HashMap::new(),
+			cancel:                Arc::new(AtomicBool::new(false)),
+		}
+	}
+
+	#[test]
+	fn is_active_tracks_scope_and_survives_panic() {
+		assert!(!is_active(), "no scope installed");
+		scope(empty_io(), || assert!(is_active(), "scope active inside closure"));
+		assert!(!is_active(), "scope torn down");
+
+		// The crash hook reads is_active() while a panic unwinds, so the depth
+		// counter must be restored by the scope guard even on panic.
+		let unwound = std::panic::catch_unwind(|| scope(empty_io(), || panic!("boom")));
+		assert!(unwound.is_err(), "panic propagated out of the scope");
+		assert!(!is_active(), "scope depth restored after an unwinding panic");
+	}
 }
