@@ -44,6 +44,8 @@ resources:
     kind: script
   - path: scripts/run-benchmark-validation.js
     kind: script
+  - path: scripts/materialize-selection-repair.js
+    kind: script
   - path: scripts/guard-selection-repair.js
     kind: script
   - path: scripts/finalize-performance-selection.js
@@ -301,6 +303,14 @@ sequence:
                       state: /benchmark
                     review:
                       state: /review
+              writes:
+                - /selectionRepair
+          - node:
+              id: materializeSelectionRepair
+              type: script
+              script:
+                language: js
+                file: scripts/materialize-selection-repair.js
               writes:
                 - /selectionRepair
           - node:
