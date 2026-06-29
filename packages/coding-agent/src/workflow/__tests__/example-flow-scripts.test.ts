@@ -4246,6 +4246,50 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("materializes research comparisons before review", async () => {
+		using tempDir = TempDir.createSync("@omh-research-comparison-materialized-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const materializer = await Bun.file(`${RESEARCH_REPRODUCTION_SCRIPT_DIR}/materialize-comparison.js`).text();
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "research-comparison-materializer-test",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "compareResults",
+						type: "script",
+						script: {
+							language: "js",
+							code: 'return { summary: "Comparison: baseline passed, variant failed with parser evidence." };',
+						},
+					},
+					{
+						id: "materializeComparison",
+						type: "script",
+						script: {
+							language: "js",
+							code: materializer,
+						},
+						writes: ["/comparison"],
+					},
+				],
+				edges: [{ from: "compareResults", to: "materializeComparison" }],
+			},
+		});
+
+		expect(result.scheduler.state.comparison).toMatchObject({
+			status: "comparison_materialized",
+			producer_node: "materializeComparison",
+			source_node: "compareResults",
+			summary: expect.stringContaining("variant failed"),
+		});
+	});
+
 	it("keeps performance parallel lanes lane-local until selection applies a candidate", async () => {
 		const optimizationPrompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/optimization.md`,

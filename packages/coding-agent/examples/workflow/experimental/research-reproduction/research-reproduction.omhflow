@@ -41,6 +41,8 @@ resources:
     kind: script
   - path: scripts/materialize-claim.js
     kind: script
+  - path: scripts/materialize-comparison.js
+    kind: script
   - path: scripts/guard-claim-evidence.js
     kind: script
   - path: scripts/run-reproduction.js
@@ -171,6 +173,11 @@ nodes:
             state: /variant/validationCommandEvidence
           review:
             state: /review
+  - id: materializeComparison
+    type: script
+    script:
+      language: js
+      file: scripts/materialize-comparison.js
     writes:
       - /comparison
   - id: reportReview
@@ -247,6 +254,8 @@ edges:
   - from: runVariant
     to: compareResults
   - from: compareResults
+    to: materializeComparison
+  - from: materializeComparison
     to: reportReview
   - from: reportReview
     to: extractClaim

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental research-reproduction flow assuming comparison agent summaries automatically materialized `/comparison` before review prompts.
 - Fixed headless workflow starts returning success when scheduler-level prompt binding failures failed the run, and now persist those failures into workflow observability.
 - Fixed experimental performance-optimization-search, refactor-migration-plan, and research-reproduction flows assuming agent summaries automatically materialized declared state paths before downstream prompt bindings.
 - Fixed experimental workflow archive scripts accepting manually reconstructed output without required scheduler lineage, so partial agent runs fail closed instead of looking like completed workflow evidence.
