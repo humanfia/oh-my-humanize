@@ -17,7 +17,7 @@ if (result.exitCode !== 0) {
 
 return {
 	summary: `captured performance baseline; exit=${result.exitCode}`,
-	data: { ...result, sharedProjectFilesBeforeBranches },
+	data: result,
 	statePatch: [
 		{
 			op: "set",
@@ -31,7 +31,7 @@ return {
 		},
 		{
 			op: "set",
-			path: "/task/sharedProjectFilesBeforeBranches",
+			path: "/runtime/sharedProjectFilesBeforeBranches",
 			value: sharedProjectFilesBeforeBranches,
 		},
 	],

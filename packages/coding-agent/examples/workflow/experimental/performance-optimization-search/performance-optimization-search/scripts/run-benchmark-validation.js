@@ -1,4 +1,5 @@
 const task = workflowContext.state?.task;
+const runtime = workflowContext.state?.runtime;
 const benchmarkCommand = task?.benchmarkCommand;
 const validationCommand = task?.validationCommand;
 if (typeof benchmarkCommand !== "string" || benchmarkCommand.trim() === "") {
@@ -10,7 +11,7 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 
 await materializeBranchStateReports(workflowContext.state);
 
-const projectChangedFiles = projectFilesChangedAfterBranchStart(await changedProjectFiles(), task);
+const projectChangedFiles = projectFilesChangedAfterBranchStart(await changedProjectFiles(), runtime);
 if (projectChangedFiles.length > 0) {
 	const outputPath = "workflow-output/performance-benchmark.md";
 	await Bun.write(outputPath, isolationViolationMarkdown(projectChangedFiles));
@@ -275,13 +276,13 @@ async function changedProjectFiles() {
 		.filter((filePath) => filePath && !isAllowedWorkflowMetadataPath(filePath));
 }
 
-function projectFilesChangedAfterBranchStart(currentFiles, task) {
-	const preBranchFiles = new Set(sharedProjectFilesBeforeBranches(task));
+function projectFilesChangedAfterBranchStart(currentFiles, runtime) {
+	const preBranchFiles = new Set(sharedProjectFilesBeforeBranches(runtime));
 	return currentFiles.filter(filePath => !preBranchFiles.has(filePath));
 }
 
-function sharedProjectFilesBeforeBranches(task) {
-	const value = task?.sharedProjectFilesBeforeBranches;
+function sharedProjectFilesBeforeBranches(runtime) {
+	const value = runtime?.sharedProjectFilesBeforeBranches;
 	if (!Array.isArray(value)) return [];
 	return value.filter(filePath => typeof filePath === "string" && filePath.trim() !== "");
 }

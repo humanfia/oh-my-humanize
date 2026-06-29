@@ -87,7 +87,7 @@ sequence:
         - /task
       writes:
         - /baseline
-        - /task/sharedProjectFilesBeforeBranches
+        - /runtime/sharedProjectFilesBeforeBranches
   - template:
       kind: retry_until
       body:
@@ -223,6 +223,7 @@ sequence:
                 file: scripts/run-benchmark-validation.js
               reads:
                 - /task
+                - /runtime
                 - /baseline
                 - /algorithmic
                 - /caching

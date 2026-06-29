@@ -4007,7 +4007,7 @@ describe("example workflow scripts", () => {
 			nodeId: "captureBaseline",
 			scriptFileName: "capture-baseline.js",
 			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
-			writes: ["/baseline", "/task/sharedProjectFilesBeforeBranches"],
+			writes: ["/baseline", "/runtime/sharedProjectFilesBeforeBranches"],
 			initialState: {
 				task: {
 					baselineCommand:
@@ -4020,9 +4020,11 @@ describe("example workflow scripts", () => {
 			status: "pass",
 			exitCode: 0,
 		});
-		expect(result.scheduler.state.task).toMatchObject({
+		expect(result.scheduler.state.runtime).toMatchObject({
 			sharedProjectFilesBeforeBranches: ["Cargo.lock", "target/debug/build-output"],
 		});
+		expect(result.scheduler.state.task).not.toHaveProperty("sharedProjectFilesBeforeBranches");
+		expect(result.scheduler.state.baseline).not.toHaveProperty("sharedProjectFilesBeforeBranches");
 	});
 
 	it("materializes performance scratch root into task state before branch agents run", async () => {
@@ -4451,6 +4453,8 @@ describe("example workflow scripts", () => {
 				task: {
 					benchmarkCommand: "echo benchmark",
 					validationCommand: "echo validation",
+				},
+				runtime: {
 					sharedProjectFilesBeforeBranches: preBranchArtifacts,
 				},
 			},
@@ -4493,6 +4497,8 @@ describe("example workflow scripts", () => {
 				task: {
 					benchmarkCommand: "echo benchmark",
 					validationCommand: "echo validation",
+				},
+				runtime: {
 					sharedProjectFilesBeforeBranches: ["Cargo.lock"],
 				},
 			},
