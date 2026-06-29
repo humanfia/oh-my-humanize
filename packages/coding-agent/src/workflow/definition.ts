@@ -126,6 +126,12 @@ export interface WorkflowNodeIsolation {
 	enabled: boolean;
 	apply?: boolean;
 	merge?: boolean;
+	capture?: WorkflowIsolationCapture;
+}
+
+export interface WorkflowIsolationCapture {
+	include?: string[];
+	exclude?: string[];
 }
 
 export interface WorkflowNode {
@@ -739,7 +745,18 @@ function parseNodeIsolation(value: unknown, path: string, sourcePath?: string): 
 	const isolation: WorkflowNodeIsolation = { enabled };
 	if (raw.apply !== undefined) isolation.apply = expectBoolean(raw.apply, `${path}.apply`, sourcePath);
 	if (raw.merge !== undefined) isolation.merge = expectBoolean(raw.merge, `${path}.merge`, sourcePath);
+	if (raw.capture !== undefined) isolation.capture = parseIsolationCapture(raw.capture, `${path}.capture`, sourcePath);
 	return isolation;
+}
+
+function parseIsolationCapture(value: unknown, path: string, sourcePath?: string): WorkflowIsolationCapture {
+	const raw = expectRecord(value, path, sourcePath);
+	const capture: WorkflowIsolationCapture = {};
+	const include = parseOptionalStringList(raw.include, `${path}.include`, sourcePath);
+	const exclude = parseOptionalStringList(raw.exclude, `${path}.exclude`, sourcePath);
+	if (include !== undefined) capture.include = include;
+	if (exclude !== undefined) capture.exclude = exclude;
+	return capture;
 }
 
 function parseNodeCheckpoint(value: unknown, path: string, sourcePath?: string): WorkflowNodeCheckpoint | undefined {

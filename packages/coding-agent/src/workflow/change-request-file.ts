@@ -1,5 +1,6 @@
 import type {
 	WorkflowEdge,
+	WorkflowIsolationCapture,
 	WorkflowModelContext,
 	WorkflowModelUnavailablePolicy,
 	WorkflowNode,
@@ -213,7 +214,20 @@ function parseWorkflowPatchNodeIsolation(value: unknown, pathLabel: string): Wor
 	};
 	if (raw.apply !== undefined) isolation.apply = expectWorkflowPatchBoolean(raw.apply, `${pathLabel}.apply`);
 	if (raw.merge !== undefined) isolation.merge = expectWorkflowPatchBoolean(raw.merge, `${pathLabel}.merge`);
+	if (raw.capture !== undefined) {
+		isolation.capture = parseWorkflowPatchIsolationCapture(raw.capture, `${pathLabel}.capture`);
+	}
 	return isolation;
+}
+
+function parseWorkflowPatchIsolationCapture(value: unknown, pathLabel: string): WorkflowIsolationCapture {
+	const raw = expectWorkflowPatchRecord(value, pathLabel);
+	const capture: WorkflowIsolationCapture = {};
+	const include = parseOptionalWorkflowPatchStringArray(raw.include, `${pathLabel}.include`);
+	const exclude = parseOptionalWorkflowPatchStringArray(raw.exclude, `${pathLabel}.exclude`);
+	if (include !== undefined) capture.include = include;
+	if (exclude !== undefined) capture.exclude = exclude;
+	return capture;
 }
 
 function expectWorkflowPatchBoolean(value: unknown, pathLabel: string): boolean {

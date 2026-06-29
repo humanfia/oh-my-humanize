@@ -131,6 +131,18 @@ sequence:
                     enabled: true
                     apply: false
                     merge: false
+                    capture:
+                      exclude:
+                        - target/**
+                        - node_modules/**
+                        - dist/**
+                        - build/**
+                        - .next/**
+                        - .gradle/**
+                        - .pytest_cache/**
+                        - __pycache__/**
+                        - coverage/**
+                        - workflow-output/**
                   reads:
                     - /task
                     - /baseline
@@ -162,6 +174,18 @@ sequence:
                     enabled: true
                     apply: false
                     merge: false
+                    capture:
+                      exclude:
+                        - target/**
+                        - node_modules/**
+                        - dist/**
+                        - build/**
+                        - .next/**
+                        - .gradle/**
+                        - .pytest_cache/**
+                        - __pycache__/**
+                        - coverage/**
+                        - workflow-output/**
                   reads:
                     - /task
                     - /baseline
@@ -193,6 +217,18 @@ sequence:
                     enabled: true
                     apply: false
                     merge: false
+                    capture:
+                      exclude:
+                        - target/**
+                        - node_modules/**
+                        - dist/**
+                        - build/**
+                        - .next/**
+                        - .gradle/**
+                        - .pytest_cache/**
+                        - __pycache__/**
+                        - coverage/**
+                        - workflow-output/**
                   reads:
                     - /task
                     - /baseline

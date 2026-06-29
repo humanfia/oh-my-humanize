@@ -38,6 +38,7 @@ import {
 	type IsolationHandle,
 	mergeTaskBranches,
 	type NestedRepoPatch,
+	type PatchPathCapture,
 	type WorktreeBaseline,
 } from "./worktree";
 
@@ -54,9 +55,9 @@ export interface IsolationContext {
  * each isolated spawn against. Throws when the cwd is not inside a git
  * repository; callers surface the error as a task-tool failure.
  */
-export async function prepareIsolationContext(cwd: string): Promise<IsolationContext> {
+export async function prepareIsolationContext(cwd: string, capture?: PatchPathCapture): Promise<IsolationContext> {
 	const repoRoot = await getRepoRoot(cwd);
-	const baseline = await captureBaseline(repoRoot);
+	const baseline = await captureBaseline(repoRoot, capture);
 	return { repoRoot, baseline };
 }
 
@@ -103,6 +104,8 @@ export interface IsolatedRunOptions {
 	mergeMode: "patch" | "branch";
 	/** Output dir for `${agentId}.patch` artifacts (patch mode). */
 	artifactsDir: string;
+	/** Optional path contract for patch-mode captured changes. */
+	capture?: PatchPathCapture;
 	/** Human description carried onto the branch commit (branch mode). */
 	description?: string;
 	/** Build a commit-message callback (`task.isolation.commits === "ai"`). */
@@ -132,6 +135,7 @@ export interface IsolatedWorktreeRunOptions<Result extends IsolatedWorktreeResul
 	agentId: string;
 	mergeMode: "patch" | "branch";
 	artifactsDir: string;
+	capture?: PatchPathCapture;
 	description?: string;
 	buildCommitMessage?: BuildCommitMessage;
 	buildFailureResult: (err: unknown) => Result;
@@ -161,6 +165,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 		agentId: opts.agentId,
 		mergeMode: opts.mergeMode,
 		artifactsDir: opts.artifactsDir,
+		capture: opts.capture,
 		description: opts.description,
 		buildCommitMessage: opts.buildCommitMessage,
 		buildFailureResult: opts.buildFailureResult,
@@ -207,7 +212,7 @@ export async function runIsolatedWorktree<Result extends IsolatedWorktreeResult>
 		}
 		if (result.exitCode === 0) {
 			try {
-				const delta = await captureDeltaPatch(isolationDir, taskBaseline);
+				const delta = await captureDeltaPatch(isolationDir, taskBaseline, opts.capture);
 				const patchPath = path.join(opts.artifactsDir, `${opts.agentId}.patch`);
 				await Bun.write(patchPath, delta.rootPatch);
 				return {

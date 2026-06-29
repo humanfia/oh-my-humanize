@@ -26,6 +26,7 @@ export function createTaskToolAgentRunner(toolSession: ToolSession): WorkflowAge
 		if (request.isolated !== undefined) params.isolated = request.isolated;
 		if (request.apply !== undefined) params.apply = request.apply;
 		if (request.merge !== undefined) params.merge = request.merge;
+		if (request.capture !== undefined) params.capture = request.capture;
 		const result = await taskTool.execute(`workflow-${request.activationId}`, params, request.signal);
 		const taskResult = result.details?.results[0];
 		const output = textContent(result.content);

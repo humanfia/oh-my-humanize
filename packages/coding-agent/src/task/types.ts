@@ -180,10 +180,17 @@ export interface TaskParams {
 	apply?: boolean;
 	/** Internal workflow isolation flag: allow branch merge mode when true; false forces patch mode. */
 	merge?: boolean;
+	/** Internal workflow isolation patch-capture contract. */
+	capture?: TaskPatchCapture;
 	/** Internal override used by workflow/model-role dispatch; not exposed in the task tool schema. */
 	modelOverride?: string | string[];
 	/** Internal workflow exactness flag; false prevents auth fallback to the parent model. */
 	modelOverrideAuthFallback?: boolean;
+}
+
+export interface TaskPatchCapture {
+	include?: string[];
+	exclude?: string[];
 }
 
 /**

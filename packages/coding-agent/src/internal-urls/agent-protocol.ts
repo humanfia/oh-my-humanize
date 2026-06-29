@@ -1,5 +1,5 @@
 /**
- * Protocol handler for agent:// URLs.
+ * Protocol handler for agent:// and agent-output:// URLs.
  *
  * Resolves agent output IDs against the artifacts directories of every active
  * session. Parents and subagents share outputs via this registry: a subagent
@@ -10,6 +10,7 @@
  * - agent://<id> - Full output content
  * - agent://<id>/<path> - JSON extraction via path form
  * - agent://<id>?q=<query> - JSON extraction via query form
+ * - agent-output://<id> - Workflow-facing alias for finalized agent output
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -19,19 +20,23 @@ import { artifactsDirsFromRegistry, findRegisteredAgentRef } from "./registry-he
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 /**
- * Handler for agent:// URLs.
+ * Handler for finalized agent output URLs.
  *
  * Resolves output IDs like "reviewer_0" to their artifact files,
  * with optional JSON extraction.
  */
 export class AgentProtocolHandler implements ProtocolHandler {
-	readonly scheme = "agent";
+	readonly scheme: string;
 	readonly immutable = true;
+
+	constructor(scheme = "agent") {
+		this.scheme = scheme;
+	}
 
 	async resolve(url: InternalUrl): Promise<InternalResource> {
 		const outputId = url.rawHost || url.hostname;
 		if (!outputId) {
-			throw new Error("agent:// URL requires an output ID: agent://<id>");
+			throw new Error(`${this.scheme}:// URL requires an output ID: ${this.scheme}://<id>`);
 		}
 
 		const urlPath = url.pathname;

@@ -28,6 +28,11 @@ export interface WorktreeBaseline {
 	nested: Array<{ relativePath: string; baseline: RepoBaseline }>;
 }
 
+export interface PatchPathCapture {
+	include?: readonly string[];
+	exclude?: readonly string[];
+}
+
 export async function getRepoRoot(cwd: string): Promise<string> {
 	// Pure-jj check runs first so a jj workspace nested under an unrelated
 	// outer Git checkout is rejected at its own root rather than silently
@@ -88,12 +93,18 @@ async function discoverNestedRepos(repoRoot: string): Promise<string[]> {
 	return result;
 }
 
-async function captureUntrackedPatch(repoRoot: string, untracked: readonly string[]): Promise<string> {
-	if (untracked.length === 0) return "";
+async function captureUntrackedPatch(
+	repoRoot: string,
+	untracked: readonly string[],
+	capture?: PatchPathCapture,
+): Promise<string> {
+	const capturedUntracked =
+		capture === undefined ? untracked : untracked.filter(entry => shouldCapturePatchPath(entry, capture));
+	if (capturedUntracked.length === 0) return "";
 	const nullPath = getGitNoIndexNullPath();
 	// Bound concurrent git spawns; large untracked sets would otherwise fork one
 	// process per file at once.
-	const { results: untrackedDiffs } = await mapWithConcurrencyLimit([...untracked], 8, entry =>
+	const { results: untrackedDiffs } = await mapWithConcurrencyLimit([...capturedUntracked], 8, entry =>
 		git.diff(repoRoot, {
 			allowFailure: true,
 			binary: true,
@@ -103,12 +114,12 @@ async function captureUntrackedPatch(repoRoot: string, untracked: readonly strin
 	return untrackedDiffs.filter((diff): diff is string => !!diff?.trim()).join("\n");
 }
 
-async function captureRepoBaseline(repoRoot: string): Promise<RepoBaseline> {
+async function captureRepoBaseline(repoRoot: string, capture?: PatchPathCapture): Promise<RepoBaseline> {
 	const headCommit = (await git.head.sha(repoRoot)) ?? "";
 	const staged = await git.diff(repoRoot, { binary: true, cached: true });
 	const unstaged = await git.diff(repoRoot, { binary: true });
 	const untracked = await git.ls.untracked(repoRoot);
-	const untrackedPatch = await captureUntrackedPatch(repoRoot, untracked);
+	const untrackedPatch = await captureUntrackedPatch(repoRoot, untracked, capture);
 	return { repoRoot, headCommit, staged, unstaged, untracked, untrackedPatch };
 }
 
@@ -133,40 +144,128 @@ async function writeSyntheticTree(repoDir: string, baseTreeish: string, patches:
 	}
 }
 
-export async function captureBaseline(repoRoot: string): Promise<WorktreeBaseline> {
-	const [root, nestedPaths] = await Promise.all([captureRepoBaseline(repoRoot), discoverNestedRepos(repoRoot)]);
+export async function captureBaseline(repoRoot: string, capture?: PatchPathCapture): Promise<WorktreeBaseline> {
+	const [root, nestedPaths] = await Promise.all([
+		captureRepoBaseline(repoRoot, capture),
+		discoverNestedRepos(repoRoot),
+	]);
 	const nested = await Promise.all(
 		nestedPaths.map(async relativePath => ({
 			relativePath,
-			baseline: await captureRepoBaseline(path.join(repoRoot, relativePath)),
+			baseline: await captureRepoBaseline(path.join(repoRoot, relativePath), capture),
 		})),
 	);
 	return { root, nested };
 }
 
-async function captureRepoDeltaPatch(repoDir: string, rb: RepoBaseline): Promise<string> {
+async function captureRepoDeltaPatch(repoDir: string, rb: RepoBaseline, capture?: PatchPathCapture): Promise<string> {
 	const currentHead = (await git.head.sha(repoDir)) ?? "";
 	const currentStaged = await git.diff(repoDir, { binary: true, cached: true });
 	const currentUnstaged = await git.diff(repoDir, { binary: true });
 	const currentUntracked = await git.ls.untracked(repoDir);
-	const currentUntrackedPatch = await captureUntrackedPatch(repoDir, currentUntracked);
+	const currentUntrackedPatch = await captureUntrackedPatch(repoDir, currentUntracked, capture);
 
-	const baselineTree = await writeSyntheticTree(repoDir, rb.headCommit, [rb.staged, rb.unstaged, rb.untrackedPatch]);
+	const baselineTree = await writeSyntheticTree(repoDir, rb.headCommit, [
+		filterPatchByPathPatterns(rb.staged, capture),
+		filterPatchByPathPatterns(rb.unstaged, capture),
+		filterPatchByPathPatterns(rb.untrackedPatch, capture),
+	]);
 	const currentTree = await writeSyntheticTree(repoDir, currentHead, [
-		currentStaged,
-		currentUnstaged,
-		currentUntrackedPatch,
+		filterPatchByPathPatterns(currentStaged, capture),
+		filterPatchByPathPatterns(currentUnstaged, capture),
+		filterPatchByPathPatterns(currentUntrackedPatch, capture),
 	]);
 
-	return git.diff.tree(repoDir, baselineTree, currentTree, {
-		allowFailure: true,
-		binary: true,
-	});
+	return filterPatchByPathPatterns(
+		await git.diff.tree(repoDir, baselineTree, currentTree, {
+			allowFailure: true,
+			binary: true,
+		}),
+		capture,
+	);
+}
+
+function normalizePatchPath(value: string): string {
+	return value.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function normalizeCapturePattern(value: string): string {
+	return value.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function capturePatternMatchesPath(pattern: string, filePath: string): boolean {
+	const normalizedPattern = normalizeCapturePattern(pattern);
+	const normalizedPath = normalizePatchPath(filePath);
+	if (!normalizedPattern) return false;
+	if (normalizedPattern.endsWith("/**")) {
+		const directory = normalizedPattern.slice(0, -3).replace(/\/$/, "");
+		if (normalizedPath === directory || normalizedPath.startsWith(`${directory}/`)) return true;
+	}
+	return new Bun.Glob(normalizedPattern).match(normalizedPath);
+}
+
+function shouldCapturePatchPath(filePath: string, capture: PatchPathCapture): boolean {
+	const exclude = capture.exclude?.filter(pattern => pattern.trim()) ?? [];
+	if (exclude.some(pattern => capturePatternMatchesPath(pattern, filePath))) return false;
+	const include = capture.include?.filter(pattern => pattern.trim()) ?? [];
+	return include.length === 0 || include.some(pattern => capturePatternMatchesPath(pattern, filePath));
+}
+
+function shouldKeepPatchSection(paths: readonly string[], capture: PatchPathCapture | undefined): boolean {
+	if (capture === undefined || paths.length === 0) return true;
+	const exclude = capture.exclude?.filter(pattern => pattern.trim()) ?? [];
+	if (exclude.some(pattern => paths.some(file => capturePatternMatchesPath(pattern, file)))) return false;
+	const include = capture.include?.filter(pattern => pattern.trim()) ?? [];
+	return include.length === 0 || include.some(pattern => paths.some(file => capturePatternMatchesPath(pattern, file)));
+}
+
+export function filterPatchByPathPatterns(patch: string, capture?: PatchPathCapture): string {
+	if (capture === undefined || !patch.trim()) return patch;
+	const sections: string[][] = [];
+	let current: string[] = [];
+	for (const line of patch.split("\n")) {
+		if (line.startsWith("diff --git ") && current.length > 0) {
+			sections.push(current);
+			current = [];
+		}
+		current.push(line);
+	}
+	if (current.length > 0) sections.push(current);
+	const kept = sections.filter(section => shouldKeepPatchSection(patchTouchedFiles(section.join("\n")), capture));
+	if (kept.length === 0) return "";
+	return kept.map(section => section.join("\n")).join("\n");
 }
 
 export interface NestedRepoPatch {
 	relativePath: string;
 	patch: string;
+}
+
+export interface DeltaPatchResult {
+	rootPatch: string;
+	nestedPatches: NestedRepoPatch[];
+}
+
+export async function captureDeltaPatch(
+	isolationDir: string,
+	baseline: WorktreeBaseline,
+	capture?: PatchPathCapture,
+): Promise<DeltaPatchResult> {
+	const rootPatch = await captureRepoDeltaPatch(isolationDir, baseline.root, capture);
+	const nestedPatches: NestedRepoPatch[] = [];
+
+	for (const { relativePath, baseline: nb } of baseline.nested) {
+		const nestedDir = path.join(isolationDir, relativePath);
+		try {
+			await fs.access(path.join(nestedDir, ".git"));
+		} catch {
+			continue;
+		}
+		const patch = await captureRepoDeltaPatch(nestedDir, nb, capture);
+		if (patch.trim()) nestedPatches.push({ relativePath, patch });
+	}
+
+	return { rootPatch, nestedPatches };
 }
 
 function unquoteGitDiffPath(rawPath: string): string {
@@ -200,29 +299,6 @@ function patchTouchedFiles(patch: string): string[] {
 		for (const file of parseDiffGitLinePaths(line)) files.add(file);
 	}
 	return [...files];
-}
-
-export interface DeltaPatchResult {
-	rootPatch: string;
-	nestedPatches: NestedRepoPatch[];
-}
-
-export async function captureDeltaPatch(isolationDir: string, baseline: WorktreeBaseline): Promise<DeltaPatchResult> {
-	const rootPatch = await captureRepoDeltaPatch(isolationDir, baseline.root);
-	const nestedPatches: NestedRepoPatch[] = [];
-
-	for (const { relativePath, baseline: nb } of baseline.nested) {
-		const nestedDir = path.join(isolationDir, relativePath);
-		try {
-			await fs.access(path.join(nestedDir, ".git"));
-		} catch {
-			continue;
-		}
-		const patch = await captureRepoDeltaPatch(nestedDir, nb);
-		if (patch.trim()) nestedPatches.push({ relativePath, patch });
-	}
-
-	return { rootPatch, nestedPatches };
 }
 
 /**

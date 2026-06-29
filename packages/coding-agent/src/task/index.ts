@@ -1143,7 +1143,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		let isolationContext: IsolationContext | null = null;
 		if (isIsolated) {
 			try {
-				isolationContext = await prepareIsolationContext(this.session.cwd);
+				isolationContext = await prepareIsolationContext(this.session.cwd, params.capture);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return {
@@ -1351,6 +1351,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agentId,
 					mergeMode,
 					artifactsDir: effectiveArtifactsDir,
+					capture: params.capture,
 					description: params.description,
 					buildCommitMessage: buildCommitMessageFn,
 					buildFailureResult: err => {

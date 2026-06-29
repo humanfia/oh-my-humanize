@@ -591,7 +591,7 @@ export async function runHeadlessAgentTask(
 	const tempArtifactsDir = options.artifactsDir === undefined ? artifactsDir : undefined;
 	let isolationContext: IsolationContext;
 	try {
-		isolationContext = await prepareIsolationContext(cwd);
+		isolationContext = await prepareIsolationContext(cwd, request.capture);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return {
@@ -608,6 +608,7 @@ export async function runHeadlessAgentTask(
 		agentId,
 		mergeMode,
 		artifactsDir,
+		capture: request.capture,
 		description: request.task.description,
 		buildFailureResult: err => {
 			const message = err instanceof Error ? err.message : String(err);

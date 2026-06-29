@@ -31,12 +31,27 @@ nodes:
       enabled: true
       apply: false
       merge: false
+      capture:
+        include:
+          - src/**
+          - Cargo.toml
+        exclude:
+          - target/**
+          - workflow-output/**
     writes:
       - /branch
 edges: []
 `);
 
-		expect(definition.nodes[0]?.isolation).toEqual({ enabled: true, apply: false, merge: false });
+		expect(definition.nodes[0]?.isolation).toEqual({
+			enabled: true,
+			apply: false,
+			merge: false,
+			capture: {
+				include: ["src/**", "Cargo.toml"],
+				exclude: ["target/**", "workflow-output/**"],
+			},
+		});
 	});
 
 	it("passes workflow node isolation to task runners and exposes captured patch metadata", async () => {
@@ -60,7 +75,12 @@ edges: []
 			type: "agent",
 			agent: "task",
 			prompt: "Try a lane-local change.",
-			isolation: { enabled: true, apply: false, merge: false },
+			isolation: {
+				enabled: true,
+				apply: false,
+				merge: false,
+				capture: { include: ["src/**"], exclude: ["target/**"] },
+			},
 		};
 		const output = await host.runAgentNode({
 			node,
@@ -72,6 +92,7 @@ edges: []
 		expect(capturedRequest?.isolated).toBe(true);
 		expect(capturedRequest?.apply).toBe(false);
 		expect(capturedRequest?.merge).toBe(false);
+		expect(capturedRequest?.capture).toEqual({ include: ["src/**"], exclude: ["target/**"] });
 		expect(output.data).toMatchObject({
 			exitCode: 0,
 			patchPath: "/workspace/.omh/artifacts/lane.patch",

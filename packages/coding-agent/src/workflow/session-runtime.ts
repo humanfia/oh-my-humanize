@@ -51,8 +51,14 @@ export interface WorkflowAgentTaskRequest {
 	isolated?: boolean;
 	apply?: boolean;
 	merge?: boolean;
+	capture?: WorkflowAgentTaskPatchCapture;
 	signal?: AbortSignal;
 	task: WorkflowAgentTaskItem;
+}
+
+export interface WorkflowAgentTaskPatchCapture {
+	include?: string[];
+	exclude?: string[];
 }
 
 export interface WorkflowAgentTaskItem {
@@ -296,13 +302,16 @@ function workflowReviewNodeAssignment(
 
 function applyWorkflowNodeIsolation(
 	request: WorkflowAgentTaskRequest,
-	node: { isolation?: { enabled: boolean; apply?: boolean; merge?: boolean } },
+	node: {
+		isolation?: { enabled: boolean; apply?: boolean; merge?: boolean; capture?: WorkflowAgentTaskPatchCapture };
+	},
 ): void {
 	const isolation = node.isolation;
 	if (isolation === undefined || isolation.enabled !== true) return;
 	request.isolated = true;
 	if (isolation.apply !== undefined) request.apply = isolation.apply;
 	if (isolation.merge !== undefined) request.merge = isolation.merge;
+	if (isolation.capture !== undefined) request.capture = isolation.capture;
 }
 
 interface NormalizedWorkflowAgentTaskRetryPolicy {
