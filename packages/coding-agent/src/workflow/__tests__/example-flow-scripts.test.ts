@@ -7689,6 +7689,39 @@ describe("example workflow scripts", () => {
 		});
 		expect(summary.entry.implementationActivationIds).toEqual(["activation-1"]);
 	});
+
+	it("accepts uppercase TASK.md as the Humanize RLCR task contract", async () => {
+		using tempDir = TempDir.createSync("@omh-humanize-rlcr-uppercase-contract-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const scriptDir = `${import.meta.dir}/../../../examples/workflow/experimental/humanize-rlcr/humanize-rlcr/scripts`;
+		await Bun.write(
+			`${cwd}/TASK.md`,
+			["Implement malformed JSON diagnostics.", "", "Acceptance:", "- invalid JSON returns a diagnostic."].join(
+				"\n",
+			),
+		);
+		const definition = await singleScriptDefinitionFrom({
+			nodeId: "planCompliancePrecheck",
+			scriptFileName: "plan-compliance-precheck.js",
+			scriptDir,
+			writes: ["/humanize"],
+		});
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition,
+		});
+
+		expect(result.scheduler.state.humanize).toMatchObject({
+			precheck: {
+				status: "ready-for-human-gate",
+				taskSource: "TASK.md",
+				taskPreview: expect.stringContaining("malformed JSON diagnostics"),
+			},
+		});
+	});
 });
 
 class MemoryWorkflowHost {

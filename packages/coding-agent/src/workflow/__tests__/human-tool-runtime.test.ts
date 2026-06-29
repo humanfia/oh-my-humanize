@@ -46,6 +46,30 @@ describe("createAskToolHumanInputRunner", () => {
 		).rejects.toThrow('workflow human node "operatorGate" checkpointed for /workflow commands');
 		expect(selectedOptions[0]?.map(labelOf)).toContain("Checkpoint for /workflow commands");
 	});
+
+	it("defaults the human checkpoint selection to proceed", async () => {
+		let initialIndex: number | undefined;
+		let optionLabels: string[] = [];
+		const runner = createAskToolHumanInputRunner(toolSession(), () =>
+			toolContext({
+				select: async (_title, options, options_) => {
+					initialIndex = options_?.initialIndex;
+					optionLabels = options.map(labelOf);
+					return "Decision: proceed (Recommended)";
+				},
+			}),
+		);
+
+		const output = await runner({
+			activationId: "activation-1",
+			nodeId: "operatorGate",
+			question: "Proceed after reviewing the plan?",
+		});
+
+		expect(initialIndex).toBe(1);
+		expect(optionLabels[1]).toBe("Decision: proceed (Recommended)");
+		expect(output.response).toBe("Decision: proceed");
+	});
 });
 
 function toolSession(): ToolSession {

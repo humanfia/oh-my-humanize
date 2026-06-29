@@ -7,12 +7,7 @@ const elapsedMs = Math.max(0, Date.now() - startedAtMs);
 const enteredAfterRound = Number.isFinite(ledger.currentRound) ? ledger.currentRound : 0;
 const summaryReviewFile = `workflow-output/round-${enteredAfterRound}-codex-summary-review.json`;
 const summaryReviewOutput = latestParentOutput("codexSummaryReview");
-let taskText = "";
-try {
-	taskText = await Bun.file("task.md").text();
-} catch {
-	taskText = "";
-}
+const taskText = await readTaskText();
 const baseBranchMatch = taskText.match(/(?:^|\n)\s*(?:base\s*branch|baseBranch|review\s*base)\s*:\s*([^\n]+)/iu);
 const envBaseBranch = Bun.env.OMH_HUMANIZE_BASE_BRANCH?.trim();
 const taskBaseBranch = baseBranchMatch?.[1]?.trim();
@@ -69,4 +64,13 @@ function latestParentOutput(nodeId) {
 		if (activation?.nodeId === nodeId) return activation.output ?? {};
 	}
 	return {};
+}
+
+async function readTaskText() {
+	for (const source of ["task.md", "TASK.md"]) {
+		try {
+			return await Bun.file(source).text();
+		} catch {}
+	}
+	return "";
 }

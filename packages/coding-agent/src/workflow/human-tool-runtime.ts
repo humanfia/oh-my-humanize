@@ -42,7 +42,7 @@ export function createAskToolHumanInputRunner(
 									description: "Stop safely, create a checkpoint, then resume with /workflow restart.",
 								},
 							],
-							recommended: 0,
+							recommended: 1,
 						},
 					],
 				},

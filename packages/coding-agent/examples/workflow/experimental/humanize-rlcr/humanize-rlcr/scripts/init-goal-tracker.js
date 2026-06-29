@@ -1,12 +1,7 @@
 const state = workflowContext.state;
 const humanize = state.humanize && typeof state.humanize === "object" ? state.humanize : {};
-let taskText = "";
-
-try {
-	taskText = await Bun.file("task.md").text();
-} catch {
-	taskText = "";
-}
+const task = await readTaskContract();
+const taskText = task.text;
 
 const immutableGoal = taskText.trim().slice(0, 4000) || "Follow the operator-provided task brief and acceptance criteria.";
 const ledger = {
@@ -30,7 +25,7 @@ const goal = {
 	immutableGoal,
 	round: 0,
 	acceptance: {
-		source: taskText ? "task.md" : "operator prompt",
+		source: taskText ? task.source : "operator prompt",
 		status: "open",
 	},
 	ledger,
@@ -44,3 +39,12 @@ return {
 		{ op: "set", path: "/humanize/ledger", value: ledger },
 	],
 };
+
+async function readTaskContract() {
+	for (const source of ["task.md", "TASK.md"]) {
+		try {
+			return { source, text: await Bun.file(source).text() };
+		} catch {}
+	}
+	return { source: "operator prompt", text: "" };
+}

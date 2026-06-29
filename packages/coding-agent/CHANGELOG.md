@@ -8,6 +8,8 @@
 - Fixed workflow observability omitting failed node activations, so failed agent/review/script/human nodes now persist their node id, activation id, and error in `workflow-output/omh-runtime`.
 - Fixed headless workflow JSON starts hiding failed activation diagnostics, so failed runs now include the failing node, activation id, error, and runtime sidecar paths.
 - Fixed the source installer defaulting to a non-PATH Bun bin when a writable PATH directory is available, so fresh container installs can run `omh` immediately more often.
+- Fixed Humanize RLCR requiring lowercase `task.md` even when a project already provides `TASK.md`.
+- Fixed workflow human checkpoints defaulting to stop in the interactive selector, aligning the default with the proceed path while keeping stop and checkpoint explicit.
 - Fixed the experimental parallel implementation review guard treating ordinary tuple ids containing `final` as premature final workflow artifacts.
 
 ## [16.2.5] - 2026-06-28
