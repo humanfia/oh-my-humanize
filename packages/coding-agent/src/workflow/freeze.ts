@@ -74,7 +74,7 @@ export class WorkflowFreezeError extends Error {
 export async function freezeWorkflowArtifact(artifact: WorkflowArtifact): Promise<FlowFreeze> {
 	await ensureResourceDirectory(artifact.resourceDir);
 	const freezeMetadata = validateFreezeMetadata(artifact);
-	validateNodeRuntimeContracts(artifact.definition);
+	await validateNodeRuntimeContracts(artifact);
 	const resourceReferences = collectResourceReferences(artifact);
 	await validateReferencedResources(artifact.resourceDir, resourceReferences);
 	await validateDeclaredChangeRequestFiles(artifact);
@@ -181,7 +181,8 @@ function validateFreezeMetadata(artifact: WorkflowArtifact): {
 	};
 }
 
-function validateNodeRuntimeContracts(definition: WorkflowDefinition): void {
+async function validateNodeRuntimeContracts(artifact: WorkflowArtifact): Promise<void> {
+	const definition = artifact.definition;
 	for (const node of definition.nodes) {
 		validateNodeStateScopes(node);
 		validatePromptReadScope(node);
@@ -189,6 +190,9 @@ function validateNodeRuntimeContracts(definition: WorkflowDefinition): void {
 			throw new WorkflowFreezeError(
 				`workflow script node "${node.id}" must define inline code or a script file before production freeze`,
 			);
+		}
+		if (node.type === "script" && node.script !== undefined) {
+			await validateScriptSyntaxContract(artifact, node);
 		}
 		if (node.type === "agent" && !node.agent) {
 			throw new WorkflowFreezeError(
@@ -202,6 +206,37 @@ function validateNodeRuntimeContracts(definition: WorkflowDefinition): void {
 		}
 	}
 	validateLoopProgressContracts(definition);
+}
+
+async function validateScriptSyntaxContract(artifact: WorkflowArtifact, node: WorkflowNode): Promise<void> {
+	const script = node.script;
+	if (script === undefined || script.language === "sh" || script.language === "py") return;
+	const code =
+		script.code ??
+		(script.file === undefined
+			? ""
+			: await Bun.file(await resolveResourcePath(artifact.resourceDir, script.file)).text());
+	validateJsScriptBody(node, code, script.file);
+}
+
+function validateJsScriptBody(node: WorkflowNode, code: string, scriptFile: string | undefined): void {
+	const source = scriptFile === undefined ? "inline script" : `script file ${scriptFile}`;
+	if (/^\s*(?:import\s+(?!\()|export\s+(?:\*|\{|\w|default\b))/mu.test(code)) {
+		throw new WorkflowFreezeError(
+			`workflow js script node "${node.id}" ${source} uses static import/export declarations, but workflow js scripts run as an async function body; use dynamic import(...) or a shell script instead`,
+		);
+	}
+	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
+		code: string,
+	) => () => Promise<unknown>;
+	try {
+		new AsyncFunction(code);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new WorkflowFreezeError(
+			`workflow js script node "${node.id}" ${source} must parse as an async function body: ${message}`,
+		);
+	}
 }
 
 function validateNodeStateScopes(node: WorkflowNode): void {

@@ -96,6 +96,45 @@ describe("workflow CLI", () => {
 		expect(errorOutput).not.toContain("WorkflowPackageError");
 	});
 
+	it("rejects module-style js workflow scripts before production freeze", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-js-module-script-");
+		const root = tempDir.path();
+		await Bun.write(`${root}/js-module-script.omhflow`, workflowJsModuleScriptFlow());
+		await Bun.write(
+			`${root}/js-module-script/scripts/module-style.js`,
+			['import * as path from "node:path";', 'return { summary: path.basename("artifact.txt") };'].join("\n"),
+		);
+		const originalExitCode = process.exitCode;
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			stdout.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+		vi.spyOn(process.stderr, "write").mockImplementation(chunk => {
+			stderr.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+		process.exitCode = undefined;
+		try {
+			await runWorkflowCommand({
+				action: "freeze",
+				args: [`${root}/js-module-script.omhflow`],
+				flags: { cwd: root },
+			});
+		} finally {
+			process.exitCode = originalExitCode ?? 0;
+		}
+
+		expect(stdout.join("")).toBe("");
+		const errorOutput = stderr.join("");
+		expect(errorOutput).toContain('workflow js script node "moduleStyle"');
+		expect(errorOutput).toContain("async function body");
+		expect(errorOutput).toContain("static import/export declarations");
+		expect(errorOutput).not.toContain("freeze.ts");
+		expect(errorOutput).not.toContain("WorkflowFreezeError");
+	});
+
 	it("lists workflow names without long artifact paths by default", async () => {
 		const stdout: string[] = [];
 		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
@@ -476,6 +515,39 @@ function workflowFailedDiagnosticsFlow(): string {
 
 function workflowFailedDiagnosticsScript(): string {
 	return ["#!/bin/sh", "set -eu", "printf 'boom\\n' >&2", "exit 7"].join("\n");
+}
+
+function workflowJsModuleScriptFlow(): string {
+	return [
+		"---",
+		"name: js-module-script",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: js-module-script",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# JS module script fixture",
+		"",
+		"```yaml workflow",
+		"resources:",
+		"  - path: scripts/module-style.js",
+		"    kind: script",
+		"sequence:",
+		"  - node:",
+		"      id: moduleStyle",
+		"      type: script",
+		"      script:",
+		"        language: js",
+		"        file: scripts/module-style.js",
+		"```",
+	].join("\n");
 }
 
 function workflowPythonEnvSmokeFlow(): string {
