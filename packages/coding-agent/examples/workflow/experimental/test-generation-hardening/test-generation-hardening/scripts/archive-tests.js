@@ -15,6 +15,10 @@ const sourceEditGuard = await testOnlyChangeGuard(taskText);
 if (sourceEditGuard.status !== "pass") {
 	throw new Error(`cannot archive test hardening with unauthorized source edits: ${sourceEditGuard.blockers.join(", ")}`);
 }
+assertSchedulerLineage(
+	["inspectCoverage", "materializeGapReport", "generateTests", "runTestSuite", "testReview"],
+	"test-generation-hardening archive",
+);
 
 await Bun.write(
 	archivePath,
@@ -72,6 +76,19 @@ function boundedLines(text, limit) {
 	const kept = lines.slice(0, limit);
 	if (lines.length > limit) kept.push(`[truncated ${lines.length - limit} additional lines]`);
 	return kept.join("\n");
+}
+
+function assertSchedulerLineage(requiredNodeIds, label) {
+	const completedNodeIds = new Set(
+		(Array.isArray(workflowContext.completedActivations) ? workflowContext.completedActivations : [])
+			.filter(activation => activation?.status === "completed")
+			.map(activation => activation.nodeId)
+			.filter(Boolean),
+	);
+	const missing = requiredNodeIds.filter(nodeId => !completedNodeIds.has(nodeId));
+	if (missing.length > 0) {
+		throw new Error(`${label} missing scheduler lineage: ${missing.join(", ")}`);
+	}
 }
 
 async function testOnlyChangeGuard(taskText) {

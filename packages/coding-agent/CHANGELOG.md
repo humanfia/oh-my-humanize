@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed experimental workflow archive scripts accepting manually reconstructed output without required scheduler lineage, so partial agent runs fail closed instead of looking like completed workflow evidence.
+
 ## [16.2.5] - 2026-06-28
 
 ### Changed

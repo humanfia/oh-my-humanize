@@ -43,6 +43,9 @@ if (outsideAllowedChangedFiles.length > 0 && !isRejectArchive) {
 if (changedFiles.length === 0 && !allowsNoChange(taskText) && !isRejectArchive) {
 	throw new Error("agent-build-review-loop cannot archive without project changes unless task.md explicitly allows No-Code/No-Change");
 }
+if (!isRejectArchive) {
+	assertSchedulerLineage(["initialBuildRound", "reviewRound", "classifyReviewRoute", "semanticArchiveGuard"], "agent-build-review-loop archive");
+}
 if (archivedEvidenceFiles.length === 0) {
 	throw new Error("agent-build-review-loop cannot archive without loop evidence artifacts");
 }
@@ -667,6 +670,19 @@ function progressRoundLabels(progressText) {
 	return [...progressText.matchAll(/^\s*ROUND\s+(\d+)\s*:/gimu)]
 		.map(match => Number(match[1]))
 		.filter(round => Number.isInteger(round));
+}
+
+function assertSchedulerLineage(requiredNodeIds, label) {
+	const completedNodeIds = new Set(
+		(Array.isArray(workflowContext.completedActivations) ? workflowContext.completedActivations : [])
+			.filter(activation => activation?.status === "completed")
+			.map(activation => activation.nodeId)
+			.filter(Boolean),
+	);
+	const missing = requiredNodeIds.filter(nodeId => !completedNodeIds.has(nodeId));
+	if (missing.length > 0) {
+		throw new Error(`${label} missing scheduler lineage: ${missing.join(", ")}`);
+	}
 }
 
 function allowsNoChange(taskText) {

@@ -1146,6 +1146,9 @@ describe("example workflow scripts", () => {
 				"",
 				"Validation Command:",
 				"echo validate",
+				"",
+				"No-Change Allowed:",
+				"yes",
 			].join("\n"),
 		);
 		await Bun.write(`${cwd}/workflow-output/setup-blocker.md`, "Validation cannot start in this environment.\n");
@@ -1182,6 +1185,56 @@ describe("example workflow scripts", () => {
 			verdict: "reject",
 			final_artifact: "workflow-output/final-agent-loop-reject.md",
 		});
+	});
+
+	it("blocks accepted agent build review archive without scheduler lineage", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-archive-lineage-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Archive only after real build, review, and semantic guard activations.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"No-Change allowed:",
+				"yes",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/progress.md`, "ROUND 1: implementation and review completed\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-stdout.txt`, "ok\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-stderr.txt`, "");
+		await Bun.write(`${cwd}/workflow-output/review-route-1.json`, "{}\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveLoop",
+			scriptFileName: "archive-loop.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				reviewRoute: {
+					decision: "complete",
+					reason: "manually supplied complete route",
+					reviewVerdict: "complete",
+					reviewDecisionTrailFile: "workflow-output/review-route-1.json",
+				},
+				semanticGuard: {
+					verdict: "PASS",
+					findings: [],
+				},
+			},
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "archiveLoop");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("missing scheduler lineage");
+		expect(activation?.error).toContain("initialBuildRound");
 	});
 
 	it("routes completed agent build reviews to semantic archive despite incidental continue text", async () => {
@@ -6528,6 +6581,51 @@ describe("example workflow scripts", () => {
 		expect(result.scheduler.activations.find(activation => activation.nodeId === "archiveTests")?.error).toContain(
 			"unauthorized source edits",
 		);
+	});
+
+	it("blocks test-hardening archive without scheduler lineage", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-archive-lineage-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Archive only after real coverage, generation, suite, and review nodes.",
+				"",
+				"Validation Command:",
+				"echo validate",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/test-suite.md`, ["# Test Suite Evidence", "", "Exit code: 0"].join("\n"));
+		await Bun.write(`${cwd}/workflow-output/test-hardening-repair-evidence.md`, "# Repair Evidence\n");
+		await Bun.write(`${cwd}/workflow-output/test-hardening-rollback.md`, "# Rollback\n");
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveTests",
+			scriptFileName: "archive-tests.js",
+			scriptDir: `${TEST_GENERATION_HARDENING_DIR}/scripts`,
+			writes: ["/archive"],
+			initialState: {
+				suite: {
+					status: "pass",
+				},
+				review: "finish",
+			},
+		});
+
+		const activation = result.scheduler.activations.find(item => item.nodeId === "archiveTests");
+		expect(activation?.status).toBe("failed");
+		expect(activation?.error).toContain("missing scheduler lineage");
+		expect(activation?.error).toContain("inspectCoverage");
 	});
 
 	it("blocks refactor migration when compatibility design is fail-closed", async () => {
