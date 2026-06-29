@@ -243,16 +243,24 @@ function benchmarkCoveredLosingRejected(text) {
 
 function hasPositiveBenchmarkEvidence(text) {
 	if (
-		/\bno\s+(?:measured\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text) ||
-		/\bno\s+positive\s+benchmark\s+(?:movement|result|candidate|optimization)\b/iu.test(text) ||
-		/\bno\s+stable\s+positive\s+result\b/iu.test(text) ||
-		/\bwithout\s+(?:a\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text)
+		/\bno[^\S\r\n]+(?:measured[^\S\r\n]+)?positive[^\S\r\n]+(?:movement|result|candidate|optimization)\b/iu.test(
+			text,
+		) ||
+		/\bno[^\S\r\n]+positive[^\S\r\n]+(?:task[^\S\r\n]+)?benchmark(?:[- ]like)?[^\S\r\n]+(?:movement|result|candidate|optimization)\b/iu.test(
+			text,
+		) ||
+		/\bno[^\S\r\n]+stable[^\S\r\n]+positive[^\S\r\n]+result\b/iu.test(text) ||
+		/\bwithout[^\S\r\n]+(?:a[^\S\r\n]+)?positive[^\S\r\n]+(?:movement|result|candidate|optimization)\b/iu.test(
+			text,
+		) ||
+		/\bbenchmark[^\S\r\n]+(?:result|measurement)[^\S\r\n]+was[^\S\r\n]+(?:flat|neutral)\b/iu.test(text) ||
+		/\bspeedup\s*`?0(?:\.0+)?%`?\b/iu.test(text)
 	) {
 		return false;
 	}
 	return (
-		/\bpositive\s+benchmark\b/iu.test(text) ||
-		/\bbenchmark\s+(?:improvement|speedup|win)\b/iu.test(text) ||
+		/\bpositive[^\S\r\n]+benchmark\b/iu.test(text) ||
+		/\bbenchmark[^\S\r\n]+(?:improvement|speedup|win)\b/iu.test(text) ||
 		/\b(?:improved|faster|speedup|reduced|lower)\b.{0,100}\bbenchmark\b/iu.test(text) ||
 		/\bbenchmark\b.{0,100}\b(?:improved|faster|speedup|reduced|lower|win)\b/iu.test(text)
 	);

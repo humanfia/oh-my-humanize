@@ -60,7 +60,13 @@ function commandEvidenceLines(report, commandName) {
 		if (!commandLineMatches(line, commandName)) continue;
 		evidenceLines.push(line);
 		for (const nextLine of lines.slice(index + 1, index + 5)) {
-			if (/^\s*-\s+\w+(?: command)?:/iu.test(nextLine) && !/\bstatus\s*:/iu.test(nextLine)) break;
+			if (/^##\s+/u.test(nextLine)) break;
+			if (
+				/\b(?:benchmark|validation)(?: command)?\s*:/iu.test(nextLine) &&
+				!commandLineMatches(nextLine, commandName)
+			) {
+				break;
+			}
 			evidenceLines.push(nextLine);
 		}
 	}
@@ -81,7 +87,7 @@ function statusFromLine(line) {
 }
 
 function exitCodeFromLine(line) {
-	const match = /\b(?:exited|exit code)\s*(?:code\s*)?(\d+)\b/iu.exec(line);
+	const match = /\b(?:exited|exit code)\s*:?\s*(?:code\s*)?(\d+)\b/iu.exec(line);
 	if (!match) return undefined;
 	return Number(match[1]);
 }

@@ -6337,6 +6337,140 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("does not treat no positive benchmark-like repair evidence as a positive branch", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-no-positive-benchmark-like-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance-aware refactor with regression checks",
+			"",
+			"Benchmark Command:",
+			"cat fixtures/large.txt fixtures/large.txt | cargo run --release --quiet",
+			"",
+			"Validation Command:",
+			"cargo test && printf 'alpha beta\\ngamma\\n' | cargo run --quiet | grep ^3",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/main.rs`, "fn main() {}\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/main.rs", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/main.rs`, 'fn main() { println!("1"); }\n');
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Performance caching Branch",
+				"",
+				"- final-selection: yes",
+				"- no-win-result: no",
+				"- benchmark-relevance: yes",
+				"- semantic-probe: yes",
+				"- semantic probe evidence: repeated-line CLI behavior passed",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Performance algorithmic Branch",
+				"",
+				"- final-selection: no",
+				"- no-win-result: no",
+				"- benchmark-relevance: yes",
+				"- off-benchmark: no",
+				"- Algorithmic branch initially reported a positive benchmark-like result.",
+				"- Explicit rejection reason: weaker than the selected caching candidate.",
+				"- rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			[
+				"# Performance io Branch",
+				"",
+				"- final-selection: no",
+				"- no-win-result: no",
+				"- benchmark-relevance: yes",
+				"- IO branch reported no positive task benchmark result: baseline median `30 ms`, candidate median `30 ms`, speedup `0.00%`.",
+				"- off-benchmark: no positive benchmark-like result was reported, so no off-benchmark win was rejected.",
+				"- rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"## Current benchmark and validation status",
+				"",
+				"- Validation command: `cargo test && printf 'alpha beta\\ngamma\\n' | cargo run --quiet | grep ^3`",
+				"  - cwd: `/workspace/project`",
+				"  - exit code: 0",
+				"- Benchmark command: `cat fixtures/large.txt fixtures/large.txt | cargo run --release --quiet`",
+				"  - cwd: `/workspace/project`",
+				"  - exit code: 0",
+				"",
+				"## Selection result",
+				"",
+				"- selected branch: caching",
+				"- final-selection: yes",
+				"",
+				"## Off-benchmark and unselected-branch rejection evidence",
+				"",
+				"- algorithmic:",
+				"  - final-selection: no.",
+				"  - off-benchmark: no.",
+				"  - Algorithmic branch initially reported a benchmark-like positive result.",
+				"  - Explicit rejection reason: weaker than the selected benchmark-covered caching candidate.",
+				"- IO:",
+				"  - final-selection: no.",
+				"  - off-benchmark: no positive benchmark-like result was reported.",
+				"  - Explicit rejection reason: no positive benchmark result.",
+			].join("\n"),
+		);
+
+		const materialized = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeSelectionRepair",
+			scriptFileName: "materialize-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionRepair"],
+		});
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: materialized.scheduler.state.selectionRepair,
+			},
+		});
+
+		expect(materialized.scheduler.state.selectionRepair).toMatchObject({
+			benchmark: { status: "pass", exitCode: 0 },
+			validation: { status: "pass", exitCode: 0 },
+		});
+		const selectionGuard = expectRecord(result.scheduler.state.selectionGuard, "selectionGuard");
+		expect(selectionGuard.status).toBe("pass");
+		expect(selectionGuard.positiveUnselectedBranches).toEqual(["algorithmic"]);
+		expect(selectionGuard.benchmarkCoveredRejectedBranches).toEqual(["algorithmic"]);
+		expect(selectionGuard.benchmarkRelevanceBlockers).toEqual([]);
+	});
+
 	it("finalizes benchmark-covered losing performance branches with comparative rejection evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-finalize-covered-losing-rejection-");
 		const cwd = tempDir.path();
@@ -8595,6 +8729,13 @@ async function runGit(cwd: string, args: string[]): Promise<void> {
 	if (exitCode !== 0) {
 		throw new Error(`git ${args.join(" ")} failed: ${stderr.trim() || stdout.trim()}`);
 	}
+}
+
+function expectRecord(value: unknown, name: string): Record<string, unknown> {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error(`${name} must be an object`);
+	}
+	return value as Record<string, unknown>;
 }
 
 async function initializeCleanGitRepo(cwd: string): Promise<void> {
