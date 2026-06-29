@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { $ } from "bun";
 import {
 	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
 } from "../../workflow/model-env";
-import { buildHeadlessAgentTaskEnv, runWorkflowCommand, type WorkflowStartSignalTarget } from "../workflow-cli";
+import {
+	buildHeadlessAgentTaskEnv,
+	runHeadlessAgentTask,
+	runWorkflowCommand,
+	type WorkflowStartSignalTarget,
+} from "../workflow-cli";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -370,6 +376,52 @@ describe("workflow CLI", () => {
 		expect(result.runs[0]?.stateKeys).toEqual(["marker"]);
 	});
 
+	it("runs isolated headless workflow agents outside the parent checkout and captures a patch", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-agent-isolation-");
+		const root = tempDir.path();
+		await initGitRepo(root);
+		const artifactsDir = path.join(root, "agent-artifacts");
+		const launchedCwds: string[] = [];
+
+		const result = await runHeadlessAgentTask(
+			root,
+			{
+				activationId: "activation-1",
+				nodeId: "branch",
+				agent: "task",
+				task: {
+					id: "branch",
+					description: "branch",
+					role: "optimizer",
+					assignment: "write a lane-local artifact",
+				},
+				isolated: true,
+				apply: false,
+				merge: false,
+			},
+			{
+				artifactsDir,
+				runProcess: async (_args, options) => {
+					launchedCwds.push(options.cwd);
+					await Bun.write(path.join(options.cwd, "lane-output.txt"), "isolated lane output\n");
+					return {
+						exitCode: 0,
+						stdout: JSON.stringify({ summary: "lane finished" }),
+						stderr: "",
+					};
+				},
+			},
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.changesApplied).toBe(null);
+		expect(result.patchPath).toBe(path.join(artifactsDir, "workflow-branch-activation-1.patch"));
+		expect(launchedCwds).toHaveLength(1);
+		expect(launchedCwds[0]).not.toBe(root);
+		expect(await Bun.file(path.join(root, "lane-output.txt")).exists()).toBe(false);
+		expect(await Bun.file(result.patchPath ?? "").text()).toContain("lane-output.txt");
+	});
+
 	it("checkpoints headless workflow starts on SIGINT instead of leaving a run alive", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-sigint-");
 		const root = tempDir.path();
@@ -447,6 +499,15 @@ class FakeWorkflowStartSignalTarget implements WorkflowStartSignalTarget {
 		}
 		return listeners;
 	}
+}
+
+async function initGitRepo(root: string): Promise<void> {
+	await Bun.write(path.join(root, "README.md"), "baseline\n");
+	await $`git init`.cwd(root).quiet();
+	await $`git add README.md`.cwd(root).quiet();
+	await $`git -c user.name=omh-test -c user.email=omh-test@example.invalid -c commit.gpgsign=false commit -m baseline`
+		.cwd(root)
+		.quiet();
 }
 
 function workflowAmbiguousHumanizeRlcrFlow(): string {

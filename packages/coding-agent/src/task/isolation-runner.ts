@@ -37,6 +37,7 @@ import {
 	getRepoRoot,
 	type IsolationHandle,
 	mergeTaskBranches,
+	type NestedRepoPatch,
 	type WorktreeBaseline,
 } from "./worktree";
 
@@ -114,6 +115,29 @@ export interface IsolatedRunOptions {
 	buildFailureResult: (err: unknown) => SingleResult;
 }
 
+export interface IsolatedWorktreeResult {
+	id: string;
+	description?: string;
+	exitCode: number;
+	error?: string;
+	aborted?: boolean;
+	patchPath?: string;
+	branchName?: string;
+	nestedPatches?: NestedRepoPatch[];
+}
+
+export interface IsolatedWorktreeRunOptions<Result extends IsolatedWorktreeResult> {
+	context: IsolationContext;
+	preferredBackend: IsoBackendKind | undefined;
+	agentId: string;
+	mergeMode: "patch" | "branch";
+	artifactsDir: string;
+	description?: string;
+	buildCommitMessage?: BuildCommitMessage;
+	buildFailureResult: (err: unknown) => Result;
+	run: (isolationDir: string) => Promise<Result>;
+}
+
 /**
  * Run a subagent inside an isolation worktree and capture its changes.
  *
@@ -131,17 +155,34 @@ export interface IsolatedRunOptions {
  * The isolation handle is always torn down in `finally`.
  */
 export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<SingleResult> {
+	return runIsolatedWorktree({
+		context: opts.context,
+		preferredBackend: opts.preferredBackend,
+		agentId: opts.agentId,
+		mergeMode: opts.mergeMode,
+		artifactsDir: opts.artifactsDir,
+		description: opts.description,
+		buildCommitMessage: opts.buildCommitMessage,
+		buildFailureResult: opts.buildFailureResult,
+		run: isolationDir =>
+			runSubprocess({
+				...opts.baseOptions,
+				worktree: isolationDir,
+				preloadedExtensionPaths: undefined,
+				preloadedCustomToolPaths: undefined,
+			}),
+	});
+}
+
+export async function runIsolatedWorktree<Result extends IsolatedWorktreeResult>(
+	opts: IsolatedWorktreeRunOptions<Result>,
+): Promise<Result> {
 	let handle: IsolationHandle | undefined;
 	try {
 		const taskBaseline = structuredClone(opts.context.baseline);
 		handle = await ensureIsolation(opts.context.repoRoot, opts.agentId, opts.preferredBackend);
 		const isolationDir = handle.mergedDir;
-		const result = await runSubprocess({
-			...opts.baseOptions,
-			worktree: isolationDir,
-			preloadedExtensionPaths: undefined,
-			preloadedCustomToolPaths: undefined,
-		});
+		const result = await opts.run(isolationDir);
 		if (opts.mergeMode === "branch" && result.exitCode === 0) {
 			try {
 				const commitResult = await commitToBranch(
@@ -190,7 +231,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 }
 
 export interface IsolationMergeOptions {
-	result: SingleResult;
+	result: IsolatedWorktreeResult;
 	repoRoot: string;
 	mergeMode: "patch" | "branch";
 }
@@ -313,7 +354,7 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 
 export interface NestedPatchApplyOptions {
 	/** Subagent result carrying `nestedPatches`/`exitCode`/`aborted`. */
-	result: SingleResult;
+	result: IsolatedWorktreeResult;
 	repoRoot: string;
 	mergeMode: "patch" | "branch";
 	/** Parent merge outcome — patch mode skips nested apply when this is `false`. */

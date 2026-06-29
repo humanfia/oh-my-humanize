@@ -1,7 +1,17 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
-import { APP_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getProjectDir, Snowflake } from "@oh-my-pi/pi-utils";
 import { buildWorkflowShellEnvironment } from "../exec/shell-environment-policy";
 import type { CustomEntry, SessionEntry } from "../session/session-entries";
+import {
+	applyEligibleNestedPatches,
+	type IsolatedWorktreeResult,
+	type IsolationContext,
+	mergeIsolatedChanges,
+	prepareIsolationContext,
+	runIsolatedWorktree,
+} from "../task/isolation-runner";
 import {
 	installWorkflowArtifact,
 	listWorkflowFlowSpecs,
@@ -29,6 +39,7 @@ import { workflowScriptEnvironment } from "../workflow/script-runtime-env";
 import {
 	createSessionWorkflowRuntimeHost,
 	type WorkflowAgentTaskRequest,
+	type WorkflowAgentTaskResult,
 	type WorkflowShellScriptRequest,
 } from "../workflow/session-runtime";
 
@@ -67,8 +78,31 @@ export interface WorkflowStartSignalTarget {
 	off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
 }
 
+export interface HeadlessAgentProcessOptions {
+	cwd: string;
+	env: NodeJS.ProcessEnv;
+	signal?: AbortSignal;
+}
+
+export interface HeadlessAgentProcessResult {
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+}
+
+export type HeadlessAgentProcessRunner = (
+	args: string[],
+	options: HeadlessAgentProcessOptions,
+) => Promise<HeadlessAgentProcessResult>;
+
+export interface HeadlessAgentTaskOptions {
+	runProcess?: HeadlessAgentProcessRunner;
+	artifactsDir?: string;
+}
+
 export interface WorkflowCommandRuntime {
 	signalTarget?: WorkflowStartSignalTarget;
+	headlessAgentProcess?: HeadlessAgentProcessRunner;
 }
 
 interface WorkflowStartSignalController {
@@ -208,7 +242,7 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 		cwd,
 		runEvalScript: async request => runHeadlessEvalScript(cwd, request.code, request.language),
 		runShellScript: async request => runHeadlessShellScript(cwd, request),
-		runAgentTask: async request => runHeadlessAgentTask(cwd, request),
+		runAgentTask: async request => runHeadlessAgentTask(cwd, request, { runProcess: runtime.headlessAgentProcess }),
 	});
 	const runtimeBindingSnapshot = createHeadlessRuntimeBindingSnapshot(pkg.definition, `${runId}:binding-1`);
 	const bindingError =
@@ -538,17 +572,123 @@ async function runHeadlessShellScript(
 	};
 }
 
-async function runHeadlessAgentTask(
+interface HeadlessIsolatedAgentTaskResult extends WorkflowAgentTaskResult, IsolatedWorktreeResult {
+	id: string;
+	description?: string;
+	output: string;
+}
+
+export async function runHeadlessAgentTask(
 	cwd: string,
 	request: WorkflowAgentTaskRequest,
-): Promise<{ exitCode: number; output: string; stderr?: string; error?: string }> {
+	options: HeadlessAgentTaskOptions = {},
+): Promise<WorkflowAgentTaskResult> {
+	if (request.isolated !== true) {
+		return runHeadlessAgentTaskProcess(cwd, request, options.runProcess);
+	}
+	const agentId = headlessWorkflowAgentId(request);
+	const artifactsDir = options.artifactsDir ?? path.join(os.tmpdir(), `omh-workflow-agent-${Snowflake.next()}`);
+	const tempArtifactsDir = options.artifactsDir === undefined ? artifactsDir : undefined;
+	let isolationContext: IsolationContext;
+	try {
+		isolationContext = await prepareIsolationContext(cwd);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			exitCode: 1,
+			output: "",
+			stderr: message,
+			error: `Isolated workflow agent execution requires a git repository. ${message}`,
+		};
+	}
+	const mergeMode: "patch" = "patch";
+	const result = await runIsolatedWorktree<HeadlessIsolatedAgentTaskResult>({
+		context: isolationContext,
+		preferredBackend: undefined,
+		agentId,
+		mergeMode,
+		artifactsDir,
+		description: request.task.description,
+		buildFailureResult: err => {
+			const message = err instanceof Error ? err.message : String(err);
+			return {
+				id: agentId,
+				agentId,
+				exitCode: 1,
+				output: "",
+				stderr: message,
+				error: message,
+				description: request.task.description,
+			};
+		},
+		run: async isolationDir => {
+			const processResult = await runHeadlessAgentTaskProcess(isolationDir, request, options.runProcess);
+			return {
+				...processResult,
+				id: agentId,
+				agentId,
+				description: request.task.description,
+			};
+		},
+	});
+	let changesApplied: boolean | null | undefined;
+	if (request.apply === false) {
+		changesApplied = null;
+	} else {
+		const outcome = await mergeIsolatedChanges({ result, repoRoot: isolationContext.repoRoot, mergeMode });
+		changesApplied = outcome.changesApplied;
+		await applyEligibleNestedPatches({
+			result,
+			repoRoot: isolationContext.repoRoot,
+			mergeMode,
+			changesApplied,
+			mergedBranchForNestedPatches: outcome.mergedBranchForNestedPatches,
+		});
+	}
+	if (tempArtifactsDir !== undefined && changesApplied === true) {
+		await fs.rm(tempArtifactsDir, { recursive: true, force: true });
+	}
+	return {
+		exitCode: result.exitCode,
+		output: result.output,
+		...(result.stderr !== undefined ? { stderr: result.stderr } : {}),
+		...(result.error !== undefined ? { error: result.error } : {}),
+		agentId,
+		...(result.patchPath !== undefined ? { patchPath: result.patchPath } : {}),
+		...(result.branchName !== undefined ? { branchName: result.branchName } : {}),
+		...(changesApplied !== undefined ? { changesApplied } : {}),
+	};
+}
+
+async function runHeadlessAgentTaskProcess(
+	cwd: string,
+	request: WorkflowAgentTaskRequest,
+	runProcess: HeadlessAgentProcessRunner = spawnHeadlessAgentTaskProcess,
+): Promise<WorkflowAgentTaskResult> {
 	const args = buildHeadlessAgentTaskArgs(cwd, request.task.assignment, request.modelOverride);
-	const child = Bun.spawn(args, {
+	const { stdout, stderr, exitCode } = await runProcess(args, {
 		cwd,
-		stdout: "pipe",
-		stderr: "pipe",
 		signal: request.signal,
 		env: buildHeadlessAgentTaskEnv(Bun.env, request.modelOverride, request.modelOverrideAuthFallback),
+	});
+	return {
+		exitCode,
+		output: stdout.trim(),
+		...(stderr.trim() ? { stderr: stderr.trim() } : {}),
+		...(exitCode === 0 ? {} : { error: stderr.trim() || `exit code ${exitCode}` }),
+	};
+}
+
+async function spawnHeadlessAgentTaskProcess(
+	args: string[],
+	options: HeadlessAgentProcessOptions,
+): Promise<HeadlessAgentProcessResult> {
+	const child = Bun.spawn(args, {
+		cwd: options.cwd,
+		stdout: "pipe",
+		stderr: "pipe",
+		signal: options.signal,
+		env: options.env,
 	});
 	const [stdout, stderr, exitCode] = await Promise.all([
 		streamText(child.stdout),
@@ -557,10 +697,18 @@ async function runHeadlessAgentTask(
 	]);
 	return {
 		exitCode,
-		output: stdout.trim(),
-		...(stderr.trim() ? { stderr: stderr.trim() } : {}),
-		...(exitCode === 0 ? {} : { error: stderr.trim() || `exit code ${exitCode}` }),
+		stdout,
+		stderr,
 	};
+}
+
+function headlessWorkflowAgentId(request: WorkflowAgentTaskRequest): string {
+	return `workflow-${sanitizeHeadlessAgentIdSegment(`${request.task.id}-${request.activationId}`)}`;
+}
+
+function sanitizeHeadlessAgentIdSegment(value: string): string {
+	const sanitized = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+	return sanitized || Snowflake.next();
 }
 
 export function buildHeadlessAgentTaskArgs(cwd: string, assignment: string, modelOverride?: string): string[] {
