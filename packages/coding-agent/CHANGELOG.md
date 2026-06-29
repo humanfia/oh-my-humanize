@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental performance-optimization-search flow treating a committed positive selection with a clean worktree as a no-win outcome during finalize/archive.
 - Fixed the experimental research-reproduction flow assuming comparison agent summaries automatically materialized `/comparison` before review prompts.
 - Fixed headless workflow starts returning success when scheduler-level prompt binding failures failed the run, and now persist those failures into workflow observability.
 - Fixed experimental performance-optimization-search, refactor-migration-plan, and research-reproduction flows assuming agent summaries automatically materialized declared state paths before downstream prompt bindings.

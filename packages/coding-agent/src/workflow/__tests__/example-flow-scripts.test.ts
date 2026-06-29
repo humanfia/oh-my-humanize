@@ -5685,6 +5685,113 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("finalizes and archives committed positive performance selections with a clean worktree", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-committed-positive-selection-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance committed positive selection",
+			"",
+			"Benchmark Command:",
+			"scripts/observability.sh",
+			"",
+			"Validation Command:",
+			"test -x scripts/observability.sh",
+		].join("\n");
+
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await Bun.write(`${cwd}/README.md`, "baseline\n");
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "task.md", "README.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/scripts/observability.sh`, "#!/usr/bin/env sh\necho docs=1 headings=1 todos=0\n");
+		await runGit(cwd, ["add", "scripts/observability.sh"]);
+		await runGit(cwd, ["commit", "-m", "add selected observability script"]);
+
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Algorithmic",
+				"",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: retained script matches the benchmark contract on a fixture.",
+				"rollback evidence: losing branches were not retained.",
+			].join("\n"),
+		);
+		for (const name of ["caching", "io"]) {
+			await Bun.write(
+				`${cwd}/workflow-output/perf-${name}.md`,
+				["# Branch", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+			);
+		}
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"- Selected retained candidate: `algorithmic`.",
+				"- Committed selected project change `abc123`: `add selected observability script`.",
+				"- Benchmark status: pass, exit code 0.",
+				"- Validation status: pass, exit code 0.",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/performance-baseline.md`, "# Baseline\n\nbaseline evidence\n");
+		await Bun.write(`${cwd}/workflow-output/performance-benchmark.md`, "# Benchmark\n\nstale benchmark\n");
+
+		const finalize = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					status: "fail",
+					benchmarkExitCode: 1,
+					validationExitCode: 1,
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+				review: "finish",
+			},
+		});
+
+		expect(finalize.scheduler.state.selection).toMatchObject({
+			status: "pass",
+			terminalState: "positive",
+			projectChangedFiles: [],
+			selectedBranches: ["algorithmic"],
+		});
+
+		const archive = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archivePerformance",
+			scriptFileName: "archive-performance.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: finalize.scheduler.state,
+		});
+
+		expect(archive.scheduler.state.archive).toMatchObject({
+			status: "accepted",
+			noWin: false,
+			projectChangedFiles: [],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-archive.md`).text()).toContain(
+			"terminalState: positive",
+		);
+	});
+
 	it("blocks positive performance repair without benchmark relevance evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-benchmark-relevance-selected-");
 		const cwd = tempDir.path();

@@ -45,26 +45,9 @@ const validationPassed = validationCommandPassed(benchmark, selectionRepair, sel
 
 let terminalState;
 let selectionStatus = "pass";
-if (projectChangedFiles.length === 0) {
-	if (noWinBranches.length === 0) {
-		throw new Error("no-win performance selection requires at least one branch with `no-win-result: yes`");
-	}
-	if (!hasRollbackEvidence) {
-		throw new Error("no-win performance selection requires rollback or no-change evidence");
-	}
-	if (selectedBranches.length > 0) {
-		throw new Error("no-win performance selection cannot also contain `final-selection: yes`");
-	}
-	if (!noWinAllowed) {
-		terminalState = "rejected-no-win-not-authorized";
-		selectionStatus = "rejected";
-	} else {
-		terminalState = validationPassed ? "no-win" : "no-win-validation-blocked";
-		selectionStatus = validationPassed ? "pass" : "blocked";
-	}
-} else {
-	if (noWinBranches.length > 0 && selectedBranches.length === 0) {
-		throw new Error("no-win performance selection requires an empty project diff");
+if (selectedBranches.length > 0) {
+	if (noWinBranches.length > 0) {
+		throw new Error("positive performance selection cannot also contain `no-win-result: yes`");
 	}
 	if (!validationPassed) {
 		throw new Error("positive performance selection requires the task-declared validation command to pass");
@@ -95,6 +78,23 @@ if (projectChangedFiles.length === 0) {
 		throw new Error("positive performance selection requires rollback evidence for the retained/rejected branches");
 	}
 	terminalState = "positive";
+} else {
+	if (noWinBranches.length === 0) {
+		throw new Error("no-win performance selection requires at least one branch with `no-win-result: yes`");
+	}
+	if (projectChangedFiles.length !== 0) {
+		throw new Error("no-win performance selection requires an empty project diff");
+	}
+	if (!hasRollbackEvidence) {
+		throw new Error("no-win performance selection requires rollback or no-change evidence");
+	}
+	if (!noWinAllowed) {
+		terminalState = "rejected-no-win-not-authorized";
+		selectionStatus = "rejected";
+	} else {
+		terminalState = validationPassed ? "no-win" : "no-win-validation-blocked";
+		selectionStatus = validationPassed ? "pass" : "blocked";
+	}
 }
 
 const outputPath = "workflow-output/performance-selection.md";
