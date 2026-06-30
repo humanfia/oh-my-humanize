@@ -1301,6 +1301,24 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"retry.streamInterruptedAfterContentMaxRetries": {
+		type: "number",
+		default: 2,
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Post-content stream retries",
+			description:
+				"Maximum retries for provider stream interruptions after assistant content already started. Keeps long streaming failures from burning the full generic retry budget.",
+			options: [
+				{ value: "0", label: "No retry" },
+				{ value: "1", label: "1 retry" },
+				{ value: "2", label: "2 retries" },
+				{ value: "3", label: "3 retries" },
+			],
+		},
+	},
+
 	"retry.baseDelayMs": { type: "number", default: 500 },
 	"retry.maxDelayMs": {
 		type: "number",
@@ -4938,6 +4956,7 @@ export interface ContextPromotionSettings {
 export interface RetrySettings {
 	enabled: boolean;
 	maxRetries: number;
+	streamInterruptedAfterContentMaxRetries: number;
 	baseDelayMs: number;
 	maxDelayMs: number;
 	modelFallback: boolean;

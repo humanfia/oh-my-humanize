@@ -12385,7 +12385,8 @@ export class AgentSession {
 			this.#retryResolve = resolve;
 		}
 
-		if (this.#retryAttempt > retrySettings.maxRetries) {
+		const maxRetries = this.#retryMaxAttemptsForMessage(message, retrySettings);
+		if (this.#retryAttempt > maxRetries) {
 			// Max retries exceeded, emit final failure and reset
 			await this.#emitSessionEvent({
 				type: "auto_retry_end",
@@ -12525,7 +12526,7 @@ export class AgentSession {
 		await this.#emitSessionEvent({
 			type: "auto_retry_start",
 			attempt: this.#retryAttempt,
-			maxAttempts: retrySettings.maxRetries,
+			maxAttempts: maxRetries,
 			delayMs,
 			errorMessage,
 			errorId: message.errorId,
@@ -12570,6 +12571,24 @@ export class AgentSession {
 		});
 
 		return true;
+	}
+
+	#retryMaxAttemptsForMessage(message: AssistantMessage, retrySettings: { maxRetries: number }): number {
+		const configuredMaxRetries = Math.max(0, Math.floor(retrySettings.maxRetries));
+		if (!this.#messageIsInterruptedAfterContent(message)) return configuredMaxRetries;
+		const streamInterruptedMaxRetries = Math.max(
+			0,
+			Math.floor(this.settings.get("retry.streamInterruptedAfterContentMaxRetries")),
+		);
+		return Math.min(configuredMaxRetries, streamInterruptedMaxRetries);
+	}
+
+	#messageIsInterruptedAfterContent(message: AssistantMessage): boolean {
+		const stopDetails = message.stopDetails;
+		if (stopDetails && typeof stopDetails === "object" && "type" in stopDetails) {
+			return stopDetails.type === "stream_interrupted_after_content";
+		}
+		return /\bstream_interrupted_after_content\b/iu.test(message.errorMessage ?? "");
 	}
 
 	/**

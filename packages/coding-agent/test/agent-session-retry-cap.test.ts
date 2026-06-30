@@ -201,6 +201,89 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.content).toContainEqual({ type: "text", text: "recovered after stream read retry" });
 	});
 
+	it("caps repeated stream-interrupted-after-content retries separately from generic retry attempts", async () => {
+		const model = getBundledModel("openai", "gpt-5");
+		if (!model) {
+			throw new Error("Expected bundled OpenAI test model to exist");
+		}
+		authStorage.setRuntimeApiKey("openai", "openai-test-key");
+
+		const streamInterruptedError =
+			"Error Code internal_server_error: stream error: stream ID 1; INTERNAL_ERROR; received from peer";
+		const mock = createMockModel({
+			responses: [
+				{
+					content: ["partial reviewer output"],
+					stopReason: "error",
+					errorMessage: streamInterruptedError,
+					stopDetails: { type: "stream_interrupted_after_content" },
+				},
+				{
+					content: ["partial reviewer output again"],
+					stopReason: "error",
+					errorMessage: streamInterruptedError,
+					stopDetails: { type: "stream_interrupted_after_content" },
+				},
+				{
+					content: ["would have recovered too late"],
+					stopReason: "stop",
+				},
+			],
+		});
+		const agent = new Agent({
+			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => mock.stream(requestedModel, context, options),
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxDelayMs": 5_000,
+			"retry.maxRetries": 10,
+			"retry.streamInterruptedAfterContentMaxRetries": 1,
+			"retry.modelFallback": false,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const retryStartEvents: AutoRetryStartEvent[] = [];
+		const retryEndEvents: AutoRetryEndEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_start") retryStartEvents.push(event);
+			if (event.type === "auto_retry_end") retryEndEvents.push(event);
+		});
+
+		await session.prompt("Trigger repeated post-content stream interruption");
+		await session.waitForIdle();
+
+		expect(mock.calls).toHaveLength(2);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0].maxAttempts).toBe(1);
+		expect(retryEndEvents).toContainEqual({
+			type: "auto_retry_end",
+			success: false,
+			attempt: 1,
+			finalError: streamInterruptedError,
+		});
+		const last = lastAssistant(session);
+		expect(last.stopReason).toBe("error");
+		expect(last.errorMessage).toBe(streamInterruptedError);
+		expect(session.isRetrying).toBe(false);
+	});
+
 	it("switches credentials instead of failing the delay cap for account rate limits", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {
