@@ -9,7 +9,25 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 const docs = typeof docsCommand === "string" && docsCommand.trim() !== "" ? await runShell(docsCommand) : undefined;
 const validation = await runShell(validationCommand);
 const outputPath = "workflow-output/documentation-validation.md";
-await Bun.write(outputPath, evidenceMarkdown(docsCommand, docs, validationCommand, validation));
+const docsStdoutPath = docs ? "workflow-output/docs-stdout.txt" : undefined;
+const docsStderrPath = docs ? "workflow-output/docs-stderr.txt" : undefined;
+const validationStdoutPath = "workflow-output/validation-stdout.txt";
+const validationStderrPath = "workflow-output/validation-stderr.txt";
+if (docs && docsStdoutPath && docsStderrPath) {
+	await Bun.write(docsStdoutPath, docs.stdout);
+	await Bun.write(docsStderrPath, docs.stderr);
+}
+await Bun.write(validationStdoutPath, validation.stdout);
+await Bun.write(validationStderrPath, validation.stderr);
+await Bun.write(
+	outputPath,
+	evidenceMarkdown(docsCommand, docs, validationCommand, validation, {
+		docsStdoutPath,
+		docsStderrPath,
+		validationStdoutPath,
+		validationStderrPath,
+	}),
+);
 
 const docsPass = docs === undefined || docs.exitCode === 0;
 const validationPass = validation.exitCode === 0;
@@ -32,6 +50,10 @@ return {
 				docsExitCode: docs?.exitCode,
 				validationCommand,
 				validationExitCode: validation.exitCode,
+				docsStdoutPath,
+				docsStderrPath,
+				validationStdoutPath,
+				validationStderrPath,
 				status: docsPass && validationPass ? "pass" : "fail",
 				outputPath,
 			},
@@ -57,7 +79,7 @@ async function runShell(command) {
 	};
 }
 
-function evidenceMarkdown(docsCommand, docs, validationCommand, validation) {
+function evidenceMarkdown(docsCommand, docs, validationCommand, validation, paths) {
 	const lines = ["# Documentation Validation Evidence", ""];
 	if (docsCommand && docs) {
 		lines.push(
@@ -68,6 +90,9 @@ function evidenceMarkdown(docsCommand, docs, validationCommand, validation) {
 			"```",
 			"",
 			`Exit code: ${docs.exitCode}`,
+			"",
+			`Stdout artifact: ${paths.docsStdoutPath}`,
+			`Stderr artifact: ${paths.docsStderrPath}`,
 			"",
 			"### Stdout",
 			"",
@@ -91,6 +116,9 @@ function evidenceMarkdown(docsCommand, docs, validationCommand, validation) {
 		"```",
 		"",
 		`Exit code: ${validation.exitCode}`,
+		"",
+		`Stdout artifact: ${paths.validationStdoutPath}`,
+		`Stderr artifact: ${paths.validationStderrPath}`,
 		"",
 		"### Stdout",
 		"",

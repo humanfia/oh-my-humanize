@@ -3813,6 +3813,41 @@ describe("example workflow scripts", () => {
 		expect(evidence).toMatch(/not found|command not found/u);
 	});
 
+	it("preserves documentation validation stdout and stderr as raw artifacts", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-audit-validation-streams-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runDocsValidation",
+			scriptFileName: "run-doc-validation.js",
+			scriptDir: DOCUMENTATION_AUDIT_SCRIPT_DIR,
+			writes: ["/validation"],
+			initialState: {
+				task: {
+					validationCommand: "printf 'validation stdout\\n'; printf 'validation stderr\\n' >&2",
+				},
+				patch: {
+					status: "patched",
+					changed_files: ["docs/commands-and-groups.md"],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.validation).toMatchObject({
+			status: "pass",
+			validationStdoutPath: "workflow-output/validation-stdout.txt",
+			validationStderrPath: "workflow-output/validation-stderr.txt",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/validation-stdout.txt`).text()).toBe("validation stdout\n");
+		expect(await Bun.file(`${cwd}/workflow-output/validation-stderr.txt`).text()).toBe("validation stderr\n");
+		const evidence = await Bun.file(`${cwd}/workflow-output/documentation-validation.md`).text();
+		expect(evidence).toContain("workflow-output/validation-stdout.txt");
+		expect(evidence).toContain("workflow-output/validation-stderr.txt");
+	});
+
 	it("fails documentation audit before fanout when validation cannot start", async () => {
 		using tempDir = TempDir.createSync("@omh-documentation-audit-validation-startup-");
 		const cwd = tempDir.path();
