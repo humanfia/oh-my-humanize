@@ -35,4 +35,16 @@ describe("buildWorkflowShellEnvironment", () => {
 		expect(env.PYTHONNOUSERSITE).toBe("1");
 		expect(env.PYTHONPATH).toBe("src");
 	});
+
+	it("derives Python cache isolation from the workflow temp root", () => {
+		const env = buildWorkflowShellEnvironment(
+			undefined,
+			{ OMH_RUN_TMP: "/repo/temp/run", PYTEST_ADDOPTS: "-q" },
+			"linux",
+		);
+
+		expect(env.PYTHONDONTWRITEBYTECODE).toBe("1");
+		expect(env.PYTHONPYCACHEPREFIX).toBe("/repo/temp/run/python-pycache");
+		expect(env.PYTEST_ADDOPTS).toBe("-q -p no:cacheprovider");
+	});
 });

@@ -61,6 +61,24 @@ function createFifoOrSkip(fifoPath: string): boolean {
 	return true;
 }
 
+function findFilesWithSuffix(rootPath: string, suffix: string): string[] {
+	const results: string[] = [];
+	if (!fs.existsSync(rootPath)) return results;
+	const visit = (directoryPath: string, relativePath: string): void => {
+		for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+			const childRelativePath = relativePath ? path.join(relativePath, entry.name) : entry.name;
+			const childPath = path.join(directoryPath, entry.name);
+			if (entry.isDirectory()) {
+				visit(childPath, childRelativePath);
+			} else if (entry.isFile() && childRelativePath.endsWith(suffix)) {
+				results.push(childRelativePath);
+			}
+		}
+	};
+	visit(rootPath, "");
+	return results.sort();
+}
+
 interface ArchiveFixtureEntry {
 	path: string;
 	content: string;
@@ -1149,6 +1167,39 @@ function b() {
 
 			expect(getTextOutput(result)).toContain("test output");
 			expect(result.details?.timeoutSeconds).toBe(300);
+		});
+
+		it("keeps workflow Python cache byproducts under the workflow temp root", async () => {
+			const previousRunTmp = Bun.env.OMH_RUN_TMP;
+			const runTmp = path.join(testDir, "run-tmp");
+			await Bun.write(path.join(testDir, "pkg", "module_under_test.py"), "VALUE = 42\n");
+			Bun.env.OMH_RUN_TMP = runTmp;
+			try {
+				const workflowBashTool = new BashTool(
+					createTestToolSession(testDir, Settings.isolated(), { shellEnvironmentPolicy: "workflow" }),
+				);
+
+				const result = await workflowBashTool.execute("test-call-workflow-python-cache", {
+					command: "python -m py_compile pkg/module_under_test.py",
+				});
+
+				expect(result.isError).toBeUndefined();
+				expect(fs.existsSync(path.join(testDir, "pkg", "__pycache__"))).toBe(false);
+				expect(
+					findFilesWithSuffix(runTmp, ".pyc").some(
+						file =>
+							file.includes(`${path.sep}pkg${path.sep}`) &&
+							path.basename(file).startsWith("module_under_test.cpython-") &&
+							file.endsWith(".pyc"),
+					),
+				).toBe(true);
+			} finally {
+				if (previousRunTmp === undefined) {
+					delete Bun.env.OMH_RUN_TMP;
+				} else {
+					Bun.env.OMH_RUN_TMP = previousRunTmp;
+				}
+			}
 		});
 
 		it("should record wall time in text content and details", async () => {

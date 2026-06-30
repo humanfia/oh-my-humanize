@@ -1,3 +1,4 @@
+import { workflowScriptEnvironment } from "../workflow/script-runtime-env";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
 
 export type ShellEnvironmentPolicy = "isolated" | "workflow";
@@ -24,9 +25,13 @@ export function buildWorkflowShellEnvironment(
 	delete inheritedEnv.PYTHONPATH;
 	delete inheritedEnv.OMP_WORKFLOW_CONTEXT;
 	delete inheritedEnv.OMP_WORKFLOW_RESOURCE_DIR;
+	const workflowOverrides = {
+		...workflowScriptEnvironment({}, baseEnv),
+		...overrides,
+	};
 	const env = {
 		...inheritedEnv,
-		...buildNonInteractiveEnv(overrides, baseEnv, platform),
+		...buildNonInteractiveEnv(workflowOverrides, baseEnv, platform),
 	};
 	if (!overrides || !Object.hasOwn(overrides, "PYTHONNOUSERSITE")) {
 		delete env.PYTHONNOUSERSITE;
