@@ -72,12 +72,8 @@ nodes:
       - /task
     prompt:
       file: prompts/test-gaps.md
-    writes:
-      - /gaps
   - id: materializeGapReport
     type: script
-    reads:
-      - /gaps
     script:
       language: js
       file: scripts/materialize-gap-report.js

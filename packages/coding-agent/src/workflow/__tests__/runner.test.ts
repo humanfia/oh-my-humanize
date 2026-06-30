@@ -139,6 +139,54 @@ edges: []
 		});
 	});
 
+	it("fails the producer node when declared state writes are not materialized", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = declaredWriteMissingDefinition();
+		const freeze = freezeForDefinition(definition);
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async () => ({
+				summary: "coverage gaps were described in prose only",
+			}),
+			runScriptNode: async () => {
+				throw new Error("consumer node should not run");
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "inspectCoverage",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["inspectCoverage", "failed"],
+		]);
+		expect(result.scheduler.activations[0]?.error).toContain(
+			'workflow node "inspectCoverage" declared state writes but produced no workflow state patch',
+		);
+		expect(result.scheduler.state).toEqual({});
+
+		const family = reconstructWorkflowFamilies(host.getBranch())[0]!;
+		expect(family.attempts[0]).toMatchObject({
+			status: "failed",
+			error: expect.stringContaining("declared state writes"),
+		});
+		expect(family.checkpoints[0]).toMatchObject({
+			frontierNodeIds: ["inspectCoverage"],
+			state: {},
+			completedActivationIds: [],
+		});
+	});
+
 	it("creates a restartable checkpoint when an activation fails", async () => {
 		const host = new MemoryWorkflowHost();
 		const definition = failureRecoveryDefinition();
@@ -634,6 +682,31 @@ function failClosedAgentDefinition(): WorkflowDefinition {
 			},
 		],
 		edges: [{ from: "inspect", to: "after" }],
+	};
+}
+
+function declaredWriteMissingDefinition(): WorkflowDefinition {
+	return {
+		name: "declared-write-missing",
+		version: 1,
+		models: { roles: {}, defaults: {} },
+		nodes: [
+			{
+				id: "inspectCoverage",
+				type: "agent",
+				agent: "task",
+				prompt: "Return a structured gap report.",
+				writes: ["/gaps"],
+			},
+			{
+				id: "materializeGapReport",
+				type: "script",
+				script: { language: "sh", code: "consume gaps" },
+				reads: ["/gaps"],
+				writes: ["/gaps"],
+			},
+		],
+		edges: [{ from: "inspectCoverage", to: "materializeGapReport" }],
 	};
 }
 

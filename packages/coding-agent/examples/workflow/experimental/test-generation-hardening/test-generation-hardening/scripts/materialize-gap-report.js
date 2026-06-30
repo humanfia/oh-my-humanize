@@ -1,4 +1,17 @@
-const gaps = workflowContext.state?.gaps;
+const RUNTIME_DATA_KEYS = new Set([
+	"exitCode",
+	"summaryTruncated",
+	"summaryBytes",
+	"agentId",
+	"outputPath",
+	"sessionFile",
+	"patchPath",
+	"branchName",
+	"changesApplied",
+	"retryHistory",
+]);
+
+const gaps = workflowContext.state?.gaps ?? (await materializeCoverageGapHandoff(latestCompletedActivation("inspectCoverage")));
 if (!gaps || typeof gaps !== "object") {
 	throw new Error("test-generation-hardening requires /gaps before materializeGapReport");
 }
@@ -110,4 +123,143 @@ function bounded(text) {
 	const limit = 8000;
 	if (text.length <= limit) return text;
 	return `${text.slice(0, limit)}\n[truncated ${text.length - limit} bytes]`;
+}
+
+function latestCompletedActivation(nodeId) {
+	const completed = Array.isArray(workflowContext.completedActivations)
+		? workflowContext.completedActivations.filter(
+				activation => activation.nodeId === nodeId && activation.status === "completed",
+			)
+		: [];
+	const activation = completed.at(-1);
+	if (activation) return activation;
+	throw new Error(`test-generation-hardening could not find completed ${nodeId} activation`);
+}
+
+async function materializeCoverageGapHandoff(activation) {
+	const summary = activationSummary(activation);
+	const data = activationData(activation);
+	const source =
+		gapReportSource(parseObjectFromText(summary)) ??
+		gapReportSource(data) ??
+		gapReportSource(await parseGapReportFromActivationSession(activation));
+	if (!source) {
+		throw new Error(`test-generation-hardening ${activation.nodeId} did not return a structured coverage gap report`);
+	}
+	const value = {
+		...source,
+		status: stringValue(source.status, "ready"),
+		summary: stringValue(source.summary, summary || "Coverage inspection completed."),
+		source_node: "inspectCoverage",
+		source_activation_id: activation.id,
+	};
+	return value;
+}
+
+function activationSummary(activation) {
+	const summary = activation?.output?.summary;
+	return typeof summary === "string" ? summary.trim() : "";
+}
+
+function activationData(activation) {
+	const value = activation?.output?.data;
+	if (!isRecord(value)) return {};
+	const data = {};
+	for (const [key, child] of Object.entries(value)) {
+		if (RUNTIME_DATA_KEYS.has(key)) continue;
+		data[key] = child;
+	}
+	return data;
+}
+
+async function parseGapReportFromActivationSession(activation) {
+	const sessionFile = activation?.output?.data?.sessionFile;
+	if (typeof sessionFile !== "string" || !sessionFile.trim()) return undefined;
+	let records = [];
+	try {
+		records = Bun.JSONL.parse(await Bun.file(sessionFile).text());
+	} catch {
+		return undefined;
+	}
+	for (const record of records.toReversed()) {
+		for (const text of assistantTextBlocks(record).toReversed()) {
+			const source = gapReportSource(parseObjectFromText(text));
+			if (source) return source;
+		}
+	}
+	return undefined;
+}
+
+function assistantTextBlocks(record) {
+	if (!isRecord(record)) return [];
+	if (record.type !== "message") return [];
+	const message = record.message;
+	if (!isRecord(message) || message.role !== "assistant") return [];
+	const content = Array.isArray(message.content) ? message.content : [];
+	const texts = [];
+	for (const item of content) {
+		if (!isRecord(item) || item.type !== "text" || typeof item.text !== "string") continue;
+		texts.push(item.text);
+	}
+	return texts;
+}
+
+function gapReportSource(value) {
+	if (!isRecord(value)) return undefined;
+	if (isRecord(value.data)) {
+		const nested = gapReportSource(value.data);
+		if (nested) {
+			return typeof value.summary === "string" && !nested.summary ? { ...nested, summary: value.summary } : nested;
+		}
+	}
+	if (!isStructuredGapReport(value)) return undefined;
+	return value;
+}
+
+function isStructuredGapReport(value) {
+	if (typeof value.status === "string" && value.status.trim()) return true;
+	if (isRecord(value.validation)) return true;
+	if (hasNonEmptyArray(value.unitGaps)) return true;
+	if (hasNonEmptyArray(value.integrationGaps)) return true;
+	if (hasNonEmptyArray(value.regressionRisks)) return true;
+	if (hasNonEmptyArray(value.filesLikelyToNeedTestChanges)) return true;
+	if (hasNonEmptyArray(value.smallestUsefulTestAdditions)) return true;
+	return false;
+}
+
+function hasNonEmptyArray(value) {
+	return Array.isArray(value) && value.length > 0;
+}
+
+function parseObjectFromText(text) {
+	if (!text.trim()) return undefined;
+	const direct = parseJsonObject(text.trim());
+	if (direct) return direct;
+	const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/iu);
+	if (fence?.[1]) {
+		const fenced = parseJsonObject(fence[1].trim());
+		if (fenced) return fenced;
+	}
+	const lines = text
+		.split(/\r?\n/)
+		.map(line => line.trim())
+		.filter(line => line.length > 0);
+	for (const line of lines.toReversed()) {
+		const parsed = parseJsonObject(line);
+		if (parsed) return parsed;
+	}
+	return undefined;
+}
+
+function parseJsonObject(text) {
+	try {
+		const parsed = JSON.parse(text);
+		return isRecord(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function isRecord(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

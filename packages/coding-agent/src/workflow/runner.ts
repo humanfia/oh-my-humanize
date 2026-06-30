@@ -509,6 +509,7 @@ async function executeAndPersistActivation(
 			allowedWritePaths: node.writes,
 			stateSchema: options.definition.stateSchema,
 		});
+		assertDeclaredWritesWereMaterialized(node, output);
 		assertWorkflowOutputAllowsContinuation(node, output);
 		if (output.statePatch) {
 			appendWorkflowStatePatch(options.host, run.id, {
@@ -696,7 +697,29 @@ function materializeSingleWriteData(node: WorkflowNode, output: WorkflowActivati
 
 function hasStructuredWorkflowData(data: Record<string, unknown> | undefined): data is Record<string, unknown> {
 	if (data === undefined) return false;
-	return Object.keys(data).some(key => key !== "exitCode" && key !== "summaryTruncated" && key !== "summaryBytes");
+	return Object.keys(data).some(key => !WORKFLOW_RUNTIME_DATA_KEYS.has(key));
+}
+
+const WORKFLOW_RUNTIME_DATA_KEYS = new Set([
+	"exitCode",
+	"summaryTruncated",
+	"summaryBytes",
+	"agentId",
+	"outputPath",
+	"sessionFile",
+	"patchPath",
+	"branchName",
+	"changesApplied",
+	"retryHistory",
+]);
+
+function assertDeclaredWritesWereMaterialized(node: WorkflowNode, output: WorkflowActivationOutput): void {
+	if (node.writes === undefined || node.writes.length === 0) return;
+	if (node.type === "script") return;
+	if ((output.statePatch?.length ?? 0) > 0) return;
+	throw new WorkflowRunnerError(
+		`workflow node "${node.id}" declared state writes but produced no workflow state patch`,
+	);
 }
 
 function assertWorkflowOutputAllowsContinuation(node: WorkflowNode, output: WorkflowActivationOutput): void {

@@ -7763,6 +7763,249 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("materializes test-hardening gap reports from coverage inspection activations", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-gap-agent-handoff-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const materializer = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/scripts/materialize-gap-report.js`).text();
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "test-hardening-gap-agent-handoff",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "inspectCoverage",
+						type: "script",
+						script: {
+							language: "js",
+							code: [
+								"return {",
+								"  summary: JSON.stringify({",
+								"    status: 'ready',",
+								"    summary: 'CSV validation lacks malformed row coverage',",
+								"    unitGaps: ['Malformed CSV row branch'],",
+								"    filesLikelyToNeedTestChanges: ['tests/test_csv.py'],",
+								"    validation: { startable: true, command: 'python -m pytest tests/test_csv.py' },",
+								"  }),",
+								"};",
+							].join("\n"),
+						},
+					},
+					{
+						id: "materializeGapReport",
+						type: "script",
+						script: {
+							language: "js",
+							code: materializer,
+						},
+						writes: ["/gaps"],
+					},
+				],
+				edges: [{ from: "inspectCoverage", to: "materializeGapReport" }],
+			},
+		});
+
+		expect(result.scheduler.state.gaps).toMatchObject({
+			summary: "CSV validation lacks malformed row coverage",
+			source_node: "inspectCoverage",
+			gapReportPath: "workflow-output/test-hardening-gap-report.md",
+		});
+		const report = await Bun.file(`${cwd}/workflow-output/test-hardening-gap-report.md`).text();
+		expect(report).toContain("Malformed CSV row branch");
+		expect(report).toContain("tests/test_csv.py");
+	});
+
+	it("materializes test-hardening blocked reports from coverage inspection data handoffs", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-gap-data-handoff-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const materializer = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/scripts/materialize-gap-report.js`).text();
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "test-hardening-gap-data-handoff",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "inspectCoverage",
+						type: "script",
+						script: {
+							language: "js",
+							code: [
+								"return {",
+								"  summary: 'Structured coverage report returned in data.',",
+								"  data: {",
+								"    status: 'blocked',",
+								"    summary: 'pytest is unavailable in this environment',",
+								"    validation: {",
+								"      startable: false,",
+								"      command: 'python3 -m pytest tests -q',",
+								"      stderr: '/usr/bin/python3: No module named pytest',",
+								"    },",
+								"    agentId: 'workflow-inspectCoverage-activation-2',",
+								"  },",
+								"};",
+							].join("\n"),
+						},
+					},
+					{
+						id: "materializeGapReport",
+						type: "script",
+						script: {
+							language: "js",
+							code: materializer,
+						},
+						writes: ["/gaps"],
+					},
+				],
+				edges: [{ from: "inspectCoverage", to: "materializeGapReport" }],
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "materializeGapReport")?.status,
+		).toBe("failed");
+		expect(await Bun.file(`${cwd}/workflow-output/test-hardening-gap-report.md`).text()).toContain(
+			"No module named pytest",
+		);
+	});
+
+	it("materializes test-hardening gap reports from coverage inspection session transcripts", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-gap-session-handoff-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const materializer = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/scripts/materialize-gap-report.js`).text();
+		await Bun.write(
+			`${cwd}/inspect-session.jsonl`,
+			[
+				JSON.stringify({
+					type: "message",
+					message: {
+						role: "assistant",
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									status: "blocked",
+									summary: "pytest is unavailable in this environment",
+									validation: {
+										startable: false,
+										command: "python3 -m pytest tests -q",
+										stderr: "/usr/bin/python3: No module named pytest",
+									},
+									unitGaps: ["Markup spans around wide glyphs"],
+								}),
+							},
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					message: {
+						role: "assistant",
+						content: [
+							{
+								type: "text",
+								text: "Todo completed. The blocked structured report was already returned.",
+							},
+						],
+					},
+				}),
+			].join("\n"),
+		);
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "test-hardening-gap-session-handoff",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "inspectCoverage",
+						type: "script",
+						script: {
+							language: "js",
+							code: [
+								"return {",
+								"  summary: 'Todo completed. The blocked structured report was already returned.',",
+								"  data: { sessionFile: 'inspect-session.jsonl' },",
+								"};",
+							].join("\n"),
+						},
+					},
+					{
+						id: "materializeGapReport",
+						type: "script",
+						script: {
+							language: "js",
+							code: materializer,
+						},
+						writes: ["/gaps"],
+					},
+				],
+				edges: [{ from: "inspectCoverage", to: "materializeGapReport" }],
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "materializeGapReport")?.status,
+		).toBe("failed");
+		const report = await Bun.file(`${cwd}/workflow-output/test-hardening-gap-report.md`).text();
+		expect(report).toContain("Markup spans around wide glyphs");
+		expect(report).toContain("No module named pytest");
+	});
+
+	it("fails test-hardening gap materialization when coverage inspection is unstructured", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-gap-unstructured-handoff-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const materializer = await Bun.file(`${TEST_GENERATION_HARDENING_DIR}/scripts/materialize-gap-report.js`).text();
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "test-hardening-gap-unstructured-handoff",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "inspectCoverage",
+						type: "script",
+						script: {
+							language: "js",
+							code: "return { summary: 'Todo completed. The structured report was already returned.' };",
+						},
+					},
+					{
+						id: "materializeGapReport",
+						type: "script",
+						script: {
+							language: "js",
+							code: materializer,
+						},
+						writes: ["/gaps"],
+					},
+				],
+				edges: [{ from: "inspectCoverage", to: "materializeGapReport" }],
+			},
+		});
+
+		const materialize = result.scheduler.activations.find(activation => activation.nodeId === "materializeGapReport");
+		expect(materialize?.status).toBe("failed");
+		expect(materialize?.error).toContain("did not return a structured coverage gap report");
+		expect(result.scheduler.state.gaps).toBeUndefined();
+	});
+
 	it("fails closed when test-hardening validation has an unclean baseline", async () => {
 		using tempDir = TempDir.createSync("@omh-test-hardening-gap-unclean-baseline-");
 		const cwd = tempDir.path();

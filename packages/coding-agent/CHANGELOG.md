@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed workflow agent/human nodes being marked complete after declaring state writes but producing no workflow state patch, so missing model-output state now fails at the producer node instead of later consumers; the experimental test-generation-hardening flow now materializes coverage-inspection summary/data/transcript handoffs before writing `/gaps` and fails closed on unstructured handoffs instead of fabricating a ready report.
 - Fixed the experimental performance-optimization-search flow treating a committed positive selection with a clean worktree as a no-win outcome during finalize/archive.
 - Fixed the experimental research-reproduction flow assuming comparison agent summaries automatically materialized `/comparison` before review prompts.
 - Fixed headless workflow starts returning success when scheduler-level prompt binding failures failed the run, and now persist those failures into workflow observability.
