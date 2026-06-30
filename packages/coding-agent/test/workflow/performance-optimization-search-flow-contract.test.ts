@@ -285,6 +285,58 @@ describe("performance-optimization-search flow contract", () => {
 			benchmarkRelevanceBlockers: [],
 		});
 	});
+
+	it("finalizes a natural-language authorized no-win search without ghost branches", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "src/click/core.py"), "def core():\n    return 'unchanged'\n");
+		await runCommand(["git", "add", "src/click/core.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await writeNoWinBranchReport(
+			cwd,
+			"algorithmic",
+			"parser dispatch candidate reverted; no improvement over baseline",
+		);
+		await writeNoWinBranchReport(cwd, "caching", "cache candidate reverted; no repeatable improvement");
+		await writeNoWinBranchReport(cwd, "io", "io candidate reverted; slower than clean repeated evidence");
+		await Bun.write(
+			path.join(cwd, "workflow-output/performance-selection-repair.md"),
+			[
+				"# Performance Selection Repair",
+				"",
+				"- selected branch: none",
+				"- no-win branch: algorithmic, caching, and io are all retained as benchmark-relevant no-win branch findings.",
+				"",
+				"benchmark command exited 0",
+				"validation command exited 0",
+				"Negative branch findings are acceptable when archived with durable evidence and rollback reasoning.",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "finalize-performance-selection.js", {
+			review: "verdict: finish",
+			task: {
+				text: "Negative branch findings are acceptable when archived with durable evidence and rollback reasoning.",
+			},
+			benchmark: { status: "pass", benchmarkExitCode: 0, validationExitCode: 0 },
+			selectionRepair: {
+				benchmark: { status: "pass", exitCode: 0 },
+				validation: { status: "pass", exitCode: 0 },
+			},
+		});
+		const selection = result.statePatch?.find(patch => patch.path === "/selection")?.value;
+
+		expect(result.summary).toBe("finalized performance selection: no-win");
+		expect(selection).toMatchObject({
+			status: "pass",
+			terminalState: "no-win",
+			selectedBranches: [],
+			noWinBranches: ["algorithmic", "caching", "io"],
+		});
+		expect(selection?.positiveUnselectedBranches).not.toContain("no-win");
+	});
 });
 
 async function runScriptFile(
@@ -320,6 +372,42 @@ async function createGitRepo(): Promise<string> {
 	await runCommand(["git", "config", "user.name", "Test User"], dir);
 	await runCommand(["git", "config", "commit.gpgsign", "false"], dir);
 	return dir;
+}
+
+async function writeNoWinBranchReport(cwd: string, strategy: string, decision: string): Promise<void> {
+	await Bun.write(
+		path.join(cwd, `workflow-output/perf-${strategy}.md`),
+		[
+			`# Performance ${strategy} Branch`,
+			"",
+			"## Structured Branch State",
+			"",
+			"```json",
+			JSON.stringify(
+				{
+					status: "no-win",
+					strategy,
+					retainedFiles: [],
+					candidatePatchPath: null,
+					benchmarkRelevance: "yes",
+					finalSelection: "no",
+					noWinResult: "yes",
+					measurements: [{ candidate: strategy, result: "200 loops, best of 3: 158 usec per loop", decision }],
+				},
+				null,
+				2,
+			),
+			"```",
+			"",
+			"final-selection: no",
+			"no-win-result: yes",
+			"benchmark-relevance: yes",
+			"benchmark-covered rejection: yes",
+			`${decision}.`,
+			"rollback evidence: no project-code changes are retained.",
+			"",
+		].join("\n"),
+	);
 }
 
 async function runCommand(command: string[], cwd: string): Promise<void> {

@@ -30,6 +30,7 @@ const benchmarkRelevantBranches = selectedBranches.filter((report) =>
 );
 const positiveUnselectedBranches = branchReports.filter((report) => {
 	if (selectedBranchNames.has(report.name)) return false;
+	if (isNoWinWithoutRetainedPositiveEvidence(report.text, selectionRepairText)) return false;
 	const evidenceText = reportEvidenceText(report, selectionRepairText);
 	return hasPositiveBenchmarkEvidence(evidenceText);
 });
@@ -169,7 +170,8 @@ async function readBranchReports() {
 	const reports = [];
 	for (const name of ["algorithmic", "caching", "io", "no-win"]) {
 		const file = `workflow-output/perf-${name}.md`;
-		reports.push({ name, file, text: await readOptionalText(file) });
+		const text = await readOptionalText(file);
+		if (text.trim() !== "") reports.push({ name, file, text });
 	}
 	return reports;
 }
@@ -233,18 +235,105 @@ function uniqueReports(reports) {
 }
 
 function hasPositiveBenchmarkEvidence(text) {
+	const evidenceText = text
+		.split(/\r?\n/u)
+		.filter((line) => !dismissesPositiveBenchmarkEvidence(line))
+		.join("\n");
 	if (
-		/\bno\s+(?:measured\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text) ||
-		/\bno\s+stable\s+positive\s+result\b/iu.test(text) ||
-		/\bwithout\s+(?:a\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(text)
+		/\bno\s+(?:measured\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(evidenceText) ||
+		/\bno\s+stable\s+positive\s+result\b/iu.test(evidenceText) ||
+		/\bwithout\s+(?:a\s+)?positive\s+(?:movement|result|candidate|optimization)\b/iu.test(evidenceText)
 	) {
 		return false;
 	}
 	return (
-		/\bpositive\s+benchmark\b/iu.test(text) ||
-		/\bbenchmark\s+(?:improvement|speedup|win)\b/iu.test(text) ||
-		/\b(?:improved|faster|speedup|reduced|lower)\b.{0,100}\bbenchmark\b/iu.test(text) ||
-		/\bbenchmark\b.{0,100}\b(?:improved|faster|speedup|reduced|lower|win)\b/iu.test(text)
+		/\bpositive\s+benchmark\b/iu.test(evidenceText) ||
+		/\bbenchmark\s+(?:improvement|speedup|win)\b/iu.test(evidenceText) ||
+		/\b(?:improved|faster|speedup|reduced|lower)\b.{0,100}\bbenchmark\b/iu.test(evidenceText) ||
+		/\bbenchmark\b.{0,100}\b(?:improved|faster|speedup|reduced|lower|win)\b/iu.test(evidenceText)
+	);
+}
+
+function isNoWinWithoutRetainedPositiveEvidence(reportText, repairText) {
+	const structuredState = branchStructuredState(reportText);
+	if (structuredState && structuredNoWinWithoutRetainedPositiveEvidence(structuredState)) return true;
+	if (!/\bno-win-result\s*:\s*yes\b/iu.test(reportText) || !/\bfinal-selection\s*:\s*no\b/iu.test(reportText)) {
+		return false;
+	}
+	const evidenceText = `${reportText}\n${repairText}`;
+	return (
+		/\b(?:no candidate patch exists|candidatePatchPath["']?\s*:\s*null|no .*project-code changes are retained|no .*code changes|retained no code changes)\b/iu.test(
+			evidenceText,
+		) &&
+		/\b(?:reverted|slower|no improvement|none improved|flat|neutral|negative|equal)\b/iu.test(evidenceText)
+	);
+}
+
+function branchStructuredState(text) {
+	const match = /```json\s*([\s\S]*?)```/iu.exec(text);
+	if (!match) return undefined;
+	try {
+		const value = JSON.parse(match[1]);
+		return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function structuredNoWinWithoutRetainedPositiveEvidence(state) {
+	const status = stringValue(state.status);
+	const finalSelection = stringValue(state.finalSelection);
+	const noWinResult = stringValue(state.noWinResult);
+	if (status !== "no-win" && noWinResult !== "yes" && noWinResult !== "true") return false;
+	if (finalSelection !== "" && finalSelection !== "no" && finalSelection !== "false") return false;
+	if (hasRetainedBranchArtifact(state)) return false;
+	const measurements = Array.isArray(state.measurements) ? state.measurements : [];
+	return measurements.length === 0 || measurements.every(measurementDismissesPositiveResult);
+}
+
+function hasRetainedBranchArtifact(state) {
+	const candidatePatchPath = state.candidatePatchPath;
+	if (typeof candidatePatchPath === "string" && candidatePatchPath.trim() !== "") return true;
+	if (Array.isArray(state.retainedFiles) && state.retainedFiles.length > 0) return true;
+	if (Array.isArray(state.retainedProjectFiles) && state.retainedProjectFiles.length > 0) return true;
+	if (Array.isArray(state.retainedCodeChanges) && state.retainedCodeChanges.length > 0) return true;
+	return false;
+}
+
+function measurementDismissesPositiveResult(measurement) {
+	if (!measurement || typeof measurement !== "object") return false;
+	const decision = typeof measurement.decision === "string" ? measurement.decision : "";
+	return /\b(?:reverted|slower|no improvement|none improved|flat|neutral|negative|equal|retained no code changes)\b/iu.test(
+		decision,
+	);
+}
+
+function stringValue(value) {
+	if (typeof value === "boolean") return value ? "yes" : "no";
+	return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function dismissesPositiveBenchmarkEvidence(line) {
+	return (
+		/\bno[^\S\r\n]+(?:measured[^\S\r\n]+)?positive[^\S\r\n]+(?:movement|result|candidate|optimization)\b/iu.test(
+			line,
+		) ||
+		/\bno[^\S\r\n]+positive[^\S\r\n]+(?:task[^\S\r\n]+)?benchmark(?:[- ]like)?[^\S\r\n]+(?:movement|result|candidate|optimization)\b/iu.test(
+			line,
+		) ||
+		/\bdid[^\S\r\n]+not[^\S\r\n]+report\b.{0,120}\bpositive[^\S\r\n]+(?:task[^\S\r\n]+)?benchmark(?:[- ]like)?[^\S\r\n]+(?:movement|result|candidate|optimization)\b/iu.test(
+			line,
+		) ||
+		/\bnot[^\S\r\n]+(?:a[^\S\r\n]+)?safe[^\S\r\n]+positive[^\S\r\n]+result\b/iu.test(line) ||
+		/\bno[^\S\r\n]+stable[^\S\r\n]+positive[^\S\r\n]+result\b/iu.test(line) ||
+		/\bwithout[^\S\r\n]+(?:a[^\S\r\n]+)?positive[^\S\r\n]+(?:movement|result|candidate|optimization)\b/iu.test(
+			line,
+		) ||
+		/\bbenchmark[^\S\r\n]+(?:result|measurement)[^\S\r\n]+was[^\S\r\n]+(?:flat|neutral|negative)\b/iu.test(line) ||
+		/\bspeedup\s*`?0(?:\.0+)?%`?\b/iu.test(line) ||
+		/\b(?:selected|retained|winning|chosen)\b.{0,120}\bpositive[^\S\r\n]+benchmark(?:[- ]covered)?[^\S\r\n]+(?:movement|result|candidate|optimization|win)\b/iu.test(
+			line,
+		)
 	);
 }
 
@@ -258,6 +347,7 @@ function allowsNoWinArchive(taskValue) {
 		/\bNo-Win Result\s*:\s*allowed\b/iu.test(taskText) ||
 		/\bNo-Code\/No-Change Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText) ||
 		/\bNo-Code Allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(taskText) ||
+		/\bnegative\s+branch\s+findings\s+are\s+acceptable\b/iu.test(taskText) ||
 		/\barchive\s+a\s+no-win\s+result\b/iu.test(taskText) ||
 		/\bno-win\s+is\s+acceptable\s+only\s+with\b/iu.test(taskText) ||
 		/\btask\s+(?:permits|allows|accepts)\s+a\s+no-win\s+result\b/iu.test(taskText)
