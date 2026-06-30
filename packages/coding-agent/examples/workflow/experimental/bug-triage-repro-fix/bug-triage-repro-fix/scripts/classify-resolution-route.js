@@ -5,14 +5,20 @@ const cause = state.cause && typeof state.cause === "object" ? state.cause : {};
 
 const reproductionExitCode = typeof repro.exitCode === "number" ? repro.exitCode : null;
 const allowedNoCodeResolution = allowsNoCodeResolution(task);
-const route = allowedNoCodeResolution && reproductionExitCode === 0 ? "no-code" : "patch";
+const noCodeCauseResolution = hasNoCodeCauseResolution(cause);
+const reproductionPassed = reproductionExitCode === 0;
+const route = allowedNoCodeResolution && (reproductionPassed || noCodeCauseResolution) ? "no-code" : "patch";
+const noCodeBasis = reproductionPassed
+	? "the task-declared reproduction command exited successfully"
+	: "isolateCause explicitly recorded no-code resolution evidence";
 const resolution = {
 	route,
 	allowedNoCodeResolution,
 	reproductionExitCode,
+	noCodeCauseResolution,
 	reason:
 		route === "no-code"
-			? "task contract permits no-code resolution and the task-declared reproduction command exited successfully"
+			? `task contract permits no-code resolution and ${noCodeBasis}`
 			: "task-declared reproduction still requires a code or test patch path",
 };
 
@@ -43,7 +49,9 @@ await Bun.write(
 		"## Evidence",
 		"",
 		"- The frozen task contract explicitly allows `No-Code Resolution: allowed`.",
+		`- Route basis: ${noCodeBasis}.`,
 		`- The task-declared reproduction command exited with ${String(reproductionExitCode)}.`,
+		noCodeCauseResolution ? "- isolateCause explicitly recorded `resolution: no-code`." : "",
 		`- Reproduction evidence: ${reproductionPath}.`,
 		"",
 		"## Rollback",
@@ -64,7 +72,7 @@ await Bun.write(
 		"## Cause Reconciliation",
 		"",
 		"The isolateCause handoff is reconciled against the task-declared reproduction command.",
-		"Because the frozen task contract permits no-code resolution and the reproduction command passed,",
+		`Because the frozen task contract permits no-code resolution and ${noCodeBasis},`,
 		"any defect-like fix boundary from isolateCause is treated as refuted for this run unless later evidence",
 		"shows that the reproduction command did not exercise the reported behavior.",
 		"",
@@ -100,6 +108,13 @@ return {
 function allowsNoCodeResolution(value) {
 	const taskText = typeof value.taskText === "string" ? value.taskText : typeof value.text === "string" ? value.text : "";
 	return /\bNo-Code Resolution\s*:\s*allowed\b/iu.test(taskText);
+}
+
+function hasNoCodeCauseResolution(value) {
+	return (
+		typeof value.resolution === "string" &&
+		/^no[-\s]?code$/iu.test(value.resolution.trim())
+	);
 }
 
 function evidenceText(value) {

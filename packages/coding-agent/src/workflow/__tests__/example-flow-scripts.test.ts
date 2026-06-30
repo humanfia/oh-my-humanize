@@ -168,6 +168,62 @@ describe("example workflow scripts", () => {
 		expect(reconciliation).toContain("isolateCause");
 	});
 
+	it("routes explicit bug triage no-code cause evidence away from patching", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-no-code-cause-route-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Investigate whether the reported behavior is an application defect or an invalid reproduction.",
+			"",
+			"No-Code Resolution: allowed",
+			"",
+			"Reproduction Command:",
+			"python -c \"raise SyntaxError('bad harness')\"",
+			"",
+			"Validation Command:",
+			"python -m py_compile src/example.py",
+		].join("\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "classifyResolutionRoute",
+			scriptFileName: "classify-resolution-route.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/resolution", "/patch"],
+			initialState: {
+				task: {
+					taskText,
+					reproductionCommand: "python -c \"raise SyntaxError('bad harness')\"",
+					validationCommand: "python -m py_compile src/example.py",
+				},
+				repro: {
+					exitCode: 1,
+					outputPath: "workflow-output/reproduction.md",
+				},
+				cause: {
+					resolution: "no-code",
+					rootCause: "The frozen reproduction command failed before exercising the reported behavior.",
+					evidence: ["Corrected manual reproduction rejected the tampered token."],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.resolution).toMatchObject({
+			route: "no-code",
+			allowedNoCodeResolution: true,
+			reproductionExitCode: 1,
+		});
+		expect(result.scheduler.state.patch).toMatchObject({
+			mode: "no-code",
+			changedFiles: [],
+		});
+		const rollback = await Bun.file(`${cwd}/workflow-output/bugfix-rollback.md`).text();
+		expect(rollback).toContain("No project files were changed");
+		expect(rollback).toContain("isolateCause");
+	});
+
 	it("binds research reproduction validation evidence as standalone prompt context", async () => {
 		const artifact = await loadWorkflowArtifact(
 			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,
