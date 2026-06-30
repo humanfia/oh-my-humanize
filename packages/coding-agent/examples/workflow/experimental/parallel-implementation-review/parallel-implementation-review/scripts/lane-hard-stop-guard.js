@@ -1,5 +1,6 @@
 const tupleId = await tupleIdFromRunArtifacts();
 const laneReadiness = await requiredLaneEvidence(tupleId);
+const laneSummaries = completedLaneSummaries(laneReadiness);
 const hardStopResult = await laneHardStopArtifacts(tupleId);
 const hardStopArtifacts = hardStopResult.active;
 const reservedFinalArtifacts = await reservedFinalArtifactFiles(tupleId);
@@ -16,6 +17,7 @@ const diagnostic = {
 	producer_kind: "workflow-script",
 	status: hasBlockingArtifacts ? "hard_stop" : "continue",
 	lane_artifacts: laneReadiness.present,
+	lane_summaries: laneSummaries,
 	missing_lane_artifacts: laneReadiness.missing,
 	blocking_lane_artifacts: laneReadiness.blocking,
 	hard_stop_artifacts: hardStopArtifacts,
@@ -43,6 +45,7 @@ if (hasBlockingArtifacts) {
 			producer_node: "laneHardStopGuard",
 			status: "hard_stop",
 			lane_artifacts: laneReadiness.present,
+			lane_summaries: laneSummaries,
 			missing_lane_artifacts: laneReadiness.missing,
 			blocking_lane_artifacts: laneReadiness.blocking,
 			hard_stop_artifacts: hardStopArtifacts,
@@ -61,9 +64,45 @@ return {
 		producer_node: "laneHardStopGuard",
 		status: "continue",
 		lane_artifacts: laneReadiness.present,
+		lane_summaries: laneSummaries,
 	},
 	statePatch: [{ op: "set", path: "/laneHardStopGuard", value: diagnostic }],
 };
+
+function completedLaneSummaries(laneReadiness) {
+	return Object.fromEntries(
+		["implementCore", "implementTests", "implementDocs"].map(nodeId => [
+			nodeId,
+			latestCompletedActivationSummary(nodeId) || laneEvidenceSummary(nodeId, laneReadiness),
+		]),
+	);
+}
+
+function latestCompletedActivationSummary(nodeId) {
+	const completed = Array.isArray(workflowContext.completedActivations)
+		? workflowContext.completedActivations.filter(
+				activation => activation.nodeId === nodeId && activation.status === "completed",
+			)
+		: [];
+	const summary = completed.at(-1)?.output?.summary;
+	return typeof summary === "string" && summary.trim() ? summary.trim() : "";
+}
+
+function laneEvidenceSummary(nodeId, laneReadiness) {
+	const artifacts = laneReadiness.present.filter(artifact => artifact.lane === nodeId);
+	if (artifacts.length === 0) {
+		return `${nodeId} produced no readable lane summary; inspect workflow-output lane artifacts.`;
+	}
+	return artifacts
+		.map(artifact => {
+			const status = artifact.status ? ` status=${artifact.status}` : "";
+			const validation = artifact.validation_status ? ` validation=${artifact.validation_status}` : "";
+			const exitCode =
+				typeof artifact.validation_exit_code === "number" ? ` validation_exit_code=${artifact.validation_exit_code}` : "";
+			return `${artifact.file}${status}${validation}${exitCode}`;
+		})
+		.join("\n");
+}
 
 async function requiredLaneEvidence(tupleId) {
 	if (!tupleId) {

@@ -243,9 +243,12 @@ function roundEvidenceFile(file) {
 }
 
 function rollbackNoteForFile(file, text) {
-	const note = [directRollbackNoteForFile(file, text), nestedRollbackNoteForFile(file, text), sectionedRollbackNoteForFile(file, text)].find(
-		candidate => concreteRollbackNote(candidate),
-	);
+	const note = [
+		directRollbackNoteForFile(file, text),
+		nestedRollbackNoteForFile(file, text),
+		sectionedRollbackNoteForFile(file, text),
+		headingScopedRollbackNoteForFile(file, text),
+	].find(candidate => concreteRollbackNote(candidate));
 	if (!note) return "";
 	return `${file}: ${note}`;
 }
@@ -284,6 +287,21 @@ function sectionedRollbackNoteForFile(file, text) {
 	return "";
 }
 
+function headingScopedRollbackNoteForFile(file, text) {
+	const lines = text.split(/\r?\n/u);
+	for (let index = 0; index < lines.length; index += 1) {
+		const headingLevel = markdownHeadingLevel(lines[index] ?? "");
+		if (headingLevel === 0 || !lineMentionsFile(file, lines[index] ?? "")) continue;
+		for (const line of lines.slice(index + 1)) {
+			const nextHeadingLevel = markdownHeadingLevel(line);
+			if (nextHeadingLevel > 0 && nextHeadingLevel <= headingLevel) break;
+			const note = rollbackLineValue(line);
+			if (concreteRollbackNote(note)) return note;
+		}
+	}
+	return "";
+}
+
 function fileReferenceLine(file, line) {
 	return lineMentionsFile(file, line) && /^\s*[-*]?\s*/u.test(line);
 }
@@ -302,7 +320,20 @@ function stripBulletPrefix(line) {
 }
 
 function concreteRollbackNote(note) {
-	return Boolean(note?.trim()) && /\b(?:rollback|revert|restore|remove)\b/iu.test(note);
+	return Boolean(note?.trim()) && /\b(?:roll\s+back|rollback|revert|restore|remove|delete)\b/iu.test(note);
+}
+
+function rollbackLineValue(line) {
+	const match =
+		/^\s*(?:[-*]\s*)?(?:concrete\s+)?(?:per-file\s+)?(?:rollback|revert|restore|remove)(?:\s*\/\s*(?:rollback|revert|restore|remove))*\s*(?:note|procedure|plan|risk)?\s*:\s*(.+)$/iu.exec(
+			line,
+		);
+	return match?.[1]?.trim() ?? "";
+}
+
+function markdownHeadingLevel(line) {
+	const match = /^(\s*#{1,6})\s+\S/u.exec(line);
+	return match ? match[1].trim().length : 0;
 }
 
 function validationRounds(progressText) {

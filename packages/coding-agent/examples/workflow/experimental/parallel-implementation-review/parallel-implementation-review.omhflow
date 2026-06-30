@@ -172,20 +172,11 @@ sequence:
             taskContract:
               state: /taskContract
             coreSummary:
-              output:
-                node: implementCore
-                path: /summary
-                activation: latest-completed
+              state: /laneHardStopGuard/lane_summaries/implementCore
             testsSummary:
-              output:
-                node: implementTests
-                path: /summary
-                activation: latest-completed
+              state: /laneHardStopGuard/lane_summaries/implementTests
             docsSummary:
-              output:
-                node: implementDocs
-                path: /summary
-                activation: latest-completed
+              state: /laneHardStopGuard/lane_summaries/implementDocs
   - node:
       id: materializeIntegrationReview
       type: script

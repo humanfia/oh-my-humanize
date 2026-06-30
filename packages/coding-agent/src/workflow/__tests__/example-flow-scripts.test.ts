@@ -46,6 +46,22 @@ describe("example workflow scripts", () => {
 			model: {
 				role: "reviewer",
 			},
+			promptSource: {
+				bindings: {
+					coreSummary: {
+						kind: "state",
+						path: "/laneHardStopGuard/lane_summaries/implementCore",
+					},
+					testsSummary: {
+						kind: "state",
+						path: "/laneHardStopGuard/lane_summaries/implementTests",
+					},
+					docsSummary: {
+						kind: "state",
+						path: "/laneHardStopGuard/lane_summaries/implementDocs",
+					},
+				},
+			},
 		});
 	});
 
@@ -2136,6 +2152,96 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("accepts per-file heading rollback notes for changed agent loop files", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-per-file-heading-rollback-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Accept per-file heading rollback evidence from a real agent build loop.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Scope Fence:",
+				"Allowed paths: tests/test_tutorial/test_query_params/test_tutorial001.py, tests/test_tutorial/test_body/test_tutorial001.py, workflow-output/, progress.md.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/tests/test_tutorial/test_query_params/test_tutorial001.py`,
+			"def test_read_user_item():\n    pass\n\n\ndef test_openapi_schema():\n    pass\n",
+		);
+		await Bun.write(
+			`${cwd}/tests/test_tutorial/test_body/test_tutorial001.py`,
+			"def test_post_with_only_name_price():\n    pass\n\n\ndef test_post_with_no_data():\n    pass\n",
+		);
+		await runGit(cwd, [
+			"add",
+			"task.md",
+			"tests/test_tutorial/test_query_params/test_tutorial001.py",
+			"tests/test_tutorial/test_body/test_tutorial001.py",
+		]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			`${cwd}/tests/test_tutorial/test_query_params/test_tutorial001.py`,
+			"def test_read_user_item():\n    pass\n\n\ndef test_invalid_query_params():\n    pass\n\n\ndef test_openapi_schema():\n    pass\n",
+		);
+		await Bun.write(
+			`${cwd}/tests/test_tutorial/test_body/test_tutorial001.py`,
+			"def test_post_with_only_name_price():\n    pass\n\n\ndef test_post_with_multiple_invalid_numbers():\n    pass\n\n\ndef test_post_with_no_data():\n    pass\n",
+		);
+		await Bun.write(
+			`${cwd}/progress.md`,
+			"ROUND 4: added query and body validation canaries; validation=echo validate; result=pass\n",
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/round-4/rollback-evidence.md`,
+			[
+				"# Round 4 Rollback Evidence",
+				"",
+				"## tests/test_tutorial/test_query_params/test_tutorial001.py",
+				"",
+				"Retained change: the query tutorial test suite includes `test_invalid_query_params`.",
+				"",
+				"Concrete rollback/revert/restore/remove note: to roll back this file only, restore `tests/test_tutorial/test_query_params/test_tutorial001.py` from the baseline with `git restore tests/test_tutorial/test_query_params/test_tutorial001.py`. The equivalent manual rollback is to remove the entire `test_invalid_query_params` function block.",
+				"",
+				"## tests/test_tutorial/test_body/test_tutorial001.py",
+				"",
+				"Retained change: the body tutorial test suite includes `test_post_with_multiple_invalid_numbers`.",
+				"",
+				"Concrete per-file rollback/revert/restore/remove note: revert this file by removing the whole `test_post_with_multiple_invalid_numbers` test function. A file-level restore rollback is also valid: run `git restore -- tests/test_tutorial/test_body/test_tutorial001.py`.",
+			].join("\n"),
+		);
+		for (const file of [
+			"validation-stdout.txt",
+			"validation-stderr.txt",
+			"validation-attempt-1-stdout.txt",
+			"validation-attempt-1-stderr.txt",
+		]) {
+			await Bun.write(`${cwd}/workflow-output/round-4/${file}`, "validate\n");
+		}
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "PASS",
+			findings: [],
+		});
+	});
+
 	it("does not require extra validation attempt logs for ambiguous cross-round rerun prose", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-validation-rerun-prose-");
 		const cwd = tempDir.path();
@@ -3234,6 +3340,81 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/lane-hard-stop-guard-${tupleId}.json`).json()).toMatchObject({
 			status: "continue",
 			blocking_lane_artifacts: [],
+		});
+	});
+
+	it("materializes parallel lane summaries at the hard-stop join", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-lane-summary-join-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "P06-T04-f8c67bde1-ripgrep-hotpath-recanary-d";
+		const guardScript = await Bun.file(`${PARALLEL_REVIEW_SCRIPT_DIR}/lane-hard-stop-guard.js`).text();
+
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(
+			`${cwd}/workflow-output/core-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementCore", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/tests-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementTests", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/docs-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementDocs", status: "complete" }, null, 2)}\n`,
+		);
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			definition: {
+				name: "parallel-lane-summary-join",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "implementCore",
+						type: "script",
+						script: { language: "js", code: "return { summary: 'core hardened EOF sentinel handling' };" },
+					},
+					{
+						id: "implementTests",
+						type: "script",
+						script: {
+							language: "js",
+							code: "return { summary: 'tests added candidate false-positive traversal coverage' };",
+						},
+					},
+					{
+						id: "implementDocs",
+						type: "script",
+						script: {
+							language: "js",
+							code: "return { summary: 'docs recorded rollback and validation evidence' };",
+						},
+					},
+					{
+						id: "laneHardStopGuard",
+						type: "script",
+						script: { language: "js", code: guardScript },
+						writes: ["/laneHardStopGuard"],
+					},
+				],
+				edges: [
+					{ from: "implementCore", to: "implementTests" },
+					{ from: "implementTests", to: "implementDocs" },
+					{ from: "implementDocs", to: "laneHardStopGuard" },
+				],
+			},
+		});
+
+		expect(result.scheduler.state.laneHardStopGuard).toMatchObject({
+			status: "continue",
+			lane_summaries: {
+				implementCore: "core hardened EOF sentinel handling",
+				implementTests: "tests added candidate false-positive traversal coverage",
+				implementDocs: "docs recorded rollback and validation evidence",
+			},
 		});
 	});
 
@@ -8418,6 +8599,61 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${blockedDir.path()}/workflow-output/test-hardening-gap-report.md`).text()).toContain(
 			"No module named pytest",
 		);
+	});
+
+	it("continues test-hardening gap materialization when generation can create a missing validation target", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-missing-target-gap-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeGapReport",
+			scriptFileName: "materialize-gap-report.js",
+			scriptDir: `${TEST_GENERATION_HARDENING_DIR}/scripts`,
+			writes: ["/gaps"],
+			initialState: {
+				gaps: {
+					status: "ready",
+					summary:
+						"Pytest is installed and the frozen validation command starts, but it exits during collection because the declared tutorial target tests/test_tutorial/test_encoder.py is absent.",
+					validation: {
+						startable: true,
+						command:
+							"python -m pytest tests/test_jsonable_encoder.py tests/test_tutorial/test_encoder.py tests/test_response_model_as_return_annotation.py",
+						status:
+							"started; pytest available; failed during path collection because one declared test file is missing",
+						exitCode: 4,
+						stderr:
+							"ERROR: file or directory not found: tests/test_tutorial/test_encoder.py\ncollected 0 items\nno tests ran",
+					},
+					filesLikelyToNeedTestChanges: [
+						{
+							path: "tests/test_tutorial/test_encoder.py",
+							reason: "Create the missing frozen-command tutorial target.",
+						},
+					],
+					smallestUsefulTestAdditions: [
+						{
+							priority: "P1",
+							file: "tests/test_tutorial/test_encoder.py",
+							addition: "Add a focused tutorial encoder regression test at the declared validation target.",
+						},
+					],
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "materializeGapReport")?.status,
+		).toBe("completed");
+		expect(result.scheduler.state.gaps).toMatchObject({
+			gapReportPath: "workflow-output/test-hardening-gap-report.md",
+		});
+		const report = await Bun.file(`${cwd}/workflow-output/test-hardening-gap-report.md`).text();
+		expect(report).toContain("tests/test_tutorial/test_encoder.py");
+		expect(report).toContain("file or directory not found");
 	});
 
 	it("materializes test-hardening gap reports from coverage inspection activations", async () => {

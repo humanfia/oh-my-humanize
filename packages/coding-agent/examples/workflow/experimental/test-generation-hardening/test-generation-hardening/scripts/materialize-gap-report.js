@@ -42,9 +42,27 @@ function isBlocked(gaps) {
 	const validation = gaps.validation;
 	if (!validation || typeof validation !== "object") return false;
 	if (validation.startable === false) return true;
+	if (isRepairableMissingValidationTarget(gaps, validation)) return false;
 	if (typeof validation.exitCode === "number" && validation.exitCode !== 0) return true;
 	if (typeof validation.status !== "string") return false;
 	return /\b(?:blocked|fail|failed|failure|cannot|unclean)\b/iu.test(validation.status);
+}
+
+function isRepairableMissingValidationTarget(gaps, validation) {
+	if (typeof validation.exitCode !== "number" || validation.exitCode === 0) return false;
+	const evidence = [
+		stringValue(gaps.summary, ""),
+		stringValue(validation.status, ""),
+		stringValue(validation.stderr, ""),
+		listText(gaps.integrationGaps),
+		listText(gaps.filesLikelyToNeedTestChanges),
+		listText(gaps.smallestUsefulTestAdditions),
+	].join("\n");
+	if (!/\b(?:file or directory not found|path collection|missing|absent|does not exist)\b/iu.test(evidence)) {
+		return false;
+	}
+	if (!/\b(?:create|add|generate|write)\b/iu.test(evidence)) return false;
+	return /\b(?:test|tests)\b/iu.test(evidence);
 }
 
 function gapReportMarkdown(gaps) {
@@ -113,6 +131,11 @@ function listMarkdown(value) {
 	const items = Array.isArray(value) ? value : [];
 	if (!items.length) return "- None reported.";
 	return items.map(item => `- ${stringValue(item, JSON.stringify(item))}`).join("\n");
+}
+
+function listText(value) {
+	const items = Array.isArray(value) ? value : [];
+	return items.map(item => stringValue(item, JSON.stringify(item))).join("\n");
 }
 
 function stringValue(value, fallback) {
