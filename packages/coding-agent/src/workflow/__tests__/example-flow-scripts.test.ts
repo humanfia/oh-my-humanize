@@ -8656,6 +8656,64 @@ describe("example workflow scripts", () => {
 		expect(report).toContain("file or directory not found");
 	});
 
+	it("fails test-hardening gap materialization when a missing validation target collides with an existing package", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-missing-target-package-collision-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/tests/test_tutorial/test_encoder/__init__.py`, "");
+		await Bun.write(
+			`${cwd}/tests/test_tutorial/test_encoder/test_tutorial001.py`,
+			"def test_existing():\n    pass\n",
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeGapReport",
+			scriptFileName: "materialize-gap-report.js",
+			scriptDir: `${TEST_GENERATION_HARDENING_DIR}/scripts`,
+			writes: ["/gaps"],
+			initialState: {
+				gaps: {
+					status: "ready",
+					summary:
+						"Pytest is installed and the frozen validation command starts, but it exits during collection because the declared tutorial target tests/test_tutorial/test_encoder.py is absent.",
+					validation: {
+						startable: true,
+						command:
+							"python -m pytest tests/test_jsonable_encoder.py tests/test_tutorial/test_encoder.py tests/test_response_model_as_return_annotation.py",
+						status:
+							"started; pytest available; failed during path collection because one declared test file is missing",
+						exitCode: 4,
+						stderr:
+							"ERROR: file or directory not found: tests/test_tutorial/test_encoder.py\ncollected 0 items\nno tests ran",
+					},
+					filesLikelyToNeedTestChanges: [
+						{
+							path: "tests/test_tutorial/test_encoder.py",
+							reason: "Create the missing frozen-command tutorial target.",
+						},
+					],
+					smallestUsefulTestAdditions: [
+						{
+							priority: "P1",
+							file: "tests/test_tutorial/test_encoder.py",
+							addition: "Add a focused tutorial encoder regression test at the declared validation target.",
+						},
+					],
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "materializeGapReport")?.status,
+		).toBe("failed");
+		const report = await Bun.file(`${cwd}/workflow-output/test-hardening-gap-report.md`).text();
+		expect(report).toContain("tests/test_tutorial/test_encoder.py");
+		expect(report).toContain("file or directory not found");
+	});
+
 	it("materializes test-hardening gap reports from coverage inspection activations", async () => {
 		using tempDir = TempDir.createSync("@omh-test-hardening-gap-agent-handoff-");
 		const cwd = tempDir.path();

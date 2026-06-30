@@ -19,7 +19,7 @@ if (!gaps || typeof gaps !== "object") {
 const outputPath = "workflow-output/test-hardening-gap-report.md";
 await Bun.write(outputPath, gapReportMarkdown(gaps));
 
-if (isBlocked(gaps)) {
+if (await isBlocked(gaps)) {
 	throw new Error(`test-generation-hardening coverage inspection blocked; see ${outputPath}`);
 }
 
@@ -37,18 +37,18 @@ return {
 	],
 };
 
-function isBlocked(gaps) {
+async function isBlocked(gaps) {
 	if (gaps.status === "blocked") return true;
 	const validation = gaps.validation;
 	if (!validation || typeof validation !== "object") return false;
 	if (validation.startable === false) return true;
-	if (isRepairableMissingValidationTarget(gaps, validation)) return false;
+	if (await isRepairableMissingValidationTarget(gaps, validation)) return false;
 	if (typeof validation.exitCode === "number" && validation.exitCode !== 0) return true;
 	if (typeof validation.status !== "string") return false;
 	return /\b(?:blocked|fail|failed|failure|cannot|unclean)\b/iu.test(validation.status);
 }
 
-function isRepairableMissingValidationTarget(gaps, validation) {
+async function isRepairableMissingValidationTarget(gaps, validation) {
 	if (typeof validation.exitCode !== "number" || validation.exitCode === 0) return false;
 	const evidence = [
 		stringValue(gaps.summary, ""),
@@ -62,7 +62,30 @@ function isRepairableMissingValidationTarget(gaps, validation) {
 		return false;
 	}
 	if (!/\b(?:create|add|generate|write)\b/iu.test(evidence)) return false;
+	if (await hasMissingTargetPackageCollision(evidence)) return false;
 	return /\b(?:test|tests)\b/iu.test(evidence);
+}
+
+async function hasMissingTargetPackageCollision(evidence) {
+	for (const filePath of pythonTargetPaths(evidence)) {
+		if (!filePath.endsWith(".py")) continue;
+		const packageDir = filePath.slice(0, -3);
+		if (await Bun.file(`${packageDir}/__init__.py`).exists()) return true;
+	}
+	return false;
+}
+
+function pythonTargetPaths(text) {
+	const paths = new Set();
+	for (const match of text.matchAll(/(?:^|[\s`'"])([A-Za-z0-9_./-]+\.py)(?=$|[\s`'",.:;)]|\\n)/gu)) {
+		const path = normalizePath(match[1] ?? "");
+		if (path) paths.add(path);
+	}
+	return Array.from(paths);
+}
+
+function normalizePath(filePath) {
+	return filePath.replace(/^\.\//u, "").replace(/\\/gu, "/").replace(/[),.;:]+$/u, "");
 }
 
 function gapReportMarkdown(gaps) {
