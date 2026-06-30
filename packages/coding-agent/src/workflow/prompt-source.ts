@@ -163,7 +163,10 @@ function promptTemplateBindingText(node: WorkflowNode, bindingName: string, valu
 	}
 	try {
 		const serialized = JSON.stringify(value, null, 2);
-		if (serialized !== undefined) return compactPromptTemplateBindingText(node, bindingName, serialized, maxBytes);
+		if (serialized !== undefined) {
+			if (utf8ByteLength(serialized) <= maxBytes) return serialized;
+			return compactPromptTemplateBindingJson(node, bindingName, value, serialized, maxBytes);
+		}
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new WorkflowPromptSourceError(
@@ -173,6 +176,102 @@ function promptTemplateBindingText(node: WorkflowNode, bindingName: string, valu
 	throw new WorkflowPromptSourceError(
 		`workflow prompt template binding "${bindingName}" for node "${node.id}" must resolve to a string or JSON value`,
 	);
+}
+
+function compactPromptTemplateBindingJson(
+	node: WorkflowNode,
+	bindingName: string,
+	value: unknown,
+	serialized: string,
+	maxBytes: number,
+): string {
+	const metadata = {
+		name: bindingName,
+		node: node.id,
+		originalBytes: utf8ByteLength(serialized),
+		contentHash: contentHash(serialized),
+		note: "full value remains in workflow state or activation artifacts referenced by this flow",
+	};
+	const compacted =
+		isJsonObject(value) && !Array.isArray(value)
+			? { ...compactJsonObject(value, 0), __omh_compacted_binding: metadata }
+			: { __omh_compacted_binding: metadata, preview: compactJsonValue(value, 0) };
+	return fitJsonBindingToBudget(compacted, maxBytes, metadata, value);
+}
+
+function fitJsonBindingToBudget(
+	value: Record<string, unknown>,
+	maxBytes: number,
+	metadata: Record<string, unknown>,
+	originalValue: unknown,
+): string {
+	const serialized = JSON.stringify(value, null, 2);
+	if (utf8ByteLength(serialized) <= maxBytes) return serialized;
+	const fallback: Record<string, unknown> = { __omh_compacted_binding: metadata };
+	if (isJsonObject(originalValue) && !Array.isArray(originalValue)) {
+		for (const [key, entry] of Object.entries(originalValue)) {
+			if (isPrimitiveJsonValue(entry)) fallback[key] = entry;
+		}
+		const rankedRisks = originalValue.ranked_risks_for_next_node;
+		if (Array.isArray(rankedRisks) && rankedRisks.length > 0) {
+			fallback.ranked_risks_for_next_node = compactJsonArray(rankedRisks.slice(0, 2), 1);
+		}
+		fallback.__omh_top_level_keys = Object.keys(originalValue);
+	}
+	const fallbackSerialized = JSON.stringify(fallback, null, 2);
+	if (utf8ByteLength(fallbackSerialized) <= maxBytes) return fallbackSerialized;
+	return JSON.stringify({ __omh_compacted_binding: metadata }, null, 2);
+}
+
+function compactJsonValue(value: unknown, depth: number): unknown {
+	if (isPrimitiveJsonValue(value)) {
+		return typeof value === "string" ? compactJsonString(value, depth) : value;
+	}
+	if (Array.isArray(value)) return compactJsonArray(value, depth);
+	if (isJsonObject(value)) return compactJsonObject(value, depth);
+	return String(value);
+}
+
+function compactJsonObject(value: Record<string, unknown>, depth: number): Record<string, unknown> {
+	if (depth >= 3) {
+		return {
+			__omh_object_compacted: true,
+			keys: Object.keys(value),
+		};
+	}
+	const result: Record<string, unknown> = {};
+	for (const [key, entry] of Object.entries(value)) {
+		result[key] = compactJsonValue(entry, depth + 1);
+	}
+	return result;
+}
+
+function compactJsonArray(value: unknown[], depth: number): unknown {
+	if (value.length <= 3) return value.map(entry => compactJsonValue(entry, depth + 1));
+	const first = value.slice(0, 2).map(entry => compactJsonValue(entry, depth + 1));
+	const last = compactJsonValue(value[value.length - 1], depth + 1);
+	return {
+		__omh_array_compacted: true,
+		originalLength: value.length,
+		first,
+		last,
+	};
+}
+
+function compactJsonString(value: string, depth: number): string {
+	const maxBytes = depth <= 1 ? 240 : 120;
+	if (utf8ByteLength(value) <= maxBytes) return value;
+	const marker = `...[truncated ${utf8ByteLength(value) - maxBytes} bytes]`;
+	const prefixBytes = Math.max(0, maxBytes - utf8ByteLength(marker));
+	return `${truncateUtf8(value, prefixBytes).trimEnd()}${marker}`;
+}
+
+function isPrimitiveJsonValue(value: unknown): value is string | number | boolean | null {
+	return value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readOutputPromptValue(

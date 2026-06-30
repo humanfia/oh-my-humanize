@@ -54,10 +54,55 @@ describe("resolveWorkflowPrompt", () => {
 		expect(prompt?.byteLength).toBeLessThanOrEqual(2048);
 		expect(prompt?.value).toContain("Review the reproduced evidence.");
 		expect(prompt?.value).toContain("Reproduce alias configuration behavior");
-		expect(prompt?.value).toContain('workflow prompt binding "evidence" was compacted');
+		expect(prompt?.value).toContain("__omh_compacted_binding");
+		expect(prompt?.value).toContain('"name": "evidence"');
 		expect(prompt?.value).toContain("originalBytes");
 		expect(prompt?.value).toContain("sha256:");
 		expect(prompt?.value).toContain("tail evidence: validation 896 passed");
+	});
+
+	it("keeps compacted JSON template bindings parseable", async () => {
+		const packageRoot = await makePackageRoot();
+		await Bun.write(`${packageRoot}/audit.md`, ["Inventory:", "{{inventory}}"].join("\n"));
+		const node: WorkflowNode = {
+			id: "auditApiDocs",
+			type: "agent",
+			reads: ["/inventory"],
+			promptSource: {
+				kind: "template",
+				file: "audit.md",
+				bindings: {
+					inventory: { kind: "state", path: "/inventory" },
+				},
+			},
+		};
+
+		const prompt = await resolveWorkflowPrompt(node, {
+			packageRoot,
+			state: {
+				inventory: {
+					status: "complete_read_only",
+					inspected_surfaces: Array.from({ length: 120 }, (_, index) => ({
+						file: `docs/surface-${index}.md`,
+						evidence: "click documentation behavior ".repeat(20),
+					})),
+					ranked_risks_for_next_node: [{ rank: 1, risk: "suffix stripping docs gap" }],
+				},
+			},
+			completedActivations: [],
+			parentActivationIds: [],
+			maxPromptBytes: 2048,
+		});
+
+		const value = prompt?.value ?? "";
+		const compacted = value.slice(value.indexOf("{"));
+		const parsed = JSON.parse(compacted) as Record<string, unknown>;
+		expect(parsed.status).toBe("complete_read_only");
+		expect(parsed.__omh_compacted_binding).toMatchObject({
+			name: "inventory",
+			node: "auditApiDocs",
+		});
+		expect(value).toContain("suffix stripping docs gap");
 	});
 });
 
