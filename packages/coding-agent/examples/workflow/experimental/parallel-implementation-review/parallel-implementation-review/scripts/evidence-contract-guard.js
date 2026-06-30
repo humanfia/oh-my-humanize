@@ -3,6 +3,8 @@ const tupleId = await tupleIdFromRunArtifacts();
 const validationCommand = validationCommandFromTask(taskText);
 const validationEnvironment = validationEnvironmentFromTask(taskText);
 const manualEvidenceAllowed = hasHeadingOrField(taskText, "manual evidence allowed");
+const expectedReferencedArtifacts = expectedReferencedArtifactsFromState(workflowContext.state, tupleId);
+const materializedAliasArtifacts = await materializeReferencedArtifactAliases(expectedReferencedArtifacts);
 const changedFiles = await changedProjectFiles();
 const evidenceFiles = await workflowEvidenceFiles();
 const validationMatch = await validationEvidenceMatches(evidenceFiles, validationCommand, validationEnvironment);
@@ -44,7 +46,6 @@ const testArtifacts = evidenceFiles.filter(isTestLaneEvidenceFile);
 const docsArtifacts = evidenceFiles.filter(isDocsLaneEvidenceFile);
 const integrationArtifacts = evidenceFiles.filter(isIntegrationReviewEvidenceFile);
 const rollbackArtifacts = evidenceFiles.filter(isRollbackEvidenceFile);
-const expectedReferencedArtifacts = expectedReferencedArtifactsFromState(workflowContext.state, tupleId);
 const missingReferencedArtifacts = await missingExpectedArtifacts(expectedReferencedArtifacts);
 const laneArtifacts = [...coreArtifacts, ...testArtifacts, ...docsArtifacts, ...integrationArtifacts].sort((left, right) =>
 	left.localeCompare(right, "en"),
@@ -175,6 +176,7 @@ const diagnostic = {
 		rollback_artifacts: rollbackArtifacts.slice(0, 40),
 		missing_rollback_files: missingRollbackFiles.slice(0, 80),
 		expected_referenced_artifacts: expectedReferencedArtifacts.slice(0, 80),
+		materialized_alias_artifacts: materializedAliasArtifacts.slice(0, 80),
 		missing_referenced_artifacts: missingReferencedArtifacts.slice(0, 80),
 		lane_artifacts: laneArtifacts.slice(0, 80),
 		validation_artifacts: validationArtifacts.slice(0, 80),
@@ -699,6 +701,45 @@ async function missingExpectedArtifacts(artifacts) {
 	return missing;
 }
 
+async function materializeReferencedArtifactAliases(artifacts) {
+	const materialized = [];
+	for (const artifact of artifacts) {
+		if (await Bun.file(artifact).exists()) continue;
+		for (const canonical of materializedArtifactAliases(artifact)) {
+			if (!(await Bun.file(canonical).exists())) continue;
+			await Bun.write(artifact, materializedArtifactAliasContent(artifact, canonical));
+			materialized.push({ artifact, canonical });
+			break;
+		}
+	}
+	return materialized.sort((left, right) => left.artifact.localeCompare(right.artifact, "en"));
+}
+
+function materializedArtifactAliasContent(artifact, canonical) {
+	if (artifact.endsWith(".json")) {
+		return `${JSON.stringify(
+			{
+				schema: "workflow-artifact-alias-v1",
+				artifact,
+				canonical_artifact: canonical,
+				producer_node: "evidenceContractGuard",
+			},
+			null,
+			2,
+		)}\n`;
+	}
+	return [
+		"# Workflow artifact alias",
+		"",
+		`Artifact: ${artifact}`,
+		`Canonical artifact: ${canonical}`,
+		"Producer node: evidenceContractGuard",
+		"",
+		"This file keeps planned lane evidence references readable while preserving the canonical lane evidence artifact.",
+		"",
+	].join("\n");
+}
+
 async function referencedArtifactExists(artifact) {
 	for (const candidate of referencedArtifactCandidates(artifact)) {
 		if (await Bun.file(candidate).exists()) return true;
@@ -738,6 +779,13 @@ function materializedArtifactAliases(artifact) {
 		const canonicalPrefix =
 			lane === "implementCore" ? "core-lane" : lane === "implementTests" ? "tests-lane" : "docs-lane";
 		aliases.push(`workflow-output/${canonicalPrefix}-${suffix}`);
+	}
+	const evidenceMatch = /^workflow-output\/(core|tests?|docs?)-evidence-(.+)\.(?:md|txt|json)$/u.exec(artifact);
+	if (evidenceMatch) {
+		const lane = evidenceMatch[1];
+		const suffix = evidenceMatch[2];
+		const canonicalPrefix = lane === "core" ? "core-lane" : lane === "test" || lane === "tests" ? "tests-lane" : "docs-lane";
+		aliases.push(`workflow-output/${canonicalPrefix}-${suffix}.json`);
 	}
 	const hardStopMatch = /^workflow-output\/lane-archive-laneHardStopGuard-(.+)\.(?:json|md|txt)$/u.exec(artifact);
 	if (hardStopMatch) {

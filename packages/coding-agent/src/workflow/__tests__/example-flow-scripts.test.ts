@@ -2885,6 +2885,115 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("materializes readable evidence aliases for planned parallel lane references", async () => {
+		using tempDir = TempDir.createSync("@omh-parallel-review-planned-lane-evidence-aliases-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const tupleId = "P06-T04-2530e0a06-ripgrep-hotpath-canary-b";
+		const validationCommand = "echo validate";
+
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Accept canonical lane evidence when planner handoffs cite planned lane evidence documents.",
+				"",
+				"Validation Command:",
+				validationCommand,
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/manifest-entry.json`, `${JSON.stringify({ runId: tupleId }, null, 2)}\n`);
+		await Bun.write(
+			`${cwd}/workflow-output/core-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementCore", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/tests-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementTests", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/docs-lane-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "implementDocs", status: "complete" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/integration-review-materialized-${tupleId}.json`,
+			`${JSON.stringify({ tuple_id: tupleId, producer_node: "materializeIntegrationReview" }, null, 2)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/validation-${tupleId}.json`,
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "runDeclaredValidation",
+					producer_kind: "workflow-script",
+					validation: {
+						command: validationCommand,
+						environment: {},
+						result: "passed",
+						status: "passed",
+						exitCode: 0,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "evidenceContractGuard",
+			scriptFileName: "evidence-contract-guard.js",
+			writes: ["/evidenceContract"],
+			initialState: {
+				laneHardStopGuard: {
+					status: "continue",
+				},
+				planHandoff: [
+					`planned core evidence workflow-output/core-evidence-${tupleId}.md`,
+					`planned tests evidence workflow-output/tests-evidence-${tupleId}.md`,
+					`planned docs evidence workflow-output/docs-evidence-${tupleId}.md`,
+				].join("\n"),
+				reviewHandoff: {
+					artifacts: [
+						`workflow-output/core-lane-${tupleId}.json`,
+						`workflow-output/tests-lane-${tupleId}.json`,
+						`workflow-output/docs-lane-${tupleId}.json`,
+						`workflow-output/integration-review-${tupleId}.json`,
+					],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.evidenceContract).toMatchObject({
+			verdict: "READY",
+			checked_inputs: {
+				missing_referenced_artifacts: [],
+			},
+		});
+		const evidenceContract = expectRecord(result.scheduler.state.evidenceContract, "evidenceContract");
+		const checkedInputs = expectRecord(evidenceContract.checked_inputs, "evidenceContract.checked_inputs");
+		expect(checkedInputs.materialized_alias_artifacts).toEqual(
+			expect.arrayContaining([
+				{
+					artifact: `workflow-output/core-evidence-${tupleId}.md`,
+					canonical: `workflow-output/core-lane-${tupleId}.json`,
+				},
+				{
+					artifact: `workflow-output/docs-evidence-${tupleId}.md`,
+					canonical: `workflow-output/docs-lane-${tupleId}.json`,
+				},
+				{
+					artifact: `workflow-output/tests-evidence-${tupleId}.md`,
+					canonical: `workflow-output/tests-lane-${tupleId}.json`,
+				},
+			]),
+		);
+		expect(await Bun.file(`${cwd}/workflow-output/core-evidence-${tupleId}.md`).text()).toContain(
+			`Canonical artifact: workflow-output/core-lane-${tupleId}.json`,
+		);
+	});
+
 	it("blocks parallel joins when required lane evidence is missing", async () => {
 		using tempDir = TempDir.createSync("@omh-parallel-review-missing-lane-evidence-");
 		const cwd = tempDir.path();
