@@ -11,6 +11,30 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 
 await materializeBranchStateReports(workflowContext.state);
 
+const missingDeclaredArtifacts = await missingDeclaredWorkflowArtifacts();
+if (missingDeclaredArtifacts.length > 0) {
+	const outputPath = "workflow-output/performance-benchmark.md";
+	await Bun.write(outputPath, missingDeclaredArtifactsMarkdown(missingDeclaredArtifacts));
+	return {
+		summary: `branch evidence materialization violation: ${missingDeclaredArtifacts.length} missing durable artifact(s)`,
+		data: { evidenceViolation: true, missingDeclaredArtifacts },
+		statePatch: [
+			{
+				op: "set",
+				path: "/benchmark",
+				value: {
+					status: "fail",
+					evidenceViolation: true,
+					missingDeclaredArtifacts,
+					benchmarkCommand,
+					validationCommand,
+					outputPath,
+				},
+			},
+		],
+	};
+}
+
 const projectChangedFiles = projectFilesChangedAfterBranchStart(await changedProjectFiles(), runtime);
 if (projectChangedFiles.length > 0) {
 	const outputPath = "workflow-output/performance-benchmark.md";
@@ -289,6 +313,35 @@ function appendBranchSelectionMarker(lines, marker, value) {
 	const normalized = typeof value === "boolean" ? (value ? "yes" : "no") : value.trim().toLowerCase();
 	if (normalized !== "yes" && normalized !== "no") return;
 	lines.push(`${marker}: ${normalized}`, "");
+}
+
+async function missingDeclaredWorkflowArtifacts() {
+	const evidenceGlob = new Bun.Glob("workflow-output/perf-*.md");
+	const declared = new Set();
+	for await (const reportPath of evidenceGlob.scan({ cwd: process.cwd(), onlyFiles: true })) {
+		const text = await Bun.file(reportPath).text();
+		for (const artifactPath of declaredWorkflowArtifacts(text)) {
+			declared.add(artifactPath);
+		}
+	}
+	const missing = [];
+	for (const artifactPath of [...declared].sort()) {
+		if (!(await Bun.file(artifactPath).exists())) missing.push(artifactPath);
+	}
+	return missing;
+}
+
+function declaredWorkflowArtifacts(text) {
+	const artifacts = new Set();
+	for (const match of text.matchAll(/\bworkflow-output\/perf-[^\s`"'<>),;]+/giu)) {
+		const artifactPath = trimPathPunctuation(match[0] ?? "");
+		if (artifactPath) artifacts.add(artifactPath);
+	}
+	return [...artifacts].sort();
+}
+
+function trimPathPunctuation(filePath) {
+	return filePath.replace(/[.:\]]+$/gu, "");
 }
 
 async function changedProjectFiles() {
@@ -743,6 +796,22 @@ function sharedGitWorktreeMetadataViolationMarkdown(sharedGitWorktreeMetadataPat
 		"## Shared Git Worktree Metadata Paths",
 		"",
 		sharedGitWorktreeMetadataPaths.map((file) => `- ${file}`).join("\n"),
+		"",
+	].join("\n");
+}
+
+function missingDeclaredArtifactsMarkdown(missingDeclaredArtifacts) {
+	return [
+		"# Performance Benchmark Evidence",
+		"",
+		"## Durable Branch Evidence Violation",
+		"",
+		"Parallel optimization branch reports may only advertise durable artifacts that exist in the shared `workflow-output/` directory after the branch join.",
+		"Lane-local worktrees and scratch directories are temporary; reports that point at missing candidate patches, benchmark logs, or validation logs cannot be used as archive evidence.",
+		"",
+		"## Missing Declared Artifacts",
+		"",
+		missingDeclaredArtifacts.map((file) => `- ${file}`).join("\n"),
 		"",
 	].join("\n");
 }

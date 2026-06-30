@@ -24,6 +24,7 @@ const joinedText = branchReports.map((report) => report.text).join("\n");
 const selectedBranches = branchReports.filter((report) => /\bfinal-selection\s*:\s*yes\b/iu.test(report.text));
 const selectedBranchNames = new Set(selectedBranches.map((report) => report.name));
 const noWinBranches = branchReports.filter((report) => /\bno-win-result\s*:\s*yes\b/iu.test(report.text));
+const selectedNoWinBranches = selectedBranches.filter((report) => /\bno-win-result\s*:\s*yes\b/iu.test(report.text));
 const benchmarkRelevantBranches = selectedBranches.filter((report) =>
 	benchmarkRelevanceConfirmed(reportEvidenceText(report, selectionRepairText)),
 );
@@ -46,7 +47,7 @@ const validationPassed = validationCommandPassed(benchmark, selectionRepair, sel
 let terminalState;
 let selectionStatus = "pass";
 if (selectedBranches.length > 0) {
-	if (noWinBranches.length > 0) {
+	if (selectedNoWinBranches.length > 0) {
 		throw new Error("positive performance selection cannot also contain `no-win-result: yes`");
 	}
 	if (!validationPassed) {
