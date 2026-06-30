@@ -529,7 +529,7 @@ async function runHeadlessEvalScript(
 	const previousCwd = process.cwd();
 	const originalConsoleLog = console.log;
 	const capturedOutput: string[] = [];
-	const restoreEnv = applyHeadlessProcessEnvironment(
+	const restoreEnv = applyHeadlessWorkflowScriptEnvironment(
 		buildWorkflowShellEnvironment(workflowScriptEnvironment(request)),
 	);
 	try {
@@ -554,22 +554,78 @@ async function runHeadlessEvalScript(
 	}
 }
 
-function applyHeadlessProcessEnvironment(env: Record<string, string>): () => void {
-	const previousEnv = new Map(Object.entries(process.env));
-	for (const key of Object.keys(process.env)) {
-		if (!(key in env)) delete process.env[key];
+function applyHeadlessWorkflowScriptEnvironment(env: Record<string, string>): () => void {
+	const restoreProcessEnv = applyMutableEnvironment(process.env, env);
+	const restoreBunEnv = Bun.env === process.env ? () => {} : applyMutableEnvironment(Bun.env, env);
+	const restoreSpawn = applyBunSpawnDefaultEnvironment(env);
+	return () => {
+		restoreSpawn();
+		restoreBunEnv();
+		restoreProcessEnv();
+	};
+}
+
+function applyMutableEnvironment(target: NodeJS.ProcessEnv, env: Record<string, string>): () => void {
+	const previousEnv = new Map(Object.entries(target));
+	for (const key of Object.keys(target)) {
+		if (!(key in env)) delete target[key];
 	}
 	for (const [key, value] of Object.entries(env)) {
-		process.env[key] = value;
+		target[key] = value;
 	}
 	return () => {
-		for (const key of Object.keys(process.env)) {
-			if (!previousEnv.has(key)) delete process.env[key];
+		for (const key of Object.keys(target)) {
+			if (!previousEnv.has(key)) delete target[key];
 		}
 		for (const [key, value] of previousEnv) {
-			process.env[key] = value;
+			target[key] = value;
 		}
 	};
+}
+
+function applyBunSpawnDefaultEnvironment(env: Record<string, string>): () => void {
+	const originalSpawn = Bun.spawn.bind(Bun) as typeof Bun.spawn;
+	const originalSpawnSync = Bun.spawnSync.bind(Bun) as typeof Bun.spawnSync;
+	Bun.spawn = ((...args: unknown[]) => {
+		return originalSpawn(...(withWorkflowSpawnEnvironment(args, env) as Parameters<typeof Bun.spawn>));
+	}) as typeof Bun.spawn;
+	Bun.spawnSync = ((...args: unknown[]) => {
+		return originalSpawnSync(...(withWorkflowSpawnEnvironment(args, env) as Parameters<typeof Bun.spawnSync>));
+	}) as typeof Bun.spawnSync;
+	return () => {
+		Bun.spawn = originalSpawn;
+		Bun.spawnSync = originalSpawnSync;
+	};
+}
+
+function withWorkflowSpawnEnvironment(args: readonly unknown[], env: Record<string, string>): unknown[] {
+	const first = args[0];
+	if (isWorkflowSpawnOptionsRecord(first) && "cmd" in first) {
+		return [{ ...first, env: mergeWorkflowSpawnEnvironment(first.env, env) }, ...args.slice(1)];
+	}
+	const second = args[1];
+	if (isWorkflowSpawnOptionsRecord(second)) {
+		return [first, { ...second, env: mergeWorkflowSpawnEnvironment(second.env, env) }, ...args.slice(2)];
+	}
+	return [first, { env }, ...args.slice(1)];
+}
+
+function mergeWorkflowSpawnEnvironment(existing: unknown, fallback: Record<string, string>): unknown {
+	if (existing === undefined) return fallback;
+	if (!isWorkflowSpawnOptionsRecord(existing)) return existing;
+	const env = { ...fallback };
+	for (const [key, value] of Object.entries(existing)) {
+		if (value === undefined) {
+			delete env[key];
+			continue;
+		}
+		env[key] = String(value);
+	}
+	return env;
+}
+
+function isWorkflowSpawnOptionsRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function runHeadlessShellScript(

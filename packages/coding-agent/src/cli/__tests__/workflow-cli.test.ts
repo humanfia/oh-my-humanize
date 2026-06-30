@@ -426,6 +426,46 @@ describe("workflow CLI", () => {
 		expect((await findRelativeFiles(runTmp, ".pyc")).some(file => file.endsWith(".pyc"))).toBe(true);
 	});
 
+	it("uses workflow script environment for headless js child spawns without explicit env", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-js-python-default-env-");
+		const root = tempDir.path();
+		const runCwd = `${root}/workspace`;
+		const runTmp = `${runCwd}/workflow-output/tmp`;
+		const previousRunTmp = Bun.env.OMH_RUN_TMP;
+		await Bun.write(`${root}/js-python-env-smoke.omhflow`, workflowJsPythonEnvSmokeFlow());
+		await Bun.write(`${root}/js-python-env-smoke/scripts/compile.js`, workflowJsPythonDefaultEnvSmokeScript());
+		await Bun.write(`${runCwd}/src/module_under_test.py`, "VALUE = 42\n");
+		const output: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+		Bun.env.OMH_RUN_TMP = runTmp;
+		try {
+			await runWorkflowCommand({
+				action: "start",
+				args: [`${root}/js-python-env-smoke.omhflow`],
+				flags: {
+					cwd: runCwd,
+					json: true,
+					runId: "js-python-default-env-smoke-run",
+				},
+			});
+		} finally {
+			if (previousRunTmp === undefined) delete Bun.env.OMH_RUN_TMP;
+			else Bun.env.OMH_RUN_TMP = previousRunTmp;
+		}
+
+		const result = JSON.parse(output.join("").trim()) as {
+			run: { status: string; completed: number; failed: number };
+			runs: { stateKeys: string[] }[];
+		};
+		expect(result.run).toMatchObject({ status: "completed", completed: 1, failed: 0 });
+		expect(result.runs[0]?.stateKeys).toEqual(["result"]);
+		expect(await directoryEntriesOrEmpty(`${runCwd}/src/__pycache__`)).toEqual([]);
+		expect((await findRelativeFiles(runTmp, ".pyc")).some(file => file.endsWith(".pyc"))).toBe(true);
+	});
+
 	it("runs isolated headless workflow agents outside the parent checkout and captures a patch", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-agent-isolation-");
 		const root = tempDir.path();
@@ -1005,6 +1045,30 @@ function workflowJsPythonEnvSmokeScript(): string {
 		'  stdout: "pipe",',
 		'  stderr: "pipe",',
 		"  env: process.env,",
+		"});",
+		"const [stdout, stderr, exitCode] = await Promise.all([",
+		"  new Response(proc.stdout).text(),",
+		"  new Response(proc.stderr).text(),",
+		"  proc.exited,",
+		"]);",
+		'if (exitCode !== 0) throw new Error(stderr || stdout || "child exited " + exitCode);',
+		"return {",
+		'  summary: "python cache stayed out of the workspace",',
+		"  statePatch: [{",
+		'    op: "set",',
+		'    path: "/result",',
+		"    value: { pycachePrefix: process.env.PYTHONPYCACHEPREFIX || '' },",
+		"  }],",
+		"};",
+	].join("\n");
+}
+
+function workflowJsPythonDefaultEnvSmokeScript(): string {
+	return [
+		'const proc = Bun.spawn(["python", "-m", "py_compile", "src/module_under_test.py"], {',
+		"  cwd: process.cwd(),",
+		'  stdout: "pipe",',
+		'  stderr: "pipe",',
 		"});",
 		"const [stdout, stderr, exitCode] = await Promise.all([",
 		"  new Response(proc.stdout).text(),",
