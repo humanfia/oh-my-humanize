@@ -307,12 +307,20 @@ function normalizeScope(scope) {
 	return scope
 		.replace(/^`+|`+$/gu, "")
 		.replace(/^['"]|['"]$/gu, "")
+		.replace(/\.\s+[A-Z].*$/u, "")
+		.replace(/^(?:and\s+)?allowed paths?\s+(?:are|is)\s+/iu, "")
+		.replace(/^and\s+/iu, "")
+		.replace(/\s+if present$/iu, "")
 		.replace(/[.。]$/u, "")
 		.trim()
 		.replace(/^\.\//u, "");
 }
 
 function scopeMatchesPath(scope, filePath) {
+	if (scope.endsWith("/**")) {
+		const prefix = scope.slice(0, -3);
+		return filePath === prefix || filePath.startsWith(`${prefix}/`);
+	}
 	if (scope.endsWith("/")) return filePath.startsWith(scope);
 	return filePath === scope || filePath.startsWith(`${scope}/`);
 }

@@ -190,6 +190,7 @@ async function createGitRepo(): Promise<string> {
 	await runCommand(["git", "init"], dir);
 	await runCommand(["git", "config", "user.email", "test@example.com"], dir);
 	await runCommand(["git", "config", "user.name", "Test User"], dir);
+	await runCommand(["git", "config", "commit.gpgsign", "false"], dir);
 	return dir;
 }
 
