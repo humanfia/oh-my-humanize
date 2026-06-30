@@ -17,6 +17,7 @@ const benchmarkRelevantBranches = selectedBranches.filter((report) =>
 );
 const positiveUnselectedBranches = branchReports.filter((report) => {
 	if (selectedBranchNames.has(report.name)) return false;
+	if (isNoWinWithoutRetainedPositiveEvidence(report.text, selectionRepairText)) return false;
 	const evidenceText = reportEvidenceText(report, selectionRepairText);
 	return hasPositiveBenchmarkEvidence(evidenceText);
 });
@@ -177,7 +178,8 @@ async function readBranchReports() {
 	const reports = [];
 	for (const name of ["algorithmic", "caching", "io", "no-win"]) {
 		const file = `workflow-output/perf-${name}.md`;
-		reports.push({ name, file, text: await readOptionalText(file) });
+		const text = await readOptionalText(file);
+		if (text.trim() !== "") reports.push({ name, file, text });
 	}
 	return reports;
 }
@@ -267,6 +269,62 @@ function hasPositiveBenchmarkEvidence(text) {
 		/\b(?:improved|faster|speedup|reduced|lower)\b.{0,100}\bbenchmark\b/iu.test(evidenceText) ||
 		/\bbenchmark\b.{0,100}\b(?:improved|faster|speedup|reduced|lower|win)\b/iu.test(evidenceText)
 	);
+}
+
+function isNoWinWithoutRetainedPositiveEvidence(reportText, repairText) {
+	const structuredState = branchStructuredState(reportText);
+	if (structuredState && structuredNoWinWithoutRetainedPositiveEvidence(structuredState)) return true;
+	if (!/\bno-win-result\s*:\s*yes\b/iu.test(reportText) || !/\bfinal-selection\s*:\s*no\b/iu.test(reportText)) {
+		return false;
+	}
+	const evidenceText = `${reportText}\n${repairText}`;
+	return (
+		/\b(?:no candidate patch exists|candidatePatchPath["']?\s*:\s*null|no .*project-code changes are retained|no .*code changes|retained no code changes)\b/iu.test(
+			evidenceText,
+		) &&
+		/\b(?:reverted|slower|no improvement|none improved|flat|neutral|negative|equal)\b/iu.test(evidenceText)
+	);
+}
+
+function branchStructuredState(text) {
+	const match = /```json\s*([\s\S]*?)```/iu.exec(text);
+	if (!match) return undefined;
+	try {
+		const value = JSON.parse(match[1]);
+		return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function structuredNoWinWithoutRetainedPositiveEvidence(state) {
+	const status = stringValue(state.status);
+	const finalSelection = stringValue(state.finalSelection);
+	const noWinResult = stringValue(state.noWinResult);
+	if (status !== "no-win" && noWinResult !== "yes" && noWinResult !== "true") return false;
+	if (finalSelection !== "" && finalSelection !== "no" && finalSelection !== "false") return false;
+	if (hasRetainedBranchArtifact(state)) return false;
+	const measurements = Array.isArray(state.measurements) ? state.measurements : [];
+	return measurements.length === 0 || measurements.every(measurementDismissesPositiveResult);
+}
+
+function hasRetainedBranchArtifact(state) {
+	const candidatePatchPath = state.candidatePatchPath;
+	if (typeof candidatePatchPath === "string" && candidatePatchPath.trim() !== "") return true;
+	if (Array.isArray(state.retainedFiles) && state.retainedFiles.length > 0) return true;
+	return false;
+}
+
+function measurementDismissesPositiveResult(measurement) {
+	if (!measurement || typeof measurement !== "object") return false;
+	const decision = typeof measurement.decision === "string" ? measurement.decision : "";
+	return /\b(?:reverted|slower|no improvement|none improved|flat|neutral|negative|equal|retained no code changes)\b/iu.test(
+		decision,
+	);
+}
+
+function stringValue(value) {
+	return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
 function dismissesPositiveBenchmarkEvidence(line) {

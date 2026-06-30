@@ -47,6 +47,8 @@ interface ScriptResult {
 			terminalState?: string;
 			selectedBranches?: string[];
 			noWinBranches?: string[];
+			positiveUnselectedBranches?: string[];
+			benchmarkRelevanceBlockers?: string[];
 			evidenceViolation?: boolean;
 			missingDeclaredArtifacts?: string[];
 		};
@@ -178,6 +180,109 @@ describe("performance-optimization-search flow contract", () => {
 			terminalState: "positive",
 			selectedBranches: ["algorithmic"],
 			noWinBranches: ["io"],
+		});
+	});
+
+	it("accepts a benchmark-relevant no-win branch without retained positive evidence", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "src/click/decorators.py"), "def help_option():\n    return 'old'\n");
+		await runCommand(["git", "add", "src/click/decorators.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(path.join(cwd, "src/click/decorators.py"), "def help_option():\n    return 'cached'\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-caching.md"),
+			[
+				"# Performance caching Branch",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"benchmark improvement: selected candidate measured 114 usec against the 158 usec baseline.",
+				"rollback evidence: git apply -R workflow-output/perf-caching-candidate.diff",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-io.md"),
+			[
+				"# Performance io Branch",
+				"",
+				"## Structured Branch State",
+				"",
+				"```json",
+				JSON.stringify(
+					{
+						status: "no-win",
+						strategy: "io",
+						editedFiles: [],
+						retainedFiles: [],
+						candidatePatchPath: null,
+						benchmarkRelevance: "yes",
+						finalSelection: "no",
+						noWinResult: "yes",
+						measurements: [
+							{
+								candidate: "lazy mixed-output buffer",
+								result: "200 loops, best of 3: 163 usec per loop",
+								decision: "reverted; slower than 158 usec baseline",
+							},
+							{
+								candidate: "no-input helper reorder",
+								result: "200 loops, best of 3: 158 usec per loop",
+								decision: "reverted; no improvement over 158 usec baseline",
+							},
+						],
+					},
+					null,
+					2,
+				),
+				"```",
+				"",
+				"final-selection: no",
+				"no-win-result: yes",
+				"benchmark-relevance: yes",
+				"benchmark relevance evidence: the measured I/O candidates were evaluated under the task-declared benchmark path, but none improved over the recorded 158 usec baseline.",
+				"rollback evidence: no I/O candidate patch exists, no I/O project-code changes are retained.",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/performance-selection-repair.md"),
+			[
+				"# Performance Selection Repair",
+				"",
+				"- Selected branch: caching.",
+				"- io: not applied. No candidate patch exists, both measured I/O candidates were reverted by the branch, and the report remains marked `final-selection: no` and `no-win-result: yes`.",
+				"",
+				"benchmark command exited 0",
+				"validation command exited 0",
+				"",
+				"Selected caching branch:",
+				"benchmark-relevance: yes",
+				"The retained caching candidate is on the task benchmark path.",
+				"",
+				"Unselected I/O branch:",
+				"The I/O branch did not report a positive benchmark-like retained result. Its measured candidates were `163 usec` and `158 usec` against the `158 usec` baseline, so no off-benchmark marker is needed.",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "guard-selection-repair.js", {
+			benchmark: { status: "pass", benchmarkExitCode: 0, validationExitCode: 0 },
+			selectionRepair: {
+				benchmark: { status: "pass", exitCode: 0 },
+				validation: { status: "pass", exitCode: 0 },
+			},
+		});
+		const guard = result.statePatch?.find(patch => patch.path === "/selectionGuard")?.value;
+
+		expect(result.summary).toBe("performance selection repair guard passed");
+		expect(guard).toMatchObject({
+			status: "pass",
+			selectedBranches: ["caching"],
+			noWinBranches: ["io"],
+			positiveUnselectedBranches: [],
+			benchmarkRelevanceBlockers: [],
 		});
 	});
 });
