@@ -320,6 +320,7 @@ sequence:
         - /patch
         - /reviewRepair
         - /validation
+        - /validationStartup
         - /review
       script:
         language: js

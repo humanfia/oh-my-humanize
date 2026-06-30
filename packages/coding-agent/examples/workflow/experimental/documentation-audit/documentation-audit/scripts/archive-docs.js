@@ -1,8 +1,11 @@
 const state = workflowContext.state && typeof workflowContext.state === "object" ? workflowContext.state : {};
 const validation = state.validation && typeof state.validation === "object" ? state.validation : {};
+const validationStartup =
+	state.validationStartup && typeof state.validationStartup === "object" ? state.validationStartup : {};
 const patch = state.patch && typeof state.patch === "object" ? state.patch : {};
+const validationWaiver = await baselineValidationWaiver(validation, validationStartup);
 
-if (validation.status !== "pass") {
+if (validation.status !== "pass" && validationWaiver.status !== "accepted") {
 	throw new Error("cannot archive documentation audit flow before task-declared validation passes");
 }
 
@@ -42,6 +45,18 @@ await Bun.write(
 		"",
 		boundedLines(validationText, 160),
 		"",
+		...(validationWaiver.status === "accepted"
+			? [
+					"## Baseline Validation Waiver",
+					"",
+					"The task-declared validation command is startable but has the same baseline failure before and after the documentation repair. Documentation validation passed, so the archive records this as a baseline waiver rather than attributing it to the docs patch.",
+					"",
+					`- Startup validation exit code: ${String(validationStartup.validationExitCode ?? "(missing)")}`,
+					`- Final validation exit code: ${String(validation.validationExitCode ?? "(missing)")}`,
+					`- Evidence signature: ${validationWaiver.signature}`,
+					"",
+				]
+			: []),
 		"## Rollback",
 		"",
 		rollbackText.trim() ? boundedLines(rollbackText, 120) : "No rollback notes were present.",
@@ -63,13 +78,62 @@ return {
 			path: "/archive",
 			value: {
 				file: archivePath,
-				validation: "pass",
+				validation: validationWaiver.status === "accepted" ? "baseline-waived" : "pass",
+				...(validationWaiver.status === "accepted"
+					? { validationWaiver: "startable-baseline-failure", validationSignature: validationWaiver.signature }
+					: {}),
 				resolvedReviewFeedback,
 				rollbackEvidence: rollbackText.trim() ? "present" : "not-required",
 			},
 		},
 	],
 };
+
+async function baselineValidationWaiver(finalValidation, startupValidation) {
+	if (finalValidation.status === "pass") return { status: "not-needed" };
+	if (Number(finalValidation.docsExitCode ?? 0) !== 0) return { status: "rejected" };
+	if (startupValidation.status !== "startable-command-failed") return { status: "rejected" };
+	if (startupValidation.validationExitCode === undefined || finalValidation.validationExitCode === undefined) {
+		return { status: "rejected" };
+	}
+	if (Number(startupValidation.validationExitCode) !== Number(finalValidation.validationExitCode)) {
+		return { status: "rejected" };
+	}
+	const startupText = await readOptionalText(
+		startupValidation.outputPath ?? "workflow-output/documentation-validation-startup.md",
+	);
+	const finalText = [
+		await readOptionalText("workflow-output/documentation-validation.md"),
+		await readOptionalText(finalValidation.validationStdoutPath ?? ""),
+		await readOptionalText(finalValidation.validationStderrPath ?? ""),
+	]
+		.filter(Boolean)
+		.join("\n");
+	const signature = sharedFailureSignature(startupText, finalText);
+	if (!signature) return { status: "rejected" };
+	return { status: "accepted", signature };
+}
+
+function sharedFailureSignature(startupText, finalText) {
+	const startupSignatures = failureSignatures(startupText);
+	const finalSignatures = new Set(failureSignatures(finalText));
+	return startupSignatures.find(signature => finalSignatures.has(signature)) ?? "";
+}
+
+function failureSignatures(text) {
+	return uniqueStrings(
+		text
+			.split(/\r?\n/u)
+			.map(line => line.trim())
+			.filter(isUsefulFailureSignature)
+			.map(line => line.replace(/\s+/gu, " ").slice(0, 220)),
+	);
+}
+
+function isUsefulFailureSignature(line) {
+	if (line.length < 16) return false;
+	return /\b(error|failed|failure|exception|importerror|modulenotfounderror|traceback|cannot import)\b/iu.test(line);
+}
 
 function priorContinueReviewFeedback() {
 	const activations = Array.isArray(workflowContext.completedActivations) ? workflowContext.completedActivations : [];
@@ -209,4 +273,8 @@ function isProjectChangedFile(filePath) {
 		filePath.startsWith("workflow-output/") ||
 		filePath.startsWith("transcripts/")
 	);
+}
+
+function uniqueStrings(values) {
+	return [...new Set(values)];
 }
