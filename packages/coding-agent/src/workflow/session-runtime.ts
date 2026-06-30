@@ -156,6 +156,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			const assignment = workflowAgentNodeAssignment(
 				input.prompt?.trim() || `Run workflow node "${input.node.id}".`,
 				input.node.writes,
+				input.node.workspaceAccess,
 			);
 			const task: WorkflowAgentTaskItem = {
 				id: workflowAgentTaskIdForNode(input.node.id),
@@ -322,11 +323,17 @@ function workflowReviewNodeAssignment(
 	});
 }
 
-function workflowAgentNodeAssignment(assignment: string, writes: readonly string[] | undefined): string {
+function workflowAgentNodeAssignment(
+	assignment: string,
+	writes: readonly string[] | undefined,
+	workspaceAccess: WorkflowNode["workspaceAccess"],
+): string {
 	if (writes === undefined || writes.length === 0) return assignment;
 	return promptTemplate.render(workflowAgentNodeOutputContractPrompt, {
 		assignment,
 		declaredWrites: writes.join(", "),
+		readOnlyWorkspace: workspaceAccess === "read",
+		workspaceAccess: workspaceAccess ?? "unspecified",
 	});
 }
 

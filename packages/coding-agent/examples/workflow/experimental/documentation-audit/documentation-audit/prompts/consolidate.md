@@ -20,4 +20,6 @@ select only the smallest coherent remaining items needed to satisfy the
 reviewer, or mark the blocked item and blocker explicitly.
 Return changed-file targets, acceptance criteria, and rollback notes.
 
-Do not edit files in this node.
+Do not create, edit, or delete any files in this node, including files under
+`workflow-output`. Return the consolidated audit through the workflow state
+handoff only.

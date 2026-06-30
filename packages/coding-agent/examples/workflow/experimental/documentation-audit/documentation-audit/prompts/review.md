@@ -46,4 +46,6 @@ When this is not the first review pass, require the patch summary to include
 the new patch removes unrelated documented behavior while adding the requested
 documentation.
 
-Do not edit files in this node.
+Do not create, edit, or delete any files in this node, including files under
+`workflow-output`. Return the review verdict through the workflow review handoff
+only.

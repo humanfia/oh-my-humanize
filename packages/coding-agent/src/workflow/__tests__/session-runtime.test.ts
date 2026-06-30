@@ -154,6 +154,54 @@ edges: []
 		});
 	});
 
+	it("keeps read-only workflow agent handoffs out of workspace files", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: "",
+					agentId: "workflow-docAudit-activation-1",
+					data: {
+						summary: "documentation gap recorded",
+						statePatch: [{ op: "set", path: "/audit", value: { gapCount: 1 } }],
+					},
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = {
+			id: "docAudit",
+			type: "agent",
+			agent: "task",
+			prompt: "Audit docs without editing files.",
+			workspaceAccess: "read",
+			writes: ["/audit"],
+		};
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+
+		const assignment = capturedRequest?.task.assignment;
+		if (assignment === undefined) throw new Error("workflow agent assignment missing");
+		expect(assignment).toContain("Workspace access: read");
+		expect(assignment).toContain("Do not create, edit, or delete files");
+		expect(assignment).toContain("Do not write workflow-output files");
+		expect(assignment).toContain("agent-output://");
+		expect(output).toMatchObject({
+			summary: "documentation gap recorded",
+			statePatch: [{ op: "set", path: "/audit", value: { gapCount: 1 } }],
+			data: { agentId: "workflow-docAudit-activation-1" },
+			artifacts: ["agent-output://workflow-docAudit-activation-1"],
+		});
+	});
+
 	it("accepts headless yield envelopes as structured agent node handoffs", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",

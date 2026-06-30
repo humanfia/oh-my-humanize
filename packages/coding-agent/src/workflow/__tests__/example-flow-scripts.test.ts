@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { isEnoent, TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import type { ToolSession } from "../../tools";
 import { evaluateWorkflowCondition } from "../condition";
@@ -3912,6 +3912,38 @@ describe("example workflow scripts", () => {
 		const evidence = await Bun.file(`${cwd}/workflow-output/documentation-validation-startup.md`).text();
 		expect(evidence).toContain("started validation");
 		expect(evidence).toContain("Exit code: 1");
+	});
+
+	it("runs documentation validation startup without project Python cache byproducts", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-audit-validation-clean-python-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/module_under_test.py`, "VALUE = 42\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "checkValidationStartup",
+			scriptFileName: "check-validation-startup.js",
+			scriptDir: DOCUMENTATION_AUDIT_SCRIPT_DIR,
+			writes: ["/validationStartup"],
+			initialState: {
+				task: {
+					validationCommand: "python -c 'import module_under_test; print(module_under_test.VALUE)'",
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "checkValidationStartup")?.status,
+		).toBe("completed");
+		expect(result.scheduler.state.validationStartup).toMatchObject({
+			status: "startable-pass",
+			validationExitCode: 0,
+		});
+		expect(await directoryEntriesOrEmpty(`${cwd}/__pycache__`)).toEqual([]);
+		expect(await directoryEntriesOrEmpty(`${cwd}/.pytest_cache`)).toEqual([]);
 	});
 
 	it("blocks documentation archive when prior review feedback has no patch resolution evidence", async () => {
@@ -10440,4 +10472,13 @@ async function initializeCleanGitRepo(cwd: string): Promise<void> {
 	await Bun.write(`${cwd}/README.md`, "test repo\n");
 	await runGit(cwd, ["add", "README.md"]);
 	await runGit(cwd, ["commit", "-m", "init"]);
+}
+
+async function directoryEntriesOrEmpty(directoryPath: string): Promise<string[]> {
+	try {
+		return await fs.readdir(directoryPath);
+	} catch (error) {
+		if (isEnoent(error)) return [];
+		throw error;
+	}
 }

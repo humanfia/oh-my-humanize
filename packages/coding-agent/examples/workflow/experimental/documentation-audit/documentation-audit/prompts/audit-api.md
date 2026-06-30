@@ -17,4 +17,5 @@ signatures, options, return values, error behavior, compatibility notes, and
 examples that a user would copy. Return concrete gaps with file paths and a
 minimal repair plan.
 
-Do not edit files in this node.
+Do not create, edit, or delete any files in this node, including files under
+`workflow-output`. Return audit findings through the workflow state handoff only.

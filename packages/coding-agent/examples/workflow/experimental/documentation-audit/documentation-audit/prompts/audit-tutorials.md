@@ -17,4 +17,5 @@ current behavior. Focus on outdated commands, missing setup steps, confusing
 ordering, migration notes, and hidden assumptions. Return concrete gaps with
 file paths and a minimal repair plan.
 
-Do not edit files in this node.
+Do not create, edit, or delete any files in this node, including files under
+`workflow-output`. Return audit findings through the workflow state handoff only.

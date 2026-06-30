@@ -16,15 +16,27 @@ single `WorkflowActivationOutput` object in `data`:
   "summary": "Concise description of the completed node work.",
   "statePatch": [
     { "op": "set", "path": "/declaredPath", "value": "structured result for that path" }
-  ],
-  "artifacts": ["workflow-output/example.md"]
+  ]{{#unless readOnlyWorkspace}},
+  "artifacts": ["workflow-output/example.md"]{{/unless}}
 }
 ```
 
 Rules:
+- Workspace access: {{workspaceAccess}}.
 - Every `statePatch[].path` must be one of the declared write pointers.
 - Include a `statePatch` entry for each declared write pointer that this node is
   responsible for producing.
+{{#if readOnlyWorkspace}}
+- Do not create, edit, or delete files. Do not write workflow-output files. This
+  node is declared read-only, so any file write changes the workspace and fails
+  the workflow.
+- Keep large prose bounded inside the declared workflow state. If the detail is
+  too large, summarize it and rely on the automatically attached
+  `agent-output://...` transcript artifact for the full node transcript.
+- If you need a durable file artifact, report that need in the declared state
+  instead of writing the file yourself; a later write-capable or script node must
+  materialize it.
+{{else}}
 - Put large prose, logs, or transcripts in files and reference them through
   `artifacts`; keep `summary` and inline `value` fields bounded and structured.
 - Artifact references must be absolute paths, `workflow-output/...`,
@@ -32,6 +44,7 @@ Rules:
   `local://progress.md` for root-level task progress, never bare
   `progress.md`. Use `workflow-output/round-1/validation-stdout.txt` for files
   under `workflow-output/`.
+{{/if}}
 - Do not return plain prose as the final result when state writes are declared.
 - Do not wrap this object in another `data` key.
 - Do not install or mutate system-wide dependencies. Do not use `sudo`, global

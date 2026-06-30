@@ -12,4 +12,5 @@ Return a concise structured inventory with files, commands worth running, and
 risks for stale or missing documentation. Do not invent a validation command;
 the task contract already provides it.
 
-Do not edit files in this node.
+Do not create, edit, or delete any files in this node, including files under
+`workflow-output`. Return the inventory through the workflow state handoff only.
