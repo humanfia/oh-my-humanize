@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a `Codex (device code)` option to the `/login` provider selector and `omh auth-broker login --device-auth` for headless Codex subscription login, including remote SSH execution without a callback tunnel.
+
 ### Fixed
 
 - Fixed the experimental performance-optimization-search flow treating a committed positive selection with a clean worktree as a no-win outcome during finalize/archive.

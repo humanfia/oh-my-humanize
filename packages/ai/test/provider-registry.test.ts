@@ -71,6 +71,17 @@ describe("provider registry auth surface", () => {
 		expect(ids).not.toContain("openai");
 	});
 
+	test("login list labels the Codex device-code option", () => {
+		const providers = getOAuthProviders();
+		const browserIndex = providers.findIndex(provider => provider.id === "openai-codex");
+		const deviceIndex = providers.findIndex(provider => provider.id === "openai-codex-device");
+
+		expect(browserIndex).toBeGreaterThanOrEqual(0);
+		expect(deviceIndex).toBe(browserIndex + 1);
+		expect(providers[deviceIndex]?.name).toBe("Codex (device code)");
+		expect(providers[deviceIndex]?.storeCredentialsAs).toBe("openai-codex");
+	});
+
 	test("paste-code login set is derived from pasteCodeFlow", () => {
 		expect([...PASTE_CODE_LOGIN_PROVIDERS].sort()).toEqual(
 			[

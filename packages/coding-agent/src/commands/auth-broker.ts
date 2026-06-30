@@ -34,6 +34,9 @@ export default class AuthBroker extends Command {
 		via: Flags.string({
 			description: "SSH user@host for remote login (login --via=user@host)",
 		}),
+		"device-auth": Flags.boolean({
+			description: "Use Codex device-code login (headless; equivalent to `codex login --device-auth`)",
+		}),
 		provider: Flags.string({
 			description: "Override provider id for `import` (e.g. when JSON `type` is unrecognized)",
 		}),
@@ -60,6 +63,8 @@ export default class AuthBroker extends Command {
 		`# List supported OAuth providers\n  ${APP_NAME} auth-broker list`,
 		`# Local login (run on the broker host)\n  ${APP_NAME} auth-broker login anthropic`,
 		`# Interactive provider selection\n  ${APP_NAME} auth-broker login`,
+		`# Headless Codex subscription login (device-code flow)\n  ${APP_NAME} auth-broker login --device-auth`,
+		`# Remote headless Codex subscription login over SSH\n  ${APP_NAME} auth-broker login --device-auth --via=user@broker`,
 		`# Remote login over SSH tunnel\n  ${APP_NAME} auth-broker login anthropic --via=user@broker`,
 		`# Log out of a provider (interactive without provider arg)\n  ${APP_NAME} auth-broker logout anthropic`,
 		`# Import a CLIProxyAPI auth dump\n  ${APP_NAME} auth-broker import ~/.cliproxy/auth`,
@@ -83,6 +88,7 @@ export default class AuthBroker extends Command {
 				bind: flags.bind,
 				regenerate: flags.regenerate,
 				via: flags.via,
+				deviceAuth: flags["device-auth"],
 				// `login`/`logout` reuse the legacy `provider` slot; `import` keeps `source` separate
 				// so `provider` flag (used as an override) is unambiguous.
 				provider: action === "import" ? flags.provider : (args.source ?? flags.provider),

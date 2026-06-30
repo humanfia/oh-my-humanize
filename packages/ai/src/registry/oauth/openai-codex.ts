@@ -23,10 +23,9 @@ const DEVICE_USERCODE_URL = "https://auth.openai.com/api/accounts/deviceauth/use
 const DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token";
 const DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback";
 const DEVICE_AUTH_URL = "https://auth.openai.com/codex/device";
-const DEVICE_POLL_INTERVAL_MS = 5_000;
-const DEVICE_POLL_SAFETY_MARGIN_MS = 3_000;
-/** Upper bound on device-code polling to avoid infinite loops on server errors. */
-const DEVICE_MAX_POLLS = 120;
+const DEVICE_DEFAULT_POLL_INTERVAL_MS = 5_000;
+const DEVICE_MIN_POLL_INTERVAL_MS = 1_000;
+const DEVICE_MAX_WAIT_MS = 15 * 60_000;
 
 type JwtPayload = {
 	[JWT_CLAIM_PATH]?: {
@@ -64,6 +63,48 @@ function getTokenProfile(accessToken: string): { accountId?: string; email?: str
 interface PKCE {
 	verifier: string;
 	challenge: string;
+}
+
+function timeoutSignal(ctrlSignal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+	const timeout = AbortSignal.timeout(timeoutMs);
+	return ctrlSignal ? AbortSignal.any([ctrlSignal, timeout]) : timeout;
+}
+
+function parseDevicePollIntervalMs(value: string | number | undefined): number {
+	let seconds: number | undefined;
+	if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+		seconds = value;
+	} else if (typeof value === "string") {
+		const parsed = Number(value.trim());
+		if (Number.isFinite(parsed) && parsed >= 0) seconds = parsed;
+	}
+	return seconds === undefined
+		? DEVICE_DEFAULT_POLL_INTERVAL_MS
+		: Math.max(DEVICE_MIN_POLL_INTERVAL_MS, seconds * 1000);
+}
+
+async function sleepDevicePoll(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	if (ms <= 0) return;
+	if (!signal) {
+		await Bun.sleep(ms);
+		return;
+	}
+	if (signal.aborted) {
+		throw new AIError.LoginCancelledError("Device authorization cancelled");
+	}
+
+	const { promise, resolve, reject } = Promise.withResolvers<void>();
+	let timer: Timer | undefined;
+	const onAbort = () => {
+		clearTimeout(timer);
+		reject(new AIError.LoginCancelledError("Device authorization cancelled"));
+	};
+	timer = setTimeout(() => {
+		signal.removeEventListener("abort", onAbort);
+		resolve();
+	}, ms);
+	signal.addEventListener("abort", onAbort, { once: true });
+	await promise;
 }
 function describeTokenEndpointValue(value: unknown): string | undefined {
 	if (typeof value === "string") {
@@ -231,11 +272,12 @@ export async function loginOpenAICodex(options: OpenAICodexLoginOptions): Promis
 export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAuthCredentials> {
 	ctrl.onProgress?.("Initiating device authorization…");
 
-	const initResponse = await fetch(DEVICE_USERCODE_URL, {
+	const fetchImpl = ctrl.fetch ?? fetch;
+	const initResponse = await fetchImpl(DEVICE_USERCODE_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ client_id: CLIENT_ID }),
-		signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
+		signal: timeoutSignal(ctrl.signal, TOKEN_REQUEST_TIMEOUT_MS),
 	});
 
 	if (!initResponse.ok) {
@@ -248,20 +290,16 @@ export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAu
 	const initData = (await initResponse.json()) as {
 		device_auth_id?: string;
 		user_code?: string;
+		usercode?: string;
 		interval?: string | number;
 	};
+	const userCode = initData.user_code ?? initData.usercode;
 
-	if (!initData.device_auth_id || !initData.user_code) {
+	if (!initData.device_auth_id || !userCode) {
 		throw new AIError.OAuthError("Device authorization response missing required fields", { kind: "validation" });
 	}
 
-	const userCode = initData.user_code;
-	const pollIntervalMs =
-		(typeof initData.interval === "number"
-			? initData.interval
-			: parseInt(String(initData.interval ?? "5"), 10) || 5) *
-			1000 +
-		DEVICE_POLL_SAFETY_MARGIN_MS;
+	const pollIntervalMs = parseDevicePollIntervalMs(initData.interval);
 
 	ctrl.onAuth?.({
 		url: DEVICE_AUTH_URL,
@@ -270,24 +308,29 @@ export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAu
 
 	ctrl.onProgress?.(`Waiting for browser authorization (code: ${userCode})…`);
 
-	for (let poll = 0; poll < DEVICE_MAX_POLLS; poll++) {
-		await Bun.sleep(poll === 0 ? Math.min(pollIntervalMs, DEVICE_POLL_INTERVAL_MS) : pollIntervalMs);
+	const deadlineMs = Date.now() + DEVICE_MAX_WAIT_MS;
+	let firstPoll = true;
+	while (Date.now() < deadlineMs) {
+		if (!firstPoll) {
+			await sleepDevicePoll(Math.min(pollIntervalMs, Math.max(0, deadlineMs - Date.now())), ctrl.signal);
+		}
+		firstPoll = false;
 
 		if (ctrl.signal?.aborted) {
 			throw new AIError.LoginCancelledError("Device authorization cancelled");
 		}
 
-		const pollResponse = await fetch(DEVICE_TOKEN_URL, {
+		const pollResponse = await fetchImpl(DEVICE_TOKEN_URL, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				device_auth_id: initData.device_auth_id,
 				user_code: userCode,
 			}),
-			signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
+			signal: timeoutSignal(ctrl.signal, TOKEN_REQUEST_TIMEOUT_MS),
 		});
 
-		// 403/404 = authorization pending, keep polling
+		// 403/404 = authorization pending, keep polling.
 		if (pollResponse.status === 403 || pollResponse.status === 404) {
 			continue;
 		}
@@ -301,6 +344,7 @@ export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAu
 
 		const pollData = (await pollResponse.json()) as {
 			authorization_code?: string;
+			code_challenge?: string;
 			code_verifier?: string;
 		};
 
@@ -311,7 +355,7 @@ export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAu
 		}
 
 		ctrl.onProgress?.("Exchanging authorization code for tokens…");
-		return exchangeCodeForToken(pollData.authorization_code, pollData.code_verifier, DEVICE_REDIRECT_URI);
+		return exchangeCodeForToken(pollData.authorization_code, pollData.code_verifier, DEVICE_REDIRECT_URI, fetchImpl);
 	}
 
 	throw new AIError.OAuthError("Device authorization timed out — user did not complete login in time", {

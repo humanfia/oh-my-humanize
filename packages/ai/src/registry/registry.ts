@@ -76,6 +76,7 @@ import { zhipuCodingPlanProvider } from "./zhipu-coding-plan";
 const ALL = [
 	azureProvider,
 	openaiCodexProvider,
+	openaiCodexDeviceProvider,
 	anthropicProvider,
 	zaiProvider,
 	kimiCodeProvider,
@@ -85,7 +86,6 @@ const ALL = [
 	devinProvider,
 	googleAntigravityProvider,
 	googleGeminiCliProvider,
-	openaiCodexDeviceProvider,
 	xaiOauthProvider,
 	gitlabDuoProvider,
 	gitLabDuoWorkflowProvider,
