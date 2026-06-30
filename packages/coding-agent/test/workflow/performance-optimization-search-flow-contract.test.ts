@@ -34,6 +34,12 @@ interface WorkflowContext {
 				exitCode?: number;
 			};
 		};
+		selection?: {
+			status?: string;
+			terminalState?: string;
+			selectedBranches?: string[];
+			noWinBranches?: string[];
+		};
 	};
 }
 
@@ -336,6 +342,55 @@ describe("performance-optimization-search flow contract", () => {
 			noWinBranches: ["algorithmic", "caching", "io"],
 		});
 		expect(selection?.positiveUnselectedBranches).not.toContain("no-win");
+	});
+
+	it("archives a natural-language authorized no-win search without project changes", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "src/click/core.py"), "def core():\n    return 'unchanged'\n");
+		await runCommand(["git", "add", "src/click/core.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await writeNoWinBranchReport(cwd, "algorithmic", "parser dispatch candidate reverted; no improvement");
+		await writeNoWinBranchReport(cwd, "caching", "cache candidate reverted; no repeatable improvement");
+		await writeNoWinBranchReport(cwd, "io", "io candidate reverted; slower than clean repeated evidence");
+		await Bun.write(path.join(cwd, "workflow-output/performance-baseline.md"), "# Baseline\n\nexit code 0\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output/performance-selection-repair.md"),
+			[
+				"# Performance Selection Repair",
+				"",
+				"benchmark command exited 0",
+				"validation command exited 0",
+				"Negative branch findings are acceptable when archived with durable evidence and rollback reasoning.",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "archive-performance.js", {
+			review: "verdict: finish",
+			task: {
+				text: "Negative branch findings are acceptable when archived with durable evidence and rollback reasoning.",
+			},
+			benchmark: { status: "pass", benchmarkExitCode: 0, validationExitCode: 0 },
+			selectionRepair: {
+				benchmark: { status: "pass", exitCode: 0 },
+				validation: { status: "pass", exitCode: 0 },
+			},
+			selection: {
+				status: "pass",
+				terminalState: "no-win",
+				selectedBranches: [],
+				noWinBranches: ["algorithmic", "caching", "io"],
+			},
+		});
+		const archive = result.statePatch?.find(patch => patch.path === "/archive")?.value;
+
+		expect(result.summary).toBe("archived performance optimization evidence");
+		expect(archive).toMatchObject({
+			status: "accepted",
+			noWin: true,
+		});
 	});
 });
 
