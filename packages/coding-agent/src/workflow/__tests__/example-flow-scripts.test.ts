@@ -928,6 +928,93 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: accepted");
 	});
 
+	it("archives materialized reproduced research comparisons as accepted", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-materialized-reproduced-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/reproduction-baseline.json`,
+			`${JSON.stringify(
+				{
+					exerciseSummary: {
+						exercised: true,
+						positiveSignals: ["assertion-backed-command"],
+						negativeSignals: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/reproduction-variant.json`,
+			`${JSON.stringify(
+				{
+					variantExerciseSummary: {
+						exercised: true,
+						positiveSignals: ["assertion-backed-command"],
+						negativeSignals: false,
+					},
+					validationExerciseSummary: {
+						exercised: true,
+						positiveSignals: ["passed-count"],
+						negativeSignals: false,
+						passedCounts: 289,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction-baseline.md`, "round-trip payload accepted\n");
+		await Bun.write(`${cwd}/workflow-output/reproduction-variant.md`, "tamper rejected as expected\n289 passed\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveReproduction",
+			scriptFileName: "archive-reproduction.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				reproduction: {
+					status: "pass",
+					exercised: true,
+					evidencePath: "workflow-output/reproduction-baseline.json",
+				},
+				variant: {
+					status: "pass",
+					validationExercised: true,
+					variantCommand: "PYTHONPATH=src python workflow-output/scripts/tamper_reject.py",
+					evidencePath: "workflow-output/reproduction-variant.json",
+				},
+				comparison: {
+					status: "comparison_materialized",
+					source_node: "compareResults",
+					data: {
+						status: "pass",
+						decision: "reproduced",
+						claim: "Round-trip valid payloads and reject tampered serializer tokens.",
+						comparison: {
+							baselineReproduction: { status: "pass" },
+							variantCommand: { status: "pass" },
+							validationCommand: { status: "pass", separateFromVariant: true },
+						},
+						missingEvidence: [],
+					},
+				},
+				review: "verdict finish",
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			outcome: "accepted",
+			comparison: "comparison_materialized",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/reproduction-archive.md`).text()).toContain("Outcome: accepted");
+	});
+
 	it("keeps research reproduction command streams in artifacts instead of inline state", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-variant-output-state-");
 		const cwd = tempDir.path();

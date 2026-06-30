@@ -138,13 +138,34 @@ function comparisonRejects(comparisonState) {
 }
 
 function normalizedComparisonOutcome(comparisonState) {
-	const raw = String(comparisonState.status ?? comparisonState.overallOutcome ?? "").trim().toLowerCase();
-	if (!raw) return "unknown";
-	if (/^(?:accepted|accept|pass|passed|accepted_from_[a-z0-9_-]+)$/u.test(raw)) return "accepted";
-	if (/\b(?:reject|rejected|rejection|inconclusive|non[-_ ]exercising|failed?|fail_closed)\b/u.test(raw)) {
-		return "rejected";
+	for (const raw of comparisonOutcomeCandidates(comparisonState)) {
+		const normalized = raw.trim().toLowerCase();
+		if (!normalized) continue;
+		if (/^(?:accepted|accept|pass|passed|reproduced|reproduce|accepted_from_[a-z0-9_-]+)$/u.test(normalized)) {
+			return "accepted";
+		}
+		if (/\b(?:reject|rejected|rejection|inconclusive|non[-_ ]exercising|failed?|fail_closed)\b/u.test(normalized)) {
+			return "rejected";
+		}
 	}
 	return "unknown";
+}
+
+function comparisonOutcomeCandidates(comparisonState) {
+	const candidates = [];
+	appendOutcomeCandidate(candidates, comparisonState?.status);
+	appendOutcomeCandidate(candidates, comparisonState?.overallOutcome);
+	appendOutcomeCandidate(candidates, comparisonState?.decision);
+	if (comparisonState?.data && typeof comparisonState.data === "object" && !Array.isArray(comparisonState.data)) {
+		appendOutcomeCandidate(candidates, comparisonState.data.status);
+		appendOutcomeCandidate(candidates, comparisonState.data.overallOutcome);
+		appendOutcomeCandidate(candidates, comparisonState.data.decision);
+	}
+	return candidates;
+}
+
+function appendOutcomeCandidate(candidates, value) {
+	if (typeof value === "string") candidates.push(value);
 }
 
 function comparisonOutcome(comparisonState) {
