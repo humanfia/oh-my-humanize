@@ -2,7 +2,7 @@ const state = workflowContext.state && typeof workflowContext.state === "object"
 const task = state.task && typeof state.task === "object" ? state.task : {};
 const claim = state.claim && typeof state.claim === "object" ? state.claim : {};
 const claimText = structuredText(claim);
-const sourceEvidenceText = structuredText([claim.evidence, claim.sourceEvidence, claim.source_refs, claim.sourceRefs, task.claimSource]);
+const sourceEvidenceText = structuredText(sourceEvidenceCandidates(claim, task));
 const sourceRefs = collectSourceRefs(sourceEvidenceText || claimText);
 const negativeEvidence = /\b(?:no concrete|not provided|not available|did not inspect|cannot cite|only named)\b/iu.test(
 	sourceEvidenceText || claimText,
@@ -79,6 +79,33 @@ function hasConcreteAnchor(text) {
 		/\b(?:assert|expect\(|raises\(|throws?|with pytest\.raises|should|must)\b/iu.test(text) ||
 		/[`"'][^`"']{12,}[`"']/u.test(text)
 	);
+}
+
+function sourceEvidenceCandidates(claim, task) {
+	return [
+		claim.evidence,
+		claim.sourceEvidence,
+		claim.source_refs,
+		claim.sourceRefs,
+		claim.concreteProjectEvidence,
+		claim.projectEvidence,
+		nestedObjectValue(claim, ["data", "concreteProjectEvidence"]),
+		nestedObjectValue(claim, ["data", "projectEvidence"]),
+		nestedObjectValue(claim, ["data", "sourceEvidence"]),
+		nestedObjectValue(claim, ["data", "sourceRefs"]),
+		nestedObjectValue(claim, ["claim", "evidence"]),
+		nestedObjectValue(claim, ["claim", "sourceEvidence"]),
+		task.claimSource,
+	];
+}
+
+function nestedObjectValue(value, path) {
+	let current = value;
+	for (const segment of path) {
+		if (current === null || current === undefined || typeof current !== "object" || Array.isArray(current)) return undefined;
+		current = current[segment];
+	}
+	return current;
 }
 
 function structuredText(value) {

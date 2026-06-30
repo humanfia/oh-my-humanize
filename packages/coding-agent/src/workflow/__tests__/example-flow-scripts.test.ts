@@ -595,6 +595,59 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("accepts materialized research claim data with concrete project evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-materialized-claim-evidence-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const accepted = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardClaimEvidence",
+			scriptFileName: "guard-claim-evidence.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/claimEvidence"],
+			initialState: {
+				task: {
+					claimSource:
+						"The current repository source and tests define URL-safe serializer tamper rejection behavior.",
+				},
+				claim: {
+					status: "claim_materialized",
+					producer_node: "materializeClaim",
+					source_node: "extractClaim",
+					data: {
+						concreteProjectEvidence: [
+							{
+								path: "tests/test_itsdangerous/test_url_safe.py",
+								line: 37,
+								symbol: "test_loads_tamper",
+								excerpt: "with pytest.raises(BadSignature)",
+							},
+							{
+								path: "src/itsdangerous/url_safe.py",
+								line: 21,
+								symbol: "URLSafeSerializer",
+								excerpt: "class URLSafeSerializer",
+							},
+						],
+					},
+				},
+			},
+		});
+
+		expect(accepted.scheduler.state.claimEvidence).toMatchObject({
+			status: "pass",
+			sourceRefs: expect.arrayContaining([
+				"src/itsdangerous/url_safe.py",
+				"tests/test_itsdangerous/test_url_safe.py",
+			]),
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/claim-evidence-guard.md`).text()).toContain(
+			"tests/test_itsdangerous/test_url_safe.py",
+		);
+	});
+
 	it("keeps non-exercising research reproduction evidence on the refinement route", async () => {
 		const artifact = await loadWorkflowArtifact(
 			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,

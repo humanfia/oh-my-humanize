@@ -139,6 +139,11 @@ edges: []
 		expect(assignment).toContain("Workflow agent output contract:");
 		expect(assignment).toContain("WorkflowActivationOutput");
 		expect(assignment).toContain("Declared write pointers: /inventory");
+		expect(assignment).toContain("Artifact references must be absolute paths");
+		expect(assignment).toContain("`workflow-output/...`");
+		expect(assignment).toContain("`local://...`");
+		expect(assignment).toContain("`local://progress.md` for root-level task progress");
+		expect(assignment).toContain("never bare");
 		expect(assignment).toContain("Do not install or mutate system-wide dependencies");
 		expect(assignment).toContain(prompt);
 		expect(output).toMatchObject({
@@ -1494,7 +1499,7 @@ edges: []
 				runtimeHost: host,
 			});
 
-			expect(result.scheduler.state).toEqual({ pythonEnv: "1:unset" });
+			expect(result.scheduler.state).toEqual({ pythonEnv: "unset:unset" });
 		} finally {
 			if (previousPythonPath === undefined) delete Bun.env.PYTHONPATH;
 			else Bun.env.PYTHONPATH = previousPythonPath;

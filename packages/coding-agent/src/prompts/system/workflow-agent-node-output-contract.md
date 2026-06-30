@@ -27,6 +27,11 @@ Rules:
   responsible for producing.
 - Put large prose, logs, or transcripts in files and reference them through
   `artifacts`; keep `summary` and inline `value` fields bounded and structured.
+- Artifact references must be absolute paths, `workflow-output/...`,
+  `local://...`, `artifact://...`, or `agent-output://...`. Use
+  `local://progress.md` for root-level task progress, never bare
+  `progress.md`. Use `workflow-output/round-1/validation-stdout.txt` for files
+  under `workflow-output/`.
 - Do not return plain prose as the final result when state writes are declared.
 - Do not wrap this object in another `data` key.
 - Do not install or mutate system-wide dependencies. Do not use `sudo`, global
