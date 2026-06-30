@@ -1710,6 +1710,14 @@ describe("example workflow scripts", () => {
 		await runGit(cwd, ["add", "task.md"]);
 		await runGit(cwd, ["commit", "-m", "baseline"]);
 		await Bun.write(`${cwd}/crates/ignore/src/gitignore.rs`, "pub fn touched() {}\n");
+		await Bun.write(
+			`${cwd}/workflow-output/round-1/implementation-notes.md`,
+			[
+				"Changed files:",
+				"- crates/ignore/src/gitignore.rs",
+				"  - Rollback: remove the touched helper if this scope fixture is rejected.",
+			].join("\n"),
+		);
 
 		const result = await runExampleScript({
 			cwd,
@@ -1758,6 +1766,14 @@ describe("example workflow scripts", () => {
 		await runGit(cwd, ["add", "task.md"]);
 		await runGit(cwd, ["commit", "-m", "baseline"]);
 		await Bun.write(`${cwd}/tests/test_cli/test_help.py`, "def test_help_panel():\n    assert True\n");
+		await Bun.write(
+			`${cwd}/workflow-output/round-1/implementation-notes.md`,
+			[
+				"Changed files:",
+				"- tests/test_cli/test_help.py",
+				"  - Rollback: remove the focused help panel regression if rejected.",
+			].join("\n"),
+		);
 
 		const result = await runExampleScript({
 			cwd,
@@ -1803,6 +1819,14 @@ describe("example workflow scripts", () => {
 		await Bun.write(
 			`${cwd}/tests/test_tutorial/test_query_params/test_tutorial006.py`,
 			"def test_query_params():\n    assert True\n",
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/round-1/implementation-notes.md`,
+			[
+				"Changed files:",
+				"- tests/test_tutorial/test_query_params/test_tutorial006.py",
+				"  - Rollback: remove the focused query params regression if rejected.",
+			].join("\n"),
 		);
 
 		const result = await runExampleScript({
@@ -1877,6 +1901,55 @@ describe("example workflow scripts", () => {
 				expect.objectContaining({
 					file: "tests/test_contract.py",
 					reason: "changed file is outside task allowed paths",
+				}),
+			]),
+		});
+	});
+
+	it("fails agent build archive guard when changed files lack rollback evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-missing-rollback-evidence-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Reject archives before changed files have concrete rollback evidence.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Scope Fence:",
+				"Allowed paths: src.py, workflow-output/, progress.md.",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/src.py`, "value = 1\n");
+		await runGit(cwd, ["add", "task.md", "src.py"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.py`, "value = 2\n");
+		await Bun.write(`${cwd}/progress.md`, "ROUND 1: changed src.py; validation=echo validate; result=pass\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-stdout.txt`, "validate\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-stderr.txt`, "");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "REPAIR",
+			findings: expect.arrayContaining([
+				expect.objectContaining({
+					file: "src.py",
+					reason: "changed file lacks concrete rollback evidence",
 				}),
 			]),
 		});
@@ -1967,7 +2040,8 @@ describe("example workflow scripts", () => {
 				"Round 1 validation summary",
 				"",
 				"Rollback notes:",
-				"- src.py: restore value = 1 if the scoped source change is rejected.",
+				"- src.py",
+				"  - Rollback: restore value = 1 if the scoped source change is rejected.",
 			].join("\n"),
 		);
 		for (const file of [

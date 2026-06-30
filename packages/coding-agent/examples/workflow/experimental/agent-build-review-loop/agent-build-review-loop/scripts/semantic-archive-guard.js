@@ -36,6 +36,7 @@ findings.push(...(await downstreamCompletionClaimFindings()));
 findings.push(...(await nondurableArtifactReferenceFindings()));
 findings.push(...(await missingValidationArtifactFindings(progressText)));
 findings.push(...(await missingValidationAttemptRetentionFindings()));
+findings.push(...(await missingRollbackEvidenceFindings(changedFiles)));
 
 const blockingFindings = explicitAllowance
 	? findings.filter(finding => finding.category !== "low-semantic-content")
@@ -221,6 +222,50 @@ async function missingValidationAttemptRetentionFindings() {
 		});
 	}
 	return findings;
+}
+
+async function missingRollbackEvidenceFindings(changedFiles) {
+	const files = await workflowOutputFiles();
+	const texts = await Promise.all(files.filter(roundEvidenceFile).map(readOptionalText));
+	return changedFiles
+		.filter(file => !ignoredEvidencePath(file))
+		.filter(file => !texts.some(text => rollbackNoteForFile(file, text)))
+		.map(file => ({
+			file,
+			reason: "changed file lacks concrete rollback evidence",
+			policy:
+				"Before semantic archive, round evidence must contain a concrete per-file rollback/revert/restore/remove note for every changed project file.",
+		}));
+}
+
+function roundEvidenceFile(file) {
+	return /^workflow-output\/round-\d+\//u.test(file);
+}
+
+function rollbackNoteForFile(file, text) {
+	const pattern = new RegExp(`(?:^|\\n)\\s*[-*]?\\s*${escapeRegExp(file)}\\s*:\\s*([^\\n]+)`, "iu");
+	const match = pattern.exec(text);
+	const note = match?.[1]?.trim() || nestedRollbackNoteForFile(file, text);
+	if (!note || !/\b(?:rollback|revert|restore|remove)\b/iu.test(note)) return "";
+	return `${file}: ${note}`;
+}
+
+function nestedRollbackNoteForFile(file, text) {
+	const lines = text.split(/\r?\n/u);
+	for (let index = 0; index < lines.length; index += 1) {
+		if (!fileReferenceLine(file, lines[index] ?? "")) continue;
+		for (const line of lines.slice(index + 1, index + 8)) {
+			const rollback = /^\s*[-*]?\s*(?:rollback|revert|restore|remove)(?:\s+(?:note|risk|plan))?\s*:\s*(.+)$/iu.exec(line);
+			if (rollback?.[1]?.trim()) return rollback[1].trim();
+			if (line.trim() && !/^\s+[-*]\s+/u.test(line)) break;
+		}
+	}
+	return "";
+}
+
+function fileReferenceLine(file, line) {
+	const escaped = escapeRegExp(file);
+	return new RegExp(`^\\s*[-*]?\\s*${escaped}\\s*$`, "iu").test(line) || new RegExp(`^\\s*[-*]?\\s*${escaped}\\s+`, "iu").test(line);
 }
 
 function validationRounds(progressText) {

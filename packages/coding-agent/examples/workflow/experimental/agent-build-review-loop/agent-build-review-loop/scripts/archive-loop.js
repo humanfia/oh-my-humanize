@@ -345,9 +345,27 @@ async function rollbackNotesByChangedFile(changedFiles, evidenceFiles) {
 function rollbackNoteForFile(file, text) {
 	const pattern = new RegExp(`(?:^|\\n)\\s*[-*]?\\s*${escapeRegExp(file)}\\s*:\\s*([^\\n]+)`, "iu");
 	const match = pattern.exec(text);
-	const note = match?.[1]?.trim() ?? "";
+	const note = match?.[1]?.trim() || nestedRollbackNoteForFile(file, text);
 	if (!note || !/\b(?:rollback|revert|restore|remove)\b/iu.test(note)) return "";
 	return `${file}: ${note}`;
+}
+
+function nestedRollbackNoteForFile(file, text) {
+	const lines = text.split(/\r?\n/u);
+	for (let index = 0; index < lines.length; index += 1) {
+		if (!fileReferenceLine(file, lines[index] ?? "")) continue;
+		for (const line of lines.slice(index + 1, index + 8)) {
+			const rollback = /^\s*[-*]?\s*(?:rollback|revert|restore|remove)(?:\s+(?:note|risk|plan))?\s*:\s*(.+)$/iu.exec(line);
+			if (rollback?.[1]?.trim()) return rollback[1].trim();
+			if (line.trim() && !/^\s+[-*]\s+/u.test(line)) break;
+		}
+	}
+	return "";
+}
+
+function fileReferenceLine(file, line) {
+	const escaped = escapeRegExp(file);
+	return new RegExp(`^\\s*[-*]?\\s*${escaped}\\s*$`, "iu").test(line) || new RegExp(`^\\s*[-*]?\\s*${escaped}\\s+`, "iu").test(line);
 }
 
 function taskLabeledValue(taskText, labels) {
