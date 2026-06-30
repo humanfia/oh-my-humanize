@@ -8788,6 +8788,76 @@ describe("example workflow scripts", () => {
 		expect(report).toContain("file or directory not found");
 	});
 
+	it("continues test-hardening gap materialization for actionable existing validation failures", async () => {
+		using tempDir = TempDir.createSync("@omh-test-hardening-actionable-failure-gap-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeGapReport",
+			scriptFileName: "materialize-gap-report.js",
+			scriptDir: `${TEST_GENERATION_HARDENING_DIR}/scripts`,
+			writes: ["/gaps"],
+			initialState: {
+				gaps: {
+					status: "ready",
+					summary:
+						"Validation command starts and the scoped suite executes, but it exits non-zero on an existing timeout cleanup test. Coverage inspection found defensible gaps in event hooks and ASGI/WSGI transport passthrough.",
+					validation: {
+						startable: true,
+						command:
+							"python -m pytest tests/client/test_event_hooks.py tests/test_timeouts.py tests/test_asgi.py tests/test_wsgi.py",
+						status: "started; pytest completed with an existing failure",
+						exitCode: 1,
+						stderr:
+							"tests/test_timeouts.py::test_write_timeout[trio] failed with PytestUnraisableExceptionWarning; Summary: 1 failed, 321 passed.",
+					},
+					unitGaps: [
+						{
+							priority: 1,
+							gap: "Event hooks are tested as observers, not mutation points.",
+						},
+					],
+					integrationGaps: [
+						{
+							priority: 1,
+							gap: "ASGITransport and WSGITransport passthrough options lack focused tests.",
+						},
+					],
+					filesLikelyToNeedTestChanges: [
+						"tests/client/test_event_hooks.py",
+						"tests/test_asgi.py",
+						"tests/test_wsgi.py",
+					],
+					smallestUsefulTestAdditions: [
+						{
+							priority: 1,
+							files: ["tests/test_asgi.py"],
+							addition: "Add one ASGI scope passthrough contract test.",
+						},
+						{
+							priority: 2,
+							files: ["tests/test_wsgi.py"],
+							addition: "Add one WSGI environ passthrough contract test.",
+						},
+					],
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "materializeGapReport")?.status,
+		).toBe("completed");
+		expect(result.scheduler.state.gaps).toMatchObject({
+			gapReportPath: "workflow-output/test-hardening-gap-report.md",
+		});
+		const report = await Bun.file(`${cwd}/workflow-output/test-hardening-gap-report.md`).text();
+		expect(report).toContain("existing timeout cleanup test");
+		expect(report).toContain("ASGI scope passthrough contract test");
+	});
+
 	it("fails test-hardening gap materialization when a missing validation target collides with an existing package", async () => {
 		using tempDir = TempDir.createSync("@omh-test-hardening-missing-target-package-collision-");
 		const cwd = tempDir.path();

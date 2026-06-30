@@ -43,9 +43,43 @@ async function isBlocked(gaps) {
 	if (!validation || typeof validation !== "object") return false;
 	if (validation.startable === false) return true;
 	if (await isRepairableMissingValidationTarget(gaps, validation)) return false;
-	if (typeof validation.exitCode === "number" && validation.exitCode !== 0) return true;
+	if (typeof validation.exitCode === "number" && validation.exitCode !== 0) {
+		if (await hasMissingTargetPackageCollision(validationEvidence(gaps, validation))) return true;
+		if (hasActionableTestGaps(gaps, validation)) return false;
+		return true;
+	}
 	if (typeof validation.status !== "string") return false;
 	return /\b(?:blocked|fail|failed|failure|cannot|unclean)\b/iu.test(validation.status);
+}
+
+function hasActionableTestGaps(gaps, validation) {
+	const evidence = validationEvidence(gaps, validation);
+	if (/\b(?:site-packages|installed package|wrong checkout|unclean baseline|baseline test failures)\b/iu.test(evidence)) {
+		return false;
+	}
+	if (!/\b(?:add|generate|write|repair|test|tests|coverage|gap|gaps)\b/iu.test(evidence)) return false;
+	return (
+		hasNonEmptyArray(gaps.unitGaps) ||
+		hasNonEmptyArray(gaps.integrationGaps) ||
+		hasNonEmptyArray(gaps.smallestUsefulTestAdditions) ||
+		hasNonEmptyArray(gaps.filesLikelyToNeedTestChanges)
+	);
+}
+
+function validationEvidence(gaps, validation) {
+	return [
+		stringValue(gaps.summary, ""),
+		stringValue(validation.status, ""),
+		stringValue(validation.stderr, ""),
+		listText(gaps.unitGaps),
+		listText(gaps.integrationGaps),
+		listText(gaps.filesLikelyToNeedTestChanges),
+		listText(gaps.smallestUsefulTestAdditions),
+	].join("\n");
+}
+
+function hasNonEmptyArray(value) {
+	return Array.isArray(value) && value.length > 0;
 }
 
 async function isRepairableMissingValidationTarget(gaps, validation) {
