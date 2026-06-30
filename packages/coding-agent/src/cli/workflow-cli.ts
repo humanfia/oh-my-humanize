@@ -42,6 +42,7 @@ import {
 	createSessionWorkflowRuntimeHost,
 	type WorkflowAgentTaskRequest,
 	type WorkflowAgentTaskResult,
+	type WorkflowScriptEvalRequest,
 	type WorkflowShellScriptRequest,
 } from "../workflow/session-runtime";
 
@@ -242,7 +243,7 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 	const host = new InMemoryWorkflowStoreHost();
 	const runtimeHost = createSessionWorkflowRuntimeHost({
 		cwd,
-		runEvalScript: async request => runHeadlessEvalScript(cwd, request.code, request.language),
+		runEvalScript: async request => runHeadlessEvalScript(cwd, request),
 		runShellScript: async request => runHeadlessShellScript(cwd, request),
 		runAgentTask: async request => runHeadlessAgentTask(cwd, request, { runProcess: runtime.headlessAgentProcess }),
 	});
@@ -519,15 +520,18 @@ function createHeadlessRuntimeBindingSnapshot(
 
 async function runHeadlessEvalScript(
 	cwd: string,
-	code: string,
-	language: "js" | "py",
+	request: WorkflowScriptEvalRequest,
 ): Promise<{ exitCode: number; output: string; error?: string; language: "js" | "py" }> {
+	const language = request.language;
 	if (language === "py") {
 		return { exitCode: 1, output: "", error: "headless workflow CLI does not support py eval scripts", language };
 	}
 	const previousCwd = process.cwd();
 	const originalConsoleLog = console.log;
 	const capturedOutput: string[] = [];
+	const restoreEnv = applyHeadlessProcessEnvironment(
+		buildWorkflowShellEnvironment(workflowScriptEnvironment(request)),
+	);
 	try {
 		process.chdir(cwd);
 		console.log = (...data: unknown[]) => {
@@ -536,7 +540,7 @@ async function runHeadlessEvalScript(
 		const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
 			code: string,
 		) => () => Promise<unknown>;
-		const execute = new AsyncFunction(code);
+		const execute = new AsyncFunction(request.code);
 		const result = await execute();
 		const formattedResult = formatScriptValue(result);
 		if (formattedResult) capturedOutput.push(formattedResult);
@@ -545,8 +549,27 @@ async function runHeadlessEvalScript(
 		return { exitCode: 1, output: "", error: errorMessage(error), language };
 	} finally {
 		console.log = originalConsoleLog;
+		restoreEnv();
 		process.chdir(previousCwd);
 	}
+}
+
+function applyHeadlessProcessEnvironment(env: Record<string, string>): () => void {
+	const previousEnv = new Map(Object.entries(process.env));
+	for (const key of Object.keys(process.env)) {
+		if (!(key in env)) delete process.env[key];
+	}
+	for (const [key, value] of Object.entries(env)) {
+		process.env[key] = value;
+	}
+	return () => {
+		for (const key of Object.keys(process.env)) {
+			if (!previousEnv.has(key)) delete process.env[key];
+		}
+		for (const [key, value] of previousEnv) {
+			process.env[key] = value;
+		}
+	};
 }
 
 async function runHeadlessShellScript(

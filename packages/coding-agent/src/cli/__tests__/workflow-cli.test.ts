@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { isEnoent, TempDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import {
 	WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV,
@@ -378,6 +379,46 @@ describe("workflow CLI", () => {
 		};
 		expect(result.run).toMatchObject({ status: "completed", completed: 1, failed: 0 });
 		expect(result.runs[0]?.stateKeys).toEqual(["marker"]);
+	});
+
+	it("uses workflow script environment for headless js child spawns with explicit process env", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-js-python-env-");
+		const root = tempDir.path();
+		const runCwd = `${root}/workspace`;
+		const runTmp = `${runCwd}/workflow-output/tmp`;
+		const previousRunTmp = Bun.env.OMH_RUN_TMP;
+		await Bun.write(`${root}/js-python-env-smoke.omhflow`, workflowJsPythonEnvSmokeFlow());
+		await Bun.write(`${root}/js-python-env-smoke/scripts/compile.js`, workflowJsPythonEnvSmokeScript());
+		await Bun.write(`${runCwd}/src/module_under_test.py`, "VALUE = 42\n");
+		const output: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		});
+		Bun.env.OMH_RUN_TMP = runTmp;
+		try {
+			await runWorkflowCommand({
+				action: "start",
+				args: [`${root}/js-python-env-smoke.omhflow`],
+				flags: {
+					cwd: runCwd,
+					json: true,
+					runId: "js-python-env-smoke-run",
+				},
+			});
+		} finally {
+			if (previousRunTmp === undefined) delete Bun.env.OMH_RUN_TMP;
+			else Bun.env.OMH_RUN_TMP = previousRunTmp;
+		}
+
+		const result = JSON.parse(output.join("").trim()) as {
+			run: { status: string; completed: number; failed: number };
+			runs: { stateKeys: string[] }[];
+		};
+		expect(result.run).toMatchObject({ status: "completed", completed: 1, failed: 0 });
+		expect(result.runs[0]?.stateKeys).toEqual(["result"]);
+		expect(await directoryEntriesOrEmpty(`${runCwd}/src/__pycache__`)).toEqual([]);
+		expect((await findRelativeFiles(runTmp, ".pyc")).some(file => file.endsWith(".pyc"))).toBe(true);
 	});
 
 	it("runs isolated headless workflow agents outside the parent checkout and captures a patch", async () => {
@@ -857,6 +898,70 @@ function workflowJsCwdSmokeScript(): string {
 	].join("\n");
 }
 
+function workflowJsPythonEnvSmokeFlow(): string {
+	return [
+		"---",
+		"name: js-python-env-smoke",
+		"version: 1",
+		"schema: omhflow/v1",
+		"resourceDir: js-python-env-smoke",
+		"models:",
+		"  roles: {}",
+		"  defaults: {}",
+		"checkpoint:",
+		"  stopDeadlineMs: 30000",
+		"changePolicy:",
+		"  agentsCanPropose: true",
+		"  humansCanApprove: true",
+		"---",
+		"# JS Python env smoke",
+		"",
+		"```yaml workflow",
+		"stateSchema:",
+		"  version: 1",
+		"  shape:",
+		"    result: object",
+		"resources:",
+		"  - path: scripts/compile.js",
+		"    kind: script",
+		"sequence:",
+		"  - node:",
+		"      id: compile",
+		"      type: script",
+		"      script:",
+		"        language: js",
+		"        file: scripts/compile.js",
+		"      writes:",
+		"        - /result",
+		"```",
+	].join("\n");
+}
+
+function workflowJsPythonEnvSmokeScript(): string {
+	return [
+		'const proc = Bun.spawn(["python", "-m", "py_compile", "src/module_under_test.py"], {',
+		"  cwd: process.cwd(),",
+		'  stdout: "pipe",',
+		'  stderr: "pipe",',
+		"  env: process.env,",
+		"});",
+		"const [stdout, stderr, exitCode] = await Promise.all([",
+		"  new Response(proc.stdout).text(),",
+		"  new Response(proc.stderr).text(),",
+		"  proc.exited,",
+		"]);",
+		'if (exitCode !== 0) throw new Error(stderr || stdout || "child exited " + exitCode);',
+		"return {",
+		'  summary: "python cache stayed out of the workspace",',
+		"  statePatch: [{",
+		'    op: "set",',
+		'    path: "/result",',
+		"    value: { pycachePrefix: process.env.PYTHONPYCACHEPREFIX || '' },",
+		"  }],",
+		"};",
+	].join("\n");
+}
+
 function workflowSigintStopFlow(): string {
 	return [
 		"---",
@@ -892,4 +997,51 @@ function workflowSigintStopFlow(): string {
 
 function workflowSigintHoldScript(): string {
 	return ["#!/bin/sh", "set -eu", "sleep 2", 'printf \'{"summary":"unexpected completion"}\\n\''].join("\n");
+}
+
+async function directoryEntriesOrEmpty(directoryPath: string): Promise<string[]> {
+	try {
+		return (await fs.readdir(directoryPath)).sort();
+	} catch (error) {
+		if (isEnoent(error)) return [];
+		throw error;
+	}
+}
+
+async function findRelativeFiles(rootPath: string, suffix: string): Promise<string[]> {
+	const results: string[] = [];
+	await collectRelativeFiles(rootPath, "", suffix, results);
+	return results.sort();
+}
+
+async function collectRelativeFiles(
+	rootPath: string,
+	relativePath: string,
+	suffix: string,
+	results: string[],
+): Promise<void> {
+	const directoryPath = relativePath === "" ? rootPath : `${rootPath}/${relativePath}`;
+	let entries: DirectoryEntry[];
+	try {
+		entries = await fs.readdir(directoryPath, { withFileTypes: true });
+	} catch (error) {
+		if (isEnoent(error)) return;
+		throw error;
+	}
+	for (const entry of entries) {
+		const entryRelativePath = relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
+		if (entry.isDirectory()) {
+			await collectRelativeFiles(rootPath, entryRelativePath, suffix, results);
+			continue;
+		}
+		if (entry.isFile() && entryRelativePath.endsWith(suffix)) {
+			results.push(entryRelativePath);
+		}
+	}
+}
+
+interface DirectoryEntry {
+	name: string;
+	isDirectory(): boolean;
+	isFile(): boolean;
 }
