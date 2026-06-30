@@ -861,7 +861,7 @@ export function buildHeadlessAgentTaskEnv(
 	modelOverrideAuthFallback: boolean | undefined,
 ): NodeJS.ProcessEnv {
 	const workflowEnv = {
-		...env,
+		...buildWorkflowShellEnvironment(workflowScriptEnvironment({}, env), env),
 		[WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV]: "30000",
 		[WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV]: "300000",
 		[WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV]: "workflow",

@@ -24,7 +24,9 @@ describe("workflow CLI", () => {
 	it("passes a conservative retry profile to headless workflow subagents", () => {
 		const env = buildHeadlessAgentTaskEnv(
 			{
+				OMH_RUN_TMP: "/run/tmp",
 				PATH: "/bin",
+				PYTEST_ADDOPTS: "-q",
 			},
 			undefined,
 			undefined,
@@ -34,6 +36,9 @@ describe("workflow CLI", () => {
 		expect(env[WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV]).toBe("300000");
 		expect(env[WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV]).toBe("workflow");
 		expect(env[WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV]).toBe("true");
+		expect(env.PYTHONDONTWRITEBYTECODE).toBe("1");
+		expect(env.PYTHONPYCACHEPREFIX).toBe("/run/tmp/python-pycache");
+		expect(env.PYTEST_ADDOPTS).toBe("-q -p no:cacheprovider");
 		expect(env.PATH).toBe("/bin");
 	});
 
