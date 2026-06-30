@@ -243,11 +243,16 @@ function roundEvidenceFile(file) {
 }
 
 function rollbackNoteForFile(file, text) {
-	const pattern = new RegExp(`(?:^|\\n)\\s*[-*]?\\s*${escapeRegExp(file)}\\s*:\\s*([^\\n]+)`, "iu");
-	const match = pattern.exec(text);
-	const note = match?.[1]?.trim() || nestedRollbackNoteForFile(file, text);
-	if (!note || !/\b(?:rollback|revert|restore|remove)\b/iu.test(note)) return "";
+	const note = [directRollbackNoteForFile(file, text), nestedRollbackNoteForFile(file, text), sectionedRollbackNoteForFile(file, text)].find(
+		candidate => concreteRollbackNote(candidate),
+	);
+	if (!note) return "";
 	return `${file}: ${note}`;
+}
+
+function directRollbackNoteForFile(file, text) {
+	const pattern = new RegExp(`(?:^|\\n)\\s*[-*]?\\s*\`?${escapeRegExp(file)}\`?\\s*:\\s*([^\\n]+)`, "iu");
+	return pattern.exec(text)?.[1]?.trim() ?? "";
 }
 
 function nestedRollbackNoteForFile(file, text) {
@@ -263,9 +268,41 @@ function nestedRollbackNoteForFile(file, text) {
 	return "";
 }
 
+function sectionedRollbackNoteForFile(file, text) {
+	const lines = text.split(/\r?\n/u);
+	for (let index = 0; index < lines.length; index += 1) {
+		if (!lineMentionsFile(file, lines[index] ?? "")) continue;
+		const headingIndex = lines.slice(index + 1, index + 17).findIndex(rollbackSectionLine);
+		if (headingIndex < 0) continue;
+		const sectionStart = index + 1 + headingIndex + 1;
+		for (const line of lines.slice(sectionStart, sectionStart + 12)) {
+			const note = stripBulletPrefix(line);
+			if (!concreteRollbackNote(note)) continue;
+			if (lineMentionsFile(file, note) || /\bretained\s+project-?file\s+change\b/iu.test(note)) return note;
+		}
+	}
+	return "";
+}
+
 function fileReferenceLine(file, line) {
+	return lineMentionsFile(file, line) && /^\s*[-*]?\s*/u.test(line);
+}
+
+function lineMentionsFile(file, line) {
 	const escaped = escapeRegExp(file);
-	return new RegExp(`^\\s*[-*]?\\s*${escaped}\\s*$`, "iu").test(line) || new RegExp(`^\\s*[-*]?\\s*${escaped}\\s+`, "iu").test(line);
+	return new RegExp(`(?:^|[^\\w./-])\`?${escaped}\`?(?:$|[^\\w./-])`, "iu").test(line);
+}
+
+function rollbackSectionLine(line) {
+	return /^\s*(?:#+\s*)?(?:rollback|revert|restore|remove)\b.*:?\s*$/iu.test(line);
+}
+
+function stripBulletPrefix(line) {
+	return line.replace(/^\s*[-*]\s*/u, "").trim();
+}
+
+function concreteRollbackNote(note) {
+	return Boolean(note?.trim()) && /\b(?:rollback|revert|restore|remove)\b/iu.test(note);
 }
 
 function validationRounds(progressText) {

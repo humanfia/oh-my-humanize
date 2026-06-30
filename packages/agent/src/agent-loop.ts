@@ -36,6 +36,7 @@ import {
 	recoverHarmonyToolCall,
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
+import { getStreamIdleTimeoutMs } from "@oh-my-pi/pi-ai/utils/idle-iterator";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
@@ -75,6 +76,11 @@ export const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_
 
 /** Sentinel returned by the abort race in `streamAssistantResponse`. */
 const ABORTED: unique symbol = Symbol("agent-loop-aborted");
+
+/** Sentinel returned by the agent-level stream idle watchdog. */
+const STREAM_IDLE_TIMED_OUT: unique symbol = Symbol("agent-loop-stream-idle-timed-out");
+
+const AGENT_STREAM_IDLE_TIMEOUT_MESSAGE = "Provider stream stalled while waiting for the next event";
 
 /**
  * Cap on consecutive re-samples triggered by a non-terminal stop
@@ -1124,6 +1130,24 @@ async function emitHarmonyAudit(
 	);
 }
 
+interface ModelStreamIdleCompat {
+	streamIdleTimeoutMs?: number;
+}
+
+function normalizePositiveTimeoutMs(value: number | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isFinite(value) || value <= 0) return undefined;
+	return Math.trunc(value);
+}
+
+function resolveAgentStreamIdleTimeoutMs(config: AgentLoopConfig): number | undefined {
+	if (config.streamIdleTimeoutMs !== undefined) {
+		return normalizePositiveTimeoutMs(config.streamIdleTimeoutMs);
+	}
+	const compat = config.model.compat as ModelStreamIdleCompat | undefined;
+	return normalizePositiveTimeoutMs(getStreamIdleTimeoutMs(compat?.streamIdleTimeoutMs));
+}
+
 /**
  * Stream an assistant response from the LLM.
  * This is where AgentMessage[] gets transformed to Message[] for the LLM.
@@ -1212,9 +1236,12 @@ async function streamAssistantResponse(
 	// `requestSignal`), so it cancels the request without tripping the loop's
 	// external-abort handling (`abortRacePromise` / `requestSignal.aborted`).
 	const promptToolAbortController = ownedDialect ? new AbortController() : undefined;
+	const agentStreamIdleTimeoutMs = resolveAgentStreamIdleTimeoutMs(config);
+	const streamIdleAbortController = agentStreamIdleTimeoutMs === undefined ? undefined : new AbortController();
 	const providerAbortSignals: AbortSignal[] = [];
 	if (requestSignal) providerAbortSignals.push(requestSignal);
 	if (promptToolAbortController) providerAbortSignals.push(promptToolAbortController.signal);
+	if (streamIdleAbortController) providerAbortSignals.push(streamIdleAbortController.signal);
 	const finalRequestSignal =
 		providerAbortSignals.length === 0
 			? undefined
@@ -1331,6 +1358,27 @@ async function streamAssistantResponse(
 				await finishChat(aborted);
 				return aborted;
 			};
+			const finishTimedOutStream = async (): Promise<AssistantMessage> => {
+				const timeoutError = new AIError.StreamTimeoutError(AGENT_STREAM_IDLE_TIMEOUT_MESSAGE);
+				streamIdleAbortController?.abort(timeoutError);
+				try {
+					const cleanup = responseIterator.return?.();
+					if (cleanup) void cleanup.catch(() => {});
+				} catch {
+					// Provider cancellation failures cannot change the committed timeout message.
+				}
+				const timedOut = emitErroredAssistantMessage(
+					partialMessage,
+					addedPartial,
+					completedToolCallIds,
+					context,
+					config,
+					stream,
+					timeoutError,
+				);
+				await finishChat(timedOut);
+				return timedOut;
+			};
 
 			// Set up a single abort race: register the abort listener once for the whole
 			// stream and reuse the same race promise for every iterator.next() instead of
@@ -1347,19 +1395,38 @@ async function streamAssistantResponse(
 				abortRacePromise = promise;
 				detachAbortListener = () => requestSignal.removeEventListener("abort", onAbort);
 			}
+			const nextAssistantEvent = async (): Promise<
+				IteratorResult<AssistantMessageEvent> | typeof ABORTED | typeof STREAM_IDLE_TIMED_OUT
+			> => {
+				const nextPromise = responseIterator.next();
+				if (!abortRacePromise && agentStreamIdleTimeoutMs === undefined) return await nextPromise;
+				let timeout: Timer | undefined;
+				const racers: Array<
+					Promise<IteratorResult<AssistantMessageEvent> | typeof ABORTED | typeof STREAM_IDLE_TIMED_OUT>
+				> = [nextPromise];
+				if (abortRacePromise) racers.push(abortRacePromise);
+				if (agentStreamIdleTimeoutMs !== undefined) {
+					const idleTimeout = Promise.withResolvers<typeof STREAM_IDLE_TIMED_OUT>();
+					timeout = setTimeout(() => idleTimeout.resolve(STREAM_IDLE_TIMED_OUT), agentStreamIdleTimeoutMs);
+					racers.push(idleTimeout.promise);
+				}
+				try {
+					return await Promise.race(racers);
+				} finally {
+					if (timeout !== undefined) clearTimeout(timeout);
+				}
+			};
 
 			try {
 				while (true) {
-					let next: IteratorResult<AssistantMessageEvent>;
-					if (abortRacePromise) {
-						const result = await Promise.race([responseIterator.next(), abortRacePromise]);
-						if (result === ABORTED) {
-							return await finishAbortedStream();
-						}
-						next = result;
-					} else {
-						next = await responseIterator.next();
+					const result = await nextAssistantEvent();
+					if (result === ABORTED) {
+						return await finishAbortedStream();
 					}
+					if (result === STREAM_IDLE_TIMED_OUT) {
+						return await finishTimedOutStream();
+					}
+					const next = result;
 					if (next.done) break;
 
 					const event = next.value;
@@ -1639,6 +1706,52 @@ function emitAbortedAssistantMessage(
 	}
 	stream.push({ type: "message_end", message: snapshotAssistantMessage(abortedMessage) });
 	return abortedMessage;
+}
+
+function emitErroredAssistantMessage(
+	partialMessage: AssistantMessage | null,
+	addedPartial: boolean,
+	completedToolCallIds: ReadonlySet<string>,
+	context: AgentContext,
+	config: AgentLoopConfig,
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	error: Error,
+): AssistantMessage {
+	const base: AssistantMessage = partialMessage
+		? {
+				...partialMessage,
+				stopReason: "error",
+				errorMessage: error.message,
+				errorId: AIError.classify(error) || undefined,
+			}
+		: {
+				role: "assistant",
+				content: [],
+				api: config.model.api,
+				provider: config.model.provider,
+				model: config.model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "error",
+				errorMessage: error.message,
+				errorId: AIError.classify(error) || undefined,
+				timestamp: Date.now(),
+			};
+	const erroredMessage = snapshotAssistantMessage(retainCompletedToolCalls(base, completedToolCallIds));
+	if (addedPartial) {
+		context.messages[context.messages.length - 1] = erroredMessage;
+	} else {
+		context.messages.push(erroredMessage);
+		stream.push({ type: "message_start", message: snapshotAssistantMessage(erroredMessage) });
+	}
+	stream.push({ type: "message_end", message: snapshotAssistantMessage(erroredMessage) });
+	return erroredMessage;
 }
 
 /**

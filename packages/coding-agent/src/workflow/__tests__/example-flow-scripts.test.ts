@@ -2039,9 +2039,13 @@ describe("example workflow scripts", () => {
 			[
 				"Round 1 validation summary",
 				"",
-				"Rollback notes:",
-				"- src.py",
-				"  - Rollback: restore value = 1 if the scoped source change is rejected.",
+				"Retained project file change:",
+				"",
+				"- `src.py`: changed the value used by the scoped source path.",
+				"",
+				"Rollback procedure:",
+				"",
+				"- To revert the retained project-file change, restore `src.py` to `value = 1`.",
 			].join("\n"),
 		);
 		for (const file of [
@@ -2056,8 +2060,80 @@ describe("example workflow scripts", () => {
 		await runExampleDefinition({ cwd, previousCwd, definition });
 
 		const archive = await Bun.file(`${cwd}/workflow-output/final-agent-loop-archive.md`).text();
-		expect(archive).toContain("src.py: restore value = 1 if the scoped source change is rejected.");
+		expect(archive).toContain("src.py: To revert the retained project-file change, restore `src.py` to `value = 1`.");
 		expect(archive).not.toContain("Rollback risk: Before archive, write rollback notes for every changed file.");
+	});
+
+	it("accepts sectioned agent loop rollback procedures for changed files", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-sectioned-rollback-procedure-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Accept sectioned rollback procedures tied to the changed file list.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Scope Fence:",
+				"Allowed paths: tests/test_tutorial/test_query_params/test_tutorial001.py, workflow-output/, progress.md.",
+				"",
+				"Rollback Plan:",
+				"Before archive, write rollback notes for every changed file.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/tests/test_tutorial/test_query_params/test_tutorial001.py`,
+			"def test_existing():\n    pass\n",
+		);
+		await runGit(cwd, ["add", "task.md", "tests/test_tutorial/test_query_params/test_tutorial001.py"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			`${cwd}/tests/test_tutorial/test_query_params/test_tutorial001.py`,
+			"def test_existing():\n    pass\n\n\ndef test_invalid_skip_limit_query_params():\n    pass\n",
+		);
+		await Bun.write(
+			`${cwd}/progress.md`,
+			"ROUND 1: tightened invalid query integer regression; validation=echo validate; result=pass\n",
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/round-1/rollback.md`,
+			[
+				"# Rollback Notes",
+				"",
+				"Retained project file change:",
+				"",
+				"- `tests/test_tutorial/test_query_params/test_tutorial001.py`: added `test_invalid_skip_limit_query_params` to lock the 422 JSON error surface.",
+				"",
+				"Rollback procedure:",
+				"",
+				"- To revert the retained project-file change, delete the entire `test_invalid_skip_limit_query_params` function from `tests/test_tutorial/test_query_params/test_tutorial001.py`, leaving the existing tests unchanged.",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-stdout.txt`, "validate\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-stderr.txt`, "");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-attempt-1-stdout.txt`, "validate\n");
+		await Bun.write(`${cwd}/workflow-output/round-1/validation-attempt-1-stderr.txt`, "");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "PASS",
+			findings: [],
+		});
 	});
 
 	it("does not require extra validation attempt logs for ambiguous cross-round rerun prose", async () => {

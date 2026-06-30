@@ -315,7 +315,7 @@ describe("agentLoop with AgentMessage", () => {
 						return Promise.withResolvers<IteratorResult<AssistantMessageEvent>>().promise;
 					},
 				}),
-			}) as AssistantMessageEventStream;
+			}) as unknown as AssistantMessageEventStream;
 
 		const stream = agentLoop([createUserMessage("Hello")], context, config, controller.signal, streamFn);
 		queueMicrotask(() => controller.abort("stop now"));
@@ -327,6 +327,47 @@ describe("agentLoop with AgentMessage", () => {
 		if (finalMessage.role !== "assistant") throw new Error("Expected assistant message");
 		expect(finalMessage.stopReason).toBe("aborted");
 		expect(finalMessage.errorMessage).toBe("stop now");
+	});
+
+	it("surfaces stalled provider streams through an agent-level idle watchdog", async () => {
+		const context: AgentContext = {
+			systemPrompt: ["You are helpful."],
+			messages: [],
+			tools: [],
+		};
+		const mock = createMockModel();
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			streamIdleTimeoutMs: 20,
+		};
+		let returnCalled = false;
+		const streamFn = () =>
+			({
+				result: () => Promise.withResolvers<AssistantMessage>().promise,
+				[Symbol.asyncIterator]: () => ({
+					next: () => Promise.withResolvers<IteratorResult<AssistantMessageEvent>>().promise,
+					return: () => {
+						returnCalled = true;
+						return Promise.resolve({ done: true, value: undefined as never });
+					},
+				}),
+			}) as unknown as AssistantMessageEventStream;
+
+		const stream = agentLoop([createUserMessage("Hello")], context, config, undefined, streamFn);
+		const outcome = await Promise.race([
+			stream.result().then(messages => ({ kind: "completed" as const, messages })),
+			Bun.sleep(500).then(() => ({ kind: "hung" as const })),
+		]);
+
+		expect(outcome.kind).toBe("completed");
+		if (outcome.kind !== "completed") return;
+		expect(returnCalled).toBe(true);
+		const finalMessage = outcome.messages[outcome.messages.length - 1];
+		expect(finalMessage.role).toBe("assistant");
+		if (finalMessage.role !== "assistant") throw new Error("Expected assistant message");
+		expect(finalMessage.stopReason).toBe("error");
+		expect(finalMessage.errorMessage).toBe("Provider stream stalled while waiting for the next event");
 	});
 
 	it("surfaces a custom abort reason on the synthesized aborted message", async () => {
