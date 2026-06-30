@@ -422,6 +422,58 @@ describe("workflow CLI", () => {
 		expect(await Bun.file(result.patchPath ?? "").text()).toContain("lane-output.txt");
 	});
 
+	it("records non-isolated headless workflow agent stdout and session artifacts", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-agent-artifacts-");
+		const root = tempDir.path();
+		const artifactsDir = path.join(root, "agent-artifacts");
+		let launchedArgs: string[] = [];
+
+		const result = await runHeadlessAgentTask(
+			root,
+			{
+				activationId: "activation-1",
+				nodeId: "build",
+				agent: "task",
+				task: {
+					id: "build",
+					description: "build",
+					role: "builder",
+					assignment: "write structured workflow evidence",
+				},
+			},
+			{
+				artifactsDir,
+				runProcess: async args => {
+					launchedArgs = args;
+					const sessionDirFlag = args.indexOf("--session-dir");
+					const sessionDir = args[sessionDirFlag + 1];
+					if (sessionDir === undefined) throw new Error("expected workflow subagent session dir");
+					await Bun.write(path.join(sessionDir, "session.jsonl"), '{"type":"session"}\n');
+					return {
+						exitCode: 0,
+						stdout: '{"summary":"agent produced structured evidence"}\n',
+						stderr: "",
+					};
+				},
+			},
+		);
+
+		const agentDir = path.join(artifactsDir, "workflow-build-activation-1");
+		const sessionDir = path.join(agentDir, "sessions");
+		expect(launchedArgs).toContain("--session-dir");
+		expect(launchedArgs[launchedArgs.indexOf("--session-dir") + 1]).toBe(sessionDir);
+		expect(result).toMatchObject({
+			exitCode: 0,
+			output: '{"summary":"agent produced structured evidence"}',
+			agentId: "workflow-build-activation-1",
+			outputPath: path.join(agentDir, "output.md"),
+			sessionFile: path.join(sessionDir, "session.jsonl"),
+		});
+		expect(await Bun.file(path.join(agentDir, "output.md")).text()).toBe(
+			'{"summary":"agent produced structured evidence"}\n',
+		);
+	});
+
 	it("checkpoints headless workflow starts on SIGINT instead of leaving a run alive", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-sigint-");
 		const root = tempDir.path();

@@ -100,6 +100,54 @@ edges: []
 		});
 	});
 
+	it("adds a structured state handoff contract for agent nodes with declared writes", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: "",
+					agentId: "workflow-inventory-activation-1",
+					data: {
+						summary: "inventory recorded",
+						statePatch: [{ op: "set", path: "/inventory", value: { docs: 3 } }],
+					},
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const prompt = "Inspect docs and record an inventory.";
+		const node: WorkflowNode = {
+			id: "inventory",
+			type: "agent",
+			agent: "task",
+			prompt,
+			writes: ["/inventory"],
+		};
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+
+		const assignment = capturedRequest?.task.assignment;
+		if (assignment === undefined) throw new Error("workflow agent assignment missing");
+		expect(assignment).toContain("Workflow agent output contract:");
+		expect(assignment).toContain("WorkflowActivationOutput");
+		expect(assignment).toContain("Declared write pointers: /inventory");
+		expect(assignment).toContain(prompt);
+		expect(output).toMatchObject({
+			summary: "inventory recorded",
+			statePatch: [{ op: "set", path: "/inventory", value: { docs: 3 } }],
+			data: { agentId: "workflow-inventory-activation-1" },
+			artifacts: ["agent-output://workflow-inventory-activation-1"],
+		});
+	});
+
 	it("retries transient provider failures for agent nodes before completing", async () => {
 		const calls: string[] = [];
 		const host = createSessionWorkflowRuntimeHost({
@@ -1291,7 +1339,11 @@ edges: []
 			nodeAbortSignal: controller.signal,
 		});
 
-		expect(requests[0]?.signal).toBe(controller.signal);
+		const requestSignal = requests[0]?.signal;
+		if (requestSignal === undefined) throw new Error("expected eval node abort signal");
+		expect(requestSignal.aborted).toBe(false);
+		controller.abort("operator stop");
+		expect(requestSignal.aborted).toBe(true);
 	});
 
 	it("captures returned js workflow script objects through the real eval tool runner", async () => {

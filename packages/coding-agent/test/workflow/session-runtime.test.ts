@@ -378,10 +378,47 @@ edges: []
 
 		expect(output).toEqual({
 			summary: "agent completed",
-			data: { exitCode: 0 },
-			artifacts: ["agent-output://build", "local:///tmp/omp-workflow-agent.jsonl"],
+			data: { exitCode: 0, agentId: "build", sessionFile: "/tmp/omp-workflow-agent.jsonl" },
+			artifacts: ["agent-output://build", "/tmp/omp-workflow-agent.jsonl"],
 		});
 		expect(validateWorkflowActivationOutput(output)).toEqual(output);
+	});
+
+	it("keeps transcript metadata in data for downstream workflow materializers", async () => {
+		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
+		const node = definition.nodes.find(candidate => candidate.id === "build");
+		if (!node) throw new Error("expected build node");
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: process.cwd(),
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: "The structured report is in the session transcript.",
+				agentId: "workflow-build-activation-build",
+				outputPath: "/tmp/workflow-build-output.md",
+				sessionFile: "/tmp/workflow-build.jsonl",
+			}),
+		});
+
+		const output = await host.runAgentNode?.({
+			node,
+			activation: activation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+			model: node.model,
+		});
+		if (output === undefined) throw new Error("expected agent output");
+
+		expect(output.data).toMatchObject({
+			exitCode: 0,
+			agentId: "workflow-build-activation-build",
+			outputPath: "/tmp/workflow-build-output.md",
+			sessionFile: "/tmp/workflow-build.jsonl",
+		});
+		expect(output.artifacts).toEqual([
+			"agent-output://workflow-build-activation-build",
+			"/tmp/workflow-build-output.md",
+			"/tmp/workflow-build.jsonl",
+		]);
 	});
 
 	it("bounds unstructured agent output summaries and keeps full output references", async () => {
@@ -417,7 +454,7 @@ edges: []
 			summaryTruncated: true,
 			summaryBytes: new TextEncoder().encode(longOutput.trim()).byteLength,
 		});
-		expect(output.artifacts).toEqual(["agent-output://agent-long", "local:///tmp/workflow-long-output.md"]);
+		expect(output.artifacts).toEqual(["agent-output://agent-long", "/tmp/workflow-long-output.md"]);
 		expect(validateWorkflowActivationOutput(output)).toEqual(output);
 	});
 
@@ -489,6 +526,7 @@ edges: []
 		expect(output).toEqual({
 			summary: "implemented evaluator and tests",
 			data: {
+				agentId: "build",
 				status: "implementation_verified_not_long_running_final",
 				summary: "implemented evaluator and tests",
 				verification: [{ command: "bun test", result: "pass" }],
@@ -526,7 +564,7 @@ edges: []
 
 		expect(output).toEqual({
 			summary: taskOutput,
-			data: { exitCode: 0 },
+			data: { exitCode: 0, agentId: "build" },
 			artifacts: ["agent-output://build"],
 		});
 	});
@@ -614,7 +652,7 @@ edges: []
 			gates: node.gates,
 		});
 
-		expect(capturedRequest).toEqual({
+		expect(capturedRequest).toMatchObject({
 			agent: "reviewer",
 			activationId: "activation-review",
 			nodeId: "review",
@@ -624,9 +662,11 @@ edges: []
 				id: "review",
 				description: "Reviewer · Review",
 				role: "Reviewer · Review",
-				assignment: "Review the workflow result.",
 			},
 		});
+		expect(capturedRequest?.task.assignment).toContain("Workflow review adapter:");
+		expect(capturedRequest?.task.assignment).toContain("Review the workflow result.");
+		expect(capturedRequest?.task.assignment).toContain("Declared workflow gates: continue, finish");
 		expect(output).toEqual({
 			summary: "review passed",
 			verdict: "continue",
@@ -658,8 +698,8 @@ edges: []
 		expect(output.summary).toContain("[workflow summary truncated");
 		expect(output.artifacts).toEqual([
 			"agent-output://review-long",
-			"local:///tmp/workflow-review-output.md",
-			"local:///tmp/workflow-review-session.jsonl",
+			"/tmp/workflow-review-output.md",
+			"/tmp/workflow-review-session.jsonl",
 		]);
 		expect(validateWorkflowActivationOutput(output)).toEqual(output);
 	});
@@ -1016,7 +1056,7 @@ edges: []
 		});
 	});
 
-	it("maps reviewer correctness output to fallback when declared gates do not include pass or fail", async () => {
+	it("maps reviewer correctness output to the declared completion gate", async () => {
 		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
@@ -1044,7 +1084,7 @@ edges: []
 
 		expect(output).toEqual({
 			summary: "Round 7 artifact is present, but the loop has not reached the completion threshold.",
-			verdict: "CONTINUE",
+			verdict: "COMPLETE",
 		});
 	});
 

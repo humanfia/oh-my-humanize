@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { APP_NAME, getProjectDir, Snowflake } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getProjectDir, isEnoent, Snowflake } from "@oh-my-pi/pi-utils";
 import { buildWorkflowShellEnvironment } from "../exec/shell-environment-policy";
 import type { CustomEntry, SessionEntry } from "../session/session-entries";
 import {
@@ -584,7 +584,7 @@ export async function runHeadlessAgentTask(
 	options: HeadlessAgentTaskOptions = {},
 ): Promise<WorkflowAgentTaskResult> {
 	if (request.isolated !== true) {
-		return runHeadlessAgentTaskProcess(cwd, request, options.runProcess);
+		return runHeadlessAgentTaskProcess(cwd, request, options);
 	}
 	const agentId = headlessWorkflowAgentId(request);
 	const artifactsDir = options.artifactsDir ?? path.join(os.tmpdir(), `omh-workflow-agent-${Snowflake.next()}`);
@@ -623,7 +623,10 @@ export async function runHeadlessAgentTask(
 			};
 		},
 		run: async isolationDir => {
-			const processResult = await runHeadlessAgentTaskProcess(isolationDir, request, options.runProcess);
+			const processResult = await runHeadlessAgentTaskProcess(isolationDir, request, {
+				...options,
+				artifactsDir,
+			});
 			return {
 				...processResult,
 				id: agentId,
@@ -655,6 +658,8 @@ export async function runHeadlessAgentTask(
 		...(result.stderr !== undefined ? { stderr: result.stderr } : {}),
 		...(result.error !== undefined ? { error: result.error } : {}),
 		agentId,
+		...(result.outputPath !== undefined ? { outputPath: result.outputPath } : {}),
+		...(result.sessionFile !== undefined ? { sessionFile: result.sessionFile } : {}),
 		...(result.patchPath !== undefined ? { patchPath: result.patchPath } : {}),
 		...(result.branchName !== undefined ? { branchName: result.branchName } : {}),
 		...(changesApplied !== undefined ? { changesApplied } : {}),
@@ -664,19 +669,31 @@ export async function runHeadlessAgentTask(
 async function runHeadlessAgentTaskProcess(
 	cwd: string,
 	request: WorkflowAgentTaskRequest,
-	runProcess: HeadlessAgentProcessRunner = spawnHeadlessAgentTaskProcess,
+	options: HeadlessAgentTaskOptions = {},
 ): Promise<WorkflowAgentTaskResult> {
-	const args = buildHeadlessAgentTaskArgs(cwd, request.task.assignment, request.modelOverride);
+	const agentId = headlessWorkflowAgentId(request);
+	const artifactsDir = options.artifactsDir ?? path.join(os.tmpdir(), `omh-workflow-agent-${Snowflake.next()}`);
+	const agentArtifactsDir = path.join(artifactsDir, agentId);
+	const sessionDir = path.join(agentArtifactsDir, "sessions");
+	const outputPath = path.join(agentArtifactsDir, "output.md");
+	await fs.mkdir(sessionDir, { recursive: true });
+	const args = buildHeadlessAgentTaskArgs(cwd, request.task.assignment, request.modelOverride, sessionDir);
+	const runProcess = options.runProcess ?? spawnHeadlessAgentTaskProcess;
 	const { stdout, stderr, exitCode } = await runProcess(args, {
 		cwd,
 		signal: request.signal,
 		env: buildHeadlessAgentTaskEnv(Bun.env, request.modelOverride, request.modelOverrideAuthFallback),
 	});
+	await Bun.write(outputPath, stdout);
+	const sessionFile = await latestHeadlessAgentSessionFile(sessionDir);
 	return {
 		exitCode,
 		output: stdout.trim(),
 		...(stderr.trim() ? { stderr: stderr.trim() } : {}),
 		...(exitCode === 0 ? {} : { error: stderr.trim() || `exit code ${exitCode}` }),
+		agentId,
+		outputPath,
+		...(sessionFile !== undefined ? { sessionFile } : {}),
 	};
 }
 
@@ -712,11 +729,30 @@ function sanitizeHeadlessAgentIdSegment(value: string): string {
 	return sanitized || Snowflake.next();
 }
 
-export function buildHeadlessAgentTaskArgs(cwd: string, assignment: string, modelOverride?: string): string[] {
+export function buildHeadlessAgentTaskArgs(
+	cwd: string,
+	assignment: string,
+	modelOverride?: string,
+	sessionDir?: string,
+): string[] {
 	const args = [...currentCliInvocation(), "launch", "--cwd", cwd];
 	if (modelOverride !== undefined) args.push("--model", modelOverride);
+	if (sessionDir !== undefined) args.push("--session-dir", sessionDir);
 	args.push("-p", assignment);
 	return args;
+}
+
+async function latestHeadlessAgentSessionFile(sessionDir: string): Promise<string | undefined> {
+	let entries: string[];
+	try {
+		entries = await fs.readdir(sessionDir);
+	} catch (error) {
+		if (isEnoent(error)) return undefined;
+		throw error;
+	}
+	const jsonlEntries = entries.filter(entry => entry.endsWith(".jsonl")).sort();
+	const latest = jsonlEntries[jsonlEntries.length - 1];
+	return latest === undefined ? undefined : path.join(sessionDir, latest);
 }
 
 export function buildHeadlessAgentTaskEnv(

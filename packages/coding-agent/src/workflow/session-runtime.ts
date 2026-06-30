@@ -1,4 +1,7 @@
 import { extractRetryHint, prompt as promptTemplate } from "@oh-my-pi/pi-utils";
+import workflowAgentNodeOutputContractPrompt from "../prompts/system/workflow-agent-node-output-contract.md" with {
+	type: "text",
+};
 import workflowReviewNodeAdapterPrompt from "../prompts/system/workflow-review-node-adapter.md" with { type: "text" };
 import { workflowAgentTaskIdForNode } from "./agent-task-id";
 import type { WorkflowNode, WorkflowScriptLanguage } from "./definition";
@@ -149,11 +152,15 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				);
 			}
 			const taskLabel = formatWorkflowAgentWorkItemLabel(input.node);
+			const assignment = workflowAgentNodeAssignment(
+				input.prompt?.trim() || `Run workflow node "${input.node.id}".`,
+				input.node.writes,
+			);
 			const task: WorkflowAgentTaskItem = {
 				id: workflowAgentTaskIdForNode(input.node.id),
 				description: taskLabel,
 				role: taskLabel,
-				assignment: input.prompt?.trim() || `Run workflow node "${input.node.id}".`,
+				assignment,
 			};
 			const request: WorkflowAgentTaskRequest = {
 				agent: input.agent,
@@ -297,6 +304,14 @@ function workflowReviewNodeAssignment(
 		assignment,
 		declaredGates: gates === undefined || gates.length === 0 ? "(none)" : gates.join(", "),
 		fallbackVerdict: fallbackVerdict ?? "(none)",
+	});
+}
+
+function workflowAgentNodeAssignment(assignment: string, writes: readonly string[] | undefined): string {
+	if (writes === undefined || writes.length === 0) return assignment;
+	return promptTemplate.render(workflowAgentNodeOutputContractPrompt, {
+		assignment,
+		declaredWrites: writes.join(", "),
 	});
 }
 
@@ -746,6 +761,10 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 	}
 	const artifacts = taskResultArtifactReferences(result);
 	if (result.data !== undefined) {
+		const yieldedActivationOutput = activationOutputFromYieldData(result.data);
+		if (yieldedActivationOutput !== undefined) {
+			return mergeActivationArtifacts(applyTaskResultMetadata(yieldedActivationOutput, result), artifacts);
+		}
 		const summarySource =
 			typeof result.data.summary === "string" && result.data.summary.trim().length > 0
 				? result.data.summary
@@ -780,6 +799,11 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 		output.artifacts = artifacts;
 	}
 	return output;
+}
+
+function activationOutputFromYieldData(data: Record<string, unknown>): WorkflowActivationOutput | undefined {
+	if (data.statePatch === undefined && data.artifacts === undefined && data.data === undefined) return undefined;
+	return validateWorkflowActivationOutput(data);
 }
 
 function applyTaskResultMetadata(
