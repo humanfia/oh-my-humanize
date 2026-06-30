@@ -34,6 +34,7 @@ const INTERNAL_URL_SELECTOR_PART_RE = new RegExp(
 const INTERNAL_SCHEMES_WITH_SELECTORS: Record<string, true> = {
 	agent: true,
 	artifact: true,
+	history: true,
 	issue: true,
 	local: true,
 	memory: true,

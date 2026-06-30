@@ -12,11 +12,16 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { HistoryProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/history-protocol";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import type { ReadToolDetails } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -30,6 +35,17 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 function fakeLiveSession(messages: unknown[]): AgentSession {
 	return { messages } as unknown as AgentSession;
+}
+
+function fakeToolSession(cwd: string): ToolSession {
+	return { cwd, hasUI: false, settings: Settings.isolated() } as unknown as ToolSession;
+}
+
+function textOutput(result: AgentToolResult<ReadToolDetails>): string {
+	return result.content
+		.filter(content => content.type === "text")
+		.map(content => content.text)
+		.join("\n");
 }
 
 /** Minimal current-version session JSONL: header + a linear user/assistant chain. */
@@ -123,6 +139,30 @@ describe("history:// protocol", () => {
 
 		const resource = await InternalUrlRouter.instance().resolve("history://hubagent");
 		expect(resource.content).toContain("# HubAgent (idle)");
+	});
+
+	it("supports read-tool selectors on history:// transcript URLs", async () => {
+		await withTempDir(async dir => {
+			AgentRegistry.global().register({
+				id: "HubAgent",
+				displayName: "task",
+				kind: "sub",
+				session: fakeLiveSession([
+					{ role: "user", content: "hello from live", timestamp: 1 },
+					{ role: "assistant", content: [{ type: "text", text: "reply from live" }], timestamp: 2 },
+				]),
+				status: "idle",
+			});
+			const tool = new ReadTool(fakeToolSession(dir));
+
+			const raw = await tool.execute("read-history-raw", { path: "history://HubAgent:raw" });
+			const range = await tool.execute("read-history-range", { path: "history://HubAgent:1-3" });
+
+			expect(textOutput(raw)).toContain("# HubAgent (idle)");
+			expect(textOutput(raw)).toContain("reply from live");
+			expect(textOutput(range)).toContain("# HubAgent (idle)");
+			expect(textOutput(range)).not.toContain("reply from live");
+		});
 	});
 
 	it("history://<id> renders a parked ref read-only from its session file", async () => {
