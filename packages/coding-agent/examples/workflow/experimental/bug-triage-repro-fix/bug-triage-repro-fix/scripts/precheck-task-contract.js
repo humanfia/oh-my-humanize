@@ -1,6 +1,8 @@
 const taskText = await readRequiredTaskText();
 const reproductionCommand = requiredCommand(taskText, "Reproduction Command");
 const validationCommand = requiredCommand(taskText, "Validation Command");
+validateShellCommand(reproductionCommand, "Reproduction Command");
+validateShellCommand(validationCommand, "Validation Command");
 const runtime = runtimeFromTaskContract(taskText);
 
 await Bun.write(
@@ -76,19 +78,44 @@ function commandField(taskContract, label) {
 		if (!match) continue;
 		const inline = match[1]?.trim();
 		if (inline) return inline;
-		return firstFollowingCommandLine(lines, index + 1);
+		return followingSingleLineCommand(lines, index + 1, label);
 	}
 	return "";
 }
 
-function firstFollowingCommandLine(lines, startIndex) {
+function validateShellCommand(command, label) {
+	if (/\\[nr]/u.test(command)) {
+		throw new Error(
+			`${label} must not contain escaped newline sequences; put multi-step reproduction logic in a project script and call that script from task.md`,
+		);
+	}
+	if (/<<-?\s*['"]?[\w-]+/u.test(command)) {
+		throw new Error(
+			`${label} must not use shell here-documents; put multi-step reproduction logic in a project script and call that script from task.md`,
+		);
+	}
+}
+
+function followingSingleLineCommand(lines, startIndex, label) {
+	const commandLines = [];
+	let inFence = false;
 	for (const line of lines.slice(startIndex)) {
 		const trimmed = line.trim();
-		if (!trimmed || trimmed.startsWith("```")) continue;
-		if (isTaskSectionHeading(trimmed)) return "";
-		return trimmed;
+		if (!trimmed) continue;
+		if (trimmed.startsWith("```")) {
+			if (inFence) break;
+			inFence = true;
+			continue;
+		}
+		if (!inFence && isTaskSectionHeading(trimmed)) break;
+		commandLines.push(trimmed);
 	}
-	return "";
+	if (commandLines.length > 1) {
+		throw new Error(
+			`${label} must be a single-line command; put multi-step reproduction logic in a project script and call that script from task.md`,
+		);
+	}
+	return commandLines[0] ?? "";
 }
 
 function isTaskSectionHeading(line) {

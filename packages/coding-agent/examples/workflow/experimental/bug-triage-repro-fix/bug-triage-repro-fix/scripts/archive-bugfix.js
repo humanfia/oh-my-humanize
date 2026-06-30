@@ -8,6 +8,17 @@ if (regression.status !== "pass") {
 }
 
 const changedFiles = await gitDiffHeadChangedFiles();
+const workspaceChangedFiles = await gitStatusChangedFiles();
+const allowedScopes = allowedPathsFromTask(typeof task.taskText === "string" ? task.taskText : typeof task.text === "string" ? task.text : "");
+const outsideAllowedChangedFiles = allowedScopes.length > 0
+	? workspaceChangedFiles.filter((file) => !isAllowedPath(file, allowedScopes))
+	: [];
+if (outsideAllowedChangedFiles.length > 0) {
+	const blockers = outsideAllowedChangedFiles.map((filePath) => `${filePath} changed outside task allowed paths`);
+	throw new Error(
+		`cannot archive bug triage flow because ${blockers.join("; ")}`,
+	);
+}
 const projectChangedFiles = changedFiles.filter((file) => !file.startsWith("workflow-output/") && file !== "task.md");
 const noCodeArchive = projectChangedFiles.length === 0;
 if (noCodeArchive) {
@@ -93,6 +104,112 @@ async function gitDiffHeadChangedFiles() {
 		.split(/\r?\n/u)
 		.map((line) => line.trim())
 		.filter(Boolean);
+}
+
+async function gitStatusChangedFiles() {
+	const proc = Bun.spawn(["git", "status", "--short", "--untracked-files=all"], {
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) throw new Error(`git status failed before bug triage archive: ${stderr.trim() || stdout.trim()}`);
+	return stdout
+		.split(/\r?\n/u)
+		.map(statusLinePath)
+		.filter(Boolean);
+}
+
+function statusLinePath(line) {
+	const trimmed = line.trimEnd();
+	if (!trimmed) return "";
+	const renamed = /^R.\s+.+\s+->\s+(.+)$/u.exec(trimmed);
+	if (renamed) return normalizePath(renamed[1] ?? "");
+	return normalizePath(trimmed.slice(3).trim());
+}
+
+function allowedPathsFromTask(taskText) {
+	const lines = taskText.split(/\r?\n/u);
+	const entries = [];
+	for (let index = 0; index < lines.length; index += 1) {
+		const trimmed = lines[index]?.trim() ?? "";
+		const match = /^(?:[-*]\s*)?(?:allowed paths?|scope fence)\s*:\s*(.*)$/iu.exec(trimmed);
+		if (!match) continue;
+		for (const rawEntry of splitAllowedPathEntries(match[1] ?? "")) {
+			const normalized = normalizeAllowedPath(rawEntry);
+			if (normalized) entries.push(normalized);
+		}
+		for (const continuation of allowedPathContinuationLines(lines, index + 1)) {
+			for (const rawEntry of splitAllowedPathEntries(continuation)) {
+				const normalized = normalizeAllowedPath(rawEntry);
+				if (normalized) entries.push(normalized);
+			}
+		}
+		break;
+	}
+	return [...new Set(entries)];
+}
+
+function allowedPathContinuationLines(lines, startIndex) {
+	const continuation = [];
+	for (const line of lines.slice(startIndex)) {
+		const trimmed = line.trim();
+		if (!trimmed) break;
+		if (/^(?:[-*]\s*)?(?:allowed paths?|scope fence)\s*:/iu.test(trimmed)) return [];
+		if (isTaskSectionHeading(trimmed)) break;
+		continuation.push(trimmed);
+	}
+	return continuation;
+}
+
+function splitAllowedPathEntries(text) {
+	return text
+		.replace(/^(?:and\s+)?allowed paths?\s+(?:are|is)\s+/iu, "")
+		.replace(/\bdo not edit\b.*$/iu, "")
+		.split(/[,;]/u)
+		.map(entry => entry.trim())
+		.filter(Boolean);
+}
+
+function normalizeAllowedPath(entry) {
+	const cleaned = entry
+		.replace(/^(?:and|or)\s+/iu, "")
+		.replace(/\s+if present$/iu, "")
+		.replace(/\s*\.$/u, "")
+		.replace(/^`|`$/gu, "")
+		.trim();
+	if (!cleaned) return "";
+	return normalizePath(cleaned);
+}
+
+function isAllowedPath(filePath, allowedScopes) {
+	const normalized = normalizePath(filePath);
+	if (!normalized) return false;
+	return allowedScopes.some(scope => matchesAllowedScope(normalized, scope));
+}
+
+function matchesAllowedScope(filePath, scope) {
+	if (scope === filePath) return true;
+	if (scope.endsWith("/**")) {
+		const prefix = scope.slice(0, -2);
+		return filePath.startsWith(prefix);
+	}
+	if (scope.endsWith("/")) return filePath.startsWith(scope);
+	if (!scope.includes("*")) return false;
+	const escaped = scope.replace(/[.+?^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*");
+	return new RegExp(`^${escaped}$`, "u").test(filePath);
+}
+
+function normalizePath(filePath) {
+	return filePath.replaceAll("\\", "/").replace(/^\.\/+/u, "").replace(/\/+/gu, "/").trim();
+}
+
+function isTaskSectionHeading(line) {
+	return line.startsWith("#") || /^[A-Z][A-Za-z /-]{0,80}:\s*$/u.test(line);
 }
 
 function allowsNoCodeResolution(task) {
