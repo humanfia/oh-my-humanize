@@ -1,5 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import * as fs from "node:fs/promises";
+import { isEnoent, TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import type { ToolSession } from "../../tools";
 import { EvalTool, type EvalToolParams } from "../../tools/eval";
@@ -1556,6 +1557,45 @@ edges: []
 		}
 	});
 
+	it("routes Python cache byproducts for js workflow scripts that pass process.env to child spawns", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-eval-python-cache-");
+		const cwd = tempDir.path();
+		const runTmp = `${cwd}/workflow-output/tmp`;
+		const previousRunTmp = Bun.env.OMH_RUN_TMP;
+		Bun.env.OMH_RUN_TMP = runTmp;
+		await fs.mkdir(`${cwd}/src`, { recursive: true });
+		await Bun.write(`${cwd}/src/module_under_test.py`, "VALUE = 42\n");
+		try {
+			const settings = await Settings.init();
+			const session: ToolSession = {
+				cwd,
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => null,
+				settings,
+			};
+			const host = createSessionWorkflowRuntimeHost({
+				cwd,
+				runEvalScript: createEvalToolScriptRunner(session),
+			});
+
+			const result = await runWorkflow({
+				host: new MemoryWorkflowHost(),
+				definition: jsSpawnExplicitProcessEnvPythonCacheDefinition(`${cwd}/src/module_under_test.py`),
+				runId: "run-real-eval-python-cache",
+				startNodeId: "compile",
+				runtimeHost: host,
+			});
+
+			expect(result.scheduler.state).toEqual({ pyCompile: "passed" });
+			expect(await directoryEntriesOrEmpty(`${cwd}/src/__pycache__`)).toEqual([]);
+			expect((await findRelativeFiles(runTmp, ".pyc")).some(file => file.endsWith(".pyc"))).toBe(true);
+		} finally {
+			if (previousRunTmp === undefined) delete Bun.env.OMH_RUN_TMP;
+			else Bun.env.OMH_RUN_TMP = previousRunTmp;
+		}
+	});
+
 	it("does not pass serialized workflow context to child processes spawned by js workflow scripts", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-eval-context-child-env-");
 		const settings = await Settings.init();
@@ -1897,6 +1937,42 @@ function jsSpawnEnvDefinition(): WorkflowDefinition {
 	};
 }
 
+function jsSpawnExplicitProcessEnvPythonCacheDefinition(sourcePath: string): WorkflowDefinition {
+	return {
+		name: "eval-explicit-env-python-cache",
+		version: 1,
+		models: { roles: {}, defaults: {} },
+		nodes: [
+			{
+				id: "compile",
+				type: "script",
+				script: {
+					language: "js",
+					code: [
+						`const proc = Bun.spawn(["python", "-m", "py_compile", ${JSON.stringify(sourcePath)}], {`,
+						'  stdout: "pipe",',
+						'  stderr: "pipe",',
+						"  env: process.env,",
+						"});",
+						"const [stdout, stderr, exitCode] = await Promise.all([",
+						"  new Response(proc.stdout).text(),",
+						"  new Response(proc.stderr).text(),",
+						"  proc.exited,",
+						"]);",
+						'if (exitCode !== 0) throw new Error(stderr || stdout || "child exited " + exitCode);',
+						"return {",
+						'  summary: "py_compile completed",',
+						'  statePatch: [{ op: "set", path: "/pyCompile", value: "passed" }],',
+						"};",
+					].join("\n"),
+				},
+				writes: ["/pyCompile"],
+			},
+		],
+		edges: [],
+	};
+}
+
 function jsWorkflowContextChildEnvDefinition(): WorkflowDefinition {
 	const contextExpansion = "$" + "{OMP_WORKFLOW_CONTEXT-clean}";
 	const shellCommand = `printf "%s\\n" "${contextExpansion}"`;
@@ -1962,4 +2038,51 @@ function singleEvalDefinition(): WorkflowDefinition {
 		],
 		edges: [],
 	};
+}
+
+async function directoryEntriesOrEmpty(directoryPath: string): Promise<string[]> {
+	try {
+		return (await fs.readdir(directoryPath)).sort();
+	} catch (error) {
+		if (isEnoent(error)) return [];
+		throw error;
+	}
+}
+
+async function findRelativeFiles(rootPath: string, suffix: string): Promise<string[]> {
+	const results: string[] = [];
+	await collectRelativeFiles(rootPath, "", suffix, results);
+	return results.sort();
+}
+
+async function collectRelativeFiles(
+	rootPath: string,
+	relativePath: string,
+	suffix: string,
+	results: string[],
+): Promise<void> {
+	const directoryPath = relativePath === "" ? rootPath : `${rootPath}/${relativePath}`;
+	let entries: DirectoryEntry[];
+	try {
+		entries = await fs.readdir(directoryPath, { withFileTypes: true });
+	} catch (error) {
+		if (isEnoent(error)) return;
+		throw error;
+	}
+	for (const entry of entries) {
+		const entryRelativePath = relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
+		if (entry.isDirectory()) {
+			await collectRelativeFiles(rootPath, entryRelativePath, suffix, results);
+			continue;
+		}
+		if (entry.isFile() && entryRelativePath.endsWith(suffix)) {
+			results.push(entryRelativePath);
+		}
+	}
+}
+
+interface DirectoryEntry {
+	name: string;
+	isDirectory(): boolean;
+	isFile(): boolean;
 }

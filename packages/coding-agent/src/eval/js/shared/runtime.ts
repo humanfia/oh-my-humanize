@@ -629,7 +629,17 @@ function withDefaultSpawnEnvironment(args: readonly unknown[]): unknown[] {
 }
 
 function spawnOptionsEnvironment(existing: unknown, fallback: Record<string, string>): unknown {
-	return existing === undefined ? fallback : existing;
+	if (existing === undefined) return fallback;
+	if (!isSpawnOptionsRecord(existing)) return existing;
+	const env = { ...fallback };
+	for (const [key, value] of Object.entries(existing)) {
+		if (value === undefined) {
+			delete env[key];
+			continue;
+		}
+		env[key] = String(value);
+	}
+	return env;
 }
 
 function isSpawnOptionsRecord(value: unknown): value is Record<string, unknown> {

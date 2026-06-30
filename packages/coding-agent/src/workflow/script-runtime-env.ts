@@ -10,18 +10,13 @@ export interface WorkflowScriptEnvironmentRequest {
 
 export function workflowScriptEnvironment(
 	request: WorkflowScriptEnvironmentRequest,
-	baseEnv?: Record<string, string | undefined>,
+	baseEnv: Record<string, string | undefined> = Bun.env,
 ): Record<string, string> | undefined {
 	const env: Record<string, string> = {};
-	if (baseEnv !== undefined) {
-		for (const [key, value] of Object.entries(baseEnv)) {
-			if (value !== undefined) env[key] = value;
-		}
-	}
-	const runTmp = env.OMH_RUN_TMP || env.TMPDIR || "workflow-output/tmp";
+	const runTmp = baseEnv.OMH_RUN_TMP || baseEnv.TMPDIR || "workflow-output/tmp";
 	env.PYTHONDONTWRITEBYTECODE = "1";
 	env.PYTHONPYCACHEPREFIX = `${runTmp}/python-pycache`;
-	env.PYTEST_ADDOPTS = appendShellOption(env.PYTEST_ADDOPTS, "-p no:cacheprovider");
+	env.PYTEST_ADDOPTS = appendShellOption(baseEnv.PYTEST_ADDOPTS, "-p no:cacheprovider");
 	if (request.context !== undefined) {
 		env[WORKFLOW_CONTEXT_ENV] = JSON.stringify(request.context);
 	}
