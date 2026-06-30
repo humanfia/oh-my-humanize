@@ -5,44 +5,39 @@ const baselineCommand = optionalCommand(taskText, "Baseline Command") || benchma
 const scratchRoot = requiredScratchRoot(taskText);
 const sharedGitWorktrees = await currentSharedGitWorktreePaths();
 const runtime = runtimeFromTaskContract(taskText);
+const commandScratchViolations = disallowedTaskCommandScratchReferences([
+	{ label: "Benchmark Command", command: benchmarkCommand },
+	{ label: "Validation Command", command: validationCommand },
+	{ label: "Baseline Command", command: baselineCommand },
+]);
+if (commandScratchViolations.length > 0) {
+	await Bun.write(
+		"workflow-output/performance-precheck.md",
+		precheckMarkdown({
+			benchmarkCommand,
+			validationCommand,
+			baselineCommand,
+			scratchRoot,
+			sharedGitWorktrees,
+			commandScratchViolations,
+			validationPreflight: null,
+		}),
+	);
+	throw new Error("performance-optimization-search task commands use disallowed scratch roots");
+}
 const validationPreflight = await runShell(validationCommand);
 
 await Bun.write(
 	"workflow-output/performance-precheck.md",
-	[
-		"# Performance Optimization Precheck",
-		"",
-		"## Benchmark Command",
-		"",
-		"```sh",
+	precheckMarkdown({
 		benchmarkCommand,
-		"```",
-		"",
-		"## Validation Command",
-		"",
-		"```sh",
 		validationCommand,
-		"```",
-		"",
-		"## Baseline Command",
-		"",
-		"```sh",
 		baselineCommand,
-		"```",
-		"",
-		"## Scratch Root",
-		"",
 		scratchRoot,
-		"",
-		"## Shared Git Worktrees At Start",
-		"",
-		sharedGitWorktrees.length > 0 ? sharedGitWorktrees.map(worktree => `- ${worktree}`).join("\n") : "- none",
-		"",
-		"## Validation Preflight",
-		"",
-		commandEvidenceMarkdown(validationCommand, validationPreflight),
-		"",
-	].join("\n"),
+		sharedGitWorktrees,
+		commandScratchViolations: [],
+		validationPreflight,
+	}),
 );
 
 if (validationPreflight.exitCode !== 0) {
@@ -144,6 +139,78 @@ function runtimeFromTaskContract() {
 	return {
 		startedAtMs: Date.now(),
 	};
+}
+
+function precheckMarkdown({
+	benchmarkCommand,
+	validationCommand,
+	baselineCommand,
+	scratchRoot,
+	sharedGitWorktrees,
+	commandScratchViolations,
+	validationPreflight,
+}) {
+	const sections = [
+		"# Performance Optimization Precheck",
+		"",
+		"## Benchmark Command",
+		"",
+		"```sh",
+		benchmarkCommand,
+		"```",
+		"",
+		"## Validation Command",
+		"",
+		"```sh",
+		validationCommand,
+		"```",
+		"",
+		"## Baseline Command",
+		"",
+		"```sh",
+		baselineCommand,
+		"```",
+		"",
+		"## Scratch Root",
+		"",
+		scratchRoot,
+		"",
+		"## Shared Git Worktrees At Start",
+		"",
+		sharedGitWorktrees.length > 0 ? sharedGitWorktrees.map(worktree => `- ${worktree}`).join("\n") : "- none",
+		"",
+	];
+
+	if (commandScratchViolations.length > 0) {
+		sections.push(
+			"## Task Command Scratch Root Violation",
+			"",
+			"Performance branch agents run in parallel, so task-declared benchmark, baseline, and validation commands must not write lane-local evidence to bare `/tmp`, `workflow-output/tmp`, or shared sibling scratch.",
+			"Use `/dev/null` for disposable benchmark output, or an explicit run-local scratch path under the task scratch root.",
+			"",
+			...commandScratchViolations.map(violation => `- ${violation.label}: \`${violation.reference}\``),
+			"",
+		);
+	} else if (validationPreflight) {
+		sections.push("## Validation Preflight", "", commandEvidenceMarkdown(validationCommand, validationPreflight), "");
+	}
+
+	return sections.join("\n");
+}
+
+function disallowedTaskCommandScratchReferences(commands) {
+	return commands.flatMap(({ label, command }) => {
+		const reference = disallowedTaskCommandScratchReference(command);
+		return reference ? [{ label, reference }] : [];
+	});
+}
+
+function disallowedTaskCommandScratchReference(command) {
+	if (/\bTMPDIR\s*=\s*["']?\/tmp(?:\/|\b)/u.test(command)) return "TMPDIR=/tmp";
+	if (/(?:^|[\s"'(=<>|&;])\/tmp(?:\/|\b)/u.test(command)) return "/tmp";
+	if (/(?:^|[\s"'(=<>|&;])workflow-output\/tmp(?:\/|\b)/u.test(command)) return "workflow-output/tmp";
+	if (/(?:^|[\s"'(=<>|&;])\.\.\/workflow-scratch(?:\/|\b)/u.test(command)) return "../workflow-scratch";
+	return "";
 }
 
 async function runShell(command) {

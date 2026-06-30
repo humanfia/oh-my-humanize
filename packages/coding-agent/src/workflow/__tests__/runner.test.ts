@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $ } from "bun";
-import type { WorkflowDefinition } from "../definition";
+import { parseWorkflowDefinition, type WorkflowDefinition } from "../definition";
 import type { FlowFreeze } from "../freeze";
 import type { RuntimeBindingSnapshot, WorkflowLifecycleBranchEntry } from "../lifecycle";
 import { reconstructWorkflowFamilies, requestWorkflowAttemptStop } from "../lifecycle";
@@ -18,6 +18,77 @@ import {
 } from "../workspace-checkpoint";
 
 describe("runWorkflow lifecycle", () => {
+	it("checkpoints instead of hanging when a node exceeds its timeout", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = parseWorkflowDefinition(`
+name: node-timeout
+version: 1
+nodes:
+  waitForever:
+    type: agent
+    agent: task
+    prompt: Keep working until cancelled.
+    timeoutMs: 20
+edges: []
+`);
+		const freeze = freezeForDefinition(definition);
+		const started = Promise.withResolvers<void>();
+		let receivedAbort = false;
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async input => {
+				started.resolve();
+				const parked = Promise.withResolvers<never>();
+				input.signal?.addEventListener(
+					"abort",
+					() => {
+						receivedAbort = true;
+					},
+					{ once: true },
+				);
+				return parked.promise;
+			},
+		};
+
+		const runPromise = runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "waitForever",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+		await started.promise;
+		const deadline = Promise.withResolvers<"hung">();
+		const timer = setTimeout(() => deadline.resolve("hung"), 500);
+		try {
+			const outcome = await Promise.race([runPromise, deadline.promise]);
+			expect(outcome).not.toBe("hung");
+			if (outcome === "hung") return;
+			expect(receivedAbort).toBe(true);
+			expect(outcome.scheduler.activations).toMatchObject([
+				{
+					nodeId: "waitForever",
+					status: "aborted",
+					reason: 'workflow node "waitForever" timed out after 20ms',
+				},
+			]);
+			const family = reconstructWorkflowFamilies(host.getBranch())[0]!;
+			expect(family.attempts[0]).toMatchObject({ status: "stopped" });
+			expect(family.checkpoints[0]).toMatchObject({
+				frontierNodeIds: ["waitForever"],
+				abortedActivationIds: ["activation-1"],
+			});
+		} finally {
+			clearTimeout(timer);
+		}
+	});
+
 	it("fails fast when an agent output declares a fail-closed terminal status", async () => {
 		const host = new MemoryWorkflowHost();
 		const definition = failClosedAgentDefinition();

@@ -28,7 +28,12 @@ import {
 } from "./lifecycle";
 import { diagnoseWorkflowLiveness } from "./liveness";
 import { resolveWorkflowNodeModel, type WorkflowModelResolutionAudit } from "./model-resolution";
-import { executeWorkflowNode, type WorkflowNodeRuntimeHost, workflowNodeAbortedErrorReason } from "./node-runtime";
+import {
+	executeWorkflowNode,
+	WorkflowNodeAbortedError,
+	type WorkflowNodeRuntimeHost,
+	workflowNodeAbortedErrorReason,
+} from "./node-runtime";
 import { reconcileWorkflowSchedulerFailureObservability, recordWorkflowCheckpointObservability } from "./observability";
 import {
 	resolveWorkflowPrompt,
@@ -450,6 +455,7 @@ async function executeAndPersistActivation(
 	resourceDir: string | undefined,
 ): Promise<WorkflowActivationOutput> {
 	let started = false;
+	let activationCompletionSignal: AbortSignal | undefined;
 	try {
 		const livenessDiagnostic = diagnoseWorkflowLiveness(options.definition, node, context.completedActivations);
 		if (livenessDiagnostic !== undefined) {
@@ -472,26 +478,33 @@ async function executeAndPersistActivation(
 		if (modelAudit?.error && nodeRequiresModel(node)) {
 			throw new WorkflowRunnerError(modelAudit.error);
 		}
-		const runtimeSignal = workflowNodeRuntimeSignal(context);
-		const completionSignal = workflowNodeCompletionSignal(context);
-		const readOnlyWorkspaceBefore = await captureReadOnlyWorkspaceSnapshot(options, node);
-		const rawOutput = await awaitWorkflowNodeExecution(
-			executeWorkflowNode(nodeForExecution, activation, options.runtimeHost, {
-				modelOverride: modelOverrideFromAudit(modelAudit),
-				signal: runtimeSignal,
-				context: {
-					state: context.state,
-					completedActivations: context.completedActivations,
-				},
-				resourceDir,
-			}),
-			completionSignal,
-		);
-		const postExecutionAbortReason = workflowNodeAbortReason(completionSignal);
-		if (isWorkflowFailFastAbortReason(postExecutionAbortReason)) {
-			throw new WorkflowRunnerError(postExecutionAbortReason);
+		const nodeDeadline = workflowNodeDeadlineSignal(node);
+		let rawOutput: WorkflowActivationOutput;
+		try {
+			const runtimeSignal = workflowNodeRuntimeSignal(context, nodeDeadline.signal);
+			const completionSignal = workflowNodeCompletionSignal(context, nodeDeadline.signal);
+			activationCompletionSignal = completionSignal;
+			const readOnlyWorkspaceBefore = await captureReadOnlyWorkspaceSnapshot(options, node);
+			rawOutput = await awaitWorkflowNodeExecution(
+				executeWorkflowNode(nodeForExecution, activation, options.runtimeHost, {
+					modelOverride: modelOverrideFromAudit(modelAudit),
+					signal: runtimeSignal,
+					context: {
+						state: context.state,
+						completedActivations: context.completedActivations,
+					},
+					resourceDir,
+				}),
+				completionSignal,
+			);
+			const postExecutionAbortReason = workflowNodeAbortReason(completionSignal);
+			if (isWorkflowFailFastAbortReason(postExecutionAbortReason)) {
+				throw new WorkflowRunnerError(postExecutionAbortReason);
+			}
+			await assertReadOnlyWorkspaceUnchanged(options, node, readOnlyWorkspaceBefore);
+		} finally {
+			nodeDeadline.dispose();
 		}
-		await assertReadOnlyWorkspaceUnchanged(options, node, readOnlyWorkspaceBefore);
 		const output = validateWorkflowActivationOutput(materializeSingleWriteData(node, rawOutput), {
 			allowedWritePaths: node.writes,
 			stateSchema: options.definition.stateSchema,
@@ -522,14 +535,15 @@ async function executeAndPersistActivation(
 		}
 		const message = error instanceof Error ? error.message : String(error);
 		const abortReason =
-			workflowNodeAbortReason(workflowNodeCompletionSignal(context)) ?? workflowNodeAbortedErrorReason(error);
+			workflowNodeAbortReason(activationCompletionSignal ?? workflowNodeCompletionSignal(context, undefined)) ??
+			workflowNodeAbortedErrorReason(error);
 		if (abortReason !== undefined) {
 			appendWorkflowActivationAborted(options.host, run.id, {
 				activationId: activation.id,
 				reason: abortReason,
 			});
 			appendLifecycleActivationAborted(options, activation, node, abortReason);
-			throw error;
+			throw new WorkflowNodeAbortedError(abortReason);
 		}
 		appendWorkflowActivationFailed(options.host, run.id, {
 			activationId: activation.id,
@@ -562,14 +576,41 @@ async function assertReadOnlyWorkspaceUnchanged(
 	assertWorkflowWorkspaceSnapshotUnchanged(before, after, node.id);
 }
 
-function workflowNodeRuntimeSignal(context: WorkflowSchedulerExecutionContext): AbortSignal | undefined {
-	return context.nodeAbortSignal ?? context.signal;
+interface WorkflowNodeDeadlineSignal {
+	signal?: AbortSignal;
+	dispose: () => void;
 }
 
-function workflowNodeCompletionSignal(context: WorkflowSchedulerExecutionContext): AbortSignal | undefined {
-	if (context.nodeAbortSignal === undefined) return context.signal;
-	if (context.signal === undefined) return context.nodeAbortSignal;
-	return combineNodeCompletionAbortSignals(context.nodeAbortSignal, context.signal);
+function workflowNodeDeadlineSignal(node: WorkflowNode): WorkflowNodeDeadlineSignal {
+	const timeoutMs = node.timeoutMs;
+	if (timeoutMs === undefined) return { dispose: () => {} };
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(workflowNodeTimeoutReason(node, timeoutMs)), timeoutMs);
+	return {
+		signal: controller.signal,
+		dispose: () => clearTimeout(timeout),
+	};
+}
+
+function workflowNodeTimeoutReason(node: WorkflowNode, timeoutMs: number): string {
+	return `workflow node "${node.id}" timed out after ${timeoutMs}ms`;
+}
+
+function workflowNodeRuntimeSignal(
+	context: WorkflowSchedulerExecutionContext,
+	nodeDeadlineSignal: AbortSignal | undefined,
+): AbortSignal | undefined {
+	return combineAbortSignals([context.nodeAbortSignal, nodeDeadlineSignal, context.signal]);
+}
+
+function workflowNodeCompletionSignal(
+	context: WorkflowSchedulerExecutionContext,
+	nodeDeadlineSignal: AbortSignal | undefined,
+): AbortSignal | undefined {
+	const nodeSignal = combineAbortSignals([context.nodeAbortSignal, nodeDeadlineSignal]);
+	if (nodeSignal === undefined) return context.signal;
+	if (context.signal === undefined) return nodeSignal;
+	return combineNodeCompletionAbortSignals(nodeSignal, context.signal);
 }
 
 function combineNodeCompletionAbortSignals(nodeSignal: AbortSignal, schedulerSignal: AbortSignal): AbortSignal {

@@ -210,7 +210,14 @@ function benchmarkCoveredLosingRejected(text) {
 	) {
 		return true;
 	}
-	return /\b(?:selected|retained)\s+candidate\b.{0,160}\b(?:better|faster|more\s+stable|lower|wins?)\b/iu.test(text);
+	return (
+		/\b(?:selected|retained)\s+candidate\b.{0,160}\b(?:better|faster|more\s+stable|lower|wins?)\b/iu.test(
+			text,
+		) ||
+		/\b(?:selected|winner|winning|chosen|retained)\b.{0,100}\b(?:candidate|branch)\b.{0,180}\b(?:larger|greater|higher|stronger|better|faster|more\s+stable|lower)\b.{0,120}\b(?:benchmark|improvement|speedup|win|movement)\b/ius.test(
+			text,
+		)
+	);
 }
 
 function uniqueReports(reports) {

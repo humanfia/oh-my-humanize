@@ -13,7 +13,7 @@ import type {
 	WorkflowTemplatePromptSource,
 	WorkflowWorkspaceAccess,
 } from "./definition";
-import { WORKFLOW_SCRIPT_TIMEOUT_MAX_MS } from "./definition";
+import { WORKFLOW_NODE_TIMEOUT_MAX_MS, WORKFLOW_SCRIPT_TIMEOUT_MAX_MS } from "./definition";
 import type { WorkflowChangeRequestOrigin } from "./lifecycle";
 import type { WorkflowGraphPatchOperation } from "./patches";
 
@@ -199,6 +199,8 @@ function parseWorkflowPatchNode(value: unknown, pathLabel: string, missingMessag
 		node.workspaceAccess = parseWorkflowPatchWorkspaceAccess(raw.workspaceAccess, `${pathLabel}.workspaceAccess`);
 	}
 	if (raw.waitFor !== undefined) node.waitFor = parseWorkflowPatchStringArray(raw.waitFor, `${pathLabel}.waitFor`);
+	const timeoutMs = parseWorkflowPatchNodeTimeoutMs(raw.timeoutMs, `${pathLabel}.timeoutMs`);
+	if (timeoutMs !== undefined) node.timeoutMs = timeoutMs;
 	return node;
 }
 
@@ -449,6 +451,14 @@ function parseWorkflowPatchScriptTimeoutMs(value: unknown, pathLabel: string): n
 		return value;
 	}
 	throw new Error(`${pathLabel} must be a positive integer no greater than ${WORKFLOW_SCRIPT_TIMEOUT_MAX_MS}`);
+}
+
+function parseWorkflowPatchNodeTimeoutMs(value: unknown, pathLabel: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= WORKFLOW_NODE_TIMEOUT_MAX_MS) {
+		return value;
+	}
+	throw new Error(`${pathLabel} must be a positive integer no greater than ${WORKFLOW_NODE_TIMEOUT_MAX_MS}`);
 }
 
 function parseRequiredWorkflowPatchModelContext(value: unknown, pathLabel: string): WorkflowModelContext {

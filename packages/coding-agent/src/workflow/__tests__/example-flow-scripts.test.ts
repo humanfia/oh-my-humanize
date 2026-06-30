@@ -4069,6 +4069,60 @@ describe("example workflow scripts", () => {
 		}
 	});
 
+	it("fails performance optimization precheck before fanout when task commands use bare tmp scratch", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-tmp-command-precheck-fail-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		process.env.OMH_RUN_TMP = `${cwd}/run-tmp`;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			await Bun.write(
+				`${cwd}/task.md`,
+				[
+					"Benchmark Command:",
+					"echo benchmark >/tmp/word-counter-benchmark.out",
+					"",
+					"Validation Command:",
+					"echo validation",
+					"",
+					"Baseline Command:",
+					"echo baseline >/tmp/word-counter-baseline.out",
+				].join("\n"),
+			);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "precheckTaskContract",
+				scriptFileName: "precheck-task-contract.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/task", "/runtime", "/review"],
+			});
+
+			expect(
+				result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
+			).toBe("failed");
+			expect(result.scheduler.state.task).toBeUndefined();
+			const evidence = await Bun.file(`${cwd}/workflow-output/performance-precheck.md`).text();
+			expect(evidence).toContain("## Task Command Scratch Root Violation");
+			expect(evidence).toContain("Benchmark Command: `/tmp`");
+			expect(evidence).toContain("Baseline Command: `/tmp`");
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
 	it("fails performance optimization precheck before fanout when validation cannot run", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-validation-precheck-fail-");
 		const cwd = tempDir.path();
@@ -4374,6 +4428,9 @@ describe("example workflow scripts", () => {
 	});
 
 	it("keeps performance parallel lanes lane-local until selection applies a candidate", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search.omhflow`,
+		);
 		const optimizationPrompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search/prompts/optimization.md`,
 		).text();
@@ -4422,6 +4479,12 @@ describe("example workflow scripts", () => {
 		expect(reviewPrompt).toContain("writable bare `/tmp` sandbox mounts");
 		expect(reviewPrompt).toContain("and candidate execution did not run from `cwd: .`");
 		expect(reviewPrompt).toContain("task.scratchRoot");
+		for (const nodeId of ["tryAlgorithmicChange", "tryCachingChange", "tryIOChange"]) {
+			const node = artifact.definition.nodes.find(candidate => candidate.id === nodeId);
+			expect(node?.isolation?.apply).toBe(false);
+			expect(node?.isolation?.merge).toBe(false);
+			expect(node?.isolation?.capture?.exclude ?? []).not.toContain("workflow-output/**");
+		}
 	});
 
 	it("blocks performance benchmark joins when parallel lanes leave shared project edits", async () => {
@@ -4751,6 +4814,82 @@ describe("example workflow scripts", () => {
 		expect(ioReport).toContain("branchNotePath");
 	});
 
+	it("materializes performance branch reports from isolated patch artifacts without applying code changes", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-branch-patch-report-");
+		using patchDir = TempDir.createSync("@omh-performance-branch-patch-artifact-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const patchPath = `${patchDir.path()}/algorithmic.patch`;
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			patchPath,
+			[
+				"diff --git a/workflow-output/perf-algorithmic.md b/workflow-output/perf-algorithmic.md",
+				"new file mode 100644",
+				"index 0000000..1111111",
+				"--- /dev/null",
+				"+++ b/workflow-output/perf-algorithmic.md",
+				"@@ -0,0 +1,8 @@",
+				"+# Algorithmic candidate",
+				"+",
+				"+Candidate patch path: workflow-output/perf-algorithmic-candidate.diff",
+				"+Benchmark command ran in the OMH-managed isolated lane worktree.",
+				"+benchmark-relevance: yes",
+				"+final-selection: no",
+				"+no-win-result: no",
+				"+No writable bare /tmp execution surface was used.",
+				"diff --git a/src.txt b/src.txt",
+				"index df967b9..0000000 100644",
+				"--- a/src.txt",
+				"+++ b/src.txt",
+				"@@ -1 +1 @@",
+				"-baseline",
+				"+candidate code",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+				},
+				algorithmic: {
+					summary: JSON.stringify({
+						agentId: "workflow-tryAlgorithmicChange-activation-5",
+						patchPath,
+						changesApplied: null,
+					}),
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "pass",
+			benchmarkExitCode: 0,
+			validationExitCode: 0,
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/perf-algorithmic.md`).text()).toContain("# Algorithmic candidate");
+		expect(await Bun.file(`${cwd}/src.txt`).text()).toBe("baseline\n");
+	});
+
 	it("blocks performance benchmark joins when lane scratch lives inside the project tree", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-project-scratch-guard-");
 		const cwd = tempDir.path();
@@ -4985,6 +5124,7 @@ describe("example workflow scripts", () => {
 					"",
 					`Candidate worktree: ${runTmp}/lanes/algorithmic/worktree`,
 					`Apply-check worktree: ${runTmp}/lanes/algorithmic/apply-check/worktree`,
+					`Benchmark command cwd: ${runTmp}/lanes/algorithmic/worktree; command: /usr/bin/time -f elapsed cargo run --release -- fixtures/large.txt >/dev/null`,
 					`Candidate patch path: ${cwd}/workflow-output/perf-algorithmic-candidate.diff`,
 					"All build, benchmark, validation, apply-check, and candidate execution commands were run from these lane-local scratch paths, not from the shared task workspace. No `TMPDIR=/tmp`, `workflow-output/tmp`, `bwrap --tmpfs /tmp`, `bwrap --bind /tmp`, or `bwrap --dir /tmp` execution surface was used.",
 				],
@@ -6161,7 +6301,7 @@ describe("example workflow scripts", () => {
 				"final-selection: no",
 				"benchmark-relevance: yes",
 				"off-benchmark: no",
-				"reported a positive benchmark-covered run, but repeat evidence regressed and was weaker than the selected caching candidate",
+				"reported a positive benchmark-covered run, but the retained caching candidate has a larger measured task-benchmark improvement",
 				"rollback evidence: no retained changes",
 			].join("\n"),
 		);
@@ -6468,6 +6608,133 @@ describe("example workflow scripts", () => {
 		expect(selectionGuard.status).toBe("pass");
 		expect(selectionGuard.positiveUnselectedBranches).toEqual(["algorithmic"]);
 		expect(selectionGuard.benchmarkCoveredRejectedBranches).toEqual(["algorithmic"]);
+		expect(selectionGuard.benchmarkRelevanceBlockers).toEqual([]);
+	});
+
+	it("does not treat selected-branch positive references as unselected branch wins", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-selected-positive-reference-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance-aware refactor with regression checks",
+			"",
+			"Benchmark Command:",
+			"cat fixtures/large.txt fixtures/large.txt | cargo run --release --quiet",
+			"",
+			"Validation Command:",
+			"cargo test && printf 'alpha beta\\ngamma\\n' | cargo run --quiet | grep ^3",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/main.rs`, "fn main() {}\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/main.rs", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/main.rs`, 'fn main() { println!("1"); }\n');
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Performance caching Branch",
+				"",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: repeated-line CLI behavior passed",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			[
+				"# Performance algorithmic Branch",
+				"",
+				"final-selection: no",
+				"benchmark-relevance: yes",
+				"off-benchmark: no",
+				"Unselected because branch evidence reported a negative benchmark result.",
+				"off-benchmark: no - this branch did not report a positive benchmark-like result needing off-benchmark rejection.",
+				"Its correctness-only patch was not applied because the selected caching branch had a safe positive benchmark-covered result.",
+				"rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			[
+				"# Performance io Branch",
+				"",
+				"final-selection: no",
+				"benchmark-relevance: yes",
+				"off-benchmark: no",
+				"Unselected because the candidate was noise-band, not a safe positive result.",
+				"off-benchmark: no - this branch did not report a positive benchmark-like result needing off-benchmark rejection.",
+				"Its correctness-only patch was not applied because the selected caching branch had a safe positive benchmark-covered result.",
+				"rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"## Current benchmark and validation status",
+				"",
+				"- Validation command: `cargo test && printf 'alpha beta\\ngamma\\n' | cargo run --quiet | grep ^3`",
+				"  - exit code: 0",
+				"- Benchmark command: `cat fixtures/large.txt fixtures/large.txt | cargo run --release --quiet`",
+				"  - exit code: 0",
+				"",
+				"## Selection result",
+				"",
+				"- selected branch: caching",
+				"- final-selection: yes",
+				"",
+				"## Losing branches",
+				"",
+				"- Algorithmic:",
+				"  - final-selection: no.",
+				"  - Rejection reason: benchmark was negative.",
+				"  - off-benchmark: no - this branch did not report a positive benchmark-like result needing off-benchmark rejection.",
+				"- IO:",
+				"  - final-selection: no.",
+				"  - Rejection reason: benchmark was noise-band.",
+				"  - off-benchmark: no - this branch did not report a positive benchmark-like result needing off-benchmark rejection.",
+			].join("\n"),
+		);
+
+		const materialized = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeSelectionRepair",
+			scriptFileName: "materialize-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionRepair"],
+		});
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: materialized.scheduler.state.selectionRepair,
+			},
+		});
+
+		const selectionGuard = expectRecord(result.scheduler.state.selectionGuard, "selectionGuard");
+		expect(selectionGuard.status).toBe("pass");
+		expect(selectionGuard.positiveUnselectedBranches).toEqual([]);
+		expect(selectionGuard.benchmarkCoveredRejectedBranches).toEqual([]);
 		expect(selectionGuard.benchmarkRelevanceBlockers).toEqual([]);
 	});
 

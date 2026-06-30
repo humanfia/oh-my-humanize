@@ -81,6 +81,13 @@ that the reviewer can evaluate:
   `off-benchmark: yes`, explaining why that result is not covered by the
   task-declared Benchmark Command or why it is weaker than the retained
   benchmark-covered candidate;
+- write that rejection into the losing branch's own `workflow-output/perf-*.md`
+  report, not only into `performance-selection-repair.md`. If the losing
+  positive result was covered by the task benchmark, append the exact machine
+  marker `benchmark-covered rejection: yes` plus one sentence explaining why it
+  is weaker, noisier, slower, less stable, or less maintainable than the
+  selected/winning candidate. If it was not covered by the task benchmark,
+  append `benchmark-relevance: no` or `off-benchmark: yes` plus the reason;
 - if no safe positive optimization remains and the task explicitly allows it,
   revert all project changes and record `no-win-result: yes` plus no-change or
   rollback evidence in one branch note;
@@ -114,7 +121,11 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 - the branch report files you updated.
 
 Also ensure the relevant `workflow-output/perf-*.md` files contain the final
-selection markers needed by the downstream finalizer.
+selection and rejection markers needed by the downstream guard/finalizer. For
+positive benchmark-like losing branches, the downstream guard expects the losing
+branch report itself to contain either `off-benchmark: yes`,
+`benchmark-relevance: no`, or `benchmark-covered rejection: yes`; natural
+language only in `performance-selection-repair.md` is not enough.
 
 Do not write terminal workflow artifacts. The script nodes own final selection
 and archive evidence. In particular, do not write

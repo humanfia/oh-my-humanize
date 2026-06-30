@@ -210,10 +210,45 @@ async function materializeBranchStateReports(state) {
 	for (const strategy of ["algorithmic", "caching", "io"]) {
 		const filePath = `workflow-output/perf-${strategy}.md`;
 		if (await Bun.file(filePath).exists()) continue;
+		await materializeBranchEvidenceFromPatch(strategy, state?.[strategy]);
+		if (await Bun.file(filePath).exists()) continue;
 		const report = branchStateReportMarkdown(strategy, state?.[strategy]);
 		if (!report) continue;
 		await Bun.write(filePath, report);
 	}
+}
+
+async function materializeBranchEvidenceFromPatch(strategy, value) {
+	const patchPath = branchPatchPath(value);
+	if (!patchPath || !(await Bun.file(patchPath).exists())) return;
+	const includePattern = `workflow-output/perf-${strategy}*`;
+	const check = await runGitApply(patchPath, ["--check", `--include=${includePattern}`, "--exclude=*"]);
+	if (check.exitCode !== 0) return;
+	await runGitApply(patchPath, [`--include=${includePattern}`, "--exclude=*"]);
+}
+
+function branchPatchPath(value) {
+	const parsed = parseJsonObject(branchStateText(value));
+	const patchPath = parsed?.patchPath;
+	return typeof patchPath === "string" && patchPath.trim() !== "" ? patchPath.trim() : "";
+}
+
+async function runGitApply(patchPath, args) {
+	const proc = Bun.spawn(["git", "apply", ...args, patchPath], {
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	return {
+		exitCode,
+		stdout: bounded(stdout),
+		stderr: bounded(stderr),
+	};
 }
 
 function branchStateReportMarkdown(strategy, value) {
@@ -452,6 +487,7 @@ function hasDisallowedScratchRoot(text, roots) {
 			const normalized = normalizeAbsolutePath(path);
 			return (
 				normalized !== "" &&
+				!isSystemCommandExecutableReference(line, normalized) &&
 				!isAllowedDurableWorkflowOutputPath(normalized) &&
 				!taskCacheRoots.some(root => pathIsUnder(normalized, root)) &&
 				!roots.some(root => pathIsUnder(normalized, root))
@@ -536,6 +572,23 @@ function hasSharedWorkspaceExecutionSurface(line, workspaceRoot) {
 
 function extractEvidencePaths(line) {
 	return [...line.matchAll(/(?:^|[\s`"'(=])((?:\/[^\s`"'<>),;]+)+)/gu)].map(match => match[1]).filter(Boolean);
+}
+
+function isSystemCommandExecutableReference(line, path) {
+	if (!isSystemExecutablePath(path)) return false;
+	const escaped = path.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+	const optionalQuote = "[`\"']?";
+	const separator = "(?:$|[\\s`\"';|&])";
+	return new RegExp(`\\bcommand\\s*[:=]?\\s*${optionalQuote}(?:env\\s+)?${escaped}${separator}`, "iu").test(line);
+}
+
+function isSystemExecutablePath(path) {
+	return (
+		pathIsUnder(path, "/bin") ||
+		pathIsUnder(path, "/usr/bin") ||
+		pathIsUnder(path, "/usr/local/bin") ||
+		pathIsUnder(path, "/opt/homebrew/bin")
+	);
 }
 
 function isNegativeScratchDeclaration(line) {

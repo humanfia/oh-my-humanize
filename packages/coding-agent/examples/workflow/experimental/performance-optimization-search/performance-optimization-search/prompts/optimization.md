@@ -94,5 +94,12 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
   for this branch;
 - benchmark or validation commands you ran, if any.
 
+If a benchmark, validation, or tool invocation times out after you have already
+written durable branch evidence, make at most one focused recovery attempt. If
+that recovery also times out or is not needed to make the branch decision, update
+`workflow-output/perf-{{strategy}}.md` with the timeout evidence, classify the
+candidate as retained, reverted, conflict-only, or no-win, and yield instead of
+continuing open-ended probing.
+
 Do not fabricate measurements. The workflow will run the task-declared
 Benchmark Command and Validation Command after the branches join.

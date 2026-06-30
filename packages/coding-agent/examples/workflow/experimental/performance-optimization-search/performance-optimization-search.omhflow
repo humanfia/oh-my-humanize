@@ -127,6 +127,7 @@ sequence:
                   id: tryAlgorithmicChange
                   type: agent
                   agent: task
+                  timeoutMs: 1800000
                   model:
                     role: optimizer
                   isolation:
@@ -144,7 +145,6 @@ sequence:
                         - .pytest_cache/**
                         - __pycache__/**
                         - coverage/**
-                        - workflow-output/**
                   reads:
                     - /task
                     - /baseline
@@ -170,6 +170,7 @@ sequence:
                   id: tryCachingChange
                   type: agent
                   agent: task
+                  timeoutMs: 1800000
                   model:
                     role: optimizer
                   isolation:
@@ -187,7 +188,6 @@ sequence:
                         - .pytest_cache/**
                         - __pycache__/**
                         - coverage/**
-                        - workflow-output/**
                   reads:
                     - /task
                     - /baseline
@@ -213,6 +213,7 @@ sequence:
                   id: tryIOChange
                   type: agent
                   agent: task
+                  timeoutMs: 1800000
                   model:
                     role: optimizer
                   isolation:
@@ -230,7 +231,6 @@ sequence:
                         - .pytest_cache/**
                         - __pycache__/**
                         - coverage/**
-                        - workflow-output/**
                   reads:
                     - /task
                     - /baseline
@@ -272,6 +272,7 @@ sequence:
               id: repairPerformanceSelection
               type: agent
               agent: task
+              timeoutMs: 1800000
               model:
                 role: optimizer
               reads:
@@ -329,6 +330,7 @@ sequence:
         id: perfReview
         type: review
         agent: reviewer
+        timeoutMs: 900000
         model:
           role: reviewer
         reads:

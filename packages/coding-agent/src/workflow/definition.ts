@@ -8,6 +8,7 @@ export type WorkflowNodeCheckpoint = "after";
 export type WorkflowModelUnavailablePolicy = "fallback-to-parent" | "fail";
 export type WorkflowScriptLanguage = "js" | "py" | "sh";
 export const WORKFLOW_SCRIPT_TIMEOUT_MAX_MS = 60 * 60 * 1000;
+export const WORKFLOW_NODE_TIMEOUT_MAX_MS = 5 * 24 * 60 * 60 * 1000;
 
 export interface WorkflowModelContext {
 	role?: string;
@@ -150,6 +151,7 @@ export interface WorkflowNode {
 	workspaceAccess?: WorkflowWorkspaceAccess;
 	waitFor?: string[];
 	checkpoint?: WorkflowNodeCheckpoint;
+	timeoutMs?: number;
 }
 
 export interface WorkflowDefinition {
@@ -254,6 +256,7 @@ function parseNodes(value: unknown, sourcePath?: string): WorkflowNode[] {
 		const workspaceAccess = parseWorkspaceAccess(node.workspaceAccess, `${path}.workspaceAccess`, sourcePath);
 		const waitFor = parseOptionalStringList(node.waitFor, `${path}.waitFor`, sourcePath);
 		const checkpoint = parseNodeCheckpoint(node.checkpoint, `${path}.checkpoint`, sourcePath);
+		const timeoutMs = parseOptionalNodeTimeoutMs(node.timeoutMs, `${path}.timeoutMs`, sourcePath);
 		return compactNode({
 			id,
 			type,
@@ -269,6 +272,7 @@ function parseNodes(value: unknown, sourcePath?: string): WorkflowNode[] {
 			workspaceAccess,
 			waitFor,
 			checkpoint,
+			timeoutMs,
 		});
 	});
 }
@@ -717,6 +721,17 @@ function parseOptionalScriptTimeoutMs(value: unknown, path: string, sourcePath?:
 	);
 }
 
+function parseOptionalNodeTimeoutMs(value: unknown, path: string, sourcePath?: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= WORKFLOW_NODE_TIMEOUT_MAX_MS) {
+		return value;
+	}
+	throw new WorkflowDefinitionError(
+		`${path} must be a positive integer no greater than ${WORKFLOW_NODE_TIMEOUT_MAX_MS}`,
+		sourcePath,
+	);
+}
+
 function parseUnavailable(
 	value: unknown,
 	path: string,
@@ -789,6 +804,7 @@ function compactNode(node: WorkflowNode): WorkflowNode {
 	if (node.workspaceAccess !== undefined) result.workspaceAccess = node.workspaceAccess;
 	if (node.waitFor !== undefined) result.waitFor = node.waitFor;
 	if (node.checkpoint !== undefined) result.checkpoint = node.checkpoint;
+	if (node.timeoutMs !== undefined) result.timeoutMs = node.timeoutMs;
 	return result;
 }
 
