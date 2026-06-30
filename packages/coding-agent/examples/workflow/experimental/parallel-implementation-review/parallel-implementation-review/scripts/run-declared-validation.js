@@ -63,6 +63,12 @@ async function writeValidationArtifact({
 	const stdoutArtifact = `workflow-output/validation${suffix}.stdout`;
 	const stderrArtifact = `workflow-output/validation${suffix}.stderr`;
 	const artifactPath = `workflow-output/validation${suffix}.json`;
+	const canonicalArtifacts = await writeCanonicalValidationArtifacts({
+		tupleId,
+		stdout,
+		stderr,
+		exitCode,
+	});
 	const stdoutStderrArtifact = await writeCombinedValidationOutput({
 		tupleId,
 		stdoutArtifact,
@@ -86,6 +92,9 @@ async function writeValidationArtifact({
 			exitCode,
 			stdoutArtifact,
 			stderrArtifact,
+			canonicalStdoutArtifact: canonicalArtifacts.stdoutArtifact,
+			canonicalStderrArtifact: canonicalArtifacts.stderrArtifact,
+			canonicalExitCodeArtifact: canonicalArtifacts.exitCodeArtifact,
 			stdoutStderrArtifact,
 		},
 		checked_at_ms: Date.now(),
@@ -100,6 +109,12 @@ async function writeReusedValidationArtifact({ tupleId, validationCommand, valid
 	const materialized = await materializeReusableValidationArtifacts({ tupleId, reusableValidation });
 	const stdout = await readOptionalText(materialized.stdoutArtifact);
 	const stderr = await readOptionalText(materialized.stderrArtifact);
+	const canonicalArtifacts = await writeCanonicalValidationArtifacts({
+		tupleId,
+		stdout,
+		stderr,
+		exitCode: reusableValidation.exitCode,
+	});
 	const stdoutStderrArtifact = await writeCombinedValidationOutput({
 		tupleId,
 		stdoutArtifact: materialized.stdoutArtifact,
@@ -117,9 +132,15 @@ async function writeReusedValidationArtifact({ tupleId, validationCommand, valid
 		stdoutArtifact: materialized.stdoutArtifact,
 		stderrArtifact: materialized.stderrArtifact,
 		exitCodeArtifact: materialized.exitCodeArtifact,
+		canonicalStdoutArtifact: canonicalArtifacts.stdoutArtifact,
+		canonicalStderrArtifact: canonicalArtifacts.stderrArtifact,
+		canonicalExitCodeArtifact: canonicalArtifacts.exitCodeArtifact,
 		stdoutStderrArtifact,
 		reusedFromLane: reusableValidation.artifact,
-		reusedArtifactHashes: reusableValidation.recordedHashes,
+		reusedArtifactHashes: {
+			...reusableValidation.recordedHashes,
+			...canonicalArtifacts.hashes,
+		},
 		reusedCoverageProfiles: reusableValidation.coverageProfiles,
 	};
 	if (reusableValidation.producerNode === "implementTests") {
@@ -135,6 +156,26 @@ async function writeReusedValidationArtifact({ tupleId, validationCommand, valid
 	};
 	await Bun.write(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
 	return artifact;
+}
+
+async function writeCanonicalValidationArtifacts({ tupleId, stdout, stderr, exitCode }) {
+	const suffix = tupleId ? `-${tupleId}` : "";
+	const stdoutArtifact = `workflow-output/validation-stdout${suffix}.txt`;
+	const stderrArtifact = `workflow-output/validation-stderr${suffix}.txt`;
+	const exitCodeArtifact = `workflow-output/validation-exitcode${suffix}.txt`;
+	await Bun.write(stdoutArtifact, stdout);
+	await Bun.write(stderrArtifact, stderr);
+	await Bun.write(exitCodeArtifact, `${exitCode}\n`);
+	return {
+		stdoutArtifact,
+		stderrArtifact,
+		exitCodeArtifact,
+		hashes: {
+			[stdoutArtifact]: await sha256File(stdoutArtifact),
+			[stderrArtifact]: await sha256File(stderrArtifact),
+			[exitCodeArtifact]: await sha256File(exitCodeArtifact),
+		},
+	};
 }
 
 async function materializeReusableValidationArtifacts({ tupleId, reusableValidation }) {

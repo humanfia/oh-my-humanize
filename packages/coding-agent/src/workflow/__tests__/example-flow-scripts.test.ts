@@ -2343,6 +2343,10 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/validation-stdout-stderr-${tupleId}.txt`).text()).toContain(
 			"validation stdout",
 		);
+		expect(await Bun.file(`${cwd}/workflow-output/validation-stdout-${tupleId}.txt`).text()).toBe(
+			"validation stdout\n",
+		);
+		expect(await Bun.file(`${cwd}/workflow-output/validation-stderr-${tupleId}.txt`).text()).toBe("");
 	});
 
 	it("reuses exact declared validation evidence from any implementation lane", async () => {
