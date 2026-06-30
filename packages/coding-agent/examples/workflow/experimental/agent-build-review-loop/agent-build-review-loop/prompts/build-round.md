@@ -59,6 +59,10 @@ General loop contract:
   a task-specific source, test, script, or documentation defect.
 - Do one bounded implementation improvement per round. Bounded does not mean
   trivial; it means leave the project in a reviewable state.
+- Do not edit `task.md` after `initializeLoop` starts. It is the frozen run
+  contract. If a guard says a changed file is outside the allowed paths, revert
+  or narrow the project change, or stop for a standardized workflow/task change;
+  do not widen allowed paths in-place.
 - Keep every implementation improvement compliant with applicable local project
   instructions. A style or API ban stated by `AGENTS.md`, contributing docs, or
   task instructions is a real task defect, not a cosmetic preference.

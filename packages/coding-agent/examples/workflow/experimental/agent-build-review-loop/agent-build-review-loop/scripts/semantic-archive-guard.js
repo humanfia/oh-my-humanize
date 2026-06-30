@@ -11,7 +11,9 @@ const VALIDATION_RERUN_PATTERNS = [
 	/\boverwrit(?:e|es|ten|ing)\s+validation[- /](?:stdout|stderr|logs?)\b/iu,
 ];
 
-const taskText = await readOptionalText("task.md");
+const currentTaskText = await readOptionalText("task.md");
+const taskContract = await frozenTaskContract(currentTaskText);
+const taskText = taskContract.text;
 const progressText = await readOptionalText("progress.md");
 const explicitAllowance = explicitLowSemanticAllowance(taskText);
 const changedFiles = await changedProjectFiles();
@@ -26,6 +28,7 @@ for (const file of changedFiles) {
 	if (finding !== null) findings.push(finding);
 }
 findings.push(...scopeFenceFindings(changedFiles, allowedScopes));
+findings.push(...taskContractDriftFindings(taskContract, currentTaskText));
 findings.push(...nonPositiveProgressRoundFindings(progressText));
 findings.push(...(await earlyFinalizationArtifactFindings()));
 findings.push(...(await dependencyBootstrapFindings()));
@@ -310,6 +313,9 @@ function allowedPathEntries(taskText) {
 function scopeMatchesPath(scope, filePath) {
 	const normalizedScope = normalizeEvidencePath(scope);
 	const normalizedPath = normalizeEvidencePath(filePath);
+	if (normalizedScope.includes("*")) {
+		return globScopeMatches(normalizedScope, normalizedPath);
+	}
 	if (normalizedScope.endsWith("/**")) {
 		return normalizedPath.startsWith(normalizedScope.slice(0, -2));
 	}
@@ -319,9 +325,66 @@ function scopeMatchesPath(scope, filePath) {
 	return normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
 }
 
+function globScopeMatches(scope, filePath) {
+	return globPatternToRegExp(scope).test(filePath);
+}
+
+function globPatternToRegExp(pattern) {
+	let source = "^";
+	for (let index = 0; index < pattern.length; index += 1) {
+		const char = pattern[index] ?? "";
+		const next = pattern[index + 1] ?? "";
+		if (char === "*" && next === "*") {
+			source += ".*";
+			index += 1;
+			continue;
+		}
+		if (char === "*") {
+			source += "[^/]*";
+			continue;
+		}
+		source += escapeRegExp(char);
+	}
+	return new RegExp(`${source}$`, "u");
+}
+
+function escapeRegExp(text) {
+	return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 function normalizeEvidencePath(filePath) {
 	const normalized = filePath.replace(/^\.\//u, "").replace(/\\/gu, "/").replace(/[),.;:]+$/u, "");
 	return normalized === "/" ? normalized : normalized.replace(/\/+$/u, "");
+}
+
+async function frozenTaskContract(currentTaskText) {
+	const runtime = workflowContext.state?.runtime && typeof workflowContext.state.runtime === "object" ? workflowContext.state.runtime : {};
+	const taskContractFile = typeof runtime.taskContractFile === "string" ? runtime.taskContractFile : "";
+	const expectedHash = typeof runtime.taskHash === "string" ? runtime.taskHash : "";
+	const frozenText = taskContractFile ? await readOptionalText(taskContractFile) : "";
+	return {
+		file: taskContractFile,
+		expectedHash,
+		text: frozenText.trim() ? frozenText : currentTaskText,
+	};
+}
+
+function taskContractDriftFindings(taskContract, currentTaskText) {
+	if (!taskContract.expectedHash && !taskContract.file) return [];
+	const currentHash = String(Bun.hash(currentTaskText));
+	const frozenHash = String(Bun.hash(taskContract.text));
+	const expectedHash = taskContract.expectedHash || frozenHash;
+	if (currentHash === expectedHash) return [];
+	return [
+		{
+			file: "task.md",
+			reason: "task contract changed after workflow initialization",
+			policy:
+				"task.md is a frozen run contract after initializeLoop. Do not widen scope fences in-place; revert the drift or use workflow change/restart procedures.",
+			expectedHash,
+			currentHash,
+		},
+	];
 }
 
 async function readTextFileIfSmall(filePath) {

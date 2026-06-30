@@ -1777,6 +1777,215 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("treats glob allowed paths as recursive scope fences", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-glob-allowed-paths-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Verify glob scope fence matching.",
+				"",
+				"Validation Command:",
+				"echo validate",
+				"",
+				"Scope Fence:",
+				"Allowed paths: tests/test_tutorial/test_query_params*/**, workflow-output/, progress.md.",
+			].join("\n"),
+		);
+		await runGit(cwd, ["add", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			`${cwd}/tests/test_tutorial/test_query_params/test_tutorial006.py`,
+			"def test_query_params():\n    assert True\n",
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "PASS",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/semantic-archive-guard.json`).json()).toMatchObject({
+			verdict: "PASS",
+			findings: [],
+		});
+	});
+
+	it("fails agent build archive guard when task.md changes after workflow initialization", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-task-contract-drift-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const frozenTask = [
+			"Objective:",
+			"Keep semantic edits inside the frozen task contract.",
+			"",
+			"Validation Command:",
+			"echo validate",
+			"",
+			"Scope Fence:",
+			"Allowed paths: src/, workflow-output/, progress.md.",
+		].join("\n");
+		const widenedTask = frozenTask.replace(
+			"Allowed paths: src/, workflow-output/, progress.md.",
+			"Allowed paths: src/, tests/, workflow-output/, progress.md.",
+		);
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(`${cwd}/task.md`, frozenTask);
+		await runGit(cwd, ["add", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/workflow-output/task-contract.md`, frozenTask);
+		await Bun.write(`${cwd}/task.md`, widenedTask);
+		await Bun.write(`${cwd}/tests/test_contract.py`, "def test_contract():\n    assert True\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "semanticArchiveGuard",
+			scriptFileName: "semantic-archive-guard.js",
+			scriptDir: AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR,
+			writes: ["/semanticGuard"],
+			initialState: {
+				runtime: {
+					taskContractFile: "workflow-output/task-contract.md",
+					taskHash: String(Bun.hash(frozenTask)),
+				},
+			},
+		});
+
+		expect(result.scheduler.state.semanticGuard).toMatchObject({
+			verdict: "REPAIR",
+			findings: expect.arrayContaining([
+				expect.objectContaining({
+					file: "task.md",
+					reason: "task contract changed after workflow initialization",
+				}),
+				expect.objectContaining({
+					file: "tests/test_contract.py",
+					reason: "changed file is outside task allowed paths",
+				}),
+			]),
+		});
+	});
+
+	it("archives concrete rollback notes for changed agent loop files", async () => {
+		using tempDir = TempDir.createSync("@omh-agent-loop-archive-concrete-rollback-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Archive a scoped source change with concrete rollback evidence.",
+			"",
+			"Validation Command:",
+			"echo validate",
+			"",
+			"Scope Fence:",
+			"Allowed paths: src.py, workflow-output/, progress.md.",
+			"",
+			"Rollback Plan:",
+			"Before archive, write rollback notes for every changed file.",
+		].join("\n");
+		const archiveCode = await Bun.file(`${AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR}/archive-loop.js`).text();
+		const definition: WorkflowDefinition = {
+			name: "agent-loop-archive-concrete-rollback-test",
+			version: 1,
+			models: { roles: {}, defaults: {} },
+			nodes: [
+				{
+					id: "initialBuildRound",
+					type: "script",
+					script: { language: "js", code: "return { summary: 'build complete' };" },
+					writes: ["/progress"],
+				},
+				{
+					id: "reviewRound",
+					type: "script",
+					script: { language: "js", code: "return { summary: 'review complete' };" },
+					writes: ["/review"],
+				},
+				{
+					id: "classifyReviewRoute",
+					type: "script",
+					script: {
+						language: "js",
+						code: [
+							"return {",
+							"  summary: 'review route complete',",
+							"  statePatch: [{ op: 'set', path: '/reviewRoute', value: { decision: 'complete', reason: 'review accepted concrete rollback evidence', reviewVerdict: 'complete' } }],",
+							"};",
+						].join("\n"),
+					},
+					writes: ["/reviewRoute"],
+				},
+				{
+					id: "semanticArchiveGuard",
+					type: "script",
+					script: { language: "js", code: "return { summary: 'semantic guard passed' };" },
+					writes: ["/semanticGuard"],
+				},
+				{
+					id: "archiveLoop",
+					type: "script",
+					script: { language: "js", code: archiveCode },
+					writes: ["/archive"],
+				},
+			],
+			edges: [
+				{ from: "initialBuildRound", to: "reviewRound" },
+				{ from: "reviewRound", to: "classifyReviewRoute" },
+				{ from: "classifyReviewRoute", to: "semanticArchiveGuard" },
+				{ from: "semanticArchiveGuard", to: "archiveLoop" },
+			],
+		};
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await Bun.write(`${cwd}/src.py`, "value = 1\n");
+		await runGit(cwd, ["add", "task.md", "src.py"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src.py`, "value = 2\n");
+		await Bun.write(`${cwd}/progress.md`, "ROUND 1: changed src.py; validation=echo validate; result=pass\n");
+		await Bun.write(
+			`${cwd}/workflow-output/round-1/validation-summary.txt`,
+			[
+				"Round 1 validation summary",
+				"",
+				"Rollback notes:",
+				"- src.py: restore value = 1 if the scoped source change is rejected.",
+			].join("\n"),
+		);
+		for (const file of [
+			"validation-stdout.txt",
+			"validation-stderr.txt",
+			"validation-attempt-1-stdout.txt",
+			"validation-attempt-1-stderr.txt",
+		]) {
+			await Bun.write(`${cwd}/workflow-output/round-1/${file}`, "validate\n");
+		}
+
+		await runExampleDefinition({ cwd, previousCwd, definition });
+
+		const archive = await Bun.file(`${cwd}/workflow-output/final-agent-loop-archive.md`).text();
+		expect(archive).toContain("src.py: restore value = 1 if the scoped source change is rejected.");
+		expect(archive).not.toContain("Rollback risk: Before archive, write rollback notes for every changed file.");
+	});
+
 	it("does not require extra validation attempt logs for ambiguous cross-round rerun prose", async () => {
 		using tempDir = TempDir.createSync("@omh-agent-loop-validation-rerun-prose-");
 		const cwd = tempDir.path();

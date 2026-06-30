@@ -1,5 +1,6 @@
 const progressPath = "progress.md";
 const snapshotPath = "workflow-output/initial-loop-snapshot.md";
+const taskContractPath = "workflow-output/task-contract.md";
 
 if (!(await fileExists(progressPath))) {
 	await Bun.write(progressPath, "# Agent Build/Review Progress\n\n");
@@ -17,6 +18,7 @@ if (validationPreflight.status === "setup-blocker") {
 	throw new Error(`agent-build-review-loop validation preflight setup blocker: ${validationPreflight.reason}`);
 }
 const runtime = runtimeFromTaskContract(taskText);
+await Bun.write(taskContractPath, taskText);
 const snapshot = [
 	"# Initial Loop Snapshot",
 	"",
@@ -291,5 +293,7 @@ function boundedLines(text, limit) {
 function runtimeFromTaskContract() {
 	return {
 		startedAtMs: Date.now(),
+		taskContractFile: taskContractPath,
+		taskHash: String(Bun.hash(taskText)),
 	};
 }

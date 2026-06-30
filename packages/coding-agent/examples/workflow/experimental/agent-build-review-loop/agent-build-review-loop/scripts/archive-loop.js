@@ -1,4 +1,7 @@
-const taskText = await readRequiredTaskText();
+const currentTaskText = await readRequiredTaskText();
+const taskContract = await frozenTaskContract(currentTaskText);
+assertTaskContractStable(taskContract, currentTaskText);
+const taskText = taskContract.text;
 const tupleId = taskTupleId(taskText);
 const progressText = await readOptionalText("progress.md");
 const VALIDATION_RERUN_PATTERNS = [
@@ -49,6 +52,7 @@ if (!isRejectArchive) {
 if (archivedEvidenceFiles.length === 0) {
 	throw new Error("agent-build-review-loop cannot archive without loop evidence artifacts");
 }
+const rollbackNotes = await rollbackNotesByChangedFile(changedFiles, archivedEvidenceFiles);
 const downstreamClaimFiles = await downstreamCompletionClaimFiles(evidenceFiles);
 if (downstreamClaimFiles.length > 0) {
 	throw new Error(
@@ -112,6 +116,7 @@ const archive = [
 		verifyCommand,
 		evidenceFiles: archivedEvidenceFiles,
 		reviewRoute,
+		rollbackNotes,
 	}),
 	"",
 	"## Archived Evidence Files",
@@ -268,25 +273,25 @@ function mentionsBuildOrRepairWorkStillNeeded(text) {
 	);
 }
 
-function changedFileEvidenceMapSection({ changedFiles, taskText, verifyCommand, evidenceFiles, reviewRoute }) {
+function changedFileEvidenceMapSection({ changedFiles, taskText, verifyCommand, evidenceFiles, reviewRoute, rollbackNotes }) {
 	if (changedFiles.length === 0) {
 		return "No changed project files; task contract explicitly allowed no-code/no-change evidence.";
 	}
 	const objective = taskObjective(taskText);
-	const rollbackRisk = taskRollbackRisk(taskText);
 	const reviewerDecision = reviewerDecisionSummary(reviewRoute);
 	const validationEvidence = validationEvidenceSummary(verifyCommand, evidenceFiles);
 	return changedFiles
-		.map(file =>
-			[
+		.map(file => {
+			const rollbackRisk = rollbackNotes.get(file) ?? taskRollbackRisk(taskText);
+			return [
 				`### ${file}`,
 				"",
 				`- Objective: ${objective}`,
 				`- Validation evidence: ${validationEvidence}`,
 				`- Rollback risk: ${rollbackRisk}`,
 				`- Reviewer decision: ${reviewerDecision}`,
-			].join("\n"),
-		)
+			].join("\n");
+		})
 		.join("\n\n");
 }
 
@@ -321,6 +326,28 @@ function validationEvidenceSummary(verifyCommand, evidenceFiles) {
 
 function validationEvidenceFile(file) {
 	return /\b(?:validation|stdout|stderr|test|round-\d+)\/?/iu.test(file);
+}
+
+async function rollbackNotesByChangedFile(changedFiles, evidenceFiles) {
+	const notes = new Map();
+	for (const evidenceFile of evidenceFiles) {
+		const text = await readOptionalText(evidenceFile);
+		if (!text.trim()) continue;
+		for (const file of changedFiles) {
+			if (notes.has(file)) continue;
+			const note = rollbackNoteForFile(file, text);
+			if (note) notes.set(file, note);
+		}
+	}
+	return notes;
+}
+
+function rollbackNoteForFile(file, text) {
+	const pattern = new RegExp(`(?:^|\\n)\\s*[-*]?\\s*${escapeRegExp(file)}\\s*:\\s*([^\\n]+)`, "iu");
+	const match = pattern.exec(text);
+	const note = match?.[1]?.trim() ?? "";
+	if (!note || !/\b(?:rollback|revert|restore|remove)\b/iu.test(note)) return "";
+	return `${file}: ${note}`;
 }
 
 function taskLabeledValue(taskText, labels) {
@@ -455,6 +482,9 @@ function changedFilesOutsideAllowedScopes(changedFiles, allowedScopes) {
 function scopeMatchesPath(scope, filePath) {
 	const normalizedScope = normalizeEvidencePath(scope);
 	const normalizedPath = normalizeEvidencePath(filePath);
+	if (normalizedScope.includes("*")) {
+		return globScopeMatches(normalizedScope, normalizedPath);
+	}
 	if (normalizedScope.endsWith("/**")) {
 		return normalizedPath.startsWith(normalizedScope.slice(0, -2));
 	}
@@ -462,6 +492,29 @@ function scopeMatchesPath(scope, filePath) {
 		return normalizedPath.startsWith(normalizedScope.slice(0, -1));
 	}
 	return normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
+}
+
+function globScopeMatches(scope, filePath) {
+	return globPatternToRegExp(scope).test(filePath);
+}
+
+function globPatternToRegExp(pattern) {
+	let source = "^";
+	for (let index = 0; index < pattern.length; index += 1) {
+		const char = pattern[index] ?? "";
+		const next = pattern[index + 1] ?? "";
+		if (char === "*" && next === "*") {
+			source += ".*";
+			index += 1;
+			continue;
+		}
+		if (char === "*") {
+			source += "[^/]*";
+			continue;
+		}
+		source += escapeRegExp(char);
+	}
+	return new RegExp(`${source}$`, "u");
 }
 
 function normalizeEvidencePath(filePath) {
@@ -706,4 +759,27 @@ async function readRequiredTaskText() {
 		throw new Error("agent-build-review-loop requires a task.md contract in the project root");
 	}
 	return taskText;
+}
+
+async function frozenTaskContract(currentTaskText) {
+	const runtime = workflowContext.state?.runtime && typeof workflowContext.state.runtime === "object" ? workflowContext.state.runtime : {};
+	const taskContractFile = typeof runtime.taskContractFile === "string" ? runtime.taskContractFile : "";
+	const expectedHash = typeof runtime.taskHash === "string" ? runtime.taskHash : "";
+	const frozenText = taskContractFile ? await readOptionalText(taskContractFile) : "";
+	return {
+		file: taskContractFile,
+		expectedHash,
+		text: frozenText.trim() ? frozenText : currentTaskText,
+	};
+}
+
+function assertTaskContractStable(taskContract, currentTaskText) {
+	if (!taskContract.expectedHash && !taskContract.file) return;
+	const currentHash = String(Bun.hash(currentTaskText));
+	const frozenHash = String(Bun.hash(taskContract.text));
+	const expectedHash = taskContract.expectedHash || frozenHash;
+	if (currentHash === expectedHash) return;
+	throw new Error(
+		`agent-build-review-loop cannot archive because task.md changed after workflow initialization: expected ${expectedHash}, got ${currentHash}`,
+	);
 }
