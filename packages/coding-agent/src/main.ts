@@ -86,6 +86,7 @@ import { EventBus } from "./utils/event-bus";
 import {
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV,
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV,
+	WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV,
 	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV,
@@ -816,6 +817,9 @@ async function buildSessionOptions(
 	}
 	if (Bun.env[WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV] === "workflow") {
 		options.shellEnvironmentPolicy = "workflow";
+	}
+	if (Bun.env[WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV] === "true") {
+		options.requireYieldTool = true;
 	}
 	applyWorkflowSubagentRetryProfile(activeSettings);
 	if (parsed.maxTime !== undefined) {

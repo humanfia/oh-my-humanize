@@ -24,10 +24,17 @@ export function buildWorkflowShellEnvironment(
 	delete inheritedEnv.PYTHONPATH;
 	delete inheritedEnv.OMP_WORKFLOW_CONTEXT;
 	delete inheritedEnv.OMP_WORKFLOW_RESOURCE_DIR;
-	return {
+	const env = {
 		...inheritedEnv,
 		...buildNonInteractiveEnv(overrides, baseEnv, platform),
 	};
+	if (!overrides || !Object.hasOwn(overrides, "PYTHONNOUSERSITE")) {
+		delete env.PYTHONNOUSERSITE;
+	}
+	if (!overrides || !Object.hasOwn(overrides, "PYTHONPATH")) {
+		delete env.PYTHONPATH;
+	}
+	return env;
 }
 
 function definedShellEnvironment(baseEnv: Record<string, string | undefined>): Record<string, string> {

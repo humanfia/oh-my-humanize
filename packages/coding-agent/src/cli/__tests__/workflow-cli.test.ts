@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import {
+	WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV,
 	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV,
@@ -31,6 +32,7 @@ describe("workflow CLI", () => {
 		expect(env[WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV]).toBe("30000");
 		expect(env[WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV]).toBe("300000");
 		expect(env[WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV]).toBe("workflow");
+		expect(env[WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV]).toBe("true");
 		expect(env.PATH).toBe("/bin");
 	});
 
@@ -318,7 +320,7 @@ describe("workflow CLI", () => {
 		]);
 	});
 
-	it("disables Python user-site pollution for headless shell script nodes", async () => {
+	it("uses workflow shell policy for headless shell script nodes", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-python-env-");
 		const root = tempDir.path();
 		await Bun.write(`${root}/python-env-smoke.omhflow`, workflowPythonEnvSmokeFlow());
@@ -794,15 +796,15 @@ function workflowPythonEnvSmokeFlow(): string {
 }
 
 function workflowPythonEnvSmokeScript(): string {
-	const pythonNoUserSiteExpansion = "$" + "{PYTHONNOUSERSITE:-}";
+	const pythonNoUserSiteExpansion = "$" + "{PYTHONNOUSERSITE-unset}";
 	const pythonPathSetExpansion = "$" + "{PYTHONPATH+x}";
 	const pythonPathExpansion = "$" + "{PYTHONPATH-unset}";
 	return [
 		"#!/bin/sh",
 		"set -eu",
-		`test "${pythonNoUserSiteExpansion}" = "1"`,
+		`test "${pythonNoUserSiteExpansion}" = "unset"`,
 		`test "${pythonPathSetExpansion}" != "x"`,
-		`printf '{"summary":"python env isolated","statePatch":[{"op":"set","path":"/pythonEnv","value":{"noUserSite":"%s","pythonPath":"%s"}}]}\\n' "$PYTHONNOUSERSITE" "${pythonPathExpansion}"`,
+		`printf '{"summary":"python env follows workflow policy","statePatch":[{"op":"set","path":"/pythonEnv","value":{"noUserSite":"%s","pythonPath":"%s"}}]}\\n' "${pythonNoUserSiteExpansion}" "${pythonPathExpansion}"`,
 	].join("\n");
 }
 
