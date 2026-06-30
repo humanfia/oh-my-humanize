@@ -5,6 +5,7 @@ import { $ } from "bun";
 import {
 	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
+	WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV,
 } from "../../workflow/model-env";
 import {
 	buildHeadlessAgentTaskEnv,
@@ -29,6 +30,7 @@ describe("workflow CLI", () => {
 
 		expect(env[WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV]).toBe("30000");
 		expect(env[WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV]).toBe("300000");
+		expect(env[WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV]).toBe("workflow");
 		expect(env.PATH).toBe("/bin");
 	});
 

@@ -143,14 +143,32 @@ describe("workflow structured state and artifacts", () => {
 			validateWorkflowActivationOutput(
 				{
 					summary: "full output stored separately",
-					artifacts: ["artifact://workflow/run-1/review.txt", "agent-output://activation-1/output"],
+					artifacts: [
+						"artifact://workflow/run-1/review.txt",
+						"agent-output://activation-1/output",
+						"workflow-output/review.md",
+					],
 				},
 				{ allowedWritePaths: [] },
 			),
 		).toEqual({
 			summary: "full output stored separately",
-			artifacts: ["artifact://workflow/run-1/review.txt", "agent-output://activation-1/output"],
+			artifacts: [
+				"artifact://workflow/run-1/review.txt",
+				"agent-output://activation-1/output",
+				"workflow-output/review.md",
+			],
 		});
+
+		expect(() =>
+			validateWorkflowActivationOutput(
+				{
+					summary: "escaped workspace",
+					artifacts: ["../review.md"],
+				},
+				{ allowedWritePaths: [] },
+			),
+		).toThrow("workflow artifact reference must use a supported scheme");
 
 		expect(() =>
 			validateWorkflowActivationOutput(

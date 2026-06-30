@@ -11,11 +11,20 @@ describe("validateWorkflowActivationOutput", () => {
 		expect(output.artifacts).toEqual(["/tmp/omh-workflow/transcript.jsonl"]);
 	});
 
-	it("rejects relative artifact references without an explicit scheme", () => {
+	it("accepts project-local workflow-output artifact references", () => {
+		const output = validateWorkflowActivationOutput({
+			summary: "wrote transcript",
+			artifacts: ["workflow-output/transcript.jsonl"],
+		});
+
+		expect(output.artifacts).toEqual(["workflow-output/transcript.jsonl"]);
+	});
+
+	it("rejects relative artifact references outside workflow-output", () => {
 		expect(() =>
 			validateWorkflowActivationOutput({
 				summary: "wrote transcript",
-				artifacts: ["workflow-output/transcript.jsonl"],
+				artifacts: ["docs/transcript.jsonl"],
 			}),
 		).toThrow("workflow artifact reference must use a supported scheme");
 	});

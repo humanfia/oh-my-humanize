@@ -139,12 +139,54 @@ edges: []
 		expect(assignment).toContain("Workflow agent output contract:");
 		expect(assignment).toContain("WorkflowActivationOutput");
 		expect(assignment).toContain("Declared write pointers: /inventory");
+		expect(assignment).toContain("Do not install or mutate system-wide dependencies");
 		expect(assignment).toContain(prompt);
 		expect(output).toMatchObject({
 			summary: "inventory recorded",
 			statePatch: [{ op: "set", path: "/inventory", value: { docs: 3 } }],
 			data: { agentId: "workflow-inventory-activation-1" },
 			artifacts: ["agent-output://workflow-inventory-activation-1"],
+		});
+	});
+
+	it("accepts headless yield envelopes as structured agent node handoffs", async () => {
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: JSON.stringify({
+					result: {
+						data: {
+							summary: "classified a reproduced bug",
+							statePatch: [{ op: "set", path: "/bug", value: { reproduced: true } }],
+							artifacts: ["workflow-output/bug-triage-precheck.md"],
+						},
+					},
+				}),
+				agentId: "workflow-classifyBug-activation-2",
+			}),
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = {
+			id: "classifyBug",
+			type: "agent",
+			agent: "task",
+			prompt: "Classify the bug.",
+			writes: ["/bug"],
+		};
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+
+		expect(output).toMatchObject({
+			summary: "classified a reproduced bug",
+			statePatch: [{ op: "set", path: "/bug", value: { reproduced: true } }],
+			data: { agentId: "workflow-classifyBug-activation-2" },
+			artifacts: ["workflow-output/bug-triage-precheck.md", "agent-output://workflow-classifyBug-activation-2"],
 		});
 	});
 
@@ -402,6 +444,58 @@ edges: []
 		expect(progress).toContain("Failed activations: 1");
 		expect(progress).toContain("tryCandidate");
 		expect(progress).toContain("candidate branch failed before writing evidence");
+	});
+
+	it("records running agent nodes in workflow observability before they complete", async () => {
+		using tempDir = TempDir.createSync("@omh-workflow-running-observability-");
+		const cwd = tempDir.path();
+		const releaseAgent = Promise.withResolvers<void>();
+		const agentStarted = Promise.withResolvers<void>();
+		const host = createSessionWorkflowRuntimeHost({
+			cwd,
+			runAgentTask: async () => {
+				agentStarted.resolve();
+				await releaseAgent.promise;
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "agent completed after live monitoring" }),
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "inspectCoverage", type: "agent", prompt: "Inspect coverage gaps." };
+		const running = host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+		await agentStarted.promise;
+
+		const runningObservability = await Bun.file(`${cwd}/workflow-output/omh-runtime/observability.json`).json();
+		expect(runningObservability.activations[0]).toMatchObject({
+			activationId: "inspectCoverage:activation-1",
+			nodeId: "inspectCoverage",
+			type: "agent",
+			status: "running",
+		});
+		const runningProgress = await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text();
+		expect(runningProgress).toContain("Running activations: 1");
+		expect(runningProgress).toContain("inspectCoverage");
+
+		releaseAgent.resolve();
+		await running;
+
+		const completedObservability = await Bun.file(`${cwd}/workflow-output/omh-runtime/observability.json`).json();
+		expect(completedObservability.activations[0]).toMatchObject({
+			activationId: "inspectCoverage:activation-1",
+			status: "completed",
+			summary: "agent completed after live monitoring",
+		});
+		const completedProgress = await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text();
+		expect(completedProgress).toContain("Running activations: 0");
+		expect(completedProgress).toContain("Completed activations: 1");
 	});
 
 	it("writes a project-local workflow observability index for completed agent nodes", async () => {

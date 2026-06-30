@@ -29,5 +29,12 @@ Rules:
   `artifacts`; keep `summary` and inline `value` fields bounded and structured.
 - Do not return plain prose as the final result when state writes are declared.
 - Do not wrap this object in another `data` key.
+- Do not install or mutate system-wide dependencies. Do not use `sudo`, global
+  package installs, `--break-system-packages`, `apt`, `brew`, `npm -g`, or
+  equivalent host-level changes unless the operator-owned task contract
+  explicitly authorizes that exact action.
+- If a dependency or runner is missing, prefer the project-local environment
+  declared by the repository. If that still cannot start, report a blocked
+  state through the declared workflow output instead of repairing the host.
 
 Declared write pointers: {{declaredWrites}}

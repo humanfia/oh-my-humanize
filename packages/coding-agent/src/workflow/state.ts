@@ -197,6 +197,7 @@ function maxSummaryBytes(policy: WorkflowStateAccessPolicy): number {
 
 function assertArtifactReference(reference: string): void {
 	if (path.isAbsolute(reference)) return;
+	if (isWorkflowOutputArtifactReference(reference)) return;
 	if (
 		reference.startsWith("artifact://") ||
 		reference.startsWith("agent-output://") ||
@@ -205,6 +206,12 @@ function assertArtifactReference(reference: string): void {
 		return;
 	}
 	throw new WorkflowStateError(`workflow artifact reference must use a supported scheme: ${reference}`);
+}
+
+function isWorkflowOutputArtifactReference(reference: string): boolean {
+	if (!reference.startsWith("workflow-output/")) return false;
+	const normalized = path.posix.normalize(reference);
+	return normalized === reference && !normalized.includes("/../");
 }
 
 function assertNoRawTranscriptFields(raw: Record<string, unknown>): void {

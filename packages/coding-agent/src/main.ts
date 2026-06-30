@@ -88,6 +88,7 @@ import {
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV,
 	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
+	WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV,
 } from "./workflow/model-env";
 
 type RunAcpMode = (createSession: AcpSessionFactory) => Promise<never>;
@@ -812,6 +813,9 @@ async function buildSessionOptions(
 		} else if (authFallback === "true") {
 			options.defaultSubagentModelOverrideAuthFallback = true;
 		}
+	}
+	if (Bun.env[WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV] === "workflow") {
+		options.shellEnvironmentPolicy = "workflow";
 	}
 	applyWorkflowSubagentRetryProfile(activeSettings);
 	if (parsed.maxTime !== undefined) {

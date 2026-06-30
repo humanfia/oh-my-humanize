@@ -28,6 +28,7 @@ import {
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV,
 	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
+	WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV,
 } from "../workflow/model-env";
 import { WORKFLOW_OBSERVABILITY_INDEX_PATH, WORKFLOW_OBSERVABILITY_PROGRESS_PATH } from "../workflow/observability";
 import { loadWorkflowArtifact, WorkflowPackageError } from "../workflow/package-loader";
@@ -764,6 +765,7 @@ export function buildHeadlessAgentTaskEnv(
 		...env,
 		[WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV]: "30000",
 		[WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV]: "300000",
+		[WORKFLOW_SUBAGENT_SHELL_ENVIRONMENT_POLICY_ENV]: "workflow",
 	};
 	if (modelOverride === undefined) return workflowEnv;
 	return {

@@ -12,6 +12,7 @@ import {
 	createWorkflowObservabilityRecorder,
 	recordWorkflowActivationFailureObservability,
 	recordWorkflowActivationObservability,
+	recordWorkflowActivationStartedObservability,
 	type WorkflowObservabilityRecorder,
 } from "./observability";
 import {
@@ -177,6 +178,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				request.signal = input.signal;
 			}
 			try {
+				await recordWorkflowActivationStart(recordObservability, input.node, input.activation.id);
 				const result = await runAgentTaskWithTransientRetry(options, request);
 				const output = activationOutputFromTaskResult(input.node.id, result);
 				await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
@@ -270,6 +272,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				if (input.signal !== undefined) {
 					request.signal = input.signal;
 				}
+				await recordWorkflowActivationStart(recordObservability, input.node, input.activation.id);
 				const result = await runAgentTaskWithTransientRetry(options, request, workflowReviewTaskReasonIsRetryable);
 				const output = reviewOutputFromTaskResult(input.node.id, result, input.gates, input.fallbackVerdict);
 				await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
@@ -280,6 +283,18 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			}
 		},
 	};
+}
+
+async function recordWorkflowActivationStart(
+	record: WorkflowObservabilityRecorder,
+	node: WorkflowNode,
+	activationId: string,
+): Promise<void> {
+	try {
+		await recordWorkflowActivationStartedObservability(record, node, activationId);
+	} catch {
+		// Start observability must never mask the workflow node's own execution.
+	}
 }
 
 async function recordWorkflowActivationFailure(
@@ -716,7 +731,10 @@ function parseStructuredActivationOutput(
 ): WorkflowActivationOutput | undefined {
 	const trimmed = output.trim();
 	const parsed = parseJsonObject(trimmed) ?? parseLastJsonObjectLine(trimmed);
-	if (!parsed || !hasActivationOutputField(parsed)) return undefined;
+	if (!parsed) return undefined;
+	const yielded = activationOutputFromYieldEnvelope(parsed);
+	if (yielded !== undefined) return yielded;
+	if (!hasActivationOutputField(parsed)) return undefined;
 	if (options.allowObjectSummaryFallback && isObjectSummaryOnly(parsed)) return undefined;
 	return validateWorkflowActivationOutput(parsed);
 }
@@ -804,6 +822,19 @@ function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTas
 function activationOutputFromYieldData(data: Record<string, unknown>): WorkflowActivationOutput | undefined {
 	if (data.statePatch === undefined && data.artifacts === undefined && data.data === undefined) return undefined;
 	return validateWorkflowActivationOutput(data);
+}
+
+function activationOutputFromYieldEnvelope(data: Record<string, unknown>): WorkflowActivationOutput | undefined {
+	const result = workflowRecord(data.result);
+	if (result === undefined) return undefined;
+	const yieldedData = workflowRecord(result.data);
+	if (yieldedData === undefined) return undefined;
+	return activationOutputFromYieldData(yieldedData);
+}
+
+function workflowRecord(data: unknown): Record<string, unknown> | undefined {
+	if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+	return data as Record<string, unknown>;
 }
 
 function applyTaskResultMetadata(

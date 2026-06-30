@@ -24,7 +24,7 @@ interface WorkflowObservabilityActivation {
 	activationId: string;
 	nodeId: string;
 	type: WorkflowNode["type"];
-	status: "completed" | "failed";
+	status: "running" | "completed" | "failed";
 	summary: string;
 	artifacts: string[];
 	verdict?: string;
@@ -73,6 +73,14 @@ export async function recordWorkflowActivationObservability(
 	output: WorkflowActivationOutput | WorkflowReviewNodeOutput,
 ): Promise<void> {
 	await record(workflowObservabilityActivation(node, activationId, output));
+}
+
+export async function recordWorkflowActivationStartedObservability(
+	record: WorkflowObservabilityRecorder,
+	node: WorkflowNode,
+	activationId: string,
+): Promise<void> {
+	await record(workflowObservabilityStartedActivation(node, activationId));
 }
 
 export async function recordWorkflowActivationFailureObservability(
@@ -145,6 +153,21 @@ function workflowObservabilityActivation(
 	const retries = workflowObservabilityRetryHistory(output);
 	if (retries.length > 0) event.retries = retries;
 	return event;
+}
+
+function workflowObservabilityStartedActivation(
+	node: WorkflowNode,
+	activationId: string,
+): WorkflowObservabilityActivation {
+	return {
+		ts: new Date().toISOString(),
+		activationId,
+		nodeId: node.id,
+		type: node.type,
+		status: "running",
+		summary: `workflow node "${node.id}" running`,
+		artifacts: [],
+	};
 }
 
 function workflowObservabilityFailedActivation(
@@ -303,21 +326,35 @@ function emptyWorkflowObservabilityIndex(): WorkflowObservabilityIndex {
 }
 
 function renderWorkflowObservabilityProgress(index: WorkflowObservabilityIndex): string {
+	const runningActivations = index.activations.filter(activation => activation.status === "running");
 	const completedActivations = index.activations.filter(activation => activation.status === "completed");
 	const failedActivations = index.activations.filter(activation => activation.status === "failed");
 	const lines = [
 		"# OMH Workflow Progress",
 		"",
 		`Last updated: ${lastWorkflowObservabilityTimestamp(index)}`,
+		`Running activations: ${runningActivations.length}`,
 		`Completed activations: ${completedActivations.length}`,
 		`Failed activations: ${failedActivations.length}`,
 		`Lifecycle events: ${index.lifecycle.length}`,
 		"",
-		"## Completed Activations",
-		"",
-		"| # | Node | Type | Activation | Summary |",
-		"| - | - | - | - | - |",
 	];
+	if (runningActivations.length > 0) {
+		lines.push("## Running Activations", "", "| # | Node | Type | Activation | Summary |", "| - | - | - | - | - |");
+		for (const [indexValue, activation] of runningActivations.entries()) {
+			lines.push(
+				`| ${[
+					String(indexValue + 1),
+					markdownTableCell(activation.nodeId),
+					markdownTableCell(activation.type),
+					markdownTableCell(activation.activationId),
+					markdownTableCell(compactWorkflowProgressSummary(workflowActivationProgressSummary(activation))),
+				].join(" | ")} |`,
+			);
+		}
+		lines.push("");
+	}
+	lines.push("## Completed Activations", "", "| # | Node | Type | Activation | Summary |", "| - | - | - | - | - |");
 	for (const [indexValue, activation] of completedActivations.entries()) {
 		lines.push(
 			`| ${[
