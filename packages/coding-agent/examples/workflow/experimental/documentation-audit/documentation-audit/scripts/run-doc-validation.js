@@ -64,7 +64,7 @@ return {
 async function runShell(command) {
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: process.cwd(),
-		env: workflowCommandEnv(command),
+		env: process.env,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -78,20 +78,6 @@ async function runShell(command) {
 		stdout: bounded(stdout),
 		stderr: bounded(stderr),
 	};
-}
-
-function workflowCommandEnv(command) {
-	const env = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
-	if (runsPytest(command)) {
-		const cacheDisable = "-p no:cacheprovider";
-		const existing = process.env.PYTEST_ADDOPTS?.trim();
-		env.PYTEST_ADDOPTS = existing ? `${existing} ${cacheDisable}` : cacheDisable;
-	}
-	return env;
-}
-
-function runsPytest(command) {
-	return /\bpytest\b|(?:^|\s)python(?:\d+(?:\.\d+)?)?\s+-m\s+pytest\b/u.test(command);
 }
 
 function evidenceMarkdown(docsCommand, docs, validationCommand, validation, paths) {

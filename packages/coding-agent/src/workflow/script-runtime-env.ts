@@ -12,18 +12,28 @@ export function workflowScriptEnvironment(
 	request: WorkflowScriptEnvironmentRequest,
 	baseEnv?: Record<string, string | undefined>,
 ): Record<string, string> | undefined {
-	const additions: Record<string, string> = {};
+	const env: Record<string, string> = {};
+	if (baseEnv !== undefined) {
+		for (const [key, value] of Object.entries(baseEnv)) {
+			if (value !== undefined) env[key] = value;
+		}
+	}
+	const runTmp = env.OMH_RUN_TMP || env.TMPDIR || "workflow-output/tmp";
+	env.PYTHONDONTWRITEBYTECODE = "1";
+	env.PYTHONPYCACHEPREFIX = `${runTmp}/python-pycache`;
+	env.PYTEST_ADDOPTS = appendShellOption(env.PYTEST_ADDOPTS, "-p no:cacheprovider");
 	if (request.context !== undefined) {
-		additions[WORKFLOW_CONTEXT_ENV] = JSON.stringify(request.context);
+		env[WORKFLOW_CONTEXT_ENV] = JSON.stringify(request.context);
 	}
 	if (request.resourceDir !== undefined) {
-		additions[WORKFLOW_RESOURCE_DIR_ENV] = request.resourceDir;
+		env[WORKFLOW_RESOURCE_DIR_ENV] = request.resourceDir;
 	}
-	if (Object.keys(additions).length === 0) return undefined;
-	if (baseEnv === undefined) return additions;
-	const env: Record<string, string> = {};
-	for (const [key, value] of Object.entries(baseEnv)) {
-		if (value !== undefined) env[key] = value;
-	}
-	return { ...env, ...additions };
+	return env;
+}
+
+function appendShellOption(existing: string | undefined, addition: string): string {
+	const trimmed = existing?.trim();
+	if (!trimmed) return addition;
+	if (trimmed.includes(addition)) return trimmed;
+	return `${trimmed} ${addition}`;
 }

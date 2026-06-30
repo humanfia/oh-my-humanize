@@ -23,6 +23,12 @@ const RESEARCH_REPRODUCTION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/w
 const RELEASE_HARDENING_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/release-hardening/release-hardening/scripts`;
 const BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/scripts`;
 
+interface DirectoryEntry {
+	name: string;
+	isDirectory(): boolean;
+	isFile(): boolean;
+}
+
 describe("example workflow scripts", () => {
 	it("loads the documentation-audit workflow artifact", async () => {
 		const artifact = await loadWorkflowArtifact(
@@ -3919,7 +3925,7 @@ describe("example workflow scripts", () => {
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
 
-		await Bun.write(`${cwd}/module_under_test.py`, "VALUE = 42\n");
+		await Bun.write(`${cwd}/src/module_under_test.py`, "VALUE = 42\n");
 
 		const result = await runExampleScript({
 			cwd,
@@ -3930,7 +3936,7 @@ describe("example workflow scripts", () => {
 			writes: ["/validationStartup"],
 			initialState: {
 				task: {
-					validationCommand: "python -c 'import module_under_test; print(module_under_test.VALUE)'",
+					validationCommand: "python -m py_compile src/module_under_test.py",
 				},
 			},
 		});
@@ -3942,8 +3948,11 @@ describe("example workflow scripts", () => {
 			status: "startable-pass",
 			validationExitCode: 0,
 		});
-		expect(await directoryEntriesOrEmpty(`${cwd}/__pycache__`)).toEqual([]);
+		expect(await directoryEntriesOrEmpty(`${cwd}/src/__pycache__`)).toEqual([]);
 		expect(await directoryEntriesOrEmpty(`${cwd}/.pytest_cache`)).toEqual([]);
+		expect((await findRelativeFiles(`${cwd}/workflow-output/tmp`, ".pyc")).some(file => file.endsWith(".pyc"))).toBe(
+			true,
+		);
 	});
 
 	it("blocks documentation archive when prior review feedback has no patch resolution evidence", async () => {
@@ -10480,5 +10489,37 @@ async function directoryEntriesOrEmpty(directoryPath: string): Promise<string[]>
 	} catch (error) {
 		if (isEnoent(error)) return [];
 		throw error;
+	}
+}
+
+async function findRelativeFiles(rootPath: string, suffix: string): Promise<string[]> {
+	const results: string[] = [];
+	await collectRelativeFiles(rootPath, "", suffix, results);
+	return results.sort();
+}
+
+async function collectRelativeFiles(
+	rootPath: string,
+	relativePath: string,
+	suffix: string,
+	results: string[],
+): Promise<void> {
+	const directoryPath = relativePath === "" ? rootPath : `${rootPath}/${relativePath}`;
+	let entries: DirectoryEntry[];
+	try {
+		entries = await fs.readdir(directoryPath, { withFileTypes: true });
+	} catch (error) {
+		if (isEnoent(error)) return;
+		throw error;
+	}
+	for (const entry of entries) {
+		const entryRelativePath = relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
+		if (entry.isDirectory()) {
+			await collectRelativeFiles(rootPath, entryRelativePath, suffix, results);
+			continue;
+		}
+		if (entry.isFile() && entryRelativePath.endsWith(suffix)) {
+			results.push(entryRelativePath);
+		}
 	}
 }
