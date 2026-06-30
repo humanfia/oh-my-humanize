@@ -39,6 +39,7 @@ export default {
 			idleTimeoutMs: opts.idleTimeoutMs,
 			signal: opts.signal,
 			sessionId: namespaceSessionId(opts.sessionId),
+			env: opts.env,
 			interpreter: readInterpreterSetting(opts.session),
 			sessionFile: opts.sessionFile,
 			artifactsDir: opts.session.getArtifactsDir?.() ?? undefined,

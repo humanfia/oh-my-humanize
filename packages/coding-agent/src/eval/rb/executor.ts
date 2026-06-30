@@ -5,7 +5,7 @@ import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../../tools";
 import {
 	attachSessionOwner,
-	buildManagedKernelEnv,
+	buildKernelStartEnv,
 	buildManagedKernelEnvPatch,
 	createCancelledKernelResult,
 	executeWithKernelBase,
@@ -40,6 +40,8 @@ export interface RubyExecutorOptions {
 	idleTimeoutMs?: number;
 	/** Callback for streaming output chunks (already sanitized) */
 	onChunk?: (chunk: string) => Promise<void> | void;
+	/** Base environment inherited by the kernel subprocess. */
+	env?: Record<string, string>;
 	/** AbortSignal for cancellation */
 	signal?: AbortSignal;
 	/** Session identifier for kernel reuse */
@@ -199,7 +201,7 @@ async function startKernel(cwd: string, options: RubyExecutorOptions): Promise<R
 	requireRemainingTimeoutMs(options.deadlineMs);
 	return await RubyKernel.start({
 		cwd,
-		env: buildManagedKernelEnv(options),
+		env: buildKernelStartEnv(options),
 		signal: options.signal,
 		deadlineMs: options.deadlineMs,
 		interpreter: options.interpreter,

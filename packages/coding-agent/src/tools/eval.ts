@@ -8,6 +8,7 @@ import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-ti
 import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
+import { buildShellEnvironment } from "../exec/shell-environment-policy";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { webpExclusionForModel } from "../utils/image-loading";
@@ -80,6 +81,14 @@ function enabledEvalLanguages(backends: EvalBackendsAllowance): EvalLanguageToke
 		jl: backends.julia,
 	};
 	return EVAL_LANGUAGE_ORDER.filter(lang => allowed[lang]);
+}
+
+function resolveEvalEnvironment(session: ToolSession): Record<string, string> | undefined {
+	const explicitEnvironment = session.getEvalEnvironment?.();
+	if (explicitEnvironment !== undefined) return explicitEnvironment;
+	return session.shellEnvironmentPolicy === undefined
+		? undefined
+		: buildShellEnvironment(session.shellEnvironmentPolicy);
 }
 
 const evalCellCommonFields = {
@@ -505,7 +514,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 
 				const sessionFile = session.getSessionFile?.() ?? undefined;
 				const kernelOwnerId = session.getEvalKernelOwnerId?.() ?? undefined;
-				const evalEnvironment = session.getEvalEnvironment?.();
+				const evalEnvironment = resolveEvalEnvironment(session);
 				const { path: artifactPath, id: artifactId } = (await session.allocateOutputArtifact?.("eval")) ?? {};
 				session.assertEvalExecutionAllowed?.();
 				outputSink = new OutputSink({

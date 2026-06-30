@@ -41,6 +41,7 @@ export default {
 			signal: opts.signal,
 			sessionId: namespaceSessionId(opts.sessionId),
 			kernelMode,
+			env: opts.env,
 			interpreter: readInterpreterSetting(opts.session),
 			sessionFile: opts.sessionFile,
 			artifactsDir: opts.session.getArtifactsDir?.() ?? undefined,

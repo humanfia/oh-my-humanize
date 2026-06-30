@@ -190,6 +190,7 @@ export const MANAGED_KERNEL_ENV_KEYS = [
 ] as const;
 
 interface ManagedKernelEnvOptions {
+	env?: Record<string, string>;
 	sessionFile?: string;
 	artifactsDir?: string;
 	bridgeSessionId?: string;
@@ -219,6 +220,21 @@ export function buildManagedKernelEnv(options: ManagedKernelEnvOptions): Record<
 			env[key] = value;
 			hasKeys = true;
 		}
+	}
+	return hasKeys ? env : undefined;
+}
+
+export function buildKernelStartEnv(options: ManagedKernelEnvOptions): Record<string, string> | undefined {
+	const env: Record<string, string> = {};
+	let hasKeys = false;
+	for (const [key, value] of Object.entries(options.env ?? {})) {
+		env[key] = value;
+		hasKeys = true;
+	}
+	const managedEnv = buildManagedKernelEnv(options);
+	for (const [key, value] of Object.entries(managedEnv ?? {})) {
+		env[key] = value;
+		hasKeys = true;
 	}
 	return hasKeys ? env : undefined;
 }

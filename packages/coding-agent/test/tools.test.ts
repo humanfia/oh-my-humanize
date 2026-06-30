@@ -18,6 +18,7 @@ import * as toolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { unzip } from "@oh-my-pi/pi-coding-agent/utils/zip";
 import { $which, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { EvalTool } from "../src/tools/eval";
 import { GlobTool } from "../src/tools/glob";
 import { DEFAULT_FILE_LIMIT, GrepTool, MULTI_FILE_PER_FILE_MATCHES } from "../src/tools/grep";
 
@@ -1158,6 +1159,55 @@ function b() {
 			expect(getTextOutput(result)).toContain("Successfully replaced text");
 			const content = await Bun.file(testFile).text();
 			expect(content).toBe("hello universe");
+		});
+	});
+
+	describe("eval tool", () => {
+		it("applies workflow Python cache isolation to eval subprocesses", async () => {
+			const previousRunTmp = Bun.env.OMH_RUN_TMP;
+			const runTmp = path.join(testDir, "run-tmp");
+			await Bun.write(path.join(testDir, "pkg", "module_under_test.py"), "VALUE = 42\n");
+			Bun.env.OMH_RUN_TMP = runTmp;
+			try {
+				const workflowEvalTool = new EvalTool(
+					createTestToolSession(testDir, Settings.isolated(), { shellEnvironmentPolicy: "workflow" }),
+				);
+
+				const result = await workflowEvalTool.execute("test-call-workflow-eval-python-cache", {
+					language: "py",
+					code: [
+						"import os",
+						"import subprocess",
+						"import sys",
+						'assert os.environ.get("PYTHONDONTWRITEBYTECODE") == "1", os.environ.get("PYTHONDONTWRITEBYTECODE")',
+						'assert "-p no:cacheprovider" in os.environ.get("PYTEST_ADDOPTS", ""), os.environ.get("PYTEST_ADDOPTS")',
+						'assert os.environ.get("PYTHONPYCACHEPREFIX"), "missing PYTHONPYCACHEPREFIX"',
+						'completed = subprocess.run([sys.executable, "-m", "py_compile", "pkg/module_under_test.py"], text=True, capture_output=True)',
+						"assert completed.returncode == 0, completed.stderr",
+						'print("subprocess-env-ok")',
+					].join("\n"),
+					timeout: 30,
+					reset: true,
+				});
+
+				expect(result.isError).toBeUndefined();
+				expect(getTextOutput(result)).toContain("subprocess-env-ok");
+				expect(fs.existsSync(path.join(testDir, "pkg", "__pycache__"))).toBe(false);
+				expect(
+					findFilesWithSuffix(runTmp, ".pyc").some(
+						file =>
+							file.includes(`${path.sep}pkg${path.sep}`) &&
+							path.basename(file).startsWith("module_under_test.cpython-") &&
+							file.endsWith(".pyc"),
+					),
+				).toBe(true);
+			} finally {
+				if (previousRunTmp === undefined) {
+					delete Bun.env.OMH_RUN_TMP;
+				} else {
+					Bun.env.OMH_RUN_TMP = previousRunTmp;
+				}
+			}
 		});
 	});
 

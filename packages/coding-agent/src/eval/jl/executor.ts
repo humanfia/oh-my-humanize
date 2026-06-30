@@ -1,7 +1,12 @@
 import * as path from "node:path";
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../../tools";
-import { attachSessionOwner, createCancelledKernelResult, executeWithKernelBase } from "../executor-base";
+import {
+	attachSessionOwner,
+	buildKernelStartEnv,
+	createCancelledKernelResult,
+	executeWithKernelBase,
+} from "../executor-base";
 import { ensurePyToolBridge, type PyToolBridgeInfo } from "../py/tool-bridge";
 import type { EvalDisplayOutput, EvalStatusEvent } from "../types";
 import {
@@ -23,6 +28,7 @@ export interface JuliaExecutorOptions {
 	interpreter?: string;
 	onChunk?: (text: string) => void | Promise<void>;
 	onStatus?: (event: EvalStatusEvent) => void;
+	env?: Record<string, string>;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	deadlineMs?: number;
@@ -214,38 +220,12 @@ function buildKernelEnvPatch(options: {
 	return patch;
 }
 
-function buildKernelEnv(options: {
-	sessionFile?: string;
-	artifactsDir?: string;
-	bridge?: PyToolBridgeInfo;
-	bridgeSessionId?: string;
-	localRoots?: Record<string, string>;
-}): Record<string, string> | undefined {
-	const patch = buildKernelEnvPatch(options);
-	const keys = Object.keys(patch);
-	if (keys.length === 0) return undefined;
-	const realEnv: Record<string, string> = {};
-	for (const key in patch) {
-		const val = patch[key];
-		if (typeof val === "string") realEnv[key] = val;
-	}
-	return realEnv;
-}
-
 async function startKernel(cwd: string, options: JuliaExecutorOptions): Promise<JuliaKernel> {
 	requireRemainingTimeoutMs(options.deadlineMs);
-	const env: Record<string, string | undefined> = {};
-	const patch = buildKernelEnv(options);
-	if (patch) {
-		for (const key in patch) {
-			const value = patch[key];
-			if (typeof value === "string") env[key] = value;
-		}
-	}
 	return await JuliaKernel.start({
 		cwd,
 		interpreter: options.interpreter,
-		env,
+		env: buildKernelStartEnv(options),
 		signal: options.signal,
 		deadlineMs: options.deadlineMs,
 	});
