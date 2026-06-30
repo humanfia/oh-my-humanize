@@ -648,6 +648,51 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("accepts materialized research claim data with concrete evidence aliases", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-concrete-evidence-alias-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const accepted = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardClaimEvidence",
+			scriptFileName: "guard-claim-evidence.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/claimEvidence"],
+			initialState: {
+				task: {
+					claimSource: "The current repository source and tests define serializer round-trip behavior.",
+				},
+				claim: {
+					status: "claim_materialized",
+					producer_node: "materializeClaim",
+					source_node: "extractClaim",
+					data: {
+						status: "extracted",
+						claim: "Itsdangerous serializer primitives round-trip values.",
+						concreteEvidence: [
+							{
+								path: "tests/test_itsdangerous/test_serializer.py",
+								line: 52,
+								symbol: "TestSerializer.test_serializer",
+								excerpt: "assert serializer.loads(serializer.dumps(value)) == value",
+							},
+						],
+					},
+				},
+			},
+		});
+
+		expect(accepted.scheduler.state.claimEvidence).toMatchObject({
+			status: "pass",
+			sourceRefs: expect.arrayContaining(["tests/test_itsdangerous/test_serializer.py"]),
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/claim-evidence-guard.md`).text()).toContain(
+			"tests/test_itsdangerous/test_serializer.py",
+		);
+	});
+
 	it("keeps non-exercising research reproduction evidence on the refinement route", async () => {
 		const artifact = await loadWorkflowArtifact(
 			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,

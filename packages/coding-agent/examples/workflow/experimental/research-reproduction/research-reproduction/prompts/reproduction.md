@@ -43,9 +43,9 @@ Tool and artifact boundary:
   source/test/doc-derived claim, report `blocked_missing_claim_source`; do not
   infer a claim from broad test commands. You may read project files named by
   `task.claimSource`, but only to cite concrete source/test evidence. Return at
-  least one evidence item with a project file path and a line number, symbol,
-  assertion, or short excerpt. If you cannot cite that evidence, report
-  `blocked_missing_concrete_claim_evidence`.
+  least one `concreteProjectEvidence` item with a project file path and a line
+  number, symbol, assertion, or short excerpt. If you cannot cite that evidence,
+  report `blocked_missing_concrete_claim_evidence`.
 - Compare results: compare command evidence against the claim, explain
   variance, and identify missing evidence from the script-node outputs only.
   Treat `variant.variantCommandEvidence` and
