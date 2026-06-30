@@ -4,8 +4,8 @@
  * Sub-verbs:
  *   - `serve [--bind=…]` — boots the broker against the local SQLite store.
  *   - `token` / `token --regenerate` — manages the bearer token file.
- *   - `login <provider> [--via=user@host]` — logs into a provider locally, or
- *     via SSH tunnel into a remote broker host.
+ *   - `login <provider> [--device-auth] [--via=user@host]` — logs into a
+ *     provider locally, or via SSH tunnel/direct SSH into a remote broker host.
  *   - `import <file|dir>` — imports CLIProxyAPI-style JSON credentials into
  *     the local SQLite store (typical use: `import ~/.cliproxy/auth`).
  *   - `migrate --from-local [--include-env] [--include-oauth] [--dry-run]` —
@@ -50,6 +50,7 @@ export interface AuthBrokerCommandArgs {
 		via?: string;
 		provider?: string;
 		dryRun?: boolean;
+		deviceAuth?: boolean;
 		/** `login`/`logout`: provider id. `import`: filesystem path. */
 		source?: string;
 		/** `import`: keep credentials whose JSON had `disabled: true`. */
@@ -80,6 +81,21 @@ const CALLBACK_PORTS: Record<string, number> = Object.fromEntries(
 		provider.callbackPort != null ? [[provider.id, provider.callbackPort] as [string, number]] : [],
 	),
 );
+
+const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
+const OPENAI_CODEX_DEVICE_PROVIDER_ID = "openai-codex-device";
+const AUTH_BROKER_PROVIDER_ALIASES: Record<string, string> = {
+	codex: OPENAI_CODEX_PROVIDER_ID,
+};
+
+function resolveLoginProviderArg(providerArg: string, flags: AuthBrokerCommandArgs["flags"]): string {
+	const aliased = AUTH_BROKER_PROVIDER_ALIASES[providerArg] ?? providerArg;
+	if (flags.deviceAuth !== true) return aliased;
+	if (aliased === OPENAI_CODEX_PROVIDER_ID || aliased === OPENAI_CODEX_DEVICE_PROVIDER_ID) {
+		return OPENAI_CODEX_DEVICE_PROVIDER_ID;
+	}
+	throw new Error("--device-auth is only supported for Codex subscription login (openai-codex/codex)");
+}
 
 function getTokenFilePath(): string {
 	return path.join(getConfigRootDir(), "auth-broker.token");
@@ -180,6 +196,9 @@ async function runToken(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 async function runLogin(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	const providers = getOAuthProviders();
 	let providerArg = flags.provider;
+	if (!providerArg && flags.deviceAuth === true) {
+		providerArg = OPENAI_CODEX_PROVIDER_ID;
+	}
 	if (!providerArg) {
 		if (flags.via) {
 			throw new Error(
@@ -188,6 +207,7 @@ async function runLogin(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 		}
 		providerArg = await pickProviderInteractively(providers);
 	}
+	providerArg = resolveLoginProviderArg(providerArg, flags);
 	if (!providers.some(p => p.id === providerArg)) {
 		throw new Error(
 			`Unknown OAuth provider '${providerArg}'. Known: ${providers
@@ -326,19 +346,17 @@ async function pickProviderInteractively(providers: readonly OAuthProviderInfo[]
 
 async function runRemoteLogin(provider: string, via: string, dryRun: boolean): Promise<void> {
 	const port = CALLBACK_PORTS[provider];
-	if (port === undefined) {
-		throw new Error(
-			`No known OAuth callback port for '${provider}'. Use device-code flow on the broker host directly.`,
-		);
-	}
-	const sshArgs = [
-		"-L",
-		`${port}:127.0.0.1:${port}`,
-		"-o",
-		"ExitOnForwardFailure=yes",
-		via,
-		`${APP_NAME} auth-broker login ${provider}`,
-	];
+	const sshArgs =
+		port === undefined
+			? [via, `${APP_NAME} auth-broker login ${provider}`]
+			: [
+					"-L",
+					`${port}:127.0.0.1:${port}`,
+					"-o",
+					"ExitOnForwardFailure=yes",
+					via,
+					`${APP_NAME} auth-broker login ${provider}`,
+				];
 	if (dryRun) {
 		process.stdout.write(`ssh ${sshArgs.map(a => (a.includes(" ") ? `'${a}'` : a)).join(" ")}\n`);
 		return;

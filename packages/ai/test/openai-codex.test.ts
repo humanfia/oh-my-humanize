@@ -2,16 +2,25 @@ import { describe, expect, it } from "bun:test";
 import {
 	createOpenAICodexAuthorizationUrl,
 	formatOpenAICodexTokenEndpointError,
+	loginOpenAICodexDevice,
 } from "@oh-my-pi/pi-ai/oauth/openai-codex";
 import { type RequestBody, transformRequestBody } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
 import { CodexApiError, parseCodexError } from "@oh-my-pi/pi-ai/providers/openai-codex/response-handler";
 import { convertOpenAICodexResponsesTools } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import type { Tool } from "@oh-my-pi/pi-ai/types";
+import type { FetchImpl, Tool } from "@oh-my-pi/pi-ai/types";
 import { OPENAI_HEADER_VALUES } from "@oh-my-pi/pi-catalog/wire/codex";
 import { createCodexModel } from "./helpers";
 
 const DEFAULT_PROMPT_PREFIX =
 	"You are an expert coding assistant. You help users with coding tasks by reading files, executing commands";
+
+function makeCodexAccessToken(): string {
+	const payload = {
+		"https://api.openai.com/auth": { chatgpt_account_id: "acct_123" },
+		"https://api.openai.com/profile": { email: "USER@example.COM" },
+	};
+	return ["header", Buffer.from(JSON.stringify(payload)).toString("base64"), "signature"].join(".");
+}
 
 describe("openai-codex oauth", () => {
 	it("uses the same default originator for browser login and API requests", () => {
@@ -43,6 +52,67 @@ describe("openai-codex oauth", () => {
 		);
 
 		expect(detail).toBe("403 access_denied: Connector scope missing");
+	});
+
+	it("completes the official headless device-code flow without a local callback", async () => {
+		const requests: Array<{ url: string; method?: string; body: string }> = [];
+		const fetchImpl: FetchImpl = async (input, init) => {
+			const url = input instanceof Request ? input.url : input.toString();
+			const body = init?.body === undefined || init.body === null ? "" : String(init.body);
+			requests.push({ url, method: init?.method, body });
+			if (url === "https://auth.openai.com/api/accounts/deviceauth/usercode") {
+				return Response.json({ device_auth_id: "device-1", usercode: "ABCD-1234", interval: "0" });
+			}
+			if (url === "https://auth.openai.com/api/accounts/deviceauth/token") {
+				return Response.json({
+					authorization_code: "auth-code",
+					code_challenge: "challenge",
+					code_verifier: "verifier",
+				});
+			}
+			if (url === "https://auth.openai.com/oauth/token") {
+				return Response.json({
+					access_token: makeCodexAccessToken(),
+					refresh_token: "refresh-1",
+					expires_in: 3600,
+				});
+			}
+			return new Response(`unexpected ${url}`, { status: 500 });
+		};
+		const authEvents: Array<{ url: string; instructions?: string }> = [];
+		const progress: string[] = [];
+
+		const credentials = await loginOpenAICodexDevice({
+			fetch: fetchImpl,
+			onAuth: info => authEvents.push(info),
+			onProgress: message => progress.push(message),
+		});
+
+		expect(authEvents).toEqual([
+			{ url: "https://auth.openai.com/codex/device", instructions: "Enter code: ABCD-1234" },
+		]);
+		expect(progress).toEqual([
+			"Initiating device authorization…",
+			"Waiting for browser authorization (code: ABCD-1234)…",
+			"Exchanging authorization code for tokens…",
+		]);
+		expect(credentials.refresh).toBe("refresh-1");
+		expect(credentials.accountId).toBe("acct_123");
+		expect(credentials.email).toBe("user@example.com");
+
+		expect(requests.map(request => request.url)).toEqual([
+			"https://auth.openai.com/api/accounts/deviceauth/usercode",
+			"https://auth.openai.com/api/accounts/deviceauth/token",
+			"https://auth.openai.com/oauth/token",
+		]);
+		expect(JSON.parse(requests[0].body)).toEqual({ client_id: expect.stringMatching(/^app_/) });
+		expect(JSON.parse(requests[1].body)).toEqual({ device_auth_id: "device-1", user_code: "ABCD-1234" });
+
+		const tokenBody = new URLSearchParams(requests[2].body);
+		expect(tokenBody.get("grant_type")).toBe("authorization_code");
+		expect(tokenBody.get("code")).toBe("auth-code");
+		expect(tokenBody.get("code_verifier")).toBe("verifier");
+		expect(tokenBody.get("redirect_uri")).toBe("https://auth.openai.com/deviceauth/callback");
 	});
 });
 

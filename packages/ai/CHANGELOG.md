@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed OpenAI Codex device-code login to follow the official headless flow with the injected fetch client, usercode response alias support, and immediate token polling.
+
 ## [16.2.5] - 2026-06-28
 
 ### Fixed

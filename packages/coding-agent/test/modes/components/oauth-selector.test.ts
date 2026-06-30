@@ -49,6 +49,29 @@ describe("OAuthSelectorComponent", () => {
 		expect(selected).toEqual([target.id]);
 	});
 
+	it("labels the Codex device-code login option", () => {
+		const selected: string[] = [];
+		const component = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			providerId => selected.push(providerId),
+			() => {},
+		);
+
+		for (const char of "openai-codex-device") {
+			component.handleInput(char);
+		}
+
+		const rendered = component
+			.render(80)
+			.map(line => Bun.stripANSI(line))
+			.join("\n");
+		expect(rendered).toContain("Codex (device code)");
+
+		component.handleInput("\n");
+		expect(selected).toEqual(["openai-codex-device"]);
+	});
+
 	it("guides slash-command input back to the TUI after setup is skipped", () => {
 		const component = new OAuthSelectorComponent(
 			"login",
