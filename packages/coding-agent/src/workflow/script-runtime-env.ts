@@ -16,7 +16,8 @@ export function workflowScriptEnvironment(
 	const runTmp = baseEnv.OMH_RUN_TMP || baseEnv.TMPDIR || "workflow-output/tmp";
 	env.PYTHONDONTWRITEBYTECODE = "1";
 	env.PYTHONPYCACHEPREFIX = `${runTmp}/python-pycache`;
-	env.PYTEST_ADDOPTS = appendShellOption(baseEnv.PYTEST_ADDOPTS, "-p no:cacheprovider");
+	env.PYTEST_ADDOPTS = appendShellOptions(baseEnv.PYTEST_ADDOPTS, ["-p no:cacheprovider", "-p no:benchmark"]);
+	env.RUFF_CACHE_DIR = `${runTmp}/ruff-cache`;
 	if (request.context !== undefined) {
 		env[WORKFLOW_CONTEXT_ENV] = JSON.stringify(request.context);
 	}
@@ -26,9 +27,12 @@ export function workflowScriptEnvironment(
 	return env;
 }
 
-function appendShellOption(existing: string | undefined, addition: string): string {
+function appendShellOptions(existing: string | undefined, additions: readonly string[]): string {
 	const trimmed = existing?.trim();
-	if (!trimmed) return addition;
-	if (trimmed.includes(addition)) return trimmed;
-	return `${trimmed} ${addition}`;
+	const options = trimmed ? [trimmed] : [];
+	for (const addition of additions) {
+		if (trimmed?.includes(addition)) continue;
+		options.push(addition);
+	}
+	return options.join(" ");
 }

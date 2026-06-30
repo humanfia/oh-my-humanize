@@ -8,7 +8,8 @@ describe("workflowScriptEnvironment", () => {
 		expect(env).toMatchObject({
 			PYTHONDONTWRITEBYTECODE: "1",
 			PYTHONPYCACHEPREFIX: "/run/tmp/python-pycache",
-			PYTEST_ADDOPTS: "-q -p no:cacheprovider",
+			PYTEST_ADDOPTS: "-q -p no:cacheprovider -p no:benchmark",
+			RUFF_CACHE_DIR: "/run/tmp/ruff-cache",
 		});
 		expect(env).not.toHaveProperty("OMH_RUN_TMP");
 	});
@@ -19,7 +20,8 @@ describe("workflowScriptEnvironment", () => {
 		expect(env).toMatchObject({
 			PYTHONDONTWRITEBYTECODE: "1",
 			PYTHONPYCACHEPREFIX: "workflow-output/tmp/python-pycache",
-			PYTEST_ADDOPTS: "-p no:cacheprovider",
+			PYTEST_ADDOPTS: "-p no:cacheprovider -p no:benchmark",
+			RUFF_CACHE_DIR: "workflow-output/tmp/ruff-cache",
 		});
 	});
 });

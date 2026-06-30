@@ -45,6 +45,7 @@ describe("buildWorkflowShellEnvironment", () => {
 
 		expect(env.PYTHONDONTWRITEBYTECODE).toBe("1");
 		expect(env.PYTHONPYCACHEPREFIX).toBe("/repo/temp/run/python-pycache");
-		expect(env.PYTEST_ADDOPTS).toBe("-q -p no:cacheprovider");
+		expect(env.PYTEST_ADDOPTS).toBe("-q -p no:cacheprovider -p no:benchmark");
+		expect(env.RUFF_CACHE_DIR).toBe("/repo/temp/run/ruff-cache");
 	});
 });

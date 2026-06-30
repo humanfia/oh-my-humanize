@@ -38,7 +38,8 @@ describe("workflow CLI", () => {
 		expect(env[WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV]).toBe("true");
 		expect(env.PYTHONDONTWRITEBYTECODE).toBe("1");
 		expect(env.PYTHONPYCACHEPREFIX).toBe("/run/tmp/python-pycache");
-		expect(env.PYTEST_ADDOPTS).toBe("-q -p no:cacheprovider");
+		expect(env.PYTEST_ADDOPTS).toBe("-q -p no:cacheprovider -p no:benchmark");
+		expect(env.RUFF_CACHE_DIR).toBe("/run/tmp/ruff-cache");
 		expect(env.PATH).toBe("/bin");
 	});
 
