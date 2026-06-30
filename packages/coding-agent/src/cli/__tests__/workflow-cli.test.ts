@@ -519,6 +519,62 @@ describe("workflow CLI", () => {
 		);
 	});
 
+	it("uses a successful yield transcript result when headless agent stdout is empty", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-agent-yield-artifact-");
+		const root = tempDir.path();
+		const artifactsDir = path.join(root, "agent-artifacts");
+		const yielded = {
+			summary: "agent yielded structured state",
+			statePatch: [{ op: "set", path: "/inventory", value: { docs: 4 } }],
+		};
+
+		const result = await runHeadlessAgentTask(
+			root,
+			{
+				activationId: "activation-1",
+				nodeId: "inventoryDocs",
+				agent: "task",
+				task: {
+					id: "inventoryDocs",
+					description: "inventory docs",
+					role: "inventory",
+					assignment: "submit workflow state with yield",
+				},
+			},
+			{
+				artifactsDir,
+				runProcess: async args => {
+					const sessionDirFlag = args.indexOf("--session-dir");
+					const sessionDir = args[sessionDirFlag + 1];
+					if (sessionDir === undefined) throw new Error("expected workflow subagent session dir");
+					const entry = {
+						type: "message",
+						message: {
+							role: "toolResult",
+							toolName: "yield",
+							isError: false,
+							details: {
+								status: "success",
+								data: yielded,
+							},
+						},
+					};
+					await Bun.write(path.join(sessionDir, "session.jsonl"), `${JSON.stringify(entry)}\n`);
+					return {
+						exitCode: 0,
+						stdout: "",
+						stderr: "",
+					};
+				},
+			},
+		);
+
+		const expectedOutput = JSON.stringify(yielded);
+		expect(result.output).toBe(expectedOutput);
+		expect(await Bun.file(result.outputPath ?? "").text()).toBe(expectedOutput);
+		expect(result.sessionFile?.endsWith("session.jsonl")).toBe(true);
+	});
+
 	it("checkpoints headless workflow starts on SIGINT instead of leaving a run alive", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-sigint-");
 		const root = tempDir.path();

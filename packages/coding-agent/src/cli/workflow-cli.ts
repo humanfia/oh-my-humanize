@@ -709,11 +709,12 @@ async function runHeadlessAgentTaskProcess(
 		signal: request.signal,
 		env: buildHeadlessAgentTaskEnv(Bun.env, request.modelOverride, request.modelOverrideAuthFallback),
 	});
-	await Bun.write(outputPath, stdout);
 	const sessionFile = await latestHeadlessAgentSessionFile(sessionDir);
+	const output = await headlessAgentTaskOutput(stdout, sessionFile);
+	await Bun.write(outputPath, output.fileContent);
 	return {
 		exitCode,
-		output: stdout.trim(),
+		output: output.value,
 		...(stderr.trim() ? { stderr: stderr.trim() } : {}),
 		...(exitCode === 0 ? {} : { error: stderr.trim() || `exit code ${exitCode}` }),
 		agentId,
@@ -778,6 +779,80 @@ async function latestHeadlessAgentSessionFile(sessionDir: string): Promise<strin
 	const jsonlEntries = entries.filter(entry => entry.endsWith(".jsonl")).sort();
 	const latest = jsonlEntries[jsonlEntries.length - 1];
 	return latest === undefined ? undefined : path.join(sessionDir, latest);
+}
+
+interface HeadlessAgentTaskOutput {
+	value: string;
+	fileContent: string;
+}
+
+async function headlessAgentTaskOutput(
+	stdout: string,
+	sessionFile: string | undefined,
+): Promise<HeadlessAgentTaskOutput> {
+	const trimmedStdout = stdout.trim();
+	if (trimmedStdout.length > 0) {
+		return {
+			value: trimmedStdout,
+			fileContent: stdout,
+		};
+	}
+	const yielded = await headlessAgentSuccessfulYieldOutput(sessionFile);
+	if (yielded === undefined) {
+		return {
+			value: "",
+			fileContent: stdout,
+		};
+	}
+	return {
+		value: yielded,
+		fileContent: yielded,
+	};
+}
+
+async function headlessAgentSuccessfulYieldOutput(sessionFile: string | undefined): Promise<string | undefined> {
+	if (sessionFile === undefined) return undefined;
+	let text: string;
+	try {
+		text = await Bun.file(sessionFile).text();
+	} catch (error) {
+		if (isEnoent(error)) return undefined;
+		throw error;
+	}
+	let latestYieldOutput: string | undefined;
+	for (const line of text.split(/\r?\n/)) {
+		const candidate = successfulYieldOutputFromSessionLine(line);
+		if (candidate !== undefined) latestYieldOutput = candidate;
+	}
+	return latestYieldOutput;
+}
+
+function successfulYieldOutputFromSessionLine(line: string): string | undefined {
+	const trimmed = line.trim();
+	if (trimmed.length === 0) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(trimmed);
+	} catch {
+		return undefined;
+	}
+	const entry = workflowCliRecord(parsed);
+	if (entry?.type !== "message") return undefined;
+	const message = workflowCliRecord(entry.message);
+	if (message?.role !== "toolResult") return undefined;
+	if (message.toolName !== "yield") return undefined;
+	if (message.isError === true) return undefined;
+	const details = workflowCliRecord(message.details);
+	if (details?.status !== "success") return undefined;
+	if (!Object.hasOwn(details, "data")) return undefined;
+	const data = details.data;
+	if (data === undefined || data === null) return undefined;
+	return JSON.stringify(data);
+}
+
+function workflowCliRecord(value: unknown): Record<string, unknown> | undefined {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+	return value as Record<string, unknown>;
 }
 
 export function buildHeadlessAgentTaskEnv(
