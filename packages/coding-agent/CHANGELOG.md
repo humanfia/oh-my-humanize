@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the experimental humanize-gen-idea workflow for generating repo-grounded Humanize idea drafts from inline or file input.
+
 ### Fixed
 
 - Fixed the experimental performance-optimization-search flow treating a committed positive selection with a clean worktree as a no-win outcome during finalize/archive.

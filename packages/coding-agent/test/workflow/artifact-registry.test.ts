@@ -36,8 +36,13 @@ describe("workflow artifact registry", () => {
 			name: "experimental::kda-humanize",
 			source: "builtin-experimental",
 		});
+		expect(listedByName.get("experimental::humanize-gen-idea")).toMatchObject({
+			name: "experimental::humanize-gen-idea",
+			source: "builtin-experimental",
+		});
 		expect(listedByName.has("humanize-rlcr")).toBe(false);
 		expect(listedByName.has("kda-humanize")).toBe(false);
+		expect(listedByName.has("humanize-gen-idea")).toBe(false);
 	});
 
 	it("resolves packaged experimental flows by namespace without OMHFLOW_DIR", async () => {
@@ -53,6 +58,20 @@ describe("workflow artifact registry", () => {
 			source: "builtin-experimental",
 		});
 		expect(spec.path.endsWith("examples/workflow/experimental/humanize-rlcr/humanize-rlcr.omhflow")).toBe(true);
+
+		const genIdeaSpec = await resolveWorkflowFlowSpec("experimental::humanize-gen-idea", {
+			cwd: process.cwd(),
+			flowDirs: [],
+		});
+		expect(genIdeaSpec).toMatchObject({
+			kind: "named",
+			input: "experimental::humanize-gen-idea",
+			name: "experimental::humanize-gen-idea",
+			source: "builtin-experimental",
+		});
+		expect(
+			genIdeaSpec.path.endsWith("examples/workflow/experimental/humanize-gen-idea/humanize-gen-idea.omhflow"),
+		).toBe(true);
 	});
 
 	it("keeps experimental flows out of stable built-in short-name resolution", async () => {
@@ -61,6 +80,7 @@ describe("workflow artifact registry", () => {
 			"kda-humanize",
 			"parallel-implementation-review",
 			"agent-build-review-loop",
+			"humanize-gen-idea",
 		]) {
 			await expect(resolveWorkflowFlowSpec(name, { cwd: process.cwd(), flowDirs: [] })).rejects.toThrow(
 				`workflow flow "${name}" was not found`,
@@ -74,6 +94,9 @@ describe("workflow artifact registry", () => {
 		);
 		await expect(resolveWorkflowFlowSpec("kda-humanize", { cwd: process.cwd(), flowDirs: [] })).rejects.toThrow(
 			`workflow flow "kda-humanize" was not found. Did you mean "experimental::kda-humanize"?`,
+		);
+		await expect(resolveWorkflowFlowSpec("humanize-gen-idea", { cwd: process.cwd(), flowDirs: [] })).rejects.toThrow(
+			`workflow flow "humanize-gen-idea" was not found. Did you mean "experimental::humanize-gen-idea"?`,
 		);
 	});
 

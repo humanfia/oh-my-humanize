@@ -1,0 +1,122 @@
+---
+name: humanize-gen-idea
+version: 1
+schema: omhflow/v1
+models:
+  roles:
+    lead: gpt-5.5
+  defaults:
+    agent: lead
+  unavailable: fallback-to-parent
+checkpoint:
+  stopDeadlineMs: 30000
+changePolicy:
+  agentsCanPropose: true
+  humansCanApprove: true
+---
+# Humanize Gen Idea
+
+Generate a repo-grounded Humanize idea draft from loose input. This is the
+workflow-native counterpart to the Humanize Claude plugin `/humanize:gen-idea`.
+
+Start interactively with `/workflow start experimental::humanize-gen-idea`. The
+workflow first reads `.humanize/gen-idea.args`; if it is missing, a human input
+node asks for the same native gen-idea argument string in the TUI.
+
+```yaml workflow
+stateSchema:
+  version: 1
+  shape:
+    ideaArgs: object
+    /ideaArgs/status: string
+    idea: object
+    result: object
+resources:
+  - path: prompts/collect-input.md
+    kind: prompt
+  - path: prompts/generate-draft.md
+    kind: prompt
+  - path: scripts/load-idea-args.js
+    kind: script
+  - path: scripts/record-human-idea-args.js
+    kind: script
+  - path: scripts/validate-idea-io.js
+    kind: script
+  - path: scripts/verify-draft.js
+    kind: script
+  - path: templates/gen-idea-template.md
+    kind: data
+capabilities:
+  tools:
+    - ask
+    - eval
+    - task
+  agents:
+    - task
+nodes:
+  - id: loadIdeaArgs
+    type: script
+    script:
+      language: js
+      file: scripts/load-idea-args.js
+    writes:
+      - /ideaArgs
+  - id: collectIdeaInput
+    type: human
+    prompt:
+      file: prompts/collect-input.md
+  - id: recordHumanIdeaArgs
+    type: script
+    script:
+      language: js
+      file: scripts/record-human-idea-args.js
+    writes:
+      - /ideaArgs
+  - id: validateIdeaInput
+    type: script
+    script:
+      language: js
+      file: scripts/validate-idea-io.js
+    reads:
+      - /ideaArgs
+    writes:
+      - /idea
+  - id: generateDraft
+    type: agent
+    agent: task
+    model:
+      role: lead
+    workspaceAccess: write
+    reads:
+      - /idea
+    prompt:
+      template:
+        file: prompts/generate-draft.md
+        bindings:
+          idea:
+            state: /idea
+  - id: verifyDraft
+    type: script
+    script:
+      language: js
+      file: scripts/verify-draft.js
+    reads:
+      - /idea
+    writes:
+      - /result
+edges:
+  - from: loadIdeaArgs
+    to: validateIdeaInput
+    when: state.ideaArgs.status == "loaded"
+  - from: loadIdeaArgs
+    to: collectIdeaInput
+    when: state.ideaArgs.status != "loaded"
+  - from: collectIdeaInput
+    to: recordHumanIdeaArgs
+  - from: recordHumanIdeaArgs
+    to: validateIdeaInput
+  - from: validateIdeaInput
+    to: generateDraft
+  - from: generateDraft
+    to: verifyDraft
+```

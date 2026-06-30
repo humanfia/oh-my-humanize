@@ -22,6 +22,7 @@ const AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR = `${import.meta.dir}/../../../examples
 const RESEARCH_REPRODUCTION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction/scripts`;
 const RELEASE_HARDENING_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/release-hardening/release-hardening/scripts`;
 const BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/scripts`;
+const HUMANIZE_GEN_IDEA_FLOW_PATH = `${import.meta.dir}/../../../examples/workflow/experimental/humanize-gen-idea/humanize-gen-idea.omhflow`;
 
 describe("example workflow scripts", () => {
 	it("loads the documentation-audit workflow artifact", async () => {
@@ -31,6 +32,19 @@ describe("example workflow scripts", () => {
 
 		expect(artifact.definition.nodes.some(node => node.id === "guardReviewRepair")).toBe(true);
 		expect(artifact.definition.nodes.some(node => node.id === "runDocsValidation")).toBe(true);
+	});
+
+	it("loads the humanize-gen-idea workflow artifact", async () => {
+		const artifact = await loadWorkflowArtifact(HUMANIZE_GEN_IDEA_FLOW_PATH);
+
+		expect(artifact.definition.nodes).toContainEqual(expect.objectContaining({ id: "loadIdeaArgs", type: "script" }));
+		expect(artifact.definition.nodes).toContainEqual(
+			expect.objectContaining({ id: "collectIdeaInput", type: "human" }),
+		);
+		expect(artifact.definition.nodes).toContainEqual(
+			expect.objectContaining({ id: "generateDraft", type: "agent", agent: "task" }),
+		);
+		expect(artifact.definition.nodes).toContainEqual(expect.objectContaining({ id: "verifyDraft", type: "script" }));
 	});
 
 	it("keeps parallel integration evidence outside the reviewer output schema", async () => {
