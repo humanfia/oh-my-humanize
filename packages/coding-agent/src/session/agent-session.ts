@@ -62,6 +62,7 @@ import {
 	generateHandoffFromContext,
 	prepareCompaction,
 	renderHandoffPrompt,
+	resolveBudgetReserveTokens,
 	resolveThresholdTokens,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -128,9 +129,11 @@ import {
 	isBunTestRuntime,
 	isEnoent,
 	logger,
+	postmortem,
 	prompt,
 	relativePathWithinRoot,
 	Snowflake,
+	setProjectDir,
 	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
@@ -173,6 +176,7 @@ import {
 } from "../config/model-resolver";
 import { MODEL_ROLE_IDS, MODEL_ROLES } from "../config/model-roles";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
+import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { buildServiceTierByFamily, serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
 import { getDefault, onAppendOnlyModeChanged, validateProviderMaxInFlightRequests } from "../config/settings";
@@ -189,6 +193,7 @@ import {
 } from "../eval/py/executor";
 import { disposeRubyKernelSessionsByOwner } from "../eval/rb/executor";
 import { defaultEvalSessionId } from "../eval/session-id";
+import { syncBashSessionCwd } from "../exec/bash-cwd-sync";
 import { type BashResult, executeBash as executeBashCommand } from "../exec/bash-executor";
 import type { TtsrManager, TtsrMatchContext } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
@@ -237,6 +242,7 @@ import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
+import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
@@ -245,6 +251,7 @@ import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-remin
 import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
 import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
+import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
 import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" with { type: "text" };
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
@@ -256,6 +263,7 @@ import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redir
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
+import { AgentRegistry } from "../registry/agent-registry";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -322,6 +330,13 @@ import {
 } from "./codex-auto-reset";
 import { findCompactMode } from "./compact-modes";
 import {
+	collectPendingToolCalls,
+	SESSION_EXIT_CUSTOM_TYPE,
+	type SessionExitData,
+	TOOL_EXECUTION_START_CUSTOM_TYPE,
+	type ToolExecutionStartData,
+} from "./exit-diagnostics";
+import {
 	type BashExecutionMessage,
 	type CustomMessage,
 	convertToLlm,
@@ -350,6 +365,16 @@ import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-
 import { YieldQueue } from "./yield-queue";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
+
+/**
+ * Consecutive tool-use turns without the agent touching the `todo` tool that
+ * trip the mid-run reconciliation nudge. Picked so a single batch of edits +
+ * verification (~3-5 turns each) does not trigger it, but a sustained loop of
+ * work without flipping any todos does. Without this nudge, long runs drive
+ * the live todo HUD to `0/N` until the final stop, then batch-flip to `N/N`
+ * (issue #3651).
+ */
+const MID_RUN_TODO_NUDGE_TURN_THRESHOLD = 8;
 
 /** Abort reason for the Gemini reasoning-header runaway interrupt. Surfaced on the
  *  discarded assistant turn only; never reaches the model. */
@@ -427,11 +452,25 @@ const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 4000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
+/**
+ * Budget for callers on the user-visible `/quit` / `/exit` shutdown path that
+ * want to cap how long they wait for `MnemopiSessionState.dispose()` to finish
+ * its consolidate pass. Consolidate fires fresh LLM fact extractions, each a
+ * 1–3 s round-trip, so interactive shutdown passes this budget to keep the
+ * UI responsive. Callers that keep the process/session host alive must omit it
+ * so dispose still awaits the full consolidate-then-close pipeline.
+ */
+export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
+
+export interface AgentSessionDisposeOptions {
+	mnemopiConsolidateTimeoutMs?: number;
+}
 
 type CompactionCheckResult = Readonly<{
 	deferredHandoff: boolean;
 	continuationScheduled: boolean;
 	automaticContinuationBlocked?: boolean;
+	historyRewritten?: boolean;
 }>;
 
 const COMPACTION_CHECK_NONE: CompactionCheckResult = {
@@ -696,6 +735,14 @@ export interface AgentSessionConfig {
 	 * teardown never tears down the shared servers.
 	 */
 	disconnectOwnedMcpManager?: () => Promise<void>;
+	/**
+	 * Override the bundled system prompt used by automatic session-title
+	 * generation paths (initial title + replan refresh). Source-of-truth is
+	 * `TITLE_SYSTEM.md` discovered via {@link discoverTitleSystemPromptFile} and
+	 * resolved through {@link resolvePromptInput}; refresh after a `/move`-style
+	 * cwd change via {@link AgentSession.setTitleSystemPrompt}.
+	 */
+	titleSystemPrompt?: string;
 }
 
 /** Options for AgentSession.prompt() */
@@ -753,7 +800,7 @@ export interface RoleModelCycleResult {
 export interface ResolvedRoleModel {
 	role: string;
 	model: Model;
-	thinkingLevel?: ThinkingLevel;
+	thinkingLevel?: ConfiguredThinkingLevel;
 	explicitThinkingLevel: boolean;
 }
 
@@ -896,6 +943,7 @@ function parseRetryFallbackSelector(
 	if (!trimmed) return undefined;
 	const parsed = parseModelString(trimmed, {
 		allowMaxAlias: true,
+		allowAutoAlias: true,
 		isLiteralModelId: (provider, id) => modelLookup?.find(provider, id) !== undefined,
 	});
 	if (!parsed) return undefined;
@@ -903,7 +951,7 @@ function parseRetryFallbackSelector(
 		raw: trimmed,
 		provider: parsed.provider,
 		id: parsed.id,
-		thinkingLevel: parsed.thinkingLevel,
+		thinkingLevel: parsed.thinkingLevel === AUTO_THINKING ? undefined : parsed.thinkingLevel,
 	};
 }
 
@@ -1298,6 +1346,38 @@ type MessageEndPersistenceSlot = {
 	release: () => void;
 };
 
+type PostPromptSkipReason = "aborted" | "stale-generation";
+
+type AgentContinueSkipReason =
+	| PostPromptSkipReason
+	| "session-unavailable"
+	| "should-continue-false"
+	| "post-restore-unavailable";
+
+type ScheduledAgentContinueOptions = {
+	delayMs?: number;
+	generation?: number;
+	shouldContinue?: () => boolean;
+	onSkip?: (reason: AgentContinueSkipReason) => void;
+	onError?: () => void;
+};
+
+type AssistantContextRemovalResult = {
+	reason: string;
+	removed: boolean;
+	beforeLength: number;
+	afterLength: number;
+	lastRole: AgentMessage["role"] | undefined;
+	candidateTimestamp: number;
+	lastTimestamp: number | undefined;
+	candidateProvider: string;
+	lastProvider: string | undefined;
+	candidateModel: string;
+	lastModel: string | undefined;
+	candidateStopReason: AssistantMessage["stopReason"];
+	lastStopReason: AssistantMessage["stopReason"] | undefined;
+};
+
 const REPLAN_TITLE_CONTEXT_TURN_LIMIT = 6;
 
 type SessionTitleSource = "auto" | "user";
@@ -1376,6 +1456,8 @@ export class AgentSession {
 
 	// Event subscription state
 	#unsubscribeAgent?: () => void;
+	#cancelExitRecorder?: () => void;
+	#exitRecorded = false;
 	#unsubscribeAppendOnly?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
@@ -1444,8 +1526,21 @@ export class AgentSession {
 	 * instruction") does not drive 1/3 → 2/3 → 3/3 without user input.
 	 */
 	#todoReminderAwaitingProgress = false;
+	/**
+	 * Consecutive tool-use turns the agent has completed without invoking the
+	 * `todo` tool. Drives {@link #takeMidRunTodoNudge} so the live HUD stays in
+	 * sync with actual progress instead of flipping `0/N -> N/N` only at the
+	 * very end of a long run (issue #3651). Reset to 0 on any assistant turn
+	 * that calls `todo`, on a successful nudge fire (cooldown), and at every
+	 * new-prompt / clear / handoff lifecycle boundary.
+	 */
+	#toolTurnsSinceLastTodoTouch = 0;
 	#todoPhases: TodoPhase[] = [];
 	#replanTitleRefreshInFlight: Promise<void> | undefined = undefined;
+	/** Resolved TITLE_SYSTEM.md override applied to every automatic session-title
+	 *  generation path. Refresh via {@link AgentSession.setTitleSystemPrompt} when
+	 *  the session cwd changes. */
+	#titleSystemPrompt: string | undefined;
 	#toolChoiceQueue = new ToolChoiceQueue();
 
 	// Bash execution state
@@ -1473,8 +1568,10 @@ export class AgentSession {
 	#activeEvalExecutions = new Set<Promise<unknown>>();
 	#evalExecutionDisposing = false;
 
-	// Incoming IRC messages received while a turn was streaming; drained as
-	// non-interrupting asides at the next step boundary (see the aside provider).
+	// Incoming IRC messages received while a turn was streaming. Parent IRCs
+	// enter the steering queue; peer IRCs enter the interrupt queue and drain as
+	// asides at the next boundary; passive IRC records stay in the aside queue.
+	#pendingIrcInterrupts: CustomMessage[] = [];
 	#pendingIrcAsides: CustomMessage[] = [];
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
@@ -1703,16 +1800,17 @@ export class AgentSession {
 		this.#resumeStrandedIrcAsides();
 	}
 
-	/** IRC asides that arrive after the loop's final aside poll — or while an abort skipped that
-	 *  poll — land in #pendingIrcAsides with no loop left to drain them; the queued-message drain's
-	 *  gate (agent.hasQueuedMessages()) does not count them. Once idle, wake a turn so the agent
-	 *  responds to the peer. Skip only when a queued steer/follow-up will itself drive a resume turn
-	 *  whose aside poll already consumes these (no double-wake). */
+	/** IRC records that arrive after the loop's final aside poll — or while an abort skipped that
+	 *  poll — land in pending IRC queues with no loop left to drain them; the queued-message drain's
+	 *  gate (agent.hasQueuedMessages()) does not count peer IRC interrupts. Once idle, wake a turn so
+	 *  the agent responds to the peer. Skip only when a queued steer/follow-up will itself drive a
+	 *  resume turn whose aside poll already consumes these (no double-wake). */
 	#resumeStrandedIrcAsides(): void {
 		if (this.#isDisposed || this.isStreaming) return;
-		if (this.#pendingIrcAsides.length === 0) return;
+		if (this.#pendingIrcInterrupts.length === 0 && this.#pendingIrcAsides.length === 0) return;
 		if (this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages()) return;
-		const records = this.#pendingIrcAsides;
+		const records = [...this.#pendingIrcInterrupts, ...this.#pendingIrcAsides];
+		this.#pendingIrcInterrupts = [];
 		this.#pendingIrcAsides = [];
 		this.#wakeForIrc(records);
 	}
@@ -1839,6 +1937,7 @@ export class AgentSession {
 		this.#advisorSharedInstructions = config.advisorSharedInstructions;
 		this.#advisorContextPrompt = config.advisorContextPrompt;
 		this.#advisorConfigs = config.advisorConfigs;
+		this.#titleSystemPrompt = config.titleSystemPrompt;
 		this.#pruneToolDescriptions = config.pruneToolDescriptions === true;
 		this.#validateRetryFallbackChains();
 		this.#toolRegistry = config.toolRegistry ?? new Map();
@@ -1926,13 +2025,19 @@ export class AgentSession {
 			},
 		});
 		// Background-job completions / late diagnostics are pulled into the run at
-		// each step boundary as non-interrupting asides (see Agent.getAsideMessages),
-		// so they reach the model between requests without waiting for a yield.
+		// each step boundary as non-interrupting asides. Peer IRCs share the aside
+		// injection boundary, but also expose a non-consuming interrupt peek so
+		// `job poll` / `irc wait` can return early before the boundary drains them.
+		this.agent.hasIrcInterrupts = () => this.#pendingIrcInterrupts.length > 0;
 		this.agent.setAsideMessageProvider(() => {
-			const pendingIrc = this.#pendingIrcAsides;
+			const pendingIrc = [...this.#pendingIrcInterrupts, ...this.#pendingIrcAsides];
+			this.#pendingIrcInterrupts = [];
 			this.#pendingIrcAsides = [];
 			const thunks: AsideMessage[] = pendingIrc.map(record => () => record);
 			thunks.push(...this.yieldQueue.drainLazy());
+			// Mid-run todo reconciliation — evaluated at injection time so a turn
+			// that flips a todo just before this poll suppresses the nudge.
+			thunks.push(() => this.#takeMidRunTodoNudge());
 			return thunks;
 		});
 		this.#convertToLlm = config.convertToLlm ?? convertToLlm;
@@ -2020,6 +2125,9 @@ export class AgentSession {
 					{ deliverAs: message.deliverAs },
 				);
 			},
+		});
+		this.#cancelExitRecorder = postmortem.register(`agent-session:${this.sessionManager.getSessionId()}`, reason => {
+			this.#recordSessionExit(reason);
 		});
 
 		this.#advisorEnabled = this.settings.get("advisor.enabled") as boolean;
@@ -2136,7 +2244,7 @@ export class AgentSession {
 			if (config.model) {
 				const resolved = resolveModelOverride([config.model], this.#modelRegistry, this.settings);
 				model = resolved.model;
-				thinkingLevel = resolved.thinkingLevel;
+				thinkingLevel = resolved.thinkingLevel === AUTO_THINKING ? undefined : resolved.thinkingLevel;
 				if (!model) {
 					this.emitNotice("warning", `Advisor "${config.name}": no model matched "${config.model}"`, "advisor");
 					continue;
@@ -2150,7 +2258,7 @@ export class AgentSession {
 					continue;
 				}
 				model = sel.model;
-				thinkingLevel = sel.thinkingLevel;
+				thinkingLevel = sel.thinkingLevel === AUTO_THINKING ? undefined : sel.thinkingLevel;
 			}
 			const advisorModel = model;
 			const advisorName = config.name;
@@ -2191,6 +2299,12 @@ export class AgentSession {
 			// Mirror the SDK's provider-shaping options (streamFn/onPayload/...,
 			// providerSessionState, promptCacheKey, transformProviderContext) so each
 			// advisor's requests cache, route, and obfuscate like the main turn.
+			// `promptCacheKey` preserves an explicitly pinned provider cache key
+			// unchanged so tan/shared-session advisor calls read the exact shard the
+			// parent turn populated, while keeping only `sessionId` advisor-scoped;
+			// sessions without a pinned key fall back to the advisor session id for
+			// stable advisor-local caching (see can1357/oh-my-pi#3639).
+			const advisorPromptCacheKey = this.agent.promptCacheKey ?? advisorSessionId;
 			const advisorAgent = new Agent({
 				initialState: {
 					systemPrompt,
@@ -2200,7 +2314,7 @@ export class AgentSession {
 				},
 				appendOnlyContext,
 				sessionId: advisorSessionId,
-				promptCacheKey: advisorSessionId,
+				promptCacheKey: advisorPromptCacheKey,
 				providerSessionState: this.#providerSessionState,
 				preferWebsockets: this.#preferWebsockets,
 				getApiKey: requestModel => this.#modelRegistry.resolver(requestModel, advisorSessionId),
@@ -2825,6 +2939,61 @@ export class AgentSession {
 		this.#emit({ type: "notice", level, message, source });
 	}
 
+	#recordToolExecutionStart(event: Extract<AgentEvent, { type: "tool_execution_start" }>): void {
+		const data: ToolExecutionStartData = {
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			args: event.args,
+			startedAt: new Date().toISOString(),
+		};
+		if (event.intent) data.intent = event.intent;
+		this.sessionManager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, data);
+	}
+
+	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
+		if (this.#exitRecorded) return;
+		this.#exitRecorded = true;
+		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.getBranch());
+		if (
+			pendingToolCalls.length === 0 &&
+			!this.sessionManager.getEntries().some(entry => entry.type === "message" && entry.message.role === "assistant")
+		) {
+			return;
+		}
+		const kind: SessionExitData["kind"] =
+			reason === "dispose" || reason === postmortem.Reason.MANUAL
+				? "normal"
+				: reason === postmortem.Reason.UNCAUGHT_EXCEPTION || reason === postmortem.Reason.UNHANDLED_REJECTION
+					? "fatal"
+					: reason === postmortem.Reason.EXIT
+						? "process_exit"
+						: "signal";
+		const data: SessionExitData = {
+			reason,
+			kind,
+			recordedAt: new Date().toISOString(),
+		};
+		if (pendingToolCalls.length > 0) data.pendingToolCalls = pendingToolCalls;
+		try {
+			this.sessionManager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, data);
+			this.sessionManager.flushSync();
+			logger.warn("Session exit recorded", {
+				sessionId: this.sessionManager.getSessionId(),
+				sessionFile: this.sessionManager.getSessionFile(),
+				reason,
+				kind,
+				pendingToolCalls: pendingToolCalls.length,
+			});
+		} catch (error) {
+			logger.error("Failed to record session exit", {
+				sessionId: this.sessionManager.getSessionId(),
+				sessionFile: this.sessionManager.getSessionFile(),
+				reason,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
 	#queuedExtensionEvents: Promise<void> = Promise.resolve();
 
 	#queueExtensionEvent(event: AgentSessionEvent): Promise<void> {
@@ -3097,6 +3266,27 @@ export class AgentSession {
 	}
 
 	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// Step the mid-run todo counter synchronously, BEFORE any await in this
+		// handler. The agent loop's next-turn `getAsideMessages` poll can run
+		// before queued microtasks drain, so `#takeMidRunTodoNudge` MUST see the
+		// freshest counter — otherwise a turn that just invoked `todo` could
+		// trip a spurious nudge against stale state, and a turn that just hit
+		// the threshold could fail to nudge until a later turn (issue #3651).
+		// Pure in-memory math — no ordering requirement vs persistence or
+		// session-event fan-out.
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			const tooledTurn = event.message.content.some(content => content.type === "toolCall");
+			if (tooledTurn) {
+				const touchedTodo = event.message.content.some(
+					content => content.type === "toolCall" && content.name === "todo",
+				);
+				if (touchedTodo) {
+					this.#toolTurnsSinceLastTodoTouch = 0;
+				} else {
+					this.#toolTurnsSinceLastTodoTouch++;
+				}
+			}
+		}
 		// Plan-mode internal transition: stamp `SILENT_ABORT_MARKER` on the
 		// persisted message BEFORE the obfuscator's display-side copy below.
 		// Invariant (must hold across refactors): this branch precedes the
@@ -3160,6 +3350,10 @@ export class AgentSession {
 				cacheRead: usage.cacheRead,
 				cacheWrite: usage.cacheWrite,
 			});
+		}
+
+		if (event.type === "tool_execution_start") {
+			this.#recordToolExecutionStart(event);
 		}
 
 		try {
@@ -3591,7 +3785,11 @@ export class AgentSession {
 				this.#trackPostPromptTask(compactionTask);
 				compactionResult = await compactionTask;
 			}
-			// Check for incomplete todos only after a final assistant stop, not intermediate tool-use turns.
+			// Stop-time todo reconciliation only fires at a text-only final stop. A run
+			// that ends still mid-tool-use (deadline hit, context full, etc.) skips the
+			// reminder so we don't pile a follow-up onto an already in-flight turn.
+			// Mid-run sync is handled separately via #takeMidRunTodoNudge so a long
+			// tool-use loop still gets prodded to keep the live HUD honest (issue #3651).
 			const hasToolCalls = msg.content.some(content => content.type === "toolCall");
 			if (hasToolCalls) {
 				await emitAgentEndNotification();
@@ -3714,7 +3912,7 @@ export class AgentSession {
 
 	#schedulePostPromptTask(
 		task: (signal: AbortSignal) => Promise<void>,
-		options?: { delayMs?: number; generation?: number; onSkip?: () => void },
+		options?: { delayMs?: number; generation?: number; onSkip?: (reason: PostPromptSkipReason) => void },
 	): void {
 		const delayMs = options?.delayMs ?? 0;
 		const signal = this.#postPromptTasksAbortController.signal;
@@ -3727,11 +3925,11 @@ export class AgentSession {
 				}
 			}
 			if (signal.aborted) {
-				options?.onSkip?.();
+				options?.onSkip?.("aborted");
 				return;
 			}
 			if (options?.generation !== undefined && this.#promptGeneration !== options.generation) {
-				options.onSkip?.();
+				options.onSkip?.("stale-generation");
 				return;
 			}
 			await task(signal);
@@ -3739,13 +3937,35 @@ export class AgentSession {
 		this.#trackPostPromptTask(scheduled);
 	}
 
-	#scheduleAgentContinue(options?: {
-		delayMs?: number;
-		generation?: number;
-		shouldContinue?: () => boolean;
-		onSkip?: () => void;
-		onError?: () => void;
-	}): void {
+	#agentContinueState(options: ScheduledAgentContinueOptions | undefined, signal: AbortSignal | undefined) {
+		const messages = this.agent.state.messages;
+		return {
+			signalAborted: signal?.aborted === true,
+			disposed: this.#isDisposed,
+			compacting: this.isCompacting,
+			handoff: this.isGeneratingHandoff,
+			generation: this.#promptGeneration,
+			expectedGeneration: options?.generation,
+			messageCount: messages.length,
+			lastRole: messages.at(-1)?.role,
+			steeringQueueLength: this.agent.peekSteeringQueue().length,
+			followUpQueueLength: this.agent.peekFollowUpQueue().length,
+		};
+	}
+
+	#skipAgentContinue(
+		reason: AgentContinueSkipReason,
+		options: ScheduledAgentContinueOptions | undefined,
+		signal: AbortSignal | undefined,
+	): void {
+		logger.debug("agent.continue skipped after scheduling", {
+			reason,
+			...this.#agentContinueState(options, signal),
+		});
+		options?.onSkip?.(reason);
+	}
+
+	#scheduleAgentContinue(options?: ScheduledAgentContinueOptions): void {
 		this.#schedulePostPromptTask(
 			async signal => {
 				// Defense in depth: if compaction/handoff slipped onto the post-prompt queue
@@ -3754,25 +3974,28 @@ export class AgentSession {
 				// reset. The first-class fix is in #checkCompaction/the agent_end handler,
 				// but this guard catches anything that bypasses that path.
 				if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
-					options?.onSkip?.();
+					this.#skipAgentContinue("session-unavailable", options, signal);
 					return;
 				}
 				if (options?.shouldContinue && !options.shouldContinue()) {
-					options?.onSkip?.();
+					this.#skipAgentContinue("should-continue-false", options, signal);
 					return;
 				}
 				this.#beginInFlight();
 				try {
 					await this.#maybeRestoreRetryFallbackPrimary();
 					if (signal.aborted || this.#isDisposed) {
-						options?.onSkip?.();
+						this.#skipAgentContinue("post-restore-unavailable", options, signal);
 						return;
 					}
+					logger.debug("agent.continue starting after scheduling", this.#agentContinueState(options, signal));
 					await this.agent.continue();
 				} catch (error) {
 					logger.warn("agent.continue failed after scheduling", {
 						error: error instanceof Error ? error.message : String(error),
+						stack: error instanceof Error ? error.stack : undefined,
 					});
+					logger.debug("agent.continue failed state after scheduling", this.#agentContinueState(options, signal));
 					options?.onError?.();
 				} finally {
 					this.#endInFlight();
@@ -3781,7 +4004,7 @@ export class AgentSession {
 			{
 				delayMs: options?.delayMs,
 				generation: options?.generation,
-				onSkip: options?.onSkip,
+				onSkip: reason => this.#skipAgentContinue(reason, options, undefined),
 			},
 		);
 	}
@@ -5187,6 +5410,7 @@ export class AgentSession {
 		this.#flushPendingIrcAsides();
 		this.yieldQueue.clear();
 		this.agent.setAsideMessageProvider(undefined);
+		this.agent.hasIrcInterrupts = undefined;
 		this.#stopAdvisorRuntime();
 		this.#evalExecutionDisposing = true;
 	}
@@ -5194,9 +5418,24 @@ export class AgentSession {
 	/**
 	 * Remove all listeners, flush pending writes, and disconnect from agent.
 	 * Call this when completely done with the session.
+	 *
+	 * Idempotent: concurrent or repeated calls share one settled promise. The
+	 * keypress `InteractiveMode.shutdown()` path and the postmortem
+	 * `SIGTERM`/`SIGHUP`/`uncaughtException` callback can both target this
+	 * method, so a second invocation must never re-emit `session_shutdown` or
+	 * double-drain the owned `AsyncJobManager` (issue #4080).
 	 */
-	async dispose(): Promise<void> {
+	#disposeCall?: Promise<void>;
+	dispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
+		if (!this.#disposeCall) this.#disposeCall = this.#doDispose(options);
+		return this.#disposeCall;
+	}
+
+	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
+		this.#recordSessionExit("dispose");
+		this.#cancelExitRecorder?.();
+		this.#cancelExitRecorder = undefined;
 		try {
 			if (this.#extensionRunner?.hasHandlers("session_shutdown")) {
 				await this.#extensionRunner.emit({ type: "session_shutdown" });
@@ -5312,7 +5551,7 @@ export class AgentSession {
 		this.setHindsightSessionState(undefined);
 		hindsightState?.dispose();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
-		await mnemopiState?.dispose();
+		await mnemopiState?.dispose({ timeoutMs: options.mnemopiConsolidateTimeoutMs });
 		// Tear down the embeddings subprocess AFTER mnemopi state.dispose:
 		// consolidate-on-dispose may still call `embed()` to store the final
 		// memories, and that round-trips through the worker we are about to
@@ -6632,9 +6871,8 @@ export class AgentSession {
 
 		const planFilePath = this.#planReferencePath;
 		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, this.#localProtocolOptions());
-		let planContent: string;
 		try {
-			planContent = await Bun.file(resolvedPlanPath).text();
+			await fs.promises.access(resolvedPlanPath, fs.constants.R_OK);
 		} catch (error) {
 			if (isEnoent(error)) {
 				return null;
@@ -6644,7 +6882,6 @@ export class AgentSession {
 
 		const content = prompt.render(planModeReferencePrompt, {
 			planFilePath,
-			planContent,
 		});
 
 		this.#planReferenceSent = true;
@@ -7075,6 +7312,7 @@ export class AgentSession {
 			// Reset todo reminder count on new user prompt
 			this.#todoReminderCount = 0;
 			this.#todoReminderAwaitingProgress = false;
+			this.#toolTurnsSinceLastTodoTouch = 0;
 			this.#emptyStopRetryCount = 0;
 			this.#unexpectedStopRetryCount = 0;
 			// A new prompt cycle starts: drop any sticky yield-termination from the
@@ -7926,6 +8164,7 @@ export class AgentSession {
 			sessionId,
 			this.model,
 			provider => this.agent.metadataForProvider(provider),
+			this.#titleSystemPrompt,
 		);
 		if (!title) return;
 		if (this.sessionManager.getSessionId() !== sessionId) return;
@@ -7933,6 +8172,21 @@ export class AgentSession {
 		if (this.sessionManager.titleSource === "user") return;
 		const setSessionName = this.sessionManager.setSessionName as SetSessionNameWithTrigger;
 		await setSessionName.call(this.sessionManager, title, "auto", "replan");
+	}
+
+	/** Currently-applied {@link TITLE_SYSTEM.md} override, or undefined when the
+	 *  bundled prompt is in effect. Consumed by {@link InteractiveMode} so the
+	 *  first-input title path and the replan refresh share one source. */
+	get titleSystemPrompt(): string | undefined {
+		return this.#titleSystemPrompt;
+	}
+
+	/** Replace the title-generation system prompt override. Called by
+	 *  {@link InteractiveMode.refreshTitleSystemPrompt} after the session cwd
+	 *  changes (e.g. `/move` relocation) so the next replan refresh resolves
+	 *  against the destination project's override. */
+	setTitleSystemPrompt(prompt: string | undefined): void {
+		this.#titleSystemPrompt = prompt;
 	}
 
 	#syncTodoPhasesFromBranch(): void {
@@ -8115,6 +8369,7 @@ export class AgentSession {
 
 		this.#todoReminderCount = 0;
 		this.#todoReminderAwaitingProgress = false;
+		this.#toolTurnsSinceLastTodoTouch = 0;
 		this.#planReferenceSent = false;
 		this.#planReferencePath = "local://PLAN.md";
 		this.#resetAdvisorSessionState();
@@ -9512,6 +9767,7 @@ export class AgentSession {
 			this.#scheduledHiddenNextTurnGeneration = undefined;
 			this.#todoReminderCount = 0;
 			this.#todoReminderAwaitingProgress = false;
+			this.#toolTurnsSinceLastTodoTouch = 0;
 
 			// Inject the handoff document as a custom message
 			const handoffContent = createHandoffContext(handoffText);
@@ -10066,15 +10322,35 @@ export class AgentSession {
 		});
 	}
 
-	#removeAssistantMessageFromActiveContext(assistantMessage: AssistantMessage): void {
+	#removeAssistantMessageFromActiveContext(
+		assistantMessage: AssistantMessage,
+		reason = "assistant-context-cleanup",
+	): AssistantContextRemovalResult {
 		const messages = this.agent.state.messages;
+		const beforeLength = messages.length;
 		const lastMessage = messages[messages.length - 1];
-		if (
-			lastMessage?.role === "assistant" &&
-			this.#isSameAssistantMessage(lastMessage as AssistantMessage, assistantMessage)
-		) {
+		const lastAssistant: AssistantMessage | undefined = lastMessage?.role === "assistant" ? lastMessage : undefined;
+		const removed = lastAssistant !== undefined && this.#isSameAssistantMessage(lastAssistant, assistantMessage);
+		if (removed) {
 			this.agent.replaceMessages(messages.slice(0, -1));
 		}
+		const result: AssistantContextRemovalResult = {
+			reason,
+			removed,
+			beforeLength,
+			afterLength: this.agent.state.messages.length,
+			lastRole: lastMessage?.role,
+			candidateTimestamp: assistantMessage.timestamp,
+			lastTimestamp: lastAssistant?.timestamp,
+			candidateProvider: assistantMessage.provider,
+			lastProvider: lastAssistant?.provider,
+			candidateModel: assistantMessage.model,
+			lastModel: lastAssistant?.model,
+			candidateStopReason: assistantMessage.stopReason,
+			lastStopReason: lastAssistant?.stopReason,
+		};
+		logger.debug("agent active context assistant removal", result);
+		return result;
 	}
 
 	/**
@@ -10095,15 +10371,17 @@ export class AgentSession {
 	 * Drop the failed assistant turn from persisted history, run
 	 * {@link #runAutoCompaction} for an `overflow` / `incomplete` recovery, and
 	 * restore the assistant entry if compaction did not actually commit
-	 * anything (no usable model/preparation, hook cancel, or compaction error).
+	 * anything (no usable model/preparation, hook cancel, compaction error,
+	 * or a no-progress automatic-continuation block before any summary was
+	 * written).
 	 *
 	 * Compaction has to see a clean branch — otherwise its `prepareCompaction`
 	 * pass would keep the failed turn in the kept region and the retry would
-	 * replay it. But a NONE return that was not paired with a fresh compaction
-	 * summary means no recovery is in progress, and leaving the branch
-	 * reparented would erase the only user-visible explanation for why the turn
-	 * stopped. Reverting the drop in that case preserves the transcript while
-	 * still letting a real recovery path own the rewrite.
+	 * replay it. But a return that was not paired with a fresh compaction
+	 * summary or a successful history rewrite means no recovery is in progress,
+	 * even if queued user input gets drained next. Restoring the failed turn
+	 * before that continuation preserves the visible stop reason and rebuilds the
+	 * active assistant tail that `Agent.continue()` needs to dequeue follow-ups.
 	 */
 	async #runRecoveryCompactionWithRollback(
 		reason: "overflow" | "incomplete",
@@ -10114,15 +10392,23 @@ export class AgentSession {
 		const compactionEntryBefore = getLatestCompactionEntry(this.sessionManager.getBranch());
 		await this.#dropPersistedAssistantTurn(assistantMessage);
 		const result = await this.#runAutoCompaction(reason, true, false, allowDefer, options);
-		const recoveryCommitted =
-			result.continuationScheduled || result.deferredHandoff || result.automaticContinuationBlocked === true;
-		if (!recoveryCommitted) {
-			const compactionEntryAfter = getLatestCompactionEntry(this.sessionManager.getBranch());
-			if (compactionEntryAfter === compactionEntryBefore) {
-				this.sessionManager.appendMessage(assistantMessage);
-			}
+		const compactionEntryAfter = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (result.historyRewritten !== true && compactionEntryAfter === compactionEntryBefore) {
+			this.#restoreFailedAssistantTurn(assistantMessage);
 		}
 		return result;
+	}
+
+	#restoreFailedAssistantTurn(assistantMessage: AssistantMessage): void {
+		this.sessionManager.appendMessage(assistantMessage);
+		const lastMessage = this.agent.state.messages.at(-1);
+		if (
+			lastMessage?.role === "assistant" &&
+			this.#isSameAssistantMessage(lastMessage as AssistantMessage, assistantMessage)
+		) {
+			return;
+		}
+		this.agent.appendMessage(assistantMessage);
 	}
 
 	/**
@@ -10504,12 +10790,99 @@ export class AgentSession {
 			timestamp: Date.now(),
 		};
 
+		// A stop-time reminder starts a fresh reminder runway. Without resetting
+		// the mid-run counter here, a run that stopped just below the threshold
+		// would spend its stale pre-reminder count and fire "Mid-run reminder 2/3"
+		// after only one post-reminder tool turn.
+		this.#toolTurnsSinceLastTodoTouch = 0;
 		this.#todoReminderAwaitingProgress = true;
 		// Inject reminder and persist it so the JSONL transcript matches model context.
 		this.agent.appendMessage(reminderMessage);
 		this.sessionManager.appendMessage(reminderMessage);
 		this.#scheduleAgentContinue({ generation: this.#promptGeneration });
 		return true;
+	}
+
+	/**
+	 * Build the next mid-run todo reconciliation nudge when the agent has gone
+	 * {@link MID_RUN_TODO_NUDGE_TURN_THRESHOLD} tool-use turns without invoking
+	 * the `todo` tool and incomplete items remain. Returns the developer-role
+	 * reminder when it should fire, or `null` to skip. Called once per turn via
+	 * the aside provider; mutates internal counters when it fires so the caller
+	 * does not need to track delivery state.
+	 *
+	 * Companion to {@link #checkTodoCompletion}, which only fires when the agent
+	 * stops with text. Without this, a long tool-use loop drives the live HUD
+	 * to `0/N` until the final stop, then batch-flips to `N/N` (issue #3651).
+	 * Shares `#todoReminderCount` / `#todoReminderAwaitingProgress` with the
+	 * stop-time path so the per-cycle reminder budget is unified.
+	 */
+	#takeMidRunTodoNudge(): AgentMessage | null {
+		if (this.#toolTurnsSinceLastTodoTouch < MID_RUN_TODO_NUDGE_TURN_THRESHOLD) return null;
+		if (this.#todoReminderAwaitingProgress) return null;
+		if (!this.settings.get("todo.enabled")) return null;
+		if (!this.settings.get("todo.reminders")) return null;
+		// Plan-mode runs are authoring a plan file, not implementing it; todos
+		// don't apply, mirroring {@link #createEagerTodoPrelude}.
+		if (this.#planModeState?.enabled) return null;
+		// Tool discovery / explicit active-tool lists can hide `todo` from this
+		// run while `todo.enabled` remains true (e.g. `setActiveToolsByName`
+		// restricting the slate). Mirror {@link #createEagerTodoPrelude}'s
+		// guard so we never ask the model to call a tool that is not in its
+		// schema — the request would fabricate an unknown tool call.
+		if (!this.getActiveToolNames().includes("todo")) return null;
+
+		const remindersMax = this.settings.get("todo.reminders.max");
+		if (this.#todoReminderCount >= remindersMax) return null;
+
+		const phases = this.getTodoPhases();
+		if (phases.length === 0) return null;
+		const incompleteByPhase = phases
+			.map(phase => ({
+				name: phase.name,
+				tasks: phase.tasks
+					.filter(
+						(task): task is TodoItem & { status: "pending" | "in_progress" } =>
+							task.status === "pending" || task.status === "in_progress",
+					)
+					.map(task => ({ content: task.content, status: task.status })),
+			}))
+			.filter(phase => phase.tasks.length > 0);
+		const incomplete = incompleteByPhase.flatMap(phase => phase.tasks);
+		if (incomplete.length === 0) return null;
+
+		// Reset the turn counter so the nudge has another full runway before the
+		// next mid-run fire; the shared #todoReminderCount cap keeps total reminders
+		// (mid-run + stop-time) bounded per cycle.
+		this.#toolTurnsSinceLastTodoTouch = 0;
+		this.#todoReminderCount++;
+		this.#todoReminderAwaitingProgress = true;
+		const attempt = this.#todoReminderCount;
+
+		const { toolRefs } = this.#buildEagerPreludeContext();
+		const reminder = prompt.render(midRunTodoNudgePrompt, {
+			toolRefs,
+			incompleteCount: incomplete.length,
+			plural: incomplete.length !== 1,
+			phases: incompleteByPhase,
+			attempt,
+			maxAttempts: remindersMax,
+		});
+
+		logger.debug("Mid-run todo nudge fired", { incomplete: incomplete.length, attempt });
+		void this.#emitSessionEvent({
+			type: "todo_reminder",
+			todos: incomplete,
+			attempt,
+			maxAttempts: remindersMax,
+		});
+
+		return {
+			role: "developer",
+			content: [{ type: "text", text: reminder }],
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
 	}
 
 	/**
@@ -10867,6 +11240,7 @@ export class AgentSession {
 
 		const parsed = parseModelString(trimmedTarget, {
 			allowMaxAlias: true,
+			allowAutoAlias: true,
 			isLiteralModelId: (provider, id) =>
 				availableModels.some(model => model.provider === provider && model.id === id),
 		});
@@ -11266,12 +11640,14 @@ export class AgentSession {
 	 * `0.8 × 170k = 136k` and was wrongly refused (PR #3412 review).
 	 *
 	 * Measures residual context against the usable budget (`contextWindow - reserve`).
-	 * The default absolute reserve can exceed bundled small-context windows, so
-	 * the retry path clamps that reserve back to the proportional 15% default
-	 * before comparing; otherwise a prompt that fits the model window would still
-	 * see a negative budget and dead-end. Callers MUST invoke this AFTER dropping
-	 * the failed assistant from `this.messages`, so the just-failed turn (which
-	 * the retry prompt will not include) is excluded from the estimate.
+	 * The default absolute reserve can exceed bundled small-context windows, or
+	 * nearly consume a 16k-class window; those known-impossible defaults fall
+	 * back to the proportional 15% reserve. Explicit valid reserves still define
+	 * the usable prompt budget so retries do not enter headroom the user
+	 * intentionally reserved. Callers MUST
+	 * invoke this AFTER dropping the failed assistant from `this.messages`, so
+	 * the just-failed turn (which the retry prompt will not include) is excluded
+	 * from the estimate.
 	 *
 	 * When the model/window is unknown we cannot evaluate the budget, so we
 	 * optimistically allow the retry (preserving prior behavior).
@@ -11284,10 +11660,7 @@ export class AgentSession {
 			this.getContextUsage({ contextWindow })?.tokens ?? 0,
 			this.#estimateStoredContextTokens(),
 		);
-		const reserveTokens = effectiveReserveTokens(contextWindow, compactionSettings);
-		const defaultReserveTokens = Math.floor(contextWindow * 0.15);
-		const fitReserveTokens = Math.min(reserveTokens, defaultReserveTokens);
-		const fitBudget = Math.max(0, contextWindow - fitReserveTokens);
+		const fitBudget = Math.max(0, contextWindow - resolveBudgetReserveTokens(contextWindow, compactionSettings));
 		return residualTokens <= fitBudget;
 	}
 
@@ -11473,7 +11846,10 @@ export class AgentSession {
 					if (continuationScheduled) {
 						this.#scheduleAutoContinuePrompt(generation);
 					}
-					return continuationScheduled ? COMPACTION_CHECK_CONTINUATION : COMPACTION_CHECK_NONE;
+					return {
+						...(continuationScheduled ? COMPACTION_CHECK_CONTINUATION : COMPACTION_CHECK_NONE),
+						historyRewritten: true,
+					};
 				}
 			}
 
@@ -11518,15 +11894,25 @@ export class AgentSession {
 					willRetry: false,
 					skipped: true,
 				});
-				if (!willRetry && this.agent.hasQueuedMessages()) {
+				const noProgressDeadEnd = reason !== "idle";
+				let continuationScheduled = false;
+				if (!suppressContinuation && this.agent.hasQueuedMessages()) {
 					this.#scheduleAgentContinue({
 						delayMs: 100,
 						generation,
 						shouldContinue: () => this.agent.hasQueuedMessages(),
 					});
-					return COMPACTION_CHECK_CONTINUATION;
+					continuationScheduled = true;
 				}
-				return COMPACTION_CHECK_NONE;
+				if (noProgressDeadEnd) {
+					this.emitNotice(
+						"warning",
+						"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. The most recent turn alone is too large to reduce further; shrink it (e.g. clear large tool output) or switch to a larger-context model.",
+						"compaction",
+					);
+				}
+				if (continuationScheduled) return COMPACTION_CHECK_CONTINUATION;
+				return noProgressDeadEnd ? COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION : COMPACTION_CHECK_NONE;
 			}
 
 			let hookCompaction: CompactionResult | undefined;
@@ -12100,7 +12486,17 @@ export class AgentSession {
 				});
 				continuationScheduled = true;
 			}
-			return continuationScheduled ? COMPACTION_CHECK_CONTINUATION : COMPACTION_CHECK_NONE;
+			if (!reclaimed) {
+				return willRetry && continuationScheduled
+					? { ...COMPACTION_CHECK_CONTINUATION, historyRewritten: true }
+					: continuationScheduled
+						? COMPACTION_CHECK_CONTINUATION
+						: COMPACTION_CHECK_NONE;
+			}
+			return {
+				...(continuationScheduled ? COMPACTION_CHECK_CONTINUATION : COMPACTION_CHECK_NONE),
+				historyRewritten: true,
+			};
 		} catch (error) {
 			if (signal.aborted) {
 				await this.#emitSessionEvent({
@@ -12778,7 +13174,7 @@ export class AgentSession {
 		});
 
 		// Remove the failed assistant message from active context before retrying.
-		this.#removeAssistantMessageFromActiveContext(message);
+		this.#removeAssistantMessageFromActiveContext(message, "auto-retry");
 
 		// A thinking/response loop retried into identical context loops again. Inject a
 		// hidden redirect so the retried turn sees a directive to break the repeated
@@ -13003,9 +13399,21 @@ export class AgentSession {
 				onChunk,
 				signal: abortController.signal,
 				sessionKey: this.sessionId,
+				cwd,
 				timeout: clampTimeout("bash") * 1000,
 				onMinimizedSave: originalText => this.#saveBashOriginalArtifact(originalText),
 				useUserShell: options?.useUserShell,
+			});
+			await syncBashSessionCwd({
+				result,
+				currentCwd: cwd,
+				applyCwd: async nextCwd => {
+					await this.sessionManager.moveTo(nextCwd);
+					setProjectDir(nextCwd);
+					await this.settings.reloadForCwd(nextCwd);
+					applyProviderGlobalsFromSettings(this.settings);
+					resetCapabilities();
+				},
 			});
 
 			this.recordBashResult(command, result, options);
@@ -13262,46 +13670,53 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
-	 * Surfaces (and consumes) IRC incoming asides that have reached this running
-	 * session but have not yet been folded into the next model step.
+	 * Surfaces (and consumes) pending IRC incoming records before the next model
+	 * step can inject them automatically.
 	 *
 	 * The inbox tool injects the formatted body into the tool result, so the
-	 * model sees it once via the result. Leaving the record in
-	 * {@link #pendingIrcAsides} would let the aside provider deliver it a second
-	 * time at the next step boundary — including on `peek`, which is why peek
-	 * also drains here.
+	 * model sees it once via the result. Leaving the record in either pending
+	 * IRC queue would deliver it a second time at the next step boundary —
+	 * including on `peek`, which is why peek also drains here.
 	 */
 	drainPendingIrcInboxMessages(agentId: string): IrcMessage[] {
 		const messages: IrcMessage[] = [];
-		const remaining: CustomMessage[] = [];
-		for (const record of this.#pendingIrcAsides) {
-			if (record.customType !== "irc:incoming") {
-				remaining.push(record);
-				continue;
+		const remainingInterrupts: CustomMessage[] = [];
+		const remainingAsides: CustomMessage[] = [];
+		const queues = [
+			{ records: this.#pendingIrcInterrupts, remaining: remainingInterrupts },
+			{ records: this.#pendingIrcAsides, remaining: remainingAsides },
+		];
+		for (const queue of queues) {
+			for (const record of queue.records) {
+				if (record.customType !== "irc:incoming") {
+					queue.remaining.push(record);
+					continue;
+				}
+				const details = record.details;
+				if (!details || typeof details !== "object") {
+					queue.remaining.push(record);
+					continue;
+				}
+				const id = Reflect.get(details, "id");
+				const from = Reflect.get(details, "from");
+				const body = Reflect.get(details, "message");
+				const replyTo = Reflect.get(details, "replyTo");
+				if (typeof id !== "string" || typeof from !== "string" || typeof body !== "string") {
+					queue.remaining.push(record);
+					continue;
+				}
+				messages.push({
+					id,
+					from,
+					to: agentId,
+					body,
+					ts: record.timestamp,
+					...(typeof replyTo === "string" ? { replyTo } : {}),
+				});
 			}
-			const details = record.details;
-			if (!details || typeof details !== "object") {
-				remaining.push(record);
-				continue;
-			}
-			const id = Reflect.get(details, "id");
-			const from = Reflect.get(details, "from");
-			const body = Reflect.get(details, "message");
-			const replyTo = Reflect.get(details, "replyTo");
-			if (typeof id !== "string" || typeof from !== "string" || typeof body !== "string") {
-				remaining.push(record);
-				continue;
-			}
-			messages.push({
-				id,
-				from,
-				to: agentId,
-				body,
-				ts: record.timestamp,
-				...(typeof replyTo === "string" ? { replyTo } : {}),
-			});
 		}
-		this.#pendingIrcAsides = remaining;
+		this.#pendingIrcInterrupts = remainingInterrupts;
+		this.#pendingIrcAsides = remainingAsides;
 		return messages;
 	}
 
@@ -13339,6 +13754,7 @@ export class AgentSession {
 				message: msg.body,
 				replyTo: msg.replyTo ?? "",
 				autoReplied: autoReply,
+				interrupting: this.isStreaming,
 			}),
 			display: true,
 			details: { id: msg.id, from: msg.from, message: msg.body, ...(msg.replyTo ? { replyTo: msg.replyTo } : {}) },
@@ -13347,7 +13763,18 @@ export class AgentSession {
 		};
 		void this.#emitSessionEvent({ type: "irc_message", message: record });
 		if (this.isStreaming) {
-			this.#pendingIrcAsides.push(record);
+			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
+			if (recipientParentId === msg.from) {
+				this.agent.steer({
+					role: "user",
+					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: msg.body }),
+					attribution: "agent",
+					timestamp: msg.ts,
+					steering: true,
+				});
+			} else {
+				this.#pendingIrcInterrupts.push(record);
+			}
 			if (autoReply) void this.#runIrcAutoReply(msg);
 			return "injected";
 		}
@@ -13558,8 +13985,9 @@ export class AgentSession {
 	 * of the next prompt so the model still sees them.
 	 */
 	#flushPendingIrcAsides(): void {
-		if (this.#pendingIrcAsides.length === 0) return;
-		const records = this.#pendingIrcAsides;
+		if (this.#pendingIrcInterrupts.length === 0 && this.#pendingIrcAsides.length === 0) return;
+		const records = [...this.#pendingIrcInterrupts, ...this.#pendingIrcAsides];
+		this.#pendingIrcInterrupts = [];
 		this.#pendingIrcAsides = [];
 		for (const record of records) {
 			// emitExternalEvent on message_end appends to agent state and dispatches

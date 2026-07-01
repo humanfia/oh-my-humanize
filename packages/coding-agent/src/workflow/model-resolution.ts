@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { type ModelMatchPreferences, resolveAgentModelPatterns, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
+import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../thinking";
 import type {
 	WorkflowDefinition,
 	WorkflowModelContext,
@@ -62,6 +63,10 @@ interface ResolvedWorkflowModelRequest {
 	explicitThinkingLevel: boolean;
 	warning?: string;
 	pattern: string;
+}
+
+function concreteThinkingLevel(level: ConfiguredThinkingLevel | undefined): ThinkingLevel | undefined {
+	return level === AUTO_THINKING ? undefined : level;
 }
 
 export function resolveWorkflowNodeModel(
@@ -239,7 +244,7 @@ function resolveFirstPattern(
 		if (!resolved.model) continue;
 		return {
 			model: resolved.model,
-			thinkingLevel: resolved.thinkingLevel,
+			thinkingLevel: concreteThinkingLevel(resolved.thinkingLevel),
 			explicitThinkingLevel: resolved.explicitThinkingLevel,
 			warning: resolved.warning,
 			pattern,

@@ -11,6 +11,7 @@ import {
 	findCutPoint,
 	getLastAssistantUsage,
 	prepareCompaction,
+	resolveThresholdTokens,
 	shouldCompact,
 } from "@oh-my-pi/pi-agent-core/compaction/compaction";
 import * as ai from "@oh-my-pi/pi-ai";
@@ -239,6 +240,33 @@ describe("shouldCompact", () => {
 		expect(shouldCompact(95000, 100000, settings)).toBe(true);
 		expect(shouldCompact(86000, 100000, settings)).toBe(true);
 		expect(shouldCompact(84000, 100000, settings)).toBe(false);
+	});
+
+	it("uses proportional reserve when the default reserve nearly consumes a small window", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			thresholdPercent: -1,
+			reserveTokens: 16_384,
+			keepRecentTokens: 20_000,
+		};
+
+		// 16,385-token GPT-3.5 windows should keep the same 15% reserve behavior
+		// used by smaller windows instead of collapsing the threshold to one token.
+		expect(shouldCompact(10_000, 16_385, settings)).toBe(false);
+		expect(shouldCompact(13_929, 16_385, settings)).toBe(true);
+	});
+
+	it("respects a large valid configured reserve", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			thresholdPercent: -1,
+			reserveTokens: 90_000,
+			keepRecentTokens: 20_000,
+		};
+
+		expect(resolveThresholdTokens(100_000, settings)).toBe(10_000);
+		expect(shouldCompact(10_000, 100_000, settings)).toBe(false);
+		expect(shouldCompact(10_001, 100_000, settings)).toBe(true);
 	});
 
 	it("should use configured threshold percent", () => {
@@ -1173,8 +1201,10 @@ describe("buildSessionContext", () => {
 			collapseCompactedHistory: true,
 		});
 
-		expect(transcript.messages.map(m => m.role)).toEqual(["compactionSummary", "user", "user"]);
-		expect((transcript.messages[0] as { summary: string }).summary).toContain("Second summary");
+		expect(transcript.messages.map(m => m.role)).toEqual(["user", "compactionSummary", "user"]);
+		const summaryMsg = transcript.messages[1];
+		if (summaryMsg?.role !== "compactionSummary") throw new Error("Expected compaction summary at index 1");
+		expect(summaryMsg.summary).toContain("Second summary");
 		expect(transcript.cacheMissExplainedAt).toEqual([false, false, false]);
 	});
 
@@ -1204,7 +1234,7 @@ describe("buildSessionContext", () => {
 		// The provider payload is attached to the summary for LLM replay only; the
 		// collapsed display must still emit the kept SessionEntry rows so a
 		// remotely-compacted session keeps its recent turns visible.
-		expect(transcript.messages.map(m => m.role)).toEqual(["compactionSummary", "user", "assistant", "user"]);
+		expect(transcript.messages.map(m => m.role)).toEqual(["user", "assistant", "compactionSummary", "user"]);
 		const dump = JSON.stringify(transcript.messages);
 		expect(dump).toContain("kept-user");
 		expect(dump).toContain("kept-assistant");

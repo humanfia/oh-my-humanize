@@ -851,7 +851,7 @@ export class AcpAgent implements Agent {
 		if (!skill) {
 			return false;
 		}
-		const built = await buildSkillPromptMessage(skill, parsed.args);
+		const built = await buildSkillPromptMessage(skill, parsed.args, "user");
 		await record.session.promptCustomMessage({
 			customType: SKILL_PROMPT_MESSAGE_TYPE,
 			content: built.message,

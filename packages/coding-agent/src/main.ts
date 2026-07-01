@@ -66,6 +66,7 @@ import {
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
+import { describePendingToolCalls } from "./session/exit-diagnostics";
 import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
@@ -369,6 +370,13 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 		const nextSettings = await args.settings.cloneForCwd(cwd);
 		const nextSessionManager = SessionManager.create(cwd, args.sessionDir);
 		const agentId = `acp:${nextSessionManager.getSessionId()}`;
+		// `baseOptions.titleSystemPrompt` is resolved from the launch cwd; an ACP
+		// host can open `session/new` for any client-supplied workspace, so
+		// re-discover `TITLE_SYSTEM.md` against THIS session's `cwd` to keep the
+		// replan-driven title refresh consistent with the target project's
+		// policy (PR #3736 follow-up).
+		const titleSystemPromptSource = discoverTitleSystemPromptFile(cwd);
+		const titleSystemPrompt = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
 		const { session: nextSession } = await args.createSession({
 			...args.baseOptions,
 			cwd,
@@ -379,6 +387,7 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 			agentId,
 			hasUI: false,
 			enableMCP: false,
+			titleSystemPrompt,
 		});
 		applyCliRuntimeApiKey(args.authStorage, args.parsedArgs.apiKey, nextSession.model);
 		applyExtensionFlags(nextSession.extensionRunner, args.rawArgs);
@@ -411,7 +420,6 @@ async function runInteractiveMode(
 	eventBus?: EventBus,
 	initialMessage?: string,
 	initialImages?: ImageContent[],
-	titleSystemPrompt?: string,
 	joinLink?: string,
 ): Promise<void> {
 	const mode = new InteractiveMode(
@@ -422,7 +430,6 @@ async function runInteractiveMode(
 		lspServers,
 		mcpManager,
 		eventBus,
-		titleSystemPrompt,
 	);
 
 	// Cold-launch gate: the full setup wizard (every scene + the overlay and
@@ -800,7 +807,7 @@ async function buildSessionOptions(
 	sessionManager: SessionManager | undefined,
 	modelRegistry: ModelRegistry,
 	activeSettings: Settings,
-): Promise<{ options: CreateAgentSessionOptions; titleSystemPrompt?: string }> {
+): Promise<CreateAgentSessionOptions> {
 	const options: CreateAgentSessionOptions = {
 		cwd: parsed.cwd ?? getProjectDir(),
 		autoApprove: parsed.autoApprove ?? false,
@@ -935,6 +942,13 @@ async function buildSessionOptions(
 
 	// System prompt
 	applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
+	// Replan-driven title refresh resolves the override from this same field on
+	// `AgentSession`, so threading it through `CreateAgentSessionOptions` keeps
+	// both first-input titling (`input-controller.ts`) and replan refresh
+	// (`AgentSession.#refreshTitleAfterReplan`) on one source of truth.
+	if (titleSystemPrompt) {
+		options.titleSystemPrompt = titleSystemPrompt;
+	}
 
 	// Tools
 	if (parsed.noTools) {
@@ -971,7 +985,7 @@ async function buildSessionOptions(
 		options.additionalExtensionPaths = [];
 	}
 
-	return { options, titleSystemPrompt };
+	return options;
 }
 
 function applyWorkflowSubagentRetryProfile(settingsInstance: Settings): void {
@@ -1248,6 +1262,21 @@ export async function runRootCommand(
 		sessionManager = await SessionManager.open(selected.path);
 	}
 
+	if (sessionManager && (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork)) {
+		const pendingToolWarning = describePendingToolCalls(sessionManager.getBranch());
+		if (pendingToolWarning) {
+			logger.warn("Resumed session has pending tool calls", {
+				sessionId: sessionManager.getSessionId(),
+				sessionFile: sessionManager.getSessionFile(),
+			});
+			if (isInteractive) {
+				notifs.push({ kind: "warn", message: pendingToolWarning });
+			} else {
+				process.stderr.write(`${chalk.yellow(`${pendingToolWarning}\n`)}`);
+			}
+		}
+	}
+
 	await pluginPreloadPromise;
 
 	scheduleMarketplaceAutoUpdate({
@@ -1256,7 +1285,7 @@ export async function runRootCommand(
 		clearPluginRootsCache: clearPluginRootsAndCaches,
 	});
 
-	const { options: sessionOptions, titleSystemPrompt } = await logger.time(
+	const sessionOptions = await logger.time(
 		"buildSessionOptions",
 		buildSessionOptions,
 		parsedArgs,
@@ -1460,7 +1489,6 @@ export async function runRootCommand(
 				eventBus,
 				initialMessage,
 				initialImages,
-				titleSystemPrompt,
 				parsedArgs.join,
 			);
 		} else {

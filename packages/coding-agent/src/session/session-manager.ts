@@ -248,6 +248,7 @@ class SessionEntryIndex {
 		}
 		branch.reverse();
 
+		branch.reverse();
 		return branch;
 	}
 

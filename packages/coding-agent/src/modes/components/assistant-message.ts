@@ -34,11 +34,16 @@ type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type:
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
 
 function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean): { text: string; visible: boolean } {
-	const rawThinking = (block as DisplayThinkingContentBlock).rawThinking ?? block.thinking;
-	const formatted = formatThinkingForDisplay(block.thinking, proseOnly);
+	const rawThinking = (block as DisplayThinkingContentBlock).rawThinking;
+	// When rawThinking is set, `block.thinking` is already the formatted display
+	// text that buildDisplayMessage produced (then revealed/sliced by the
+	// streaming controller) — re-running the formatter would double-process it,
+	// and the growing revealed slice would never hit the per-tick memo. Only
+	// format raw (non-display) thinking blocks.
+	const formatted = rawThinking !== undefined ? block.thinking : formatThinkingForDisplay(block.thinking, proseOnly);
 	return {
 		text: formatted.trim(),
-		visible: hasDisplayableThinking(rawThinking, formatted),
+		visible: hasDisplayableThinking(rawThinking ?? block.thinking, formatted),
 	};
 }
 
@@ -329,17 +334,18 @@ export class AssistantMessageComponent extends Container {
 	#thinkingDotsLabel(): string {
 		const glyph = THINKING_DOTS_FRAMES[this.#thinkingDotsFrame % THINKING_DOTS_FRAMES.length] ?? "…";
 		const coloredGlyph = theme.fg("thinkingText", glyph);
+		const thinkingLabel = theme.fg("muted", " Thinking");
 		const rate = Math.min(SPEED_MAX, sharedSpeedTracker.getSpeed());
 		// The numeric badge ("<total> · <rate> toks/s") only renders while this block
 		// is genuinely streaming provider tokens. A block that has observed no token
 		// delta (e.g. a provider that reports usage only at turn end) or whose rate
-		// has decayed to zero (a streaming lull) drops it entirely — the bare pulse
-		// keeps signalling that the model is thinking. The liveness flag also stops
-		// the session-wide gauge from leaking a previous turn's rate onto a fresh
-		// token-less block.
-		if (!this.#thinkingRateLive || rate < 0.05) return coloredGlyph;
+		// has decayed to zero (a streaming lull) drops it entirely — the persistent
+		// text label keeps the pulse descriptive for terminals and screen readers.
+		// The liveness flag also stops the session-wide gauge from leaking a previous
+		// turn's rate onto a fresh token-less block.
+		if (!this.#thinkingRateLive || rate < 0.05) return coloredGlyph + thinkingLabel;
 		// Total provider tokens, dimmed, sit next to the pulse.
-		const totalSpan = this.#thinkingTokens > 0 ? theme.fg("dim", ` ${formatNumber(this.#thinkingTokens)}`) : "";
+		const totalSpan = this.#thinkingTokens > 0 ? theme.fg("dim", ` · ${formatNumber(this.#thinkingTokens)}`) : "";
 		// Speed badge color: dim gray at rest, brightening toward the theme accent as
 		// streaming speed climbs (gray → bright accent). Ease (sqrt) so typical
 		// mid-stream rates already read as clearly accent-tinted instead of staying
@@ -348,7 +354,7 @@ export class AssistantMessageComponent extends Container {
 		const hex = lerpHex(theme.getColorHex("dim"), theme.getAccentColorHex(), ratio);
 		const rateText = ` · ${rate.toFixed(1)} toks/s`;
 		const rateSpan = theme.getColorMode() === "truecolor" ? chalk.hex(hex)(rateText) : theme.fg("muted", rateText);
-		return coloredGlyph + totalSpan + rateSpan;
+		return coloredGlyph + thinkingLabel + totalSpan + rateSpan;
 	}
 
 	#startThinkingAnimation(): void {

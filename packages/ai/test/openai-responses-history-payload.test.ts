@@ -26,9 +26,9 @@ function createCodexToken(accountId: string): string {
 
 /**
  * Returns the bundled `gpt-5-mini` model with `compat.requiresJuiceZeroHack`
- * cleared so it doesn't trigger the GPT-5 "Juice: 0" developer-message hack
- * injected by `applyResponsesReasoningParams`. The hack is exercised by its
- * own targeted tests; these history-replay tests assert raw payload shape and
+ * cleared so it doesn't trigger the GPT-5 no-reasoning developer-message
+ * fallback injected by `applyResponsesReasoningParams`. The fallback is
+ * exercised by its own targeted tests; these history-replay tests assert raw payload shape and
  * should stay independent of it.
  */
 function getOpenAIReasoningModel(
@@ -537,7 +537,6 @@ describe("OpenAI responses history payload", () => {
 				role: "assistant",
 				content: [{ type: "output_text", text: "generic assistant that should be preserved", annotations: [] }],
 				status: "completed",
-				id: "msg_1",
 			},
 			{ role: "user", content: [{ type: "input_text", text: "follow-up user" }] },
 		]);
@@ -642,14 +641,13 @@ describe("OpenAI responses history payload", () => {
 				role: "assistant",
 				content: [{ type: "output_text", text: "Commentary answer", annotations: [] }],
 				status: "completed",
-				id: "msg_commentary",
 				phase: "commentary",
 			},
 			{ role: "user", content: [{ type: "input_text", text: "follow-up" }] },
 		]);
 	});
 
-	it("keeps legacy plain-string text signatures when rebuilding fallback replay history", async () => {
+	it("omits legacy plain-string text signature IDs when rebuilding fallback replay history without reasoning", async () => {
 		const context: Context = {
 			messages: [
 				{ role: "user", content: "first user", timestamp: Date.now() },
@@ -682,7 +680,6 @@ describe("OpenAI responses history payload", () => {
 				role: "assistant",
 				content: [{ type: "output_text", text: "Legacy answer", annotations: [] }],
 				status: "completed",
-				id: "msg_legacy",
 			},
 			{ role: "user", content: [{ type: "input_text", text: "follow-up" }] },
 		]);

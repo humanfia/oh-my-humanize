@@ -8,6 +8,7 @@
  * cannot be rejected post-mortem (or vice versa).
  */
 import {
+	dereferenceJsonSchema,
 	isValidJsonSchema,
 	type JsonSchemaValidationIssue,
 	type JsonSchemaValidationResult,
@@ -25,12 +26,15 @@ export interface OutputValidator {
 	 * Per-label validators for incremental yields (`type: ["<label>"]`). Each entry validates the
 	 * `data` payload of a single section against the matching top-level property's sub-schema —
 	 * array-typed properties (e.g. `findings`) use the items schema since each yield contributes
-	 * one element, while scalar properties use the property schema directly. Unknown labels (not
-	 * top-level properties) have no entry and skip per-call validation. Lets the yield tool give
-	 * the model retry feedback on a section as soon as it arrives, instead of deferring every
-	 * mismatch to the parent's post-mortem `schema_violation`.
+	 * one element, while scalar properties use the property schema directly.
 	 */
 	readonly validateSection: ReadonlyMap<string, (value: unknown) => JsonSchemaValidationResult>;
+	/** Whether top-level schema closure makes unknown incremental yield labels invalid. */
+	readonly rejectUnknownSections: boolean;
+	/** Finite top-level section labels declared directly by the schema. Pattern-backed labels are accepted via `isKnownSection`. */
+	readonly knownSectionLabels: readonly string[];
+	/** Whether an incremental yield label is accepted by the top-level schema declaration. */
+	isKnownSection(label: string): boolean;
 }
 
 export interface BuildOutputValidatorResult {
@@ -75,14 +79,28 @@ export function buildOutputValidator(schema: unknown): BuildOutputValidatorResul
 	if (!isValidJsonSchema(jsonSchema)) return { error: "invalid JSON schema", normalized };
 
 	const jsonSchemaRecord = jsonSchema as Record<string, unknown>;
-	const required = extractRequiredFields(jsonSchemaRecord);
+	// Resolve a root `$ref` (e.g. caller schemas exported as `{ $ref: "#/$defs/Closed", $defs: ... }`)
+	// before deriving incremental-label metadata. AJV-style validation chases the ref at runtime, so
+	// `validate()` accepts the resolved object — but `properties` and `additionalProperties` live on
+	// the inlined node, not the wrapper. Without this, unknown labels slipped past the yield gate and
+	// only fired as parent-side schema_violations.
+	const dereferenced = dereferenceJsonSchema(jsonSchemaRecord);
+	const labelSchema =
+		dereferenced && typeof dereferenced === "object" && !Array.isArray(dereferenced)
+			? (dereferenced as Record<string, unknown>)
+			: jsonSchemaRecord;
+	const required = extractRequiredFields(labelSchema);
+	const sectionLabels = buildSectionLabelMetadata(labelSchema);
 	return {
 		normalized,
 		jsonSchema: jsonSchemaRecord,
 		validator: {
 			requiredFields: required,
 			validate: value => validateJsonSchemaValue(jsonSchemaRecord, value),
-			validateSection: buildSectionValidators(jsonSchemaRecord),
+			validateSection: buildSectionValidators(labelSchema),
+			rejectUnknownSections: sectionLabels.rejectUnknownSections,
+			knownSectionLabels: sectionLabels.labels,
+			isKnownSection: sectionLabels.isKnown,
 		},
 	};
 }
@@ -93,25 +111,84 @@ export function buildOutputValidator(schema: unknown): BuildOutputValidatorResul
  * Each entry validates the `data` payload of one `type: ["<label>"]` section against the
  * matching property's sub-schema — array-typed properties (e.g. `findings`, derived from JTD
  * `elements`) use the items schema since each yield contributes one element, while scalar
- * properties use the property schema directly. Unknown labels (anything not declared as a
- * top-level property) are deliberately omitted so user-defined section labels still pass.
+ * properties use the property schema directly. Closed top-level schemas reject labels that are
+ * not declared as properties.
  */
 function buildSectionValidators(
 	jsonSchema: Record<string, unknown>,
 ): ReadonlyMap<string, (value: unknown) => JsonSchemaValidationResult> {
 	const validators = new Map<string, (value: unknown) => JsonSchemaValidationResult>();
 	const properties = jsonSchema.properties;
-	if (properties === null || typeof properties !== "object") return validators;
-	for (const [label, raw] of Object.entries(properties as Record<string, unknown>)) {
-		if (raw === null || typeof raw !== "object") continue;
-		const propRecord = raw as Record<string, unknown>;
+	if (properties === null || typeof properties !== "object" || Array.isArray(properties)) return validators;
+	const propertyMap = properties as Record<string, unknown>;
+	for (const label in propertyMap) {
+		const raw = propertyMap[label];
+		const propRecord =
+			raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined;
 		const sectionSchema =
-			propRecord.type === "array" && propRecord.items !== undefined && propRecord.items !== null
-				? (propRecord.items as Record<string, unknown>)
-				: propRecord;
+			propRecord?.type === "array" && propRecord.items !== undefined && propRecord.items !== null
+				? propRecord.items
+				: raw;
 		validators.set(label, value => validateJsonSchemaValue(sectionSchema, value));
 	}
 	return validators;
+}
+
+interface SectionLabelMetadata {
+	readonly labels: readonly string[];
+	readonly rejectUnknownSections: boolean;
+	isKnown(label: string): boolean;
+}
+
+function buildSectionLabelMetadata(jsonSchema: Record<string, unknown>): SectionLabelMetadata {
+	const closedSchemas = collectClosedTopLevelSchemas(jsonSchema);
+	const labels = [...new Set(closedSchemas.flatMap(schema => declaredPropertyLabels(schema)))];
+	return {
+		labels,
+		rejectUnknownSections: closedSchemas.length > 0,
+		isKnown: label =>
+			closedSchemas.length === 0 || closedSchemas.every(schema => schemaAcceptsSectionLabel(schema, label)),
+	};
+}
+
+function collectClosedTopLevelSchemas(jsonSchema: Record<string, unknown>): Record<string, unknown>[] {
+	const schemas: Record<string, unknown>[] = [];
+	if (jsonSchema.additionalProperties === false) schemas.push(jsonSchema);
+	const allOf = jsonSchema.allOf;
+	if (Array.isArray(allOf)) {
+		for (const raw of allOf) {
+			if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+				schemas.push(...collectClosedTopLevelSchemas(raw as Record<string, unknown>));
+			}
+		}
+	}
+	return schemas;
+}
+
+function declaredPropertyLabels(jsonSchema: Record<string, unknown>): string[] {
+	const properties = jsonSchema.properties;
+	if (properties === null || typeof properties !== "object" || Array.isArray(properties)) return [];
+	const labels: string[] = [];
+	for (const label in properties) labels.push(label);
+	return labels;
+}
+
+function schemaAcceptsSectionLabel(jsonSchema: Record<string, unknown>, label: string): boolean {
+	const properties = jsonSchema.properties;
+	if (properties !== null && typeof properties === "object" && !Array.isArray(properties) && label in properties) {
+		return true;
+	}
+	const patternProperties = jsonSchema.patternProperties;
+	if (patternProperties !== null && typeof patternProperties === "object" && !Array.isArray(patternProperties)) {
+		for (const pattern in patternProperties) {
+			try {
+				if (new RegExp(pattern).test(label)) return true;
+			} catch {
+				// `isValidJsonSchema` already rejected malformed regexes; ignore any unexpected runtime mismatch.
+			}
+		}
+	}
+	return jsonSchema.additionalProperties !== false;
 }
 
 /** Produce the executor's headline+missing-required summary from a failed validation. */

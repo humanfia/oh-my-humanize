@@ -138,12 +138,17 @@ async function executeApplyPatchPerFile(
 
 	const perFileResults: EditToolPerFileResult[] = [];
 	const contentTexts: string[] = [];
+	let errorCount = 0;
 
 	for (let i = 0; i < fileEntries.length; i++) {
 		const { path, run } = fileEntries[i];
 		const isLast = i === fileEntries.length - 1;
+		// Multi-file apply_patch stops after the first failed entry. Flush each
+		// successful file when the outer call asked for a final flush so an
+		// intervening failure cannot leave already-written files sitting in an
+		// unfinalized LSP write batch.
 		const batchRequest: LspBatchRequest | undefined = outerBatchRequest
-			? { id: outerBatchRequest.id, flush: isLast && outerBatchRequest.flush }
+			? { id: outerBatchRequest.id, flush: outerBatchRequest.flush }
 			: undefined;
 
 		try {
@@ -169,6 +174,29 @@ async function executeApplyPatchPerFile(
 			const displayErrorText = err instanceof HashlineMismatchError ? err.displayMessage : undefined;
 			perFileResults.push({ path, diff: "", isError: true, errorText, displayErrorText });
 			contentTexts.push(`Error editing ${path}: ${errorText}`);
+			errorCount++;
+			// Later entries were authored assuming this file's post-state; a
+			// partial cascade after failure typically compounds damage. Stop
+			// here, report applied vs. skipped, and let the caller re-issue
+			// only the failed and unapplied files. Matches
+			// `executeSinglePathEntries` semantics.
+			if (i > 0) {
+				const appliedPaths = fileEntries
+					.slice(0, i)
+					.map(e => e.path)
+					.join(", ");
+				contentTexts.push(`Files already applied: ${appliedPaths}.`);
+			}
+			if (i + 1 < fileEntries.length) {
+				const skippedPaths = fileEntries
+					.slice(i + 1)
+					.map(e => e.path)
+					.join(", ");
+				contentTexts.push(
+					`Files NOT applied: ${skippedPaths}; re-read the affected files and re-issue only the failed and unapplied files.`,
+				);
+			}
+			break;
 		}
 
 		// Emit partial result after each file so UI shows progressive completion
@@ -197,6 +225,10 @@ async function executeApplyPatchPerFile(
 			firstChangedLine: perFileResults.find(r => r.firstChangedLine)?.firstChangedLine,
 			perFileResults,
 		}),
+		// Any per-file failure marks the aggregate result as an error so the
+		// agent loop and renderer take the error branch instead of treating
+		// a mixed partial application as a successful edit.
+		...(errorCount > 0 ? { isError: true } : {}),
 	};
 }
 

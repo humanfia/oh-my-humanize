@@ -455,7 +455,8 @@ function trimCommonContext(oldLines: string[], newLines: string[]): HunkVariant 
 }
 
 function collapseConsecutiveSharedLines(oldLines: string[], newLines: string[]): HunkVariant | undefined {
-	const shared = new Set(oldLines.filter(line => newLines.includes(line)));
+	const newSet = new Set(newLines);
+	const shared = new Set(oldLines.filter(line => newSet.has(line)));
 	const collapse = (lines: string[]): string[] => {
 		const out: string[] = [];
 		let i = 0;
@@ -480,30 +481,31 @@ function collapseConsecutiveSharedLines(oldLines: string[], newLines: string[]):
 }
 
 function collapseRepeatedBlocks(oldLines: string[], newLines: string[]): HunkVariant | undefined {
-	const shared = new Set(oldLines.filter(line => newLines.includes(line)));
+	const newSet = new Set(newLines);
+	const shared = new Set(oldLines.filter(line => newSet.has(line)));
 	const collapse = (lines: string[]): string[] => {
 		const output = [...lines];
 		let changed = false;
 		let i = 0;
 		while (i < output.length) {
 			let collapsed = false;
-			for (let size = Math.floor((output.length - i) / 2); size >= 2; size--) {
-				const first = output.slice(i, i + size);
-				const second = output.slice(i + size, i + size * 2);
-				if (first.length !== second.length || first.length === 0) continue;
-				if (!first.every(line => shared.has(line))) continue;
-				let same = true;
-				for (let idx = 0; idx < size; idx++) {
-					if (first[idx] !== second[idx]) {
-						same = false;
+			// Only blocks whose lines are all shared are collapsible; if the first line
+			// is not shared no size can match, so skip the size search entirely.
+			if (shared.has(output[i])) {
+				for (let size = Math.floor((output.length - i) / 2); size >= 2; size--) {
+					let same = true;
+					for (let idx = 0; idx < size; idx++) {
+						if (output[i + idx] !== output[i + size + idx] || !shared.has(output[i + idx])) {
+							same = false;
+							break;
+						}
+					}
+					if (same) {
+						output.splice(i + size, size);
+						changed = true;
+						collapsed = true;
 						break;
 					}
-				}
-				if (same) {
-					output.splice(i + size, size);
-					changed = true;
-					collapsed = true;
-					break;
 				}
 			}
 			if (!collapsed) {
@@ -1490,12 +1492,29 @@ async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOption
 		if (destPath === absolutePath) {
 			throw new ApplyPatchError("rename path is the same as source path");
 		}
+		// The `*** Move to` / rename contract is strictly non-overwriting:
+		// reject before the update path reads or writes anything, so both
+		// source and pre-existing destination remain untouched. Callers who
+		// really need to replace the destination must delete it in an
+		// earlier hunk.
+		if (await fs.exists(destPath)) {
+			throw new ApplyPatchError(`Cannot rename ${input.path} to ${input.rename}: destination already exists.`);
+		}
 	}
 
 	// Handle CREATE operation
 	if (op === "create") {
 		if (!input.diff) {
 			throw new ApplyPatchError("Create operation requires diff (file content)");
+		}
+		// The `*** Add File` / create contract is strictly non-overwriting:
+		// reject before mkdir/write so pre-existing content stays intact and
+		// the caller can re-issue as an explicit `*** Update File` (or a
+		// delete+add pair) if overwrite is genuinely intended.
+		if (await fs.exists(absolutePath)) {
+			throw new ApplyPatchError(
+				`Cannot create ${input.path}: file already exists. Use *** Update File to modify it in place.`,
+			);
 		}
 		// Strip + prefixes if present (handles diffs formatted as additions)
 		const normalizedContent = normalizeCreateContent(input.diff);

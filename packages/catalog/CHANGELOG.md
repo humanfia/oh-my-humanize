@@ -5,6 +5,23 @@
 ### Changed
 
 - Changed package metadata links and description from the old Oh My Pi branding to OMH.
+### Fixed
+
+- Fixed the Xiaomi provider's default model to use the supported mimo-v2.5 model.
+- Fixed CoreWeave Serverless Inference project-header detection to ensure blank OpenAI-Project overrides do not block the COREWEAVE_PROJECT fallback.
+- Fixed LiteLLM MiniMax M3 discovery to remove reseller-only (3x usage) display suffixes.
+- Updated the Responses compatibility flag documentation to clarify the no-reasoning fallback behavior.
+
+## [16.2.13] - 2026-07-01
+
+### Added
+
+- Added support for human-readable reasoning summaries on compatible OpenAI Codex models (v5.4+)
+
+### Fixed
+
+- Fixed discovered OpenAI Codex models to advertise V2 streaming remote compaction, avoiding the legacy compact endpoint timeout path for Codex sessions. ([#4146](https://github.com/can1357/oh-my-pi/issues/4146))
+
 ## [16.2.12] - 2026-07-01
 
 ### Breaking Changes

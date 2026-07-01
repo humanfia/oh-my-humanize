@@ -101,11 +101,11 @@ describe("openai-responses stateful chaining", () => {
 		const sentRequests: Array<Record<string, unknown>> = [];
 		const fetchMock = createCapturingFetch(sentRequests);
 		const providerSessionState = new Map<string, ProviderSessionState>();
-		// No reasoning option: applyResponsesReasoningParams appends the trailing
-		// "# Juice: 0 !important" developer item to every request's input.
+		// No reasoning option: applyResponsesReasoningParams appends trailing
+		// no-reasoning scaffolding to every request's input.
 		const options = {
 			apiKey: "test-key",
-			sessionId: "stateful-juice-session",
+			sessionId: "stateful-no-reasoning-session",
 			providerSessionState,
 			statefulResponses: true,
 			fetch: fetchMock,
@@ -119,7 +119,7 @@ describe("openai-responses stateful chaining", () => {
 		).result();
 		expect(firstResponse.stopReason).toBe("stop");
 		const firstInput = sentRequests[0]?.input as unknown[];
-		expect(JSON.stringify(firstInput.at(-1))).toContain("# Juice: 0");
+		expect(JSON.stringify(firstInput.at(-1))).toContain("Keep internal reasoning brief");
 
 		const secondResponse = await streamOpenAIResponses(
 			model,
@@ -132,13 +132,13 @@ describe("openai-responses stateful chaining", () => {
 		expect(secondResponse.stopReason).toBe("stop");
 
 		// The trailing scaffolding is excluded from the prefix check and re-sent
-		// with the delta: [new user item, juice item].
+		// with the delta: [new user item, fallback item].
 		expect(sentRequests).toHaveLength(2);
 		expect(sentRequests[1]?.previous_response_id).toBe("resp_1");
 		const deltaInput = sentRequests[1]?.input as Array<{ role?: string }>;
 		expect(deltaInput).toHaveLength(2);
 		expect(deltaInput[0]?.role).toBe("user");
-		expect(JSON.stringify(deltaInput[1])).toContain("# Juice: 0");
+		expect(JSON.stringify(deltaInput[1])).toContain("Keep internal reasoning brief");
 	});
 
 	it("replays the full transcript when history mutates", async () => {

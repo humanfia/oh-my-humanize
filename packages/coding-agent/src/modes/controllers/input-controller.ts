@@ -111,6 +111,17 @@ function wrapPasteInAttachmentBlock(content: string): string {
 	return `<attachment>\n${content}\n</attachment>`;
 }
 
+/** Run a teardown abort that must never throw (Esc / Ctrl+C path). A thrown
+ *  error is logged at debug instead of silently swallowed, so a failing abort
+ *  stays diagnosable without disturbing teardown ordering. */
+function safeAbort(label: string, fn: () => void): void {
+	try {
+		fn();
+	} catch (err) {
+		logger.debug(`Failed to abort ${label}`, { error: err instanceof Error ? err.message : String(err) });
+	}
+}
+
 const TINY_TITLE_PROGRESS_DONE_TTL_MS = 3_000;
 // A cached model fires its file-load events in a short burst and then goes silent
 // while onnxruntime builds the session; a genuine download keeps streaming progress
@@ -324,21 +335,15 @@ export class InputController {
 				const viewSession = this.ctx.viewSession;
 				let aborted = false;
 				if (viewSession.isCompacting) {
-					try {
-						viewSession.abortCompaction();
-					} catch {}
+					safeAbort("compaction", () => viewSession.abortCompaction());
 					aborted = true;
 				}
 				if (viewSession.isGeneratingHandoff) {
-					try {
-						viewSession.abortHandoff();
-					} catch {}
+					safeAbort("handoff", () => viewSession.abortHandoff());
 					aborted = true;
 				}
 				if (viewSession.isRetrying) {
-					try {
-						viewSession.abortRetry();
-					} catch {}
+					safeAbort("retry", () => viewSession.abortRetry());
 					aborted = true;
 				}
 				if (aborted) return;
@@ -400,9 +405,7 @@ export class InputController {
 			} else if (this.ctx.session.isStreaming) {
 				this.#handleStreamingEscape();
 			} else if (this.ctx.editor.getText().trim()) {
-				// Esc with typed text clears the draft instead of (or before) any double-Esc action
-				this.ctx.editor.setText("");
-				this.ctx.ui.requestRender();
+				// Esc must not destroy an in-progress draft; it only disarms a previous empty-editor Esc.
 				this.ctx.lastEscapeTime = 0;
 				this.#clearStreamingEscapeArm();
 			} else {
@@ -854,7 +857,7 @@ export class InputController {
 					this.ctx.session.sessionId,
 					this.ctx.session.model,
 					provider => this.ctx.session.agent.metadataForProvider(provider),
-					this.ctx.titleSystemPrompt,
+					this.ctx.session.titleSystemPrompt,
 				)
 					.then(async title => {
 						// Re-check: a concurrent attempt for an earlier message may have

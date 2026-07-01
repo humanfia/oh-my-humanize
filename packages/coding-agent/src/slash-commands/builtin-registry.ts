@@ -29,6 +29,7 @@ import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { ObservableSession } from "../modes/session-observer-registry";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
+import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { resolveResumableSession } from "../session/session-listing";
@@ -36,6 +37,7 @@ import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { expandTilde, resolveToCwd } from "../tools/path-utils";
 import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
+import { copyToClipboard } from "../utils/clipboard";
 import type { WorkflowGraphActiveAgentProgress, WorkflowGraphView } from "../workflow/graph-view";
 import { reconstructWorkflowFamilies } from "../workflow/lifecycle";
 import { writeWorkflowGraphMonitorSnapshot } from "../workflow/monitor-history";
@@ -76,7 +78,7 @@ export interface TuiBuiltinSlashCommand extends BuiltinSlashCommand {
 
 function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
-	ctx.updateEditorTopBorder();
+	ctx.updateEditorBorderColor();
 	ctx.ui.requestRender();
 }
 
@@ -935,8 +937,39 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "copy",
 		description: "Pick text or code from the conversation to copy",
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showCopySelector();
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (!arg) {
+				runtime.ctx.showCopySelector();
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (arg === "code") {
+				const block = extractLastCodeBlock(runtime.ctx.session.messages);
+				if (!block) {
+					runtime.ctx.showStatus("No code block to copy.");
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				await copyToClipboard(block.code);
+				runtime.ctx.showStatus("Copied code block to clipboard");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (arg === "cmd" || arg === "command") {
+				const lastCommand = extractLastCommand(runtime.ctx.session.messages);
+				if (!lastCommand) {
+					runtime.ctx.showStatus("No command to copy.");
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				await copyToClipboard(lastCommand.code);
+				runtime.ctx.showStatus(`Copied ${lastCommand.kind === "bash" ? "bash command" : "eval code"} to clipboard`);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			runtime.ctx.showStatus("Usage: /copy [code|cmd]");
 			runtime.ctx.editor.setText("");
 		},
 	},

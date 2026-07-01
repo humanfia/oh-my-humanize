@@ -17,6 +17,7 @@ import {
 	COREWEAVE_PROJECT_HEADER,
 	coreWeaveProjectHeaders,
 	hasCoreWeaveProjectHeader,
+	removeBlankCoreWeaveProjectHeaders,
 } from "@oh-my-pi/pi-catalog/wire/coreweave";
 import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import {
@@ -81,6 +82,7 @@ import {
 } from "./openai-auth-headers";
 import type { ChatCompletionCreateParamsStreaming } from "./openai-chat-wire";
 import type { InputItem } from "./openai-codex/request-transformer";
+import responsesReasoningSuppressionPrompt from "./openai-responses-reasoning-suppression.md" with { type: "text" };
 import type {
 	ResponseContentPartAddedEvent,
 	ResponseCreateParamsStreaming,
@@ -166,6 +168,7 @@ function resolveSakanaRequestBaseUrl(): string | undefined {
 }
 
 function applyCoreWeaveProjectHeader(headers: Record<string, string>): void {
+	removeBlankCoreWeaveProjectHeaders(headers);
 	if (hasCoreWeaveProjectHeader(headers)) {
 		return;
 	}
@@ -1473,6 +1476,21 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 	return repairOrphanResponsesToolCalls(withRepairedOutputs);
 }
 
+type ResponsesReplayAssistantMessage = Omit<ResponseOutputMessage, "id"> & { id?: string };
+
+function parseResponseReasoningReplayItem(signature: string | undefined): ResponseReasoningItem | undefined {
+	if (!signature) return undefined;
+	try {
+		const parsed = JSON.parse(signature) as unknown;
+		if (!parsed || typeof parsed !== "object") return undefined;
+		if (!("type" in parsed) || parsed.type !== "reasoning") return undefined;
+		if (!("id" in parsed) || typeof parsed.id !== "string") return undefined;
+		return parsed as ResponseReasoningItem;
+	} catch {
+		return undefined;
+	}
+}
+
 export function convertResponsesAssistantMessage<TApi extends Api>(
 	assistantMsg: AssistantMessage,
 	model: Model<TApi>,
@@ -1483,6 +1501,12 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 ): ResponseInput {
 	const outputItems: ResponseInput = [];
 	let unsignedTextBlocks = 0;
+	const hasReplayableReasoningItem =
+		includeThinkingSignatures &&
+		assistantMsg.stopReason !== "error" &&
+		assistantMsg.content.some(
+			block => block.type === "thinking" && parseResponseReasoningReplayItem(block.thinkingSignature) !== undefined,
+		);
 	const isDifferentModel =
 		assistantMsg.model !== model.id && assistantMsg.provider === model.provider && assistantMsg.api === model.api;
 
@@ -1491,14 +1515,8 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 			if (!includeThinkingSignatures) {
 				continue;
 			}
-			if (block.thinkingSignature) {
-				try {
-					outputItems.push(JSON.parse(block.thinkingSignature) as ResponseReasoningItem);
-				} catch {
-					// Legacy/corrupt persisted signature — skip the reasoning item
-					// rather than failing the whole request build.
-				}
-			}
+			const reasoningItem = parseResponseReasoningReplayItem(block.thinkingSignature);
+			if (reasoningItem) outputItems.push(reasoningItem);
 			continue;
 		}
 
@@ -1506,21 +1524,26 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 			const parsedSignature = parseTextSignature(block.textSignature);
 			let msgId = parsedSignature?.id;
 			if (!msgId) {
-				// Distinct ids per unsigned block: several text blocks in one message
-				// (cross-provider replay downgrades thinking → text) must not share an id.
-				msgId = unsignedTextBlocks === 0 ? `msg_${msgIndex}` : `msg_${msgIndex}_${unsignedTextBlocks}`;
-				unsignedTextBlocks += 1;
+				if (hasReplayableReasoningItem) {
+					// Distinct ids per unsigned block: several text blocks in one message
+					// (cross-provider replay downgrades thinking → text) must not share an id.
+					msgId = unsignedTextBlocks === 0 ? `msg_${msgIndex}` : `msg_${msgIndex}_${unsignedTextBlocks}`;
+					unsignedTextBlocks += 1;
+				}
+			} else if (!hasReplayableReasoningItem && msgId.startsWith("msg_")) {
+				msgId = undefined;
 			} else if (msgId.length > 64) {
 				msgId = `msg_${Bun.hash(msgId).toString(36)}`;
 			}
-			outputItems.push({
+			const messageItem: ResponsesReplayAssistantMessage = {
 				type: "message",
 				role: "assistant",
 				content: [{ type: "output_text", text: block.text.toWellFormed(), annotations: [] }],
 				status: "completed",
-				id: msgId,
-				phase: parsedSignature?.phase,
-			} satisfies ResponseOutputMessage);
+				...(msgId ? { id: msgId } : {}),
+				...(parsedSignature?.phase ? { phase: parsedSignature.phase } : {}),
+			};
+			outputItems.push(messageItem as ResponseInput[number]);
 			continue;
 		}
 
@@ -1530,7 +1553,15 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 
 		const normalized = normalizeResponsesToolCallId(block.id, block.customWireName ? "ctc" : "fc");
 		let itemId: string | undefined = normalized.itemId;
-		if (isDifferentModel && (itemId?.startsWith("fc_") || itemId?.startsWith("fcr_") || itemId?.startsWith("ctc_"))) {
+		if (
+			!hasReplayableReasoningItem &&
+			(itemId?.startsWith("fc_") || itemId?.startsWith("fcr_") || itemId?.startsWith("ctc_"))
+		) {
+			itemId = undefined;
+		} else if (
+			isDifferentModel &&
+			(itemId?.startsWith("fc_") || itemId?.startsWith("fcr_") || itemId?.startsWith("ctc_"))
+		) {
 			itemId = undefined;
 		}
 		knownCallIds.add(normalized.callId);
@@ -1539,7 +1570,7 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 			customCallIds?.add(normalized.callId);
 			outputItems.push({
 				type: "custom_tool_call",
-				id: itemId,
+				...(itemId ? { id: itemId } : {}),
 				call_id: normalized.callId,
 				name: block.customWireName,
 				input: rawInput,
@@ -1548,7 +1579,7 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 		}
 		outputItems.push({
 			type: "function_call",
-			id: itemId,
+			...(itemId ? { id: itemId } : {}),
 			call_id: normalized.callId,
 			name: block.name,
 			arguments: JSON.stringify(block.arguments),
@@ -2385,6 +2416,8 @@ export function applyCommonResponsesSamplingParams<P extends CommonResponsesPara
 	applyOpenAIServiceTier(params, options?.serviceTier, model.provider);
 }
 
+const RESPONSES_REASONING_SUPPRESSION_PROMPT = responsesReasoningSuppressionPrompt.trim();
+
 type ReasoningOptions = {
 	reasoning?: string;
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
@@ -2429,7 +2462,7 @@ export function applyResponsesCompatPolicy<P extends ResponseCreateParamsStreami
 		if (policy.compat.requiresJuiceZeroHack && reasoning.requestedEffort === undefined) {
 			messages.push({
 				role: "developer",
-				content: [{ type: "input_text", text: "# Juice: 0 !important" }],
+				content: [{ type: "input_text", text: RESPONSES_REASONING_SUPPRESSION_PROMPT }],
 			});
 			return 1;
 		}
@@ -2461,7 +2494,7 @@ export function applyResponsesCompatPolicy<P extends ResponseCreateParamsStreami
 	if (policy.compat.requiresJuiceZeroHack) {
 		messages.push({
 			role: "developer",
-			content: [{ type: "input_text", text: "# Juice: 0 !important" }],
+			content: [{ type: "input_text", text: RESPONSES_REASONING_SUPPRESSION_PROMPT }],
 		});
 		return 1;
 	}

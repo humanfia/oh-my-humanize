@@ -5,6 +5,7 @@ import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/inp
 import type { InteractiveModeContext, SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import * as WorkflowCommandHelpers from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/workflow";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 
 type Spy = Mock<(...args: unknown[]) => unknown>;
 type StartPendingSubmissionSpy = Mock<InteractiveModeContext["startPendingSubmission"]>;
@@ -256,6 +257,21 @@ function createContext(): {
 		inputListeners,
 		sessionListeners,
 	};
+}
+
+type AbortViewSession = {
+	isCompacting: boolean;
+	isGeneratingHandoff: boolean;
+	isRetrying: boolean;
+	abortCompaction: Spy;
+	abortHandoff: Spy;
+	abortRetry: Spy;
+};
+
+function abortViewSession(ctx: InteractiveModeContext): AbortViewSession {
+	// Test harness installs a mutable fake AgentSession; keep the unchecked cast named
+	// so property access is explicit.
+	return ctx.viewSession as unknown as AbortViewSession;
 }
 beforeEach(async () => {
 	await Settings.init({ inMemory: true });
@@ -606,6 +622,36 @@ describe("InputController escape behavior", () => {
 		expect(ctx.viewSession.abortRetry as unknown as Spy).toHaveBeenCalledTimes(1);
 	});
 
+	it("logs abort failures while treating maintenance Esc as handled", () => {
+		const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+		const { ctx, editor, spies } = createContext();
+		const viewSession = abortViewSession(ctx);
+		viewSession.isCompacting = true;
+		viewSession.isGeneratingHandoff = true;
+		viewSession.isRetrying = true;
+		viewSession.abortCompaction = vi.fn(() => {
+			throw new Error("compaction boom");
+		});
+		viewSession.abortHandoff = vi.fn(() => {
+			throw new Error("handoff boom");
+		});
+		viewSession.abortRetry = vi.fn(() => {
+			throw new Error("retry boom");
+		});
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		expect(() => editor.onEscape?.()).not.toThrow();
+
+		expect(viewSession.abortCompaction).toHaveBeenCalledTimes(1);
+		expect(viewSession.abortHandoff).toHaveBeenCalledTimes(1);
+		expect(viewSession.abortRetry).toHaveBeenCalledTimes(1);
+		expect(debugSpy).toHaveBeenCalledWith("Failed to abort compaction", { error: "compaction boom" });
+		expect(debugSpy).toHaveBeenCalledWith("Failed to abort handoff", { error: "handoff boom" });
+		expect(debugSpy).toHaveBeenCalledWith("Failed to abort retry", { error: "retry boom" });
+		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
 	it("routes a focused double-← through the global input listener like Esc", () => {
 		const now = vi.spyOn(Date, "now");
 		const { ctx, inputListeners } = createContext();
@@ -673,7 +719,7 @@ describe("InputController escape behavior", () => {
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
 	});
-	it("clears typed editor text on Esc without opening selectors or aborting", () => {
+	it("preserves typed editor text on Esc without opening selectors or aborting", () => {
 		const { ctx, editor, spies } = createContext();
 		const controller = new InputController(ctx);
 
@@ -681,24 +727,26 @@ describe("InputController escape behavior", () => {
 		editor.setText("draft message");
 		editor.onEscape?.();
 
-		expect(editor.getText()).toBe("");
-		expect(spies.requestRender).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("draft message");
+		expect(spies.requestRender).not.toHaveBeenCalled();
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
 		expect(spies.resetDisplay).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("does not treat the Esc after a text-clearing Esc as a double-Esc", () => {
+	it("does not treat the Esc after a text-preserving Esc as a double-Esc", () => {
 		const { ctx, editor } = createContext();
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
 		editor.onEscape?.(); // empty editor: arms double-Esc timer
 		editor.setText("draft");
-		editor.onEscape?.(); // clears text, must also reset the timer
+		editor.onEscape?.(); // preserves text, must also reset the timer
+		editor.setText("");
 		editor.onEscape?.(); // empty again: should only re-arm, not trigger
 
+		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
 	});
 });

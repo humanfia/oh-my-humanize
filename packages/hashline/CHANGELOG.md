@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed an issue where snapshot tag collisions could cause line-anchored edits to be incorrectly applied to unrelated content.
+- Fixed tracking of edit anchors when earlier in-session insertions or deletions shift unchanged target lines.
+
 ## [16.2.8] - 2026-06-30
 
 ### Fixed

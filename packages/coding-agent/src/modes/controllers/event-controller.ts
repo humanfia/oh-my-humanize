@@ -51,6 +51,21 @@ const IDLE_RECAP_MIN_SECONDS = 1;
 const IDLE_RECAP_MAX_SECONDS = 3600;
 
 const RAW_PARTIAL_JSON_RENDERERS: Record<string, true> = { bash: true, edit: true, apply_patch: true };
+// Top-level string args a renderer reads mid-stream. The reveal controller
+// decodes these fields incrementally between throttled full-JSON parses so a
+// long payload updates preview args at reveal cadence instead of stalling for
+// STREAMING_JSON_PARSE_MIN_GROWTH bytes at a time. Nested-array modes (edit
+// patch/replace `edits[].diff`) still fall through to the throttled parse.
+const STREAMING_STRING_KEYS_BY_TOOL: Record<string, readonly string[]> = {
+	write: ["content"],
+	edit: ["input"],
+	eval: ["code"],
+};
+
+function streamingStringKeysForTool(toolName: string, rawInput: boolean): readonly string[] | undefined {
+	if (rawInput) return undefined;
+	return STREAMING_STRING_KEYS_BY_TOOL[toolName];
+}
 
 function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknown): boolean {
 	if (rawInput) return true;
@@ -287,7 +302,7 @@ export class EventController {
 		}
 
 		this.ctx.statusLine.invalidate();
-		this.ctx.updateEditorTopBorder();
+		this.ctx.ui.requestRender();
 
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
 		await run(event);
@@ -647,6 +662,7 @@ export class EventController {
 						rawInput,
 						exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
 						fullArgs: content.arguments,
+						streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
 					});
 				} else {
 					this.#toolArgsReveal.finish(content.id);
@@ -800,7 +816,7 @@ export class EventController {
 				this.ctx.showPinnedError(event.message.errorMessage);
 			}
 			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorTopBorder();
+			this.ctx.ui.requestRender();
 		}
 		this.ctx.ui.requestRender();
 	}
@@ -1158,21 +1174,21 @@ export class EventController {
 				if (!event.skipped) {
 					this.ctx.rebuildChatFromMessages();
 					this.ctx.statusLine.invalidate();
-					this.ctx.updateEditorTopBorder();
+					this.ctx.ui.requestRender();
 				}
 				this.ctx.showWarning(event.errorMessage);
 			} else if (!event.skipped) {
 				this.ctx.lastAssistantUsage = undefined;
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.statusLine.invalidate();
-				this.ctx.updateEditorTopBorder();
+				this.ctx.ui.requestRender();
 				this.ctx.showStatus("Auto-shake completed");
 			}
 		} else if (event.result) {
 			this.ctx.lastAssistantUsage = undefined;
 			this.ctx.rebuildChatFromMessages();
 			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorTopBorder();
+			this.ctx.ui.requestRender();
 		} else if (event.errorMessage) {
 			this.ctx.showWarning(event.errorMessage);
 		} else if (isHandoffAction) {
@@ -1180,7 +1196,7 @@ export class EventController {
 			this.ctx.lastAssistantUsage = undefined;
 			this.ctx.rebuildChatFromMessages();
 			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorTopBorder();
+			this.ctx.ui.requestRender();
 			await this.ctx.reloadTodos();
 			this.ctx.showStatus("Auto-handoff completed");
 		} else if (event.skipped) {
