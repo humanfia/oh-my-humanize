@@ -105,6 +105,39 @@ describe("refactor-migration-plan flow contract", () => {
 		expect(precheck).toContain("definitely_missing_omh_refactor_validation_module");
 	});
 
+	it("cleans untracked preflight byproducts before migration agents edit", async () => {
+		const cwd = await createGitRepo();
+		await Bun.write(path.join(cwd, "tracked.py"), "print('tracked')\n");
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Objective:",
+				"Keep validation preflight side effects out of the shared workspace.",
+				"",
+				"Compatibility Command:",
+				"python -c \"open('test', 'w').write('TLS secrets log file')\"",
+				"",
+				"Validation Command:",
+				"python -c \"print('validation ok')\"",
+				"",
+			].join("\n"),
+		);
+		await runCommand(["git", "add", "tracked.py", "task.md"], cwd);
+		await runCommand(["git", "commit", "-m", "baseline"], cwd);
+
+		const result = await runScriptFile(cwd, "precheck-task-contract.js", {});
+
+		expect(await Bun.file(path.join(cwd, "test")).exists()).toBe(false);
+		expect(await gitStatus(cwd)).toBe("?? workflow-output/refactor-migration-precheck.md");
+		const taskState = result.statePatch?.find(patch => patch.path === "/task")?.value;
+		expect(taskState).toMatchObject({
+			preflightByproducts: ["test"],
+		});
+		const precheck = await Bun.file(path.join(cwd, "workflow-output", "refactor-migration-precheck.md")).text();
+		expect(precheck).toContain("## Preflight Workspace Cleanup");
+		expect(precheck).toContain("- removed untracked preflight byproduct `test`");
+	});
+
 	it("exposes continuation lines from multiline allowed paths in the review context", async () => {
 		const cwd = await createGitRepo();
 		const taskText = [
@@ -204,4 +237,19 @@ async function runCommand(command: string[], cwd: string): Promise<void> {
 	if (exitCode !== 0) {
 		throw new Error(`${command.join(" ")} failed: ${stderr || stdout}`);
 	}
+}
+
+async function gitStatus(cwd: string): Promise<string> {
+	const proc = Bun.spawn(["git", "status", "--short", "--untracked-files=all"], {
+		cwd,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) throw new Error(`git status failed: ${stderr || stdout}`);
+	return stdout.trim();
 }

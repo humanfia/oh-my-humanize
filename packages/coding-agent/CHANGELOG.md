@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration-plan flow leaving validation preflight byproducts such as TLS keylog files in the project workspace before migration agents run.
 - Fixed the experimental agent-build-review-loop flow accepting rollback evidence that names a stale nearby symbol instead of the actual changed symbol or a file-level restore.
 - Fixed the experimental release-hardening flow letting release checks ignore changed files outside the frozen task allowed-path fence before reviewer decisions, and clarified resolved versus unresolved audit blockers in release gate evidence.
 - Fixed the experimental test-generation-hardening flow omitting the reviewer decision from its final archive artifact.
