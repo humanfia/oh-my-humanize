@@ -18,6 +18,7 @@
  * Step 1 happens once per top-level call (the baseline is cloned per spawn
  * before mutation); steps 2 and 3 are per-spawn.
  */
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type * as natives from "@oh-my-pi/pi-natives";
 import { isEnoent } from "@oh-my-pi/pi-utils";
@@ -256,26 +257,42 @@ export interface DeclaredWorkflowArtifactMaterialization {
 	missing: string[];
 }
 
+interface WorkflowArtifactStat {
+	isFile(): boolean;
+}
+
 export async function materializeDeclaredWorkflowArtifacts(input: {
 	parentRoot: string;
 	isolationDir: string;
 	result: IsolatedWorktreeResult;
 }): Promise<DeclaredWorkflowArtifactMaterialization> {
 	const refs = declaredWorkflowArtifactRefs(input.result);
+	const pending = refs.map(ref => ({ ref, required: true }));
+	const queued = new Set(refs);
 	const copied: string[] = [];
 	const missing: string[] = [];
-	for (const ref of refs) {
+	for (let index = 0; index < pending.length; index += 1) {
+		const { ref, required } = pending[index]!;
 		const source = path.join(input.isolationDir, ...ref.split("/"));
 		const target = path.join(input.parentRoot, ...ref.split("/"));
+		let stat: WorkflowArtifactStat;
 		try {
-			await Bun.write(target, await Bun.file(source).arrayBuffer());
-			copied.push(ref);
+			stat = await fs.stat(source);
 		} catch (error) {
 			if (isEnoent(error)) {
-				missing.push(ref);
+				if (required) missing.push(ref);
 				continue;
 			}
 			throw error;
+		}
+		if (!stat.isFile()) continue;
+		await Bun.write(target, await Bun.file(source).arrayBuffer());
+		copied.push(ref);
+		if (!isTextWorkflowArtifactRef(ref)) continue;
+		for (const linkedRef of linkedWorkflowOutputArtifactRefs(await Bun.file(source).text())) {
+			if (queued.has(linkedRef)) continue;
+			queued.add(linkedRef);
+			pending.push({ ref: linkedRef, required: false });
 		}
 	}
 	return { copied, missing };
@@ -345,12 +362,25 @@ function addWorkflowOutputArtifactRef(input: string, refs: Set<string>): void {
 }
 
 function normalizeWorkflowOutputArtifactRef(input: string): string | undefined {
-	if (!input.startsWith("workflow-output/")) return undefined;
-	if (input.startsWith("workflow-output/omh-runtime/")) return undefined;
-	if (/[*?[\]\\]/u.test(input)) return undefined;
-	const normalized = path.posix.normalize(input);
+	const candidate = input.trim().replace(/[.:\]]+$/gu, "");
+	if (!candidate.startsWith("workflow-output/")) return undefined;
+	if (candidate.startsWith("workflow-output/omh-runtime/")) return undefined;
+	if (/[*?[\]\\]/u.test(candidate)) return undefined;
+	const normalized = path.posix.normalize(candidate);
 	if (normalized === "workflow-output" || !normalized.startsWith("workflow-output/")) return undefined;
 	return normalized;
+}
+
+function isTextWorkflowArtifactRef(ref: string): boolean {
+	return /\.(?:json|jsonl|log|md|markdown|txt|yaml|yml)$/iu.test(ref);
+}
+
+function linkedWorkflowOutputArtifactRefs(text: string): string[] {
+	const refs = new Set<string>();
+	for (const match of text.matchAll(/\bworkflow-output\/[^\s`"'<>),;]+/giu)) {
+		addWorkflowOutputArtifactRef(match[0] ?? "", refs);
+	}
+	return [...refs];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

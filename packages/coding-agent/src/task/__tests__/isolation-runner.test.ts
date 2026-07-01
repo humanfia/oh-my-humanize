@@ -73,4 +73,49 @@ describe("isolated workflow artifacts", () => {
 		});
 		expect(await Bun.file(`${parentRoot}/workflow-output/missing.md`).exists()).toBe(false);
 	});
+
+	it("copies existing workflow-output artifacts referenced by declared text reports", async () => {
+		using tempDir = TempDir.createSync("@omh-isolated-workflow-linked-artifacts-");
+		const parentRoot = `${tempDir.path()}/parent`;
+		const isolationDir = `${tempDir.path()}/lane`;
+		await Bun.write(
+			`${isolationDir}/workflow-output/report.md`,
+			[
+				"# Branch report",
+				"",
+				"Durable detail: `workflow-output/detail.json`.",
+				"Planned missing detail: `workflow-output/missing.json`.",
+				"Fixture directory: `workflow-output/perf-tree`.",
+			].join("\n"),
+		);
+		await Bun.write(`${isolationDir}/workflow-output/detail.json`, "{}\n");
+		await Bun.write(`${isolationDir}/workflow-output/perf-tree/file.txt`, "fixture\n");
+
+		const result = await materializeDeclaredWorkflowArtifacts({
+			parentRoot,
+			isolationDir,
+			result: {
+				id: "branch",
+				exitCode: 0,
+				extractedToolData: {
+					yield: [
+						{
+							data: {
+								artifacts: ["workflow-output/report.md"],
+							},
+						},
+					],
+				},
+			},
+		});
+
+		expect(result).toEqual({
+			copied: ["workflow-output/report.md", "workflow-output/detail.json"],
+			missing: [],
+		});
+		expect(await Bun.file(`${parentRoot}/workflow-output/report.md`).text()).toContain("workflow-output/detail.json");
+		expect(await Bun.file(`${parentRoot}/workflow-output/detail.json`).text()).toBe("{}\n");
+		expect(await Bun.file(`${parentRoot}/workflow-output/missing.json`).exists()).toBe(false);
+		expect(await Bun.file(`${parentRoot}/workflow-output/perf-tree/file.txt`).exists()).toBe(false);
+	});
 });

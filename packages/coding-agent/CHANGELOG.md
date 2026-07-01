@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed isolated workflow agent nodes losing lane-local `workflow-output/**` files that are referenced from declared text reports but omitted from the explicit artifact list.
 - Fixed the experimental refactor-migration-plan flow treating recursive glob scope fences such as `tests/**` as out-of-scope changes during review and archive checks.
 - Fixed the experimental release-hardening flow treating stale structured compatibility status fields as unresolved release blockers after reviewer-approved repair evidence.
 - Fixed the experimental refactor-migration-plan flow leaving validation preflight byproducts such as TLS keylog files in the project workspace before migration agents run.
