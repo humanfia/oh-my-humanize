@@ -37,6 +37,7 @@ import { $which, APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, logger, V
 import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger";
 import { $ } from "bun";
 import chalk from "chalk";
+import { z } from "zod/v4";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
 
 export type AuthBrokerAction = "serve" | "token" | "login" | "logout" | "status" | "import" | "migrate" | "list";
@@ -60,6 +61,10 @@ export interface AuthBrokerCommandArgs {
 		includeEnv?: boolean;
 		/** `migrate`: required `--from-local` source. Reserved for future sources. */
 		fromLocal?: boolean;
+		/** `login anthropic`: use Anthropic Console pasted-code flow. */
+		console?: boolean;
+		/** `login anthropic`: use Claude pasted-code flow without a localhost callback. */
+		headless?: boolean;
 	};
 }
 
@@ -177,9 +182,28 @@ async function runToken(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	}
 }
 
+function resolveLoginProvider(provider: string | undefined, flags: AuthBrokerCommandArgs["flags"]): string | undefined {
+	if (flags.console && flags.headless) {
+		throw new Error("Choose only one Anthropic login mode: --console or --headless.");
+	}
+	if (flags.console) {
+		if (provider !== undefined && provider !== "anthropic" && provider !== "anthropic-console") {
+			throw new Error("--console is only valid with the anthropic provider.");
+		}
+		return "anthropic-console";
+	}
+	if (flags.headless) {
+		if (provider !== undefined && provider !== "anthropic" && provider !== "anthropic-code") {
+			throw new Error("--headless is only valid with the anthropic provider.");
+		}
+		return "anthropic-code";
+	}
+	return provider;
+}
+
 async function runLogin(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	const providers = getOAuthProviders();
-	let providerArg = flags.provider;
+	let providerArg = resolveLoginProvider(flags.provider, flags);
 	if (!providerArg) {
 		if (flags.via) {
 			throw new Error(
@@ -326,19 +350,24 @@ async function pickProviderInteractively(providers: readonly OAuthProviderInfo[]
 
 async function runRemoteLogin(provider: string, via: string, dryRun: boolean): Promise<void> {
 	const port = CALLBACK_PORTS[provider];
-	if (port === undefined) {
+	const sshArgs =
+		port === undefined
+			? PASTE_CODE_LOGIN_PROVIDERS.has(provider)
+				? [via, `${APP_NAME} auth-broker login ${provider}`]
+				: undefined
+			: [
+					"-L",
+					`${port}:127.0.0.1:${port}`,
+					"-o",
+					"ExitOnForwardFailure=yes",
+					via,
+					`${APP_NAME} auth-broker login ${provider}`,
+				];
+	if (sshArgs === undefined) {
 		throw new Error(
-			`No known OAuth callback port for '${provider}'. Use device-code flow on the broker host directly.`,
+			`No known OAuth callback port or pasted-code login flow for '${provider}'. Run login on the broker host directly.`,
 		);
 	}
-	const sshArgs = [
-		"-L",
-		`${port}:127.0.0.1:${port}`,
-		"-o",
-		"ExitOnForwardFailure=yes",
-		via,
-		`${APP_NAME} auth-broker login ${provider}`,
-	];
 	if (dryRun) {
 		process.stdout.write(`ssh ${sshArgs.map(a => (a.includes(" ") ? `'${a}'` : a)).join(" ")}\n`);
 		return;
@@ -424,17 +453,36 @@ const CLIPROXY_TYPE_TO_PROVIDER: Record<string, string> = {
 	"gemini-cli": "google-gemini-cli",
 };
 
-interface CliProxyCredentialJson {
-	type?: string;
-	access_token?: string;
-	refresh_token?: string;
-	id_token?: string;
-	expired?: string;
-	last_refresh?: string;
-	email?: string;
-	account_id?: string;
-	disabled?: boolean;
-}
+const ImportCredentialJsonSchema = z
+	.object({
+		type: z.string().optional(),
+		access_token: z.string().optional(),
+		refresh_token: z.string().optional(),
+		id_token: z.string().optional(),
+		expired: z.string().optional(),
+		last_refresh: z.string().optional(),
+		email: z.string().optional(),
+		account_id: z.string().optional(),
+		disabled: z.boolean().optional(),
+		claudeAiOauth: z
+			.object({
+				accessToken: z.string().optional(),
+				refreshToken: z.string().optional(),
+				expiresAt: z.number().optional(),
+				account: z
+					.object({
+						uuid: z.string().optional(),
+						email_address: z.string().optional(),
+					})
+					.passthrough()
+					.optional(),
+			})
+			.passthrough()
+			.optional(),
+	})
+	.passthrough();
+
+type ImportCredentialJson = z.infer<typeof ImportCredentialJsonSchema>;
 
 interface ImportPlanEntry {
 	sourceFile: string;
@@ -446,7 +494,7 @@ interface ImportPlanEntry {
 	credential: OAuthCredential;
 }
 
-function resolveCliProxyProvider(json: CliProxyCredentialJson, filename: string, overrideId?: string): string | null {
+function resolveCliProxyProvider(json: ImportCredentialJson, filename: string, overrideId?: string): string | null {
 	if (overrideId && overrideId.length > 0) return overrideId;
 	const typeField = json.type?.trim().toLowerCase();
 	if (typeField && CLIPROXY_TYPE_TO_PROVIDER[typeField]) return CLIPROXY_TYPE_TO_PROVIDER[typeField];
@@ -484,6 +532,84 @@ async function collectImportSources(target: string): Promise<string[]> {
 	return files;
 }
 
+function createImportPlanEntry(
+	file: string,
+	provider: string,
+	credential: OAuthCredential,
+	disabled: boolean,
+): ImportPlanEntry {
+	return {
+		sourceFile: file,
+		provider,
+		email: credential.email ?? null,
+		accountId: credential.accountId ?? null,
+		expiresAt: credential.expires,
+		disabled,
+		credential,
+	};
+}
+
+function parseClaudeCodeCredential(
+	json: ImportCredentialJson,
+	file: string,
+	overrideProvider: string | undefined,
+): ImportPlanEntry | string | null {
+	const oauth = json.claudeAiOauth;
+	if (!oauth) return null;
+	const provider = overrideProvider && overrideProvider.length > 0 ? overrideProvider : "anthropic";
+	if (!oauth.accessToken || !oauth.refreshToken)
+		return "missing claudeAiOauth.accessToken or claudeAiOauth.refreshToken";
+	if (typeof oauth.expiresAt !== "number" || !Number.isFinite(oauth.expiresAt)) {
+		return `cannot parse claudeAiOauth.expiresAt=${String(oauth.expiresAt ?? "?")}`;
+	}
+	const email =
+		typeof oauth.account?.email_address === "string" && oauth.account.email_address.length > 0
+			? oauth.account.email_address
+			: null;
+	const accountId =
+		typeof oauth.account?.uuid === "string" && oauth.account.uuid.length > 0 ? oauth.account.uuid : null;
+	return createImportPlanEntry(
+		file,
+		provider,
+		{
+			type: "oauth",
+			access: oauth.accessToken,
+			refresh: oauth.refreshToken,
+			expires: oauth.expiresAt,
+			...(email !== null ? { email } : {}),
+			...(accountId !== null ? { accountId } : {}),
+		},
+		json.disabled === true,
+	);
+}
+
+function parseCliProxyCredential(
+	json: ImportCredentialJson,
+	file: string,
+	overrideProvider: string | undefined,
+): ImportPlanEntry | string {
+	const provider = resolveCliProxyProvider(json, file, overrideProvider);
+	if (!provider) return `cannot determine OMH provider from type=${json.type ?? "?"} (pass --provider to override)`;
+	if (!json.access_token || !json.refresh_token) return "missing access_token or refresh_token";
+	const expiresAt = parseCliProxyExpiry(json.expired);
+	if (expiresAt === null) return `cannot parse expired=${json.expired ?? "?"}`;
+	const email = typeof json.email === "string" && json.email.length > 0 ? json.email : null;
+	const accountId = typeof json.account_id === "string" && json.account_id.length > 0 ? json.account_id : null;
+	return createImportPlanEntry(
+		file,
+		provider,
+		{
+			type: "oauth",
+			access: json.access_token,
+			refresh: json.refresh_token,
+			expires: expiresAt,
+			...(email !== null ? { email } : {}),
+			...(accountId !== null ? { accountId } : {}),
+		},
+		json.disabled === true,
+	);
+}
+
 async function loadImportPlan(
 	target: string,
 	overrideProvider: string | undefined,
@@ -493,9 +619,9 @@ async function loadImportPlan(
 	const entries: ImportPlanEntry[] = [];
 	const skipped: Array<{ file: string; reason: string }> = [];
 	for (const file of files) {
-		let json: CliProxyCredentialJson;
+		let json: ImportCredentialJson;
 		try {
-			json = (await Bun.file(file).json()) as CliProxyCredentialJson;
+			json = ImportCredentialJsonSchema.parse(await Bun.file(file).json());
 		} catch (err) {
 			skipped.push({ file, reason: `unreadable JSON: ${String(err)}` });
 			continue;
@@ -504,42 +630,14 @@ async function loadImportPlan(
 			skipped.push({ file, reason: "credential marked disabled (use --include-disabled to import anyway)" });
 			continue;
 		}
-		const provider = resolveCliProxyProvider(json, file, overrideProvider);
-		if (!provider) {
-			skipped.push({
-				file,
-				reason: `cannot determine OMH provider from type=${json.type ?? "?"} (pass --provider to override)`,
-			});
+		const parsed =
+			parseClaudeCodeCredential(json, file, overrideProvider) ??
+			parseCliProxyCredential(json, file, overrideProvider);
+		if (typeof parsed === "string") {
+			skipped.push({ file, reason: parsed });
 			continue;
 		}
-		if (!json.access_token || !json.refresh_token) {
-			skipped.push({ file, reason: "missing access_token or refresh_token" });
-			continue;
-		}
-		const expiresAt = parseCliProxyExpiry(json.expired);
-		if (expiresAt === null) {
-			skipped.push({ file, reason: `cannot parse expired=${json.expired ?? "?"}` });
-			continue;
-		}
-		const email = typeof json.email === "string" && json.email.length > 0 ? json.email : null;
-		const accountId = typeof json.account_id === "string" && json.account_id.length > 0 ? json.account_id : null;
-		const credential: OAuthCredential = {
-			type: "oauth",
-			access: json.access_token,
-			refresh: json.refresh_token,
-			expires: expiresAt,
-			...(email !== null ? { email } : {}),
-			...(accountId !== null ? { accountId } : {}),
-		};
-		entries.push({
-			sourceFile: file,
-			provider,
-			email,
-			accountId,
-			expiresAt,
-			disabled: json.disabled === true,
-			credential,
-		});
+		entries.push(parsed);
 	}
 	return { entries, skipped };
 }

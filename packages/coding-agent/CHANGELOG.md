@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Claude subscription and Anthropic Console headless auth-broker login modes, plus Claude Code credential JSON import support.
+
 ### Fixed
+
+- Fixed pasted OAuth login codes submitted in the TUI being sent to the agent instead of the pending login flow.
 
 - Fixed the experimental performance-optimization-search flow treating a committed positive selection with a clean worktree as a no-win outcome during finalize/archive.
 - Fixed the experimental research-reproduction flow assuming comparison agent summaries automatically materialized `/comparison` before review prompts.

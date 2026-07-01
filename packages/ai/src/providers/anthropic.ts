@@ -71,6 +71,7 @@ import {
 	calculateAnthropicRetryDelayMs,
 	retryDelayFromHeaders,
 } from "./anthropic-client";
+import { claudeCodeVersion } from "./anthropic-version";
 import type {
 	ToolInputSchema as AnthropicToolInputSchema,
 	Tool as AnthropicWireTool,
@@ -419,7 +420,7 @@ function getCacheControl(
 }
 
 // Stealth mode: mimic Claude Code's request fingerprint.
-export const claudeCodeVersion = "2.1.165";
+export { claudeCodeVersion };
 export const claudeAgentSdkVersion = "0.3.165";
 export const claudeClientVersion = "1.11187.4";
 export const claudeToolPrefix: string = "_";

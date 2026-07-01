@@ -37,6 +37,12 @@ export default class AuthBroker extends Command {
 		provider: Flags.string({
 			description: "Override provider id for `import` (e.g. when JSON `type` is unrecognized)",
 		}),
+		console: Flags.boolean({
+			description: "Use Anthropic Console pasted-code login (login anthropic)",
+		}),
+		headless: Flags.boolean({
+			description: "Use Claude pasted-code login without a localhost callback (login anthropic)",
+		}),
 		"include-disabled": Flags.boolean({
 			description: "Import credentials whose JSON has `disabled: true` (import)",
 		}),
@@ -61,6 +67,8 @@ export default class AuthBroker extends Command {
 		`# Local login (run on the broker host)\n  ${APP_NAME} auth-broker login anthropic`,
 		`# Interactive provider selection\n  ${APP_NAME} auth-broker login`,
 		`# Remote login over SSH tunnel\n  ${APP_NAME} auth-broker login anthropic --via=user@broker`,
+		`# Anthropic Console login without a localhost callback\n  ${APP_NAME} auth-broker login anthropic --console`,
+		`# Claude subscription login without a localhost callback\n  ${APP_NAME} auth-broker login anthropic --headless`,
 		`# Log out of a provider (interactive without provider arg)\n  ${APP_NAME} auth-broker logout anthropic`,
 		`# Import a CLIProxyAPI auth dump\n  ${APP_NAME} auth-broker import ~/.cliproxy/auth`,
 		`# Import a single CLIProxyAPI JSON, overriding the provider mapping\n  ${APP_NAME} auth-broker import ~/.cliproxy/auth/claude-foo.json --provider anthropic`,
@@ -86,12 +94,14 @@ export default class AuthBroker extends Command {
 				// `login`/`logout` reuse the legacy `provider` slot; `import` keeps `source` separate
 				// so `provider` flag (used as an override) is unambiguous.
 				provider: action === "import" ? flags.provider : (args.source ?? flags.provider),
-				source: args.source,
+				source: action === "import" ? args.source : undefined,
 				includeDisabled: flags["include-disabled"],
 				fromLocal: flags["from-local"],
 				includeEnv: flags["include-env"],
 				includeOauth: flags["include-oauth"],
 				dryRun: flags["dry-run"],
+				console: flags.console,
+				headless: flags.headless,
 			},
 		};
 		await initTheme();

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Anthropic Claude subscription and Console pasted-code OAuth login providers, including fixed platform redirect handling and account identity propagation for token responses.
+
 ## [16.2.5] - 2026-06-28
 
 ### Fixed

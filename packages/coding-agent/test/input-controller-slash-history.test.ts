@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "bun:test";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
+import { OAuthManualInputManager } from "@oh-my-pi/pi-coding-agent/modes/oauth-manual-input";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 
 // Drives the real editor submit handler through the builtin slash dispatch
@@ -11,6 +12,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 function makeCtx() {
 	const addToHistory = vi.fn();
 	const handleMCPCommand = vi.fn(async () => {});
+	const oauthManualInput = new OAuthManualInputManager();
 	let text = "";
 	const editor = {
 		onSubmit: undefined as undefined | ((t: string) => Promise<void>),
@@ -38,10 +40,11 @@ function makeCtx() {
 		collabGuest: undefined,
 		handleHotkeysCommand: vi.fn(),
 		handleMCPCommand,
+		oauthManualInput,
 		showStatus: vi.fn(),
 		ui: { requestRender: vi.fn() },
 	} as unknown as InteractiveModeContext;
-	return { ctx, editor, addToHistory, handleMCPCommand };
+	return { ctx, editor, addToHistory, handleMCPCommand, oauthManualInput };
 }
 
 function controllerFor(ctx: InteractiveModeContext) {
@@ -79,6 +82,18 @@ describe("input controller — slash command history (#3148)", () => {
 		// Command still executes...
 		expect(handleMCPCommand).toHaveBeenCalledWith("/mcp add srv --url http://x --token sk-secret123");
 		// ...but the secret-bearing text is kept out of recallable history.
+		expect(addToHistory).not.toHaveBeenCalled();
+	});
+
+	it("routes raw pasted OAuth codes to the pending login instead of the agent", async () => {
+		const { ctx, editor, addToHistory, oauthManualInput } = makeCtx();
+		const pending = oauthManualInput.waitForInput("anthropic-code");
+		controllerFor(ctx);
+
+		await editor.onSubmit?.("code-secret#state-secret");
+
+		expect(await pending).toBe("code-secret#state-secret");
+		expect(ctx.showStatus).toHaveBeenCalledWith("OAuth callback received; completing login…");
 		expect(addToHistory).not.toHaveBeenCalled();
 	});
 });

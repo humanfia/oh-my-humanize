@@ -1,7 +1,7 @@
 import { scheduler } from "node:timers/promises";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import * as AIError from "../error";
-import { claudeCodeVersion } from "../providers/anthropic";
+import { claudeCodeVersion } from "../providers/anthropic-version";
 import type {
 	CredentialRankingStrategy,
 	UsageAmount,
