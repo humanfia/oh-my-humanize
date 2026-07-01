@@ -14,6 +14,7 @@ Current promoted built-ins: none.
 | --- | --- | --- |
 | `agent-build-review-loop` | Real build/review loop evidence on HTTPX plus recent Vite semantic canaries. | 100h cumulative clean evidence across diverse contexts. |
 | `humanize-rlcr` | Real RLCR-style implementation/review evidence and recent Axum semantic canaries. | Longer clean current-commit evidence and broader contexts. |
+| `humanize-gen-idea` | Workflow-native port of Humanize `/humanize:gen-idea`; initial canary only. | Fresh long-running evidence across diverse repositories and generated-draft audits. |
 | `kda-humanize` | Nested subflow composition and KDA-style candidate validation evidence. | Fresh clean long-running runs after recent KDA flow-control repairs. |
 | `parallel-implementation-review` | Real parallel implementation/review evidence and repaired durable final archive contract. | Fresh clean long-running runs after finalizer repair. |
 | `bug-triage-repro-fix` | Seeded candidate for reproduce-first bug repair. | First fresh canary-grade success sample or recorded-and-repaired defect. |

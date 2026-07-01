@@ -116,6 +116,17 @@ describe("WorkflowGraphComponent display modes", () => {
 		expect(text).not.toContain("7/8 done");
 	});
 
+	it("keeps completed workflow summaries visible in collapsed mode", () => {
+		const text = new WorkflowGraphComponent(completedConditionalBranchViewFixture(), {
+			displayModeProvider: () => "collapsed",
+		})
+			.render(140)
+			.map(stripAnsi)
+			.join("\n");
+
+		expect(text).toContain("Idea draft saved to /tmp/idea.md");
+	});
+
 	it("switches selected workflow nodes and activation summaries from keyboard input", () => {
 		const component = new WorkflowGraphComponent(workflowGraphNavigationViewFixture(), {
 			displayModeProvider: () => "full",
@@ -298,6 +309,7 @@ function completedConditionalBranchViewFixture(): WorkflowGraphView {
 			id: "attempt-1",
 			status: "completed",
 			runtimeBindingId: "binding-1",
+			summary: "Idea draft saved to /tmp/idea.md.",
 		},
 		changes: { approved: 0, proposed: 0, rejected: 0 },
 		topology: {

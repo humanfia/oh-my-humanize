@@ -5,10 +5,10 @@
  * PI_CODING_AGENT_DIR to override the agent directory.
  *
  * On Linux, if XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME environment
- * variables are set, paths are redirected to XDG-compliant locations under
- * $XDG_*_HOME/omh/. This requires running `omh config migrate` first to
- * move data to the new locations. No filesystem existence checks are performed
- * — if the env var is set, OMH trusts that the migration has been done.
+ * variables are set and their `omp` app roots already exist, paths are
+ * redirected to XDG-compliant locations under $XDG_*_HOME/omp/. This requires
+ * running `omp config init-xdg`/migration first to move data to the new
+ * locations.
  */
 
 import * as fs from "node:fs";
@@ -16,8 +16,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { engines, version } from "../package.json" with { type: "json" };
 
-/** App name (e.g. "omh") */
+/** App name used in generated file names (e.g. "omh") */
 export const APP_NAME: string = "omh";
+const XDG_APP_DIR_NAME = "omp";
 
 /** Config directory name (e.g. ".omp") */
 export const CONFIG_DIR_NAME: string = ".omp";
@@ -263,7 +264,7 @@ class DirResolver {
 				const value = process.env[envVar];
 				if (!value) return undefined;
 				try {
-					const appRoot = path.join(value, APP_NAME);
+					const appRoot = path.join(value, XDG_APP_DIR_NAME);
 					if (profile) {
 						const profilePath = path.join(appRoot, "profiles", profile);
 						if (fs.existsSync(profilePath)) {

@@ -670,12 +670,10 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(getRuntimeSignals()).toContain("compaction:start:threshold");
 	});
 
-	it("resolves a pending retry before active-goal compaction continuation returns", async () => {
-		// Codex review on #3175: a retry can succeed with a non-empty text stop
-		// that is already over the active-goal compaction threshold. If the
-		// compaction pre-empt schedules its own continuation before the normal
-		// bottom-of-handler `#resolveRetry()` call runs, the session stays
-		// `isRetrying` and later prompt/idle gates remain blocked.
+	it("clears retry state before active-goal compaction continuation returns", async () => {
+		// A retry can succeed with a non-empty text stop that is already over the
+		// active-goal compaction threshold. The retry must settle before compaction
+		// continuation work runs, otherwise prompt/idle gates stay blocked.
 		vi.useRealTimers();
 		const now = Date.now();
 		session.setGoalModeState({
@@ -758,7 +756,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		};
 		session.agent.emitExternalEvent({ type: "message_end", message: recoveredOverThreshold });
 		await withTimeout(retryEnded, 1000, "Retry end timed out");
-		expect(session.isRetrying).toBe(true);
+		expect(session.isRetrying).toBe(false);
 
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [recoveredOverThreshold] });
 

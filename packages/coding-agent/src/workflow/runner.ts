@@ -172,27 +172,16 @@ function workflowRuntimeSignal(options: WorkflowRunnerOptions): WorkflowRuntimeS
 	const timeoutSignal = workflowRuntimeTimeoutSignal(options.maxRuntimeMs, disposers);
 	const lifecycleStop = workflowLifecycleStopSignal(options, disposers);
 	const signal = combineAbortSignals([options.signal, timeoutSignal, lifecycleStop.signal]);
-	const nodeAbortSignal = combineAbortSignals([
-		options.nodeAbortSignal,
-		options.signal,
-		timeoutSignal,
-		lifecycleStop.nodeAbortSignal,
-	]);
+	const nodeAbortSignal = combineAbortSignals([options.nodeAbortSignal, timeoutSignal, lifecycleStop.nodeAbortSignal]);
+	const nodeAbortSignalForActivation =
+		options.nodeAbortSignalForActivation === undefined
+			? undefined
+			: (activation: WorkflowActivation) =>
+					combineAbortSignals([options.nodeAbortSignalForActivation?.(activation), nodeAbortSignal]);
 	return {
 		signal,
 		nodeAbortSignal,
-		nodeAbortSignalForActivation:
-			options.nodeAbortSignalForActivation === undefined &&
-			timeoutSignal === undefined &&
-			lifecycleStop.nodeAbortSignal === undefined
-				? undefined
-				: activation =>
-						combineAbortSignals([
-							options.nodeAbortSignalForActivation?.(activation),
-							options.signal,
-							timeoutSignal,
-							lifecycleStop.nodeAbortSignal,
-						]),
+		nodeAbortSignalForActivation,
 		dispose: () => {
 			for (const dispose of disposers.splice(0)) dispose();
 		},
@@ -324,10 +313,18 @@ async function finishLifecycleAttempt(
 		await createAndRecordLifecycleCheckpoint(options, scheduler, scheduler.frontierNodeIds);
 		return;
 	}
+	const summary = workflowCompletionSummary(scheduler);
 	completeWorkflowAttempt(options.host, {
 		attemptId: lifecycle.attemptId,
-		summary: "workflow completed",
+		summary,
 	});
+}
+
+function workflowCompletionSummary(scheduler: WorkflowSchedulerResult): string {
+	const completedWithSummary = [...scheduler.activations]
+		.reverse()
+		.find(activation => activation.status === "completed" && activation.output?.summary?.trim());
+	return completedWithSummary?.output?.summary?.trim() || "workflow completed";
 }
 
 async function createAndRecordLifecycleCheckpoint(
@@ -472,7 +469,7 @@ async function executeAndPersistActivation(
 		if (modelAudit?.error && nodeRequiresModel(node)) {
 			throw new WorkflowRunnerError(modelAudit.error);
 		}
-		const runtimeSignal = workflowNodeRuntimeSignal(context);
+		const runtimeSignal = workflowNodeRuntimeSignal(options, context);
 		const completionSignal = workflowNodeCompletionSignal(context);
 		const readOnlyWorkspaceBefore = await captureReadOnlyWorkspaceSnapshot(options, node);
 		const rawOutput = await awaitWorkflowNodeExecution(
@@ -562,8 +559,16 @@ async function assertReadOnlyWorkspaceUnchanged(
 	assertWorkflowWorkspaceSnapshotUnchanged(before, after, node.id);
 }
 
-function workflowNodeRuntimeSignal(context: WorkflowSchedulerExecutionContext): AbortSignal | undefined {
-	return context.nodeAbortSignal ?? context.signal;
+function workflowNodeRuntimeSignal(
+	options: WorkflowRunnerOptions,
+	context: WorkflowSchedulerExecutionContext,
+): AbortSignal | undefined {
+	if (options.nodeAbortSignal !== undefined && options.nodeAbortSignalForActivation === undefined) {
+		return options.nodeAbortSignal;
+	}
+	if (context.nodeAbortSignal === undefined) return context.signal;
+	if (context.signal === undefined) return context.nodeAbortSignal;
+	return combineNodeCompletionAbortSignals(context.nodeAbortSignal, context.signal);
 }
 
 function workflowNodeCompletionSignal(context: WorkflowSchedulerExecutionContext): AbortSignal | undefined {

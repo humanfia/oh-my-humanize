@@ -219,10 +219,11 @@ describe("workflow CLI", () => {
 		});
 
 		const result = JSON.parse(output.join("").trim()) as {
-			run: { status: string; completed: number; failed: number };
+			run: { status: string; completed: number; failed: number; summary?: string };
 			runs: { stateKeys: string[] }[];
 		};
 		expect(result.run).toMatchObject({ status: "completed", completed: 1, failed: 0 });
+		expect(result.run.summary).toBe("resource observed");
 		expect(result.runs[0]?.stateKeys).toEqual(["message"]);
 	});
 

@@ -998,12 +998,13 @@ function renderWorkflowGraphCollapsedRows(view: WorkflowGraphView, width: number
 	const summaryParts = [
 		`Workflow ${attempt}`,
 		workflowGraphProgressSummary(view),
+		workflowGraphCompletionSummary(view),
 		view.focus === undefined ? undefined : `focus ${view.focus.nodeId}`,
 	].filter((part): part is string => part !== undefined && part.length > 0);
 	const guideParts = ["/workflow help", "/workflow help agents", "/workflow dashboard show"];
 	const primaryAction = workflowGraphCollapsedPrimaryAction(view);
 	if (width >= 160) {
-		const parts = [...summaryParts.slice(0, 2), ...guideParts, primaryAction, summaryParts[2]].filter(
+		const parts = [...summaryParts.slice(0, 2), ...guideParts, primaryAction, ...summaryParts.slice(2)].filter(
 			(part): part is string => part !== undefined && part.length > 0,
 		);
 		return [truncateToWidth(`${theme.fg(color, glyph)} ${parts.join(" · ")}`, width)];
@@ -1041,6 +1042,13 @@ function workflowGraphProgressSummary(view: WorkflowGraphView): string {
 		progress.skipped > 0 ? `${progress.skipped} skipped` : undefined,
 	].filter((part): part is string => part !== undefined);
 	return tail.join(" · ");
+}
+
+function workflowGraphCompletionSummary(view: WorkflowGraphView): string | undefined {
+	if (view.currentAttempt?.status !== "completed") return undefined;
+	const summary = view.currentAttempt.summary?.trim();
+	if (!summary || summary === "workflow completed") return undefined;
+	return formatWorkflowGraphHeadlineDetail(summary);
 }
 
 function workflowGraphCollapsedPrimaryAction(view: WorkflowGraphView): string | undefined {

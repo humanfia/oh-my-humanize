@@ -47,7 +47,7 @@ describe("createAskToolHumanInputRunner", () => {
 		expect(selectedOptions[0]?.map(labelOf)).toContain("Checkpoint for /workflow commands");
 	});
 
-	it("defaults the human checkpoint selection to proceed", async () => {
+	it("defaults the human checkpoint selection to stop", async () => {
 		let initialIndex: number | undefined;
 		let optionLabels: string[] = [];
 		const runner = createAskToolHumanInputRunner(toolSession(), () =>
@@ -55,7 +55,7 @@ describe("createAskToolHumanInputRunner", () => {
 				select: async (_title, options, options_) => {
 					initialIndex = options_?.initialIndex;
 					optionLabels = options.map(labelOf);
-					return "Decision: proceed (Recommended)";
+					return "Decision: stop (Recommended)";
 				},
 			}),
 		);
@@ -66,9 +66,9 @@ describe("createAskToolHumanInputRunner", () => {
 			question: "Proceed after reviewing the plan?",
 		});
 
-		expect(initialIndex).toBe(1);
-		expect(optionLabels[1]).toBe("Decision: proceed (Recommended)");
-		expect(output.response).toBe("Decision: proceed");
+		expect(initialIndex).toBe(0);
+		expect(optionLabels[0]).toBe("Decision: stop (Recommended)");
+		expect(output.response).toBe("Decision: stop");
 	});
 });
 

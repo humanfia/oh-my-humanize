@@ -51,6 +51,7 @@ export interface WorkflowGraphAttemptView {
 	id: string;
 	status: WorkflowRunAttemptSnapshot["status"];
 	runtimeBindingId: string;
+	summary?: string;
 	checkpointId?: string;
 }
 
@@ -322,6 +323,7 @@ export function buildWorkflowGraphView(
 			status: currentAttempt.status,
 			runtimeBindingId: currentAttempt.runtimeBindingSnapshot.id,
 		};
+		if (currentAttempt.summary !== undefined) view.currentAttempt.summary = currentAttempt.summary;
 		if (currentAttempt.checkpointId !== undefined) view.currentAttempt.checkpointId = currentAttempt.checkpointId;
 	}
 	if (currentCheckpoint !== undefined) {
@@ -2235,6 +2237,13 @@ export function formatWorkflowOverviewLines(view: WorkflowGraphView): string[] {
 		const checkpoint =
 			attempt.checkpointId === undefined ? "" : ` from ${formatWorkflowShortId(attempt.checkpointId)}`;
 		lines.push(`Run: ${formatWorkflowShortId(attempt.id)} ${attempt.status}${checkpoint}`);
+		if (
+			attempt.summary !== undefined &&
+			attempt.summary.trim().length > 0 &&
+			attempt.summary !== "workflow completed"
+		) {
+			lines.push(`Summary: ${formatSingleLineWorkflowDetail(attempt.summary)}`);
+		}
 	}
 	lines.push(`Flow: ${formatWorkflowViewTopology(view)} · ${view.nodes.length} ${pluralNode(view.nodes.length)}`);
 	lines.push(`Focus: ${formatWorkflowOperatorFocus(view)}`);
@@ -2303,7 +2312,7 @@ export function formatWorkflowFocusLines(view: WorkflowGraphView): string[] {
 	if (focus.humanPrompt !== undefined) {
 		lines.push(`human prompt: ${formatSingleLineWorkflowDetail(focus.humanPrompt)}`);
 		lines.push(
-			"human input: default Decision: proceed; choose stop or checkpoint explicitly when evidence is insufficient; h help for controls",
+			"human input: default Decision: stop; choose Decision: proceed only after reading evidence; checkpoint for /workflow commands when evidence is insufficient; h help for controls",
 		);
 	}
 	if (focus.activity !== undefined) {
@@ -2341,7 +2350,7 @@ function formatWorkflowFocusStatus(focus: WorkflowGraphFocusView): string {
 
 function formatRunningWorkflowNode(node: WorkflowGraphNodeView): string {
 	const label = formatWorkflowNodeDisplayName(node.id);
-	if (node.kind === "Human checkpoint") return `${label} waiting for operator input (default Decision: proceed)`;
+	if (node.kind === "Human checkpoint") return `${label} waiting for operator input (default Decision: stop)`;
 	return `${label} running`;
 }
 

@@ -22,6 +22,8 @@ const AGENT_BUILD_REVIEW_LOOP_SCRIPT_DIR = `${import.meta.dir}/../../../examples
 const RESEARCH_REPRODUCTION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction/scripts`;
 const RELEASE_HARDENING_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/release-hardening/release-hardening/scripts`;
 const BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/scripts`;
+const HUMANIZE_GEN_IDEA_FLOW_PATH = `${import.meta.dir}/../../../examples/workflow/experimental/humanize-gen-idea/humanize-gen-idea.omhflow`;
+const HUMANIZE_GEN_IDEA_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/humanize-gen-idea/humanize-gen-idea/scripts`;
 
 describe("example workflow scripts", () => {
 	it("loads the documentation-audit workflow artifact", async () => {
@@ -31,6 +33,81 @@ describe("example workflow scripts", () => {
 
 		expect(artifact.definition.nodes.some(node => node.id === "guardReviewRepair")).toBe(true);
 		expect(artifact.definition.nodes.some(node => node.id === "runDocsValidation")).toBe(true);
+	});
+
+	it("loads the humanize-gen-idea workflow artifact", async () => {
+		const artifact = await loadWorkflowArtifact(HUMANIZE_GEN_IDEA_FLOW_PATH);
+
+		expect(artifact.definition.nodes).toContainEqual(expect.objectContaining({ id: "loadIdeaArgs", type: "script" }));
+		expect(artifact.definition.nodes).toContainEqual(
+			expect.objectContaining({ id: "collectIdeaInput", type: "human" }),
+		);
+		expect(artifact.definition.nodes).toContainEqual(
+			expect.objectContaining({ id: "generateDraft", type: "agent", agent: "task" }),
+		);
+		expect(artifact.definition.nodes).toContainEqual(expect.objectContaining({ id: "verifyDraft", type: "script" }));
+	});
+
+	it("reports the saved idea path from humanize-gen-idea verification", async () => {
+		using tempDir = TempDir.createSync("@omh-gen-idea-verify-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const outputFile = `${cwd}/ideas/draft.md`;
+		await Bun.write(
+			outputFile,
+			[
+				"# Slack Integration Draft",
+				"",
+				"## Original Idea",
+				"",
+				"connect slack",
+				"",
+				"## Primary Direction: Slack Bot Tools",
+				"",
+				"### Approach Summary",
+				"",
+				"Add Slack tools.",
+				"",
+				"### Objective Evidence",
+				"",
+				"- docs/mcp-config.md documents Slack MCP.",
+				"",
+				"### Known Risks",
+				"",
+				"- Slack scopes require care.",
+				"",
+				"## Alternative Directions Considered",
+				"",
+				"### Alt-1: Slack Notifications",
+				"- Gist: send workflow status messages.",
+				"- Objective Evidence:",
+				"  - workflow observability already records status.",
+				"- Why not primary: read/write tools are more useful.",
+				"",
+				"## Synthesis Notes",
+				"",
+				"Notifications can fold into the tool path later.",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "verifyDraft",
+			scriptFileName: "verify-draft.js",
+			scriptDir: HUMANIZE_GEN_IDEA_SCRIPT_DIR,
+			writes: ["/result"],
+			initialState: {
+				idea: {
+					outputFile,
+					ideaBody: "connect slack\n",
+				},
+			},
+		});
+
+		expect(result.scheduler.activations[0]?.output?.summary).toBe(`Idea draft saved to ${outputFile}.`);
+		expect(result.scheduler.state.result).toMatchObject({ outputFile });
 	});
 
 	it("keeps parallel integration evidence outside the reviewer output schema", async () => {

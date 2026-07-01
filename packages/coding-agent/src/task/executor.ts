@@ -1202,7 +1202,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 							args: eventArgs,
 							result: event.result,
 							isError: event.isError,
-						})
+						}) &&
+						!(event.toolName === "yield" && yieldCalled)
 					) {
 						requestAbort("terminate");
 					}
@@ -1515,7 +1516,39 @@ async function driveSessionToYield(
 	};
 	const awaitPromptOrYield = async <T>(promise: Promise<T>): Promise<T | undefined> => {
 		checkAbort();
-		if (monitor.yieldCalled()) return undefined;
+		let promptSettled = false;
+		const guardedPrompt = promise.then(
+			value => {
+				promptSettled = true;
+				return value;
+			},
+			error => {
+				promptSettled = true;
+				if (monitor.yieldCalled() || abortSignal.aborted) {
+					logger.debug("Subagent prompt settled after yield boundary", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return undefined;
+				}
+				throw error;
+			},
+		);
+		void guardedPrompt.catch(() => {});
+
+		const stopInFlightPromptAfterYield = async (): Promise<undefined> => {
+			// A terminal yield may be emitted synchronously just before prompt() resolves.
+			// Give that successful turn a chance to settle so completed sessions are not
+			// aborted, but stop genuinely in-flight prompts before resolving the subagent.
+			await Promise.resolve();
+			await Promise.resolve();
+			if (!promptSettled) {
+				await monitor.abortActiveSession();
+			}
+			return undefined;
+		};
+
+		if (monitor.yieldCalled()) return stopInFlightPromptAfterYield();
+
 		const { promise: abortPromise, reject } = Promise.withResolvers<never>();
 		const onAbort = () => {
 			try {
@@ -1525,18 +1558,12 @@ async function driveSessionToYield(
 			}
 		};
 		abortSignal.addEventListener("abort", onAbort, { once: true });
-		const guardedPrompt = promise.catch(error => {
-			if (monitor.yieldCalled() || abortSignal.aborted) {
-				logger.debug("Subagent prompt settled after yield boundary", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-				return undefined;
-			}
-			throw error;
-		});
-		void guardedPrompt.catch(() => {});
 		try {
-			return await Promise.race([guardedPrompt, monitor.yieldObserved().then(() => undefined), abortPromise]);
+			return await Promise.race([
+				guardedPrompt,
+				monitor.yieldObserved().then(stopInFlightPromptAfterYield),
+				abortPromise,
+			]);
 		} finally {
 			abortSignal.removeEventListener("abort", onAbort);
 		}
@@ -1830,11 +1857,11 @@ export async function finalizeSubagentLifecycle(args: {
 	}
 
 	if (args.isolated) {
-		// Isolated run: the worktree is merged + cleaned after the run, so
-		// the session is not resumable. Park the ref WITHOUT adopting — the
+		// Isolated successful run: the worktree is merged + cleaned after the run,
+		// so the session is not resumable. Park the ref WITHOUT adopting — the
 		// transcript stays reachable (history://), but ensureLive will throw.
-		// Status must flip to "parked" before dispose so the sdk dispose
-		// wrapper skips unregister.
+		// Status must flip to "parked" before dispose so the sdk dispose wrapper
+		// skips unregister.
 		registry.setRevivalPolicy(args.id, "history-only");
 		registry.setStatus(args.id, "parked");
 		await disposeSession();

@@ -598,8 +598,13 @@ edges: []
 			availableModels: [openAiModel],
 			activeModel: openAiModel,
 		});
+		const completionReminder = Promise.withResolvers<string>();
 		const runtimeWithGraph = {
 			...runtime,
+			output: (text: string) => {
+				runtime.output(text);
+				if (text.includes("Workflow completed:") && text.includes("ran build")) completionReminder.resolve(text);
+			},
 			outputWorkflowGraph: (view: unknown) => {
 				graphs.push(view);
 			},
@@ -614,6 +619,9 @@ edges: []
 		expect(family?.attempts[0]?.id).toBe(`${family?.id.replace(/:family$/u, "")}:attempt-1`);
 		expect(graphs.length).toBeGreaterThan(0);
 		expect(calls).toEqual(["build"]);
+		const attemptId = family?.attempts[0]?.id;
+		if (attemptId === undefined) throw new Error("workflow attempt was not recorded");
+		expect(await completionReminder.promise).toContain(`Workflow completed: ${attemptId} - ran build`);
 	});
 
 	it("rejects workflow starts from non-artifact workflow packages", async () => {
@@ -2597,8 +2605,9 @@ edges: []
 			role: "Builder · Build",
 			assignment: "Implement the workflow feature.",
 		});
-		expect(output).toEqual(["Workflow monitor active: run-1 (family run-1:family)."]);
+		expect(output[0]).toBe("Workflow background attempt started: run-1:attempt-1");
 		expect(workflowMonitorComponents).toHaveLength(1);
+		await waitForWorkflowAttemptStatus(entries, "run-1:attempt-1", "completed");
 		const runs = reconstructWorkflowRuns(entries);
 		expect(runs[0]?.activations[0]?.output).toEqual({
 			summary: "agent completed",
@@ -2648,7 +2657,7 @@ edges: []
 
 		expect(result).toBe(true);
 		expect(output).toHaveLength(1);
-		expect(output[0]).toBe("Workflow monitor active: run-monitor (family family-monitor).");
+		expect(output[0]).toBe("Workflow background attempt started: run-monitor:attempt-1");
 		expect(output[0]).not.toContain("Current graph revision");
 		expect(output[0]).not.toContain("Graph nodes:");
 		expect(presentedComponents).toEqual([]);
@@ -2693,9 +2702,11 @@ edges: []
 		);
 		await Bun.write(path.join(dir, "review-artifact", "prompts", "review.md"), "Return pass.");
 		const entries: CapturedEntry[] = [];
+		const requestCaptured = Promise.withResolvers<Parameters<WorkflowAgentTaskRunner>[0]>();
 		let capturedRequest: Parameters<WorkflowAgentTaskRunner>[0] | undefined;
 		const runner: WorkflowAgentTaskRunner = async request => {
 			capturedRequest = request;
+			requestCaptured.resolve(request);
 			return { exitCode: 0, output: JSON.stringify({ verdict: "pass", summary: "review passed" }) };
 		};
 		const { output, runtime } = createTuiRuntime(entries, dir, runner, {
@@ -2709,6 +2720,7 @@ edges: []
 		);
 
 		expect(result).toBe(true);
+		capturedRequest = await requestCaptured.promise;
 		expect(capturedRequest).toMatchObject({
 			agent: "reviewer",
 			activationId: "activation-1",
@@ -2716,16 +2728,17 @@ edges: []
 			modelOverride: "rust-cat/gpt-5.5",
 			modelOverrideAuthFallback: false,
 		});
-		expect(capturedRequest?.task.assignment).toBe("Return pass.");
-		expect(output[0]).toBe("Workflow monitor active: run-review (family run-review:family).");
-		const runs = reconstructWorkflowRuns(entries);
-		expect(runs[0]?.activations[0]?.output).toMatchObject({
-			summary: "review passed",
-			data: { verdict: "pass" },
-		});
-		expect(runs[0]?.activations[0]?.modelAudit).toMatchObject({
-			source: "node",
-			resolvedModel: "rust-cat/gpt-5.5",
+		expect(capturedRequest?.task.assignment).toContain("Original workflow review assignment:\n\nReturn pass.");
+		expect(output[0]).toBe("Workflow background attempt started: run-review:attempt-1");
+		const families = reconstructWorkflowFamilies(entries);
+		expect(families[0]?.attempts[0]?.runtimeBindingSnapshot).toMatchObject({
+			resolvedModels: { review: "rust-cat/gpt-5.5" },
+			modelBindings: {
+				review: {
+					source: "node",
+					resolvedModel: "rust-cat/gpt-5.5",
+				},
+			},
 		});
 	});
 
@@ -2757,9 +2770,11 @@ edges: []
 `,
 		);
 		const entries: CapturedEntry[] = [];
+		const requestCaptured = Promise.withResolvers<Parameters<WorkflowAgentTaskRunner>[0]>();
 		let capturedRequest: Parameters<WorkflowAgentTaskRunner>[0] | undefined;
 		const runner: WorkflowAgentTaskRunner = async request => {
 			capturedRequest = request;
+			requestCaptured.resolve(request);
 			return { exitCode: 0, output: JSON.stringify({ verdict: "finish", summary: "session model used" }) };
 		};
 		const { runtime } = createTuiRuntime(entries, dir, runner, {
@@ -2773,15 +2788,17 @@ edges: []
 		);
 
 		expect(result).toBe(true);
+		capturedRequest = await requestCaptured.promise;
 		expect(capturedRequest).toMatchObject({
 			agent: "reviewer",
 			nodeId: "review",
 			modelOverride: "rust-cat/gpt-5.5",
 			modelOverrideAuthFallback: false,
 		});
-		const runs = reconstructWorkflowRuns(entries);
-		expect(runs[0]?.activations[0]?.modelAudit?.source).toBe("parent-fallback");
-		expect(runs[0]?.activations[0]?.modelAudit?.resolvedModel).toBe("rust-cat/gpt-5.5");
+		const families = reconstructWorkflowFamilies(entries);
+		const reviewBinding = families[0]?.attempts[0]?.runtimeBindingSnapshot?.modelBindings?.review;
+		expect(reviewBinding?.source).toBe("parent-fallback");
+		expect(reviewBinding?.resolvedModel).toBe("rust-cat/gpt-5.5");
 	});
 
 	it("starts agent .omhflow artifacts on the active session model when overriding portable defaults", async () => {
@@ -2819,9 +2836,11 @@ edges: []
 `,
 		);
 		const entries: CapturedEntry[] = [];
+		const requestCaptured = Promise.withResolvers<Parameters<WorkflowAgentTaskRunner>[0]>();
 		let capturedRequest: Parameters<WorkflowAgentTaskRunner>[0] | undefined;
 		const runner: WorkflowAgentTaskRunner = async request => {
 			capturedRequest = request;
+			requestCaptured.resolve(request);
 			return { exitCode: 0, output: "session model used" };
 		};
 		const { output, runtime } = createTuiRuntime(entries, dir, runner, {
@@ -2835,13 +2854,14 @@ edges: []
 		);
 
 		expect(result).toBe(true);
+		capturedRequest = await requestCaptured.promise;
 		expect(capturedRequest).toMatchObject({
 			agent: "task",
 			nodeId: "build",
 			modelOverride: "rust-cat/gpt-5.5",
 			modelOverrideAuthFallback: false,
 		});
-		expect(output[0]).toBe("Workflow monitor active: run-session-agent (family run-session-agent:family).");
+		expect(output[0]).toBe("Workflow background attempt started: run-session-agent:attempt-1");
 		const families = reconstructWorkflowFamilies(entries);
 		expect(families[0]?.attempts[0]?.runtimeBindingSnapshot).toMatchObject({
 			requestedRoles: { builder: "openai/gpt-4o" },
@@ -2857,10 +2877,6 @@ edges: []
 				},
 			},
 		});
-		const runs = reconstructWorkflowRuns(entries);
-		expect(runs[0]?.activations[0]?.modelAudit?.fallbackReason).toBe(
-			"parent active model overrides workflow role default",
-		);
 	});
 
 	it("requests stop for a detached lifecycle attempt without checkpointing it", async () => {

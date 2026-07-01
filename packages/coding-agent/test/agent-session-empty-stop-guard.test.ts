@@ -277,7 +277,7 @@ describe("AgentSession empty stop guard", () => {
 			{
 				"retry.enabled": true,
 				"retry.baseDelayMs": 5,
-				"retry.maxDelayMs": 5_000,
+				"retry.maxDelayMs": 120_000,
 				"retry.maxRetries": 2,
 			},
 		);
@@ -351,7 +351,7 @@ describe("AgentSession empty stop guard", () => {
 			{
 				"retry.enabled": true,
 				"retry.baseDelayMs": 5,
-				"retry.maxDelayMs": 5_000,
+				"retry.maxDelayMs": 120_000,
 				"retry.maxRetries": 2,
 			},
 		);
