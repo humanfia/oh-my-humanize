@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental performance-optimization-search flow accepting truncated here-document benchmark commands and empty benchmark output as valid baseline evidence.
 - Fixed workflow agent and review nodes without explicit `timeoutMs` running without a node deadline, so provider retry stalls fail closed and checkpoint instead of leaving attempts live indefinitely.
 - Fixed the experimental release-hardening final gate treating camelCase rollback/hold policy fields from audit agents as unresolved release blockers instead of advisory gate criteria.
 - Fixed the experimental documentation-audit archive baseline waiver missing Python exception signatures such as `AttributeError`, which caused same-baseline validation failures to block docs-only archives.

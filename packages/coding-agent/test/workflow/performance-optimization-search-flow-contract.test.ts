@@ -13,6 +13,7 @@ interface WorkflowContext {
 		task?: {
 			text?: string;
 			benchmarkCommand?: string;
+			baselineCommand?: string;
 			validationCommand?: string;
 		};
 		runtime?: {
@@ -73,6 +74,44 @@ afterEach(async () => {
 });
 
 describe("performance-optimization-search flow contract", () => {
+	it("fails closed when a baseline command is a truncated here document", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+
+		await expect(
+			runScriptFile(cwd, "capture-baseline.js", {
+				task: {
+					baselineCommand: "python - <<'PY'",
+					benchmarkCommand: "python - <<'PY'",
+					validationCommand: "python -c \"print('validation')\"",
+				},
+			}),
+		).rejects.toThrow(/fatal diagnostic.*here-document/iu);
+
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-baseline.md")).text();
+		expect(evidence).toContain("here-document");
+		expect(evidence).toContain("Fatal Command Diagnostic");
+	});
+
+	it("fails closed when a baseline command exits without observable benchmark output", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+
+		await expect(
+			runScriptFile(cwd, "capture-baseline.js", {
+				task: {
+					baselineCommand: 'python -c ""',
+					benchmarkCommand: 'python -c ""',
+					validationCommand: "python -c \"print('validation')\"",
+				},
+			}),
+		).rejects.toThrow(/benchmark command produced no output/iu);
+
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-baseline.md")).text();
+		expect(evidence).toContain("benchmark command produced no output");
+		expect(evidence).toContain("Fatal Command Diagnostic");
+	});
+
 	it("fails closed when a branch report advertises missing durable artifacts", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });

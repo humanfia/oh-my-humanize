@@ -148,6 +148,8 @@ function bounded(text) {
 }
 
 function commandFailureDiagnostic(result) {
+	const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+	if (!output) return "benchmark command produced no output";
 	const text = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
 	for (const line of text.split(/\r?\n/u)) {
 		const diagnostic = line.trim();
@@ -164,6 +166,7 @@ function isFatalCommandDiagnostic(line) {
 		) ||
 		/\b(?:unknown|unrecognized|invalid)\s+(?:option|flag|argument|parameter)\b/iu.test(line) ||
 		/^usage:\s+/iu.test(line) ||
+		/\bhere-document\b/iu.test(line) ||
 		/\b(?:traceback \(most recent call last\)|syntaxerror|modulenotfounderror|importerror)\b/u.test(line)
 	);
 }

@@ -271,6 +271,7 @@ function isFatalCommandDiagnostic(line) {
 		) ||
 		/\b(?:unknown|unrecognized|invalid)\s+(?:option|flag|argument|parameter)\b/iu.test(line) ||
 		/^usage:\s+/iu.test(line) ||
+		/\bhere-document\b/iu.test(line) ||
 		/\b(?:traceback \(most recent call last\)|syntaxerror|modulenotfounderror|importerror)\b/u.test(line)
 	);
 }
