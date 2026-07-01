@@ -34,6 +34,7 @@ import {
 	type WorkflowNodeRuntimeHost,
 	workflowNodeAbortedErrorReason,
 } from "./node-runtime";
+import { resolveWorkflowNodeDeadlineTimeoutMs } from "./node-timeout-policy";
 import { reconcileWorkflowSchedulerFailureObservability, recordWorkflowCheckpointObservability } from "./observability";
 import {
 	resolveWorkflowPrompt,
@@ -583,7 +584,7 @@ interface WorkflowNodeDeadlineSignal {
 }
 
 function workflowNodeDeadlineSignal(node: WorkflowNode): WorkflowNodeDeadlineSignal {
-	const timeoutMs = node.timeoutMs;
+	const timeoutMs = resolveWorkflowNodeDeadlineTimeoutMs(node);
 	if (timeoutMs === undefined) return { dispose: () => {} };
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(workflowNodeTimeoutReason(node, timeoutMs)), timeoutMs);

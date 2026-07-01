@@ -8,6 +8,7 @@ import type { WorkflowNode, WorkflowScriptLanguage } from "./definition";
 import { formatWorkflowAgentWorkItemLabel } from "./display";
 import type { WorkflowNodeRuntimeHost, WorkflowReviewNodeOutput, WorkflowScriptContext } from "./node-runtime";
 import { WorkflowNodeRuntimeError } from "./node-runtime";
+import { resolveWorkflowAgentTaskTimeoutMs } from "./node-timeout-policy";
 import {
 	createWorkflowObservabilityRecorder,
 	recordWorkflowActivationFailureObservability,
@@ -176,9 +177,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				request.modelOverride = input.modelOverride;
 				request.modelOverrideAuthFallback = false;
 			}
-			if (input.node.timeoutMs !== undefined) {
-				request.timeoutMs = input.node.timeoutMs;
-			}
+			request.timeoutMs = resolveWorkflowAgentTaskTimeoutMs(input.node.timeoutMs);
 			if (input.signal !== undefined) {
 				request.signal = input.signal;
 			}
@@ -274,9 +273,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 					request.modelOverride = input.modelOverride;
 					request.modelOverrideAuthFallback = false;
 				}
-				if (input.node.timeoutMs !== undefined) {
-					request.timeoutMs = input.node.timeoutMs;
-				}
+				request.timeoutMs = resolveWorkflowAgentTaskTimeoutMs(input.node.timeoutMs);
 				if (input.signal !== undefined) {
 					request.signal = input.signal;
 				}

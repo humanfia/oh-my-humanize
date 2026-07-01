@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed workflow agent and review nodes without explicit `timeoutMs` running without a node deadline, so provider retry stalls fail closed and checkpoint instead of leaving attempts live indefinitely.
 - Fixed the experimental release-hardening final gate treating camelCase rollback/hold policy fields from audit agents as unresolved release blockers instead of advisory gate criteria.
 - Fixed the experimental documentation-audit archive baseline waiver missing Python exception signatures such as `AttributeError`, which caused same-baseline validation failures to block docs-only archives.
 - Fixed the experimental release-hardening flow relying on prompt-only read-only audit instructions; scope, audit, and review nodes now use the existing read-only workspace and isolated no-merge workflow contracts so validation byproducts cannot be cleaned up from the shared workspace by audit nodes.

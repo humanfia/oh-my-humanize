@@ -89,6 +89,47 @@ edges: []
 		}
 	});
 
+	it("attaches a default deadline signal to agent nodes without explicit timeouts", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = parseWorkflowDefinition(`
+name: default-node-timeout
+version: 1
+nodes:
+  inspect:
+    type: agent
+    agent: task
+    prompt: Inspect the project.
+edges: []
+`);
+		const freeze = freezeForDefinition(definition);
+		let receivedSignal: AbortSignal | undefined;
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async input => {
+				receivedSignal = input.signal;
+				return { summary: "inspection complete" };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "inspect",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		expect(receivedSignal).toBeDefined();
+		expect(receivedSignal?.aborted).toBe(false);
+		expect(result.scheduler.activations).toMatchObject([{ nodeId: "inspect", status: "completed" }]);
+	});
+
 	it("fails fast when an agent output declares a fail-closed terminal status", async () => {
 		const host = new MemoryWorkflowHost();
 		const definition = failClosedAgentDefinition();

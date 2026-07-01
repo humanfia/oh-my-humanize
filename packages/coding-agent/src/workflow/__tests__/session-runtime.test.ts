@@ -6,6 +6,7 @@ import type { ToolSession } from "../../tools";
 import { EvalTool, type EvalToolParams } from "../../tools/eval";
 import { parseWorkflowDefinition, type WorkflowDefinition, type WorkflowNode } from "../definition";
 import { createEvalToolScriptRunner } from "../eval-tool-runtime";
+import { WORKFLOW_AGENT_TASK_TIMEOUT_MS } from "../node-timeout-policy";
 import { runWorkflow } from "../runner";
 import {
 	createSessionWorkflowRuntimeHost,
@@ -181,6 +182,68 @@ edges: []
 		});
 
 		expect(capturedRequest?.timeoutMs).toBe(600_000);
+	});
+
+	it("passes default workflow agent deadlines to task runners", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: "implementation completed inside default workflow deadline",
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = {
+			id: "implement",
+			type: "agent",
+			agent: "task",
+			prompt: "Implement the next change.",
+		};
+		await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+
+		expect(capturedRequest?.timeoutMs).toBe(WORKFLOW_AGENT_TASK_TIMEOUT_MS);
+	});
+
+	it("passes default workflow review deadlines to task runners", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "review completed inside default workflow deadline" }),
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "review",
+			type: "review",
+			prompt: "Review the implementation.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(capturedRequest?.timeoutMs).toBe(WORKFLOW_AGENT_TASK_TIMEOUT_MS);
 	});
 
 	it("passes workflow review node isolation to task runners", async () => {
