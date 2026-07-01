@@ -25,6 +25,7 @@ import {
 	startWorkflowAttempt,
 	startWorkflowFamily,
 	type WorkflowCheckpointWorkspaceSnapshot,
+	workflowLifecycleStoreEntries,
 } from "./lifecycle";
 import { diagnoseWorkflowLiveness } from "./liveness";
 import { resolveWorkflowNodeModel, type WorkflowModelResolutionAudit } from "./model-resolution";
@@ -229,7 +230,7 @@ function workflowLifecycleStopSignal(
 	};
 	const inspectStopRequest = (): void => {
 		if (stopController.signal.aborted) return;
-		const attempt = reconstructWorkflowFamilies(options.host.getBranch())
+		const attempt = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(options.host))
 			.find(candidate => candidate.id === lifecycle.familyId)
 			?.attempts.find(candidate => candidate.id === lifecycle.attemptId);
 		if (attempt?.status !== "stop_requested") return;
@@ -374,7 +375,7 @@ function captureLifecycleCheckpointWorkspace(
 function requestWorkflowAttemptStopIfRunning(options: WorkflowRunnerOptions, reason: string): void {
 	const lifecycle = options.lifecycle;
 	if (!lifecycle) return;
-	const family = reconstructWorkflowFamilies(options.host.getBranch()).find(
+	const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(options.host)).find(
 		candidate => candidate.id === lifecycle.familyId,
 	);
 	const attempt = family?.attempts.find(candidate => candidate.id === lifecycle.attemptId);
@@ -418,7 +419,7 @@ function lifecycleCheckpointSourceMapping(
 ): Record<string, string> {
 	const lifecycle = options.lifecycle;
 	if (!lifecycle) return identitySourceMapping(frontierNodeIds);
-	const family = reconstructWorkflowFamilies(options.host.getBranch()).find(
+	const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(options.host)).find(
 		candidate => candidate.id === lifecycle.familyId,
 	);
 	const approvedMappings =

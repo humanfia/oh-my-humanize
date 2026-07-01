@@ -1,13 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import {
 	approveWorkflowChangeRequest,
+	completeWorkflowAttempt,
 	proposeWorkflowChangeRequest,
+	type RuntimeBindingSnapshot,
 	reconstructWorkflowFamilies,
 	recordWorkflowChangeRequestApplied,
+	startWorkflowAttempt,
 	startWorkflowFamily,
 	WORKFLOW_LIFECYCLE_EVENT_TYPE,
 	type WorkflowLifecycleBranchEntry,
 	WorkflowLifecycleError,
+	workflowLifecycleStoreEntries,
 } from "../lifecycle";
 import type { WorkflowGraphPatchOperation } from "../patches";
 
@@ -54,6 +58,25 @@ describe("workflow lifecycle", () => {
 		expect(family.changeRequests).toHaveLength(1);
 		expect(family.changeRequests[0]?.reason).toBe("repair review route");
 	});
+
+	it("keeps background lifecycle attempts visible after the conversational branch moves", () => {
+		const host = new BranchingWorkflowHost();
+		startWorkflowFamily(host, { familyId: "family-1" });
+		startWorkflowAttempt(host, {
+			familyId: "family-1",
+			attemptId: "attempt-1",
+			freezeId: "freeze-1",
+			startNodeId: "build",
+			runtimeBindingSnapshot: runtimeBinding("binding-1"),
+		});
+		host.moveConversationalBranchPastWorkflowStart();
+
+		completeWorkflowAttempt(host, { attemptId: "attempt-1", summary: "done" });
+
+		expect(reconstructWorkflowFamilies(host.getBranch())).toHaveLength(0);
+		const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(host))[0]!;
+		expect(family.attempts[0]).toMatchObject({ id: "attempt-1", status: "completed", summary: "done" });
+	});
 });
 
 function changeProposal(reason: string) {
@@ -87,4 +110,38 @@ class MemoryWorkflowHost {
 	getBranch(): WorkflowLifecycleBranchEntry[] {
 		return [...this.#entries];
 	}
+}
+
+class BranchingWorkflowHost {
+	#entries: WorkflowLifecycleBranchEntry[] = [];
+	#branchStart = 0;
+
+	appendCustomEntry(customType: string, data?: unknown): string {
+		this.#entries.push({ type: "custom", customType, data });
+		return `${WORKFLOW_LIFECYCLE_EVENT_TYPE}:${this.#entries.length}`;
+	}
+
+	getBranch(): WorkflowLifecycleBranchEntry[] {
+		return this.#entries.slice(this.#branchStart);
+	}
+
+	getEntries(): WorkflowLifecycleBranchEntry[] {
+		return [...this.#entries];
+	}
+
+	moveConversationalBranchPastWorkflowStart(): void {
+		this.#branchStart = this.#entries.length;
+	}
+}
+
+function runtimeBinding(id: string): RuntimeBindingSnapshot {
+	return {
+		id,
+		requestedRoles: {},
+		resolvedModels: {},
+		tools: [],
+		agents: [],
+		unavailable: [],
+		warnings: [],
+	};
 }

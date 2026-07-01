@@ -11,9 +11,14 @@ export const WORKFLOW_LIFECYCLE_EVENT_TYPE = "workflow-lifecycle-event";
 export interface WorkflowLifecycleStoreHost {
 	appendCustomEntry(customType: string, data?: unknown): string;
 	getBranch(): WorkflowLifecycleBranchEntry[];
+	getEntries?(): WorkflowLifecycleBranchEntry[];
 }
 
 export type WorkflowLifecycleBranchEntry = Pick<CustomEntry, "type" | "customType" | "data"> | SessionEntry;
+
+export function workflowLifecycleStoreEntries(host: WorkflowLifecycleStoreHost): WorkflowLifecycleBranchEntry[] {
+	return host.getEntries?.() ?? host.getBranch();
+}
 
 export class WorkflowLifecycleError extends Error {
 	constructor(message: string) {
@@ -475,7 +480,7 @@ export function restartWorkflowAttempt(
 }
 
 function assertWorkflowAttemptIdAvailable(host: WorkflowLifecycleStoreHost, attemptId: string): void {
-	const existing = reconstructWorkflowFamilies(host.getBranch()).some(family =>
+	const existing = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(host)).some(family =>
 		family.attempts.some(attempt => attempt.id === attemptId),
 	);
 	if (existing) throw new Error(`Workflow attempt already exists: ${attemptId}`);
@@ -1110,7 +1115,9 @@ function assertWorkflowAttemptTerminalTransitionAllowed(
 }
 
 function expectWorkflowFamily(host: WorkflowLifecycleStoreHost, familyId: string): WorkflowRunFamilySnapshot {
-	const family = reconstructWorkflowFamilies(host.getBranch()).find(candidate => candidate.id === familyId);
+	const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(host)).find(
+		candidate => candidate.id === familyId,
+	);
 	if (family === undefined) throw new WorkflowLifecycleError(`Workflow family not found: ${familyId}`);
 	return family;
 }
@@ -1129,7 +1136,7 @@ function findWorkflowAttempt(
 	host: WorkflowLifecycleStoreHost,
 	attemptId: string,
 ): { family: WorkflowRunFamilySnapshot; attempt: WorkflowRunAttemptSnapshot } | undefined {
-	for (const family of reconstructWorkflowFamilies(host.getBranch())) {
+	for (const family of reconstructWorkflowFamilies(workflowLifecycleStoreEntries(host))) {
 		const attempt = family.attempts.find(candidate => candidate.id === attemptId);
 		if (attempt !== undefined) return { family, attempt };
 	}
@@ -1140,7 +1147,7 @@ function expectWorkflowChangeRequest(
 	host: WorkflowLifecycleStoreHost,
 	changeRequestId: string,
 ): { family: WorkflowRunFamilySnapshot; request: WorkflowChangeRequestRecord } {
-	for (const family of reconstructWorkflowFamilies(host.getBranch())) {
+	for (const family of reconstructWorkflowFamilies(workflowLifecycleStoreEntries(host))) {
 		const request = family.changeRequests.find(candidate => candidate.id === changeRequestId);
 		if (request !== undefined) return { family, request };
 	}

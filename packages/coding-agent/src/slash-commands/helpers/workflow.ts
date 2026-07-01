@@ -58,13 +58,14 @@ import {
 	workflowChangeFreezeApplicationError,
 	workflowChangeProposalDenial,
 	workflowFreezeForChangeTarget,
+	workflowLifecycleStoreEntries,
 } from "../../workflow/lifecycle";
 import { resolveWorkflowNodeModel, type WorkflowModelResolutionAudit } from "../../workflow/model-resolution";
 import { parseWorkflowMonitorDisplayMode, workflowMonitorDisplayModeLabel } from "../../workflow/monitor-display-mode";
 import type { WorkflowNodeRuntimeHost } from "../../workflow/node-runtime";
 import { loadWorkflowArtifact, type WorkflowArtifact, WorkflowPackageError } from "../../workflow/package-loader";
 import { applyWorkflowGraphPatch } from "../../workflow/patches";
-import { reconstructWorkflowRuns } from "../../workflow/run-store";
+import { reconstructWorkflowRuns, workflowRunStoreEntries } from "../../workflow/run-store";
 import {
 	runWorkflow,
 	type WorkflowRunnerLifecycleOptions,
@@ -244,9 +245,8 @@ export async function handleWorkflowAcp(
 }
 
 async function handleInspectCommand(runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
-	const branch = runtime.sessionManager.getBranch();
-	const runs = reconstructWorkflowRuns(branch);
-	const families = reconstructWorkflowFamilies(branch);
+	const runs = reconstructWorkflowRuns(workflowRunStoreEntries(runtime.sessionManager));
+	const families = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager));
 	const run = runs.at(-1);
 	if (!run && families.length === 0) {
 		await runtime.output("No workflow runs or workflow families found.");
@@ -266,7 +266,7 @@ async function handleInspectCommand(runtime: SlashCommandRuntime): Promise<Slash
 async function handleListCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const parsed = parseWorkflowListArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
-	let families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
+	let families = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager));
 	if (parsed.familyId !== undefined) families = families.filter(family => family.id === parsed.familyId);
 	if (families.length === 0) {
 		await runtime.output(
@@ -281,7 +281,7 @@ async function handleListCommand(rest: string, runtime: SlashCommandRuntime): Pr
 async function handleGraphCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const parsed = parseWorkflowGraphArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
-	let families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
+	let families = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager));
 	if (parsed.familyId !== undefined) families = families.filter(family => family.id === parsed.familyId);
 	if (families.length === 0) {
 		await runtime.output(
@@ -379,7 +379,7 @@ async function outputWorkflowManager(
 	args: WorkflowManagerArgs,
 	runtime: SlashCommandRuntime,
 ): Promise<SlashCommandResult> {
-	let families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
+	let families = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager));
 	if (args.familyId !== undefined) families = families.filter(family => family.id === args.familyId);
 	if (families.length === 0) {
 		await runtime.output(
@@ -499,7 +499,7 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 		if (runInBackground) {
 			await flushWorkflowLifecycle(runtime);
 			await runtime.output(`Workflow background attempt started: ${attemptId}`);
-			const family = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+			const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 				candidate => candidate.id === lifecycle.familyId,
 			);
 			if (family) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(family, runtime)], runtime);
@@ -507,14 +507,16 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 		}
 	}
 	await runPromise;
-	const run = reconstructWorkflowRuns(runtime.sessionManager.getBranch()).find(candidate => candidate.id === runId);
+	const run = reconstructWorkflowRuns(workflowRunStoreEntries(runtime.sessionManager)).find(
+		candidate => candidate.id === runId,
+	);
 	if (!run) {
 		await runtime.output(`Workflow run ${runId} started, but no run records were found.`);
 		return commandConsumed();
 	}
 	const sections = [formatWorkflowInspection(buildWorkflowInspection(run))];
 	if (lifecycleFamilyId !== undefined) {
-		const family = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+		const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 			candidate => candidate.id === lifecycleFamilyId,
 		);
 		if (family) {
@@ -537,11 +539,13 @@ function workflowStartConflict(
 	runId: string,
 	attemptId: string | undefined,
 ): string | undefined {
-	const existingRun = reconstructWorkflowRuns(runtime.sessionManager.getBranch()).find(run => run.id === runId);
+	const existingRun = reconstructWorkflowRuns(workflowRunStoreEntries(runtime.sessionManager)).find(
+		run => run.id === runId,
+	);
 	if (existingRun !== undefined) return `Workflow run already exists: ${runId}`;
 	if (attemptId === undefined) return undefined;
-	const existingAttempt = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).some(family =>
-		family.attempts.some(attempt => attempt.id === attemptId),
+	const existingAttempt = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).some(
+		family => family.attempts.some(attempt => attempt.id === attemptId),
 	);
 	if (existingAttempt) return `Workflow attempt already exists: ${attemptId}`;
 	return undefined;
@@ -560,7 +564,7 @@ async function handleFreezeCommand(rest: string, runtime: SlashCommandRuntime): 
 		return usage(errorMessage(error), runtime);
 	}
 	const familyId = parsed.familyId ?? `${freeze.id}:family`;
-	const existingFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+	const existingFamily = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 		candidate => candidate.id === familyId,
 	);
 	const draftApplication = workflowDraftFreezeApplication(existingFamily, artifact, freeze);
@@ -580,7 +584,7 @@ async function handleFreezeCommand(rest: string, runtime: SlashCommandRuntime): 
 		lines.push(`Workflow change request applied: ${draftApplication.changeRequestId} -> freeze ${freeze.id}`);
 	}
 	await runtime.output(lines.join("\n"));
-	const family = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+	const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 		candidate => candidate.id === familyId,
 	);
 	if (family) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(family, runtime)], runtime);
@@ -633,7 +637,7 @@ async function handleRequestChangeCommand(rest: string, runtime: SlashCommandRun
 	} catch (error) {
 		return usage(errorMessage(error), runtime);
 	}
-	const family = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+	const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 		candidate => candidate.id === request.familyId,
 	);
 	if (!family) return usage(`Workflow family not found for change request: ${request.familyId}`, runtime);
@@ -646,7 +650,7 @@ async function handleRequestChangeCommand(rest: string, runtime: SlashCommandRun
 		return usage(errorMessage(error), runtime);
 	}
 	await runtime.output(`Workflow change request: ${proposed.id}\nStatus: ${proposed.status}`);
-	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+	const updatedFamily = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 		candidate => candidate.id === request.familyId,
 	);
 	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
@@ -658,7 +662,7 @@ async function handleApproveChangeCommand(rest: string, runtime: SlashCommandRun
 	if ("error" in parsed) return usage(parsed.error, runtime);
 	const actor = parsed.actor ?? "human";
 	const family = findWorkflowFamilyByChangeRequest(
-		reconstructWorkflowFamilies(runtime.sessionManager.getBranch()),
+		reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)),
 		parsed.changeRequestId,
 	);
 	const request = family?.changeRequests.find(candidate => candidate.id === parsed.changeRequestId);
@@ -672,7 +676,7 @@ async function handleApproveChangeCommand(rest: string, runtime: SlashCommandRun
 	});
 	await runtime.output(`Workflow change request approved: ${parsed.changeRequestId}`);
 	const updatedFamily = findWorkflowFamilyByChangeRequest(
-		reconstructWorkflowFamilies(runtime.sessionManager.getBranch()),
+		reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)),
 		parsed.changeRequestId,
 	);
 	if (updatedFamily) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(updatedFamily, runtime)], runtime);
@@ -689,7 +693,7 @@ async function handleRejectChangeCommand(rest: string, runtime: SlashCommandRunt
 	});
 	await runtime.output(`Workflow change request rejected: ${parsed.changeRequestId}`);
 	const family = findWorkflowFamilyByChangeRequest(
-		reconstructWorkflowFamilies(runtime.sessionManager.getBranch()),
+		reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)),
 		parsed.changeRequestId,
 	);
 	if (family) await emitWorkflowGraphViews([buildWorkflowGraphViewForRuntime(family, runtime)], runtime);
@@ -699,7 +703,7 @@ async function handleRejectChangeCommand(rest: string, runtime: SlashCommandRunt
 async function handleApplyChangeCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const parsed = parseWorkflowApplyChangeArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
-	const families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
+	const families = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager));
 	const family = findWorkflowFamilyByChangeRequest(families, parsed.changeRequestId);
 	const request = family?.changeRequests.find(candidate => candidate.id === parsed.changeRequestId);
 	if (!family || !request) return usage(`Workflow change request not found: ${parsed.changeRequestId}`, runtime);
@@ -743,7 +747,7 @@ async function handleApplyChangeCommand(rest: string, runtime: SlashCommandRunti
 	}
 	const targetId = parsed.freezeId ?? draftId;
 	const updatedFamily = findWorkflowFamilyByChangeRequest(
-		reconstructWorkflowFamilies(runtime.sessionManager.getBranch()),
+		reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)),
 		request.id,
 	);
 	await runtime.output(`Workflow change request applied: ${request.id} -> ${target} ${targetId}`);
@@ -768,7 +772,7 @@ function workflowChangeRequestAlreadyApplied(
 async function handleStopCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const parsed = parseWorkflowStopArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
-	const families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
+	const families = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager));
 	const resolved = resolveWorkflowAttempt(families, parsed.attemptId);
 	if (typeof resolved === "string") return usage(resolved, runtime);
 	const { family, attempt } = resolved;
@@ -786,7 +790,7 @@ async function handleStopCommand(rest: string, runtime: SlashCommandRuntime): Pr
 		reason: "slash command stop",
 	});
 	await flushWorkflowLifecycle(runtime);
-	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+	const updatedFamily = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 		candidate => candidate.id === family.id,
 	);
 	await runtime.output(
@@ -803,7 +807,7 @@ async function handleStopCommand(rest: string, runtime: SlashCommandRuntime): Pr
 async function handleInterruptCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const parsed = parseWorkflowInterruptArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
-	const families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
+	const families = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager));
 	const resolved = resolveWorkflowAttempt(families, parsed.attemptId);
 	if (typeof resolved === "string") return usage(resolved, runtime);
 	const { family, attempt } = resolved;
@@ -854,7 +858,7 @@ async function stopActiveWorkflowAttempt(
 			await active.finished;
 		}
 	}
-	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+	const updatedFamily = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 		candidate => candidate.id === family.id,
 	);
 	const checkpoint = updatedFamily?.checkpoints.filter(candidate => candidate.attemptId === attempt.id).at(-1);
@@ -899,7 +903,7 @@ async function interruptActiveWorkflowActivation(
 		}
 	}
 	await active.finished;
-	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+	const updatedFamily = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 		candidate => candidate.id === family.id,
 	);
 	const checkpoint = updatedFamily?.checkpoints.filter(candidate => candidate.attemptId === attempt.id).at(-1);
@@ -943,7 +947,7 @@ function workflowFreezeControlArtifactPaths(workspaceRoot: string, freeze: FlowF
 async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const parsed = parseWorkflowRestartArgs(rest);
 	if ("error" in parsed) return usage(parsed.error, runtime);
-	const families = reconstructWorkflowFamilies(runtime.sessionManager.getBranch());
+	const families = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager));
 	const located = findCheckpoint(families, parsed.checkpointId);
 	if (!located) return usage(await formatWorkflowCheckpointNotFound(parsed.checkpointId, runtime), runtime);
 	const runningResume = findRunningWorkflowCheckpointResumeAttempt(located.family, located.checkpoint.id);
@@ -1021,7 +1025,7 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 		nodeAbortSignalForActivation: activation => nodeAbortSignalForActivation(nodeAbortControllers, activation),
 		lifecycle,
 	});
-	const startedAttempt = reconstructWorkflowFamilies(runtime.sessionManager.getBranch())
+	const startedAttempt = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager))
 		.find(candidate => candidate.id === located.family.id)
 		?.attempts.find(candidate => candidate.id === attemptId);
 	if (!startedAttempt) {
@@ -1053,7 +1057,7 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 	if (parsed.background) {
 		await flushWorkflowLifecycle(runtime);
 		await runtime.output(`Workflow background restart attempt started: ${attemptId}`);
-		const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+		const updatedFamily = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 			candidate => candidate.id === located.family.id,
 		);
 		if (updatedFamily)
@@ -1061,7 +1065,7 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 		return commandConsumed();
 	}
 	await runPromise;
-	const updatedFamily = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+	const updatedFamily = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).find(
 		candidate => candidate.id === located.family.id,
 	);
 	await flushWorkflowLifecycle(runtime);
@@ -1593,7 +1597,7 @@ export async function requestActiveWorkflowStopsForRuntime(
 	const reason = options.reason ?? "operator interrupt";
 	const activeAttempts = [...activeWorkflowAttemptMap(runtime).values()];
 	const runningAttemptIds = new Set(
-		reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).flatMap(family =>
+		reconstructWorkflowFamilies(workflowLifecycleStoreEntries(runtime.sessionManager)).flatMap(family =>
 			family.attempts.filter(attempt => attempt.status === "running").map(attempt => attempt.id),
 		),
 	);
@@ -2140,7 +2144,10 @@ async function findWorkflowCheckpointInPersistedSessions(
 		let manager: SessionManager | undefined;
 		try {
 			manager = await SessionManager.open(session.path, sessionAccess.sessionDir);
-			const located = findCheckpoint(reconstructWorkflowFamilies(manager.getBranch()), checkpointId);
+			const located = findCheckpoint(
+				reconstructWorkflowFamilies(workflowLifecycleStoreEntries(manager)),
+				checkpointId,
+			);
 			if (located !== undefined) {
 				return { sessionId: session.id, familyId: located.family.id, checkpointId };
 			}

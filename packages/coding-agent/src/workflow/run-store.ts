@@ -11,6 +11,7 @@ export const WORKFLOW_RUN_EVENT_TYPE = "workflow-run-event";
 export interface WorkflowRunStoreHost {
 	appendCustomEntry(customType: string, data?: unknown): string;
 	getBranch(): Array<Pick<CustomEntry, "type" | "customType" | "data"> | SessionEntry>;
+	getEntries?(): Array<Pick<CustomEntry, "type" | "customType" | "data"> | SessionEntry>;
 }
 
 export interface WorkflowGraphRevision {
@@ -154,6 +155,12 @@ export interface WorkflowActivationFailedEvent {
 	error: string;
 }
 
+export function workflowRunStoreEntries(
+	host: WorkflowRunStoreHost,
+): Array<Pick<CustomEntry, "type" | "customType" | "data"> | SessionEntry> {
+	return host.getEntries?.() ?? host.getBranch();
+}
+
 export interface WorkflowActivationAbortedEvent {
 	event: "activation_aborted";
 	runId: string;
@@ -187,7 +194,7 @@ export function startWorkflowRun(
 }
 
 function assertWorkflowRunIdAvailable(host: WorkflowRunStoreHost, runId: string): void {
-	const existing = reconstructWorkflowRuns(host.getBranch()).some(run => run.id === runId);
+	const existing = reconstructWorkflowRuns(workflowRunStoreEntries(host)).some(run => run.id === runId);
 	if (existing) throw new Error(`Workflow run already exists: ${runId}`);
 }
 
