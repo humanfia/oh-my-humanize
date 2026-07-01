@@ -1,6 +1,7 @@
 import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { runBenchCommand } from "../cli/bench-cli";
+import { SERVICE_TIER_OPENAI_VALUES } from "../config/service-tier";
 
 export default class Bench extends Command {
 	static description =
@@ -15,16 +16,22 @@ export default class Bench extends Command {
 	};
 
 	static flags = {
-		runs: Flags.integer({ description: "Requests per model (results are averaged)", default: 1 }),
+		runs: Flags.integer({ description: "Requests per model (results are averaged)", default: 10 }),
 		"max-tokens": Flags.integer({ description: "Max output tokens per request", default: 512 }),
 		prompt: Flags.string({ description: "Custom prompt text (default: bundled bench prompt)" }),
+		"service-tier": Flags.string({
+			description: "Service tier applied per model family (default: configured `tier.*` settings; `none` omits it)",
+			options: SERVICE_TIER_OPENAI_VALUES,
+		}),
 		json: Flags.boolean({ description: "Output JSON" }),
+		par: Flags.integer({ description: "Execute runs with N parallel queries/requests", default: 4 }),
 	};
 
 	static examples = [
 		`# Compare two models\n  ${APP_NAME} bench anthropic/claude-opus-4-5 openai/gpt-5.2`,
 		`# Fuzzy selectors work\n  ${APP_NAME} bench opus sonnet`,
 		`# Average over 3 runs each\n  ${APP_NAME} bench opus gpt-5.2 --runs 3`,
+		`# Force priority serving tier\n  ${APP_NAME} bench openai-codex/gpt-5.5:low --runs 10 --service-tier priority`,
 		`# Machine-readable output\n  ${APP_NAME} bench opus --json`,
 	];
 
@@ -36,7 +43,9 @@ export default class Bench extends Command {
 				runs: flags.runs,
 				maxTokens: flags["max-tokens"],
 				prompt: flags.prompt,
+				serviceTier: flags["service-tier"],
 				json: flags.json,
+				par: flags.par,
 			},
 		});
 	}

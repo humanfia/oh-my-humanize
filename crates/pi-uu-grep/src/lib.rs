@@ -1,6 +1,6 @@
 //! `grep` implemented as an in-process shell builtin on top of the ripgrep
 //! libraries (`grep-regex` for the matcher, `grep-searcher` for line scanning),
-//! with directory recursion via `ignore` and `--include` filtering via
+//! with directory recursion via `pi-walker` and `--include` filtering via
 //! `globset`. All I/O and path resolution is routed through `pi-uutils-ctx` so
 //! the builtin writes to the command's redirected file descriptors and resolves
 //! relative paths against the shell's working directory.
@@ -24,7 +24,6 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch};
-use ignore::WalkBuilder;
 pub use rg::run as run_rg;
 
 #[derive(Parser, Debug)]
@@ -358,6 +357,83 @@ fn process_reader<R: Read, W: Write>(
 	Ok(sink.any_match)
 }
 
+fn display_path_for_operand(operand: &OsStr, resolved: &Path, path: &Path) -> PathBuf {
+	let rel = path.strip_prefix(resolved).unwrap_or(path);
+	if rel.as_os_str().is_empty() {
+		PathBuf::from(operand)
+	} else {
+		Path::new(operand).join(rel)
+	}
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_file_path<W: Write>(
+	operand: &OsStr,
+	resolved: &Path,
+	path: &Path,
+	matcher: &RegexMatcher,
+	searcher: &mut Searcher,
+	opts: &Options,
+	include_set: Option<&GlobSet>,
+	show_names: bool,
+	out: &mut W,
+	had_error: &mut bool,
+) -> bool {
+	if let Some(set) = include_set {
+		let name = path.file_name().unwrap_or_default();
+		if !set.is_match(name) {
+			return false;
+		}
+	}
+	let display_path = display_path_for_operand(operand, resolved, path);
+	match File::open(path) {
+		Ok(file) => {
+			let bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
+			let name: Option<&[u8]> = if show_names { Some(&bytes) } else { None };
+			match process_reader(matcher, searcher, file, name, opts, out) {
+				Ok(matched) => matched,
+				Err(err) => {
+					*had_error = true;
+					if !opts.no_messages {
+						let _ = writeln!(
+							pi_uutils_ctx::stderr(),
+							"grep: {}: {err}",
+							display_path.to_string_lossy()
+						);
+					}
+					false
+				},
+			}
+		},
+		Err(err) => {
+			*had_error = true;
+			if !opts.no_messages {
+				let _ =
+					writeln!(pi_uutils_ctx::stderr(), "grep: {}: {err}", display_path.to_string_lossy());
+			}
+			false
+		},
+	}
+}
+
+fn grep_walk_request(root: &Path, follow_links: bool) -> pi_walker::WalkRequest {
+	pi_walker::WalkRequest::new(root)
+		.hidden(true)
+		.gitignore(false)
+		.skip_git(false)
+		.skip_node_modules(false)
+		.follow_links(pi_walker::FollowLinks::from(follow_links))
+		.detail(pi_walker::WalkDetail::Minimal)
+		.order(pi_walker::WalkOrder::Unordered)
+		.emit_root(true)
+		.depth(0, usize::MAX)
+		.visit_order(pi_walker::VisitOrder::PreOrder)
+		.directory_errors(pi_walker::DirectoryErrorMode::Visit)
+		.same_file_system(false)
+		.cache(false)
+		.filter(pi_walker::WalkFilter::files_only())
+}
+
 /// Recursively search a directory operand. `operand` is the path as typed (used
 /// for display), `resolved` is the cwd-resolved root walked on the filesystem.
 #[allow(clippy::too_many_arguments)]
@@ -373,78 +449,89 @@ fn search_dir<W: Write>(
 	out: &mut W,
 	had_error: &mut bool,
 ) -> bool {
+	let request = grep_walk_request(resolved, follow_links);
 	let mut any = false;
-	let mut builder = WalkBuilder::new(resolved);
-	// GNU grep -r searches everything (hidden files, VCS-ignored files); disable
-	// ignore's standard filters so behaviour matches grep, not ripgrep.
-	builder.standard_filters(false);
-	builder.follow_links(follow_links);
-
-	for result in builder.build() {
-		// -q: a single match anywhere in the tree is enough.
-		if opts.quiet && any {
-			break;
-		}
-		let entry = match result {
-			Ok(e) => e,
-			Err(err) => {
-				*had_error = true;
-				if !opts.no_messages {
-					let _ = writeln!(pi_uutils_ctx::stderr(), "grep: {err}");
-				}
-				continue;
-			},
-		};
-		// Only search regular files (skip directories and other non-files).
-		if entry.file_type().is_none_or(|t| t.is_dir()) {
-			continue;
-		}
-		let path = entry.path();
-		if let Some(set) = include_set {
-			let name = path.file_name().unwrap_or_default();
-			if !set.is_match(name) {
-				continue;
+	let had_error_state = std::cell::Cell::new(*had_error);
+	let walk = request.for_each_entry_with_heartbeat(
+		|| {
+			if pi_uutils_ctx::is_cancelled() {
+				Err(io::Error::from(io::ErrorKind::Interrupted))
+			} else {
+				Ok::<(), io::Error>(())
 			}
-		}
-		// Rebuild the display path as `<operand>/<relative>` so output uses the
-		// operand exactly as typed (GNU behaviour), not the resolved abs path.
-		let rel = path.strip_prefix(resolved).unwrap_or(path);
-		let display_path: PathBuf = if rel.as_os_str().is_empty() {
-			PathBuf::from(operand)
-		} else {
-			Path::new(operand).join(rel)
-		};
-		match File::open(path) {
-			Ok(file) => {
-				let bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
-				let name: Option<&[u8]> = if show_names { Some(&bytes) } else { None };
-				match process_reader(matcher, searcher, file, name, opts, out) {
-					Ok(m) => any |= m,
-					Err(e) => {
-						*had_error = true;
-						if !opts.no_messages {
-							let _ = writeln!(
-								pi_uutils_ctx::stderr(),
-								"grep: {}: {e}",
-								display_path.to_string_lossy()
-							);
-						}
-					},
-				}
-			},
-			Err(e) => {
-				*had_error = true;
-				if !opts.no_messages {
-					let _ = writeln!(
-						pi_uutils_ctx::stderr(),
-						"grep: {}: {e}",
-						display_path.to_string_lossy()
-					);
-				}
-			},
-		}
+		},
+		|entry: pi_walker::EntryMeta<'_>| {
+			if opts.quiet && any {
+				return Ok(pi_walker::WalkDecision::Stop);
+			}
+			if entry.file_type == pi_walker::FileType::Dir {
+				return Ok(pi_walker::WalkDecision::Skip);
+			}
+			let mut entry_had_error = had_error_state.get();
+			let matched = search_file_path(
+				operand,
+				resolved,
+				entry.absolute_path.as_ref(),
+				matcher,
+				searcher,
+				opts,
+				include_set,
+				show_names,
+				out,
+				&mut entry_had_error,
+			);
+			had_error_state.set(entry_had_error);
+			any |= matched;
+			if opts.quiet && any {
+				Ok(pi_walker::WalkDecision::Stop)
+			} else {
+				Ok(pi_walker::WalkDecision::Include)
+			}
+		},
+		|error: pi_walker::DirectoryError<'_>| {
+			had_error_state.set(true);
+			if !opts.no_messages {
+				let display_path = display_path_for_operand(operand, resolved, error.path);
+				let _ = writeln!(
+					pi_uutils_ctx::stderr(),
+					"grep: {}: {}",
+					display_path.to_string_lossy(),
+					error.error
+				);
+			}
+			Ok(pi_walker::WalkDecision::Include)
+		},
+	);
+	*had_error |= had_error_state.get();
+	match walk {
+		Ok(pi_walker::WalkStatus::Complete | pi_walker::WalkStatus::Stopped) => any,
+		Err(pi_walker::WalkError::Interrupted(_)) if pi_uutils_ctx::is_cancelled() => {
+			// Harness cancellation (shell abort/timeout). The shell wrapper
+			// overrides the exit code, so stay silent and let the walk unwind
+			// without injecting a spurious diagnostic on the command's stderr.
+			*had_error = true;
+			any
+		},
+		Err(pi_walker::WalkError::Interrupted(err)) => {
+			*had_error = true;
+			if !opts.no_messages {
+				let _ = writeln!(pi_uutils_ctx::stderr(), "grep: {err}");
+			}
+			any
+		},
+		Err(pi_walker::WalkError::InvalidData { path, message }) => {
+			*had_error = true;
+			if !opts.no_messages {
+				let display_path = display_path_for_operand(operand, resolved, &path);
+				let _ = writeln!(
+					pi_uutils_ctx::stderr(),
+					"grep: {}: {message}",
+					display_path.to_string_lossy()
+				);
+			}
+			any
+		},
 	}
-	any
 }
 
 /// In-process builtin entry point. The host installs a [`pi_uutils_ctx`] scope
@@ -567,12 +654,18 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 	let mut any_match = false;
 	let mut had_error = false;
 
+	let mut processed_operand = false;
 	for f in &files {
 		// -q: once something matched, exit immediately; the status is settled
 		// below. Checked at the top so the stdin `continue` path stops too.
 		if opts.quiet && any_match {
 			break;
 		}
+		if processed_operand && pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
+		processed_operand = true;
 		// stdin
 		if f.as_os_str() == OsStr::new("-") {
 			let name: Option<&[u8]> = if show_names {
@@ -595,6 +688,10 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 						let _ = writeln!(pi_uutils_ctx::stderr(), "grep: (standard input): {e}");
 					}
 				},
+			}
+			if pi_uutils_ctx::is_cancelled() {
+				had_error = true;
+				break;
 			}
 			continue;
 		}
@@ -656,6 +753,10 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 				}
 			},
 		}
+		if pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
 	}
 
 	let _ = out.flush();
@@ -683,9 +784,10 @@ mod tests {
 	use std::{
 		collections::HashMap,
 		io::Cursor,
-		sync::{Arc, Mutex, atomic::AtomicBool},
+		sync::{Arc, atomic::AtomicBool},
 	};
 
+	use parking_lot::Mutex;
 	use pi_uutils_ctx::{ScopeIo, scope};
 
 	use super::*;
@@ -695,7 +797,7 @@ mod tests {
 
 	impl Write for SharedBuf {
 		fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-			self.0.lock().expect("buffer lock").extend_from_slice(buf);
+			self.0.lock().extend_from_slice(buf);
 			Ok(buf.len())
 		}
 
@@ -724,10 +826,8 @@ mod tests {
 			.map(OsString::from)
 			.collect();
 		let code = scope(io, || run(argv));
-		let stdout =
-			String::from_utf8(out.lock().expect("stdout lock").clone()).expect("utf8 stdout");
-		let stderr =
-			String::from_utf8(err.lock().expect("stderr lock").clone()).expect("utf8 stderr");
+		let stdout = String::from_utf8(out.lock().clone()).expect("utf8 stdout");
+		let stderr = String::from_utf8(err.lock().clone()).expect("utf8 stderr");
 		(code, stdout, stderr)
 	}
 
@@ -792,5 +892,78 @@ mod tests {
 			stdout.contains("grep") && stdout.contains("pi-uu-grep"),
 			"version output should identify the builtin, got: {stdout:?}"
 		);
+	}
+
+	/// Run `grep` with a pre-set cancel flag, mirroring how the shell wrapper
+	/// flips the flag when an abort/timeout fires while the blocking task is
+	/// still walking. Returns `(exit, stdout, stderr)`.
+	fn run_grep_cancelled(args: &[&str], cwd: &Path) -> (i32, String, String) {
+		let out = Arc::new(Mutex::new(Vec::new()));
+		let err = Arc::new(Mutex::new(Vec::new()));
+		let io = ScopeIo {
+			stdin:                 Box::new(io::empty()),
+			stdin_fd:              None,
+			stdin_is_search_input: false,
+			stdout:                Box::new(SharedBuf(Arc::clone(&out))),
+			stderr:                Box::new(SharedBuf(Arc::clone(&err))),
+			cwd:                   cwd.to_path_buf(),
+			env:                   HashMap::new(),
+			cancel:                Arc::new(AtomicBool::new(true)),
+		};
+		let argv: Vec<OsString> = std::iter::once("grep")
+			.chain(args.iter().copied())
+			.map(OsString::from)
+			.collect();
+		let code = scope(io, || run(argv));
+		let stdout = String::from_utf8(out.lock().clone()).expect("utf8 stdout");
+		let stderr = String::from_utf8(err.lock().clone()).expect("utf8 stderr");
+		(code, stdout, stderr)
+	}
+
+	#[test]
+	fn recursive_search_observes_scope_cancellation() {
+		// Regression for #3933: recursive grep used to pass a no-op heartbeat to
+		// pi_walker, so directory walks ignored the uutils cancel flag and the
+		// shell-side abort/timeout waited for the whole tree to be scanned.
+		// The walk must now bail out before scanning any file when the flag is
+		// already set, and it must do so without printing an "interrupted"
+		// diagnostic — the shell wrapper owns the user-visible status.
+		let tree = std::env::temp_dir().join(format!(
+			"pi-uu-grep-cancel-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.map(|d| d.as_nanos())
+				.unwrap_or(0)
+		));
+		std::fs::create_dir_all(&tree).expect("temp tree should be created");
+		let walk_root = tree.join("walk-root");
+		std::fs::create_dir_all(&walk_root).expect("walk root should be created");
+		std::fs::write(walk_root.join("haystack.txt"), "match-me\n")
+			.expect("walked file should be written");
+		let later_file = tree.join("later.txt");
+		std::fs::write(&later_file, "match-me\n").expect("later file should be written");
+
+		let (code, stdout, stderr) = run_grep_cancelled(
+			&[
+				"-r",
+				"match-me",
+				walk_root.to_str().expect("utf8 path"),
+				later_file.to_str().expect("utf8 path"),
+			],
+			&tree,
+		);
+
+		// Walker must have observed the heartbeat before visiting the file,
+		// and the operand loop must not continue into the later regular file
+		// after cancellation is observed.
+		assert!(stdout.is_empty(), "cancelled walk should not output matches: {stdout:?}");
+		assert!(
+			stderr.is_empty(),
+			"cancelled walk should stay silent — diagnostic is the shell's job: {stderr:?}"
+		);
+		assert_eq!(code, 2, "interrupted directory walk should report had_error (exit 2)");
+
+		let _ = std::fs::remove_dir_all(&tree);
 	}
 }

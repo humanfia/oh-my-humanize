@@ -15,7 +15,11 @@ use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
 	BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
 };
-use ignore::{WalkBuilder, overrides::OverrideBuilder, types::TypesBuilder};
+use ignore::{
+	Match,
+	overrides::{Override, OverrideBuilder},
+	types::{Types, TypesBuilder},
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -777,31 +781,57 @@ fn print_type_list<W: Write>(cli: &RgCli, out: &mut W) -> Result<(), String> {
 	Ok(())
 }
 
-fn configure_walk(cli: &RgCli, root: &Path) -> Result<WalkBuilder, String> {
+struct RgWalk {
+	request: pi_walker::WalkRequest,
+	filters: PathFilters,
+}
+
+struct PathFilters {
+	overrides:    Option<Override>,
+	types:        Option<Types>,
+	max_filesize: Option<u64>,
+}
+
+impl PathFilters {
+	fn includes(&self, path: &Path, file_type: pi_walker::FileType, size: Option<f64>) -> bool {
+		let is_dir = file_type == pi_walker::FileType::Dir;
+		if self
+			.overrides
+			.as_ref()
+			.is_some_and(|overrides| matches!(overrides.matched(path, is_dir), Match::Ignore(_)))
+		{
+			return false;
+		}
+		if file_type != pi_walker::FileType::File {
+			return true;
+		}
+		if self
+			.types
+			.as_ref()
+			.is_some_and(|types| matches!(types.matched(path, false), Match::Ignore(_)))
+		{
+			return false;
+		}
+		if let Some(limit) = self.max_filesize {
+			let size = size.or_else(|| std::fs::metadata(path).ok().map(|meta| meta.len() as f64));
+			if size.is_some_and(|size| size > limit as f64) {
+				return false;
+			}
+		}
+		true
+	}
+}
+
+fn build_path_filters(cli: &RgCli) -> Result<PathFilters, String> {
 	let cwd = pi_uutils_ctx::cwd();
-	let mut builder = WalkBuilder::new(root);
-	builder.current_dir(cwd.clone());
-	builder.follow_links(cli.follow);
-	builder.max_depth(cli.max_depth);
-	if let Some(size) = &cli.max_filesize {
-		builder.max_filesize(Some(parse_size(size).map_err(|err| format!("rg: {err}"))?));
-	}
-
-	let unrestricted_no_ignore = cli.unrestricted >= 1;
-	let include_hidden = (cli.hidden || cli.unrestricted >= 2) && !cli.no_hidden;
-	let no_ignore = (cli.no_ignore || unrestricted_no_ignore) && !cli.ignore;
-	builder.hidden(!include_hidden);
-	builder.parents(!(no_ignore || (cli.no_ignore_parent && !cli.ignore_parent)));
-	builder.ignore(!(no_ignore || (cli.no_ignore_dot && !cli.ignore_dot)));
-	builder.git_ignore(!(no_ignore || (cli.no_ignore_vcs && !cli.ignore_vcs)));
-	builder.git_global(!(no_ignore || (cli.no_ignore_global && !cli.ignore_global)));
-	builder.git_exclude(!(no_ignore || (cli.no_ignore_exclude && !cli.ignore_exclude)));
-	builder.require_git(!cli.no_require_git || cli.require_git);
-	if !(no_ignore || (cli.no_ignore_dot && !cli.ignore_dot)) {
-		builder.add_custom_ignore_filename(".rgignore");
-	}
-
-	if !cli.globs.is_empty() || !cli.iglobs.is_empty() {
+	let max_filesize = cli
+		.max_filesize
+		.as_ref()
+		.map(|size| parse_size(size).map_err(|err| format!("rg: {err}")))
+		.transpose()?;
+	let overrides = if cli.globs.is_empty() && cli.iglobs.is_empty() {
+		None
+	} else {
 		let mut overrides = OverrideBuilder::new(&cwd);
 		for glob in &cli.globs {
 			overrides
@@ -818,23 +848,49 @@ fn configure_walk(cli: &RgCli, root: &Path) -> Result<WalkBuilder, String> {
 					.map_err(|err| format!("rg: --iglob {glob:?}: {err}"))?;
 			}
 		}
-		builder.overrides(overrides.build().map_err(|err| format!("rg: {err}"))?);
-	}
-
-	if !cli.types.is_empty() || !cli.type_nots.is_empty() {
-		builder.types(
+		Some(overrides.build().map_err(|err| format!("rg: {err}"))?)
+	};
+	let types = if cli.types.is_empty() && cli.type_nots.is_empty() {
+		None
+	} else {
+		Some(
 			type_builder(cli)?
 				.build()
 				.map_err(|err| format!("rg: {err}"))?,
-		);
-	}
+		)
+	};
+	Ok(PathFilters { overrides, types, max_filesize })
+}
 
-	if cli.sort_files || cli.sort.as_deref() == Some("path") {
-		builder.sort_by_file_path(|a, b| a.cmp(b));
-	} else if cli.sortr.as_deref() == Some("path") {
-		builder.sort_by_file_path(|a, b| b.cmp(a));
-	}
-	Ok(builder)
+fn build_walk(cli: &RgCli, root: &Path) -> Result<RgWalk, String> {
+	let filters = build_path_filters(cli)?;
+	let unrestricted_no_ignore = cli.unrestricted >= 1;
+	let include_hidden = (cli.hidden || cli.unrestricted >= 2) && !cli.no_hidden;
+	let no_ignore = (cli.no_ignore || unrestricted_no_ignore) && !cli.ignore;
+	let order = if cli.sort_files || cli.sort.as_deref() == Some("path") {
+		pi_walker::WalkOrder::Path
+	} else {
+		pi_walker::WalkOrder::Unordered
+	};
+	let request = pi_walker::WalkRequest::new(root)
+		.hidden(include_hidden)
+		.gitignore(!no_ignore)
+		.skip_git(!no_ignore)
+		.skip_node_modules(false)
+		.follow_links(pi_walker::FollowLinks::from(cli.follow))
+		.detail(if filters.max_filesize.is_some() {
+			pi_walker::WalkDetail::Full
+		} else {
+			pi_walker::WalkDetail::Minimal
+		})
+		.order(order)
+		.emit_root(false)
+		.depth(1, cli.max_depth.unwrap_or(usize::MAX))
+		.visit_order(pi_walker::VisitOrder::PreOrder)
+		.directory_errors(pi_walker::DirectoryErrorMode::Visit)
+		.same_file_system(false)
+		.cache(false);
+	Ok(RgWalk { request, filters })
 }
 
 fn display_path(operand: &OsStr, root: &Path, path: &Path) -> PathBuf {
@@ -904,6 +960,59 @@ fn report_path_error(
 	clippy::too_many_arguments,
 	reason = "required by standard walk/configure interfaces and search parameters"
 )]
+fn search_collected_files<W: Write>(
+	cli: &RgCli,
+	matcher: &RegexMatcher,
+	searcher: &mut Searcher,
+	operand: &OsStr,
+	root: &Path,
+	show_names: bool,
+	opts: &SearchOptions,
+	out: &mut W,
+) -> SearchOutcome {
+	let mut files = match collect_filtered_files(cli, root) {
+		Ok(files) => files,
+		Err(_) if pi_uutils_ctx::is_cancelled() => {
+			return SearchOutcome { any_match: false, had_error: true };
+		},
+		Err(err) => {
+			if !opts.no_messages {
+				let _ = writeln!(pi_uutils_ctx::stderr(), "{err}");
+			}
+			return SearchOutcome { any_match: false, had_error: true };
+		},
+	};
+	files.sort_unstable_by(|a, b| b.cmp(a));
+	let mut any_match = false;
+	let mut had_error = false;
+	let mut processed_file = false;
+	for path in files {
+		if opts.quiet && any_match {
+			break;
+		}
+		if processed_file && pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
+		processed_file = true;
+		let display_path = display_path(operand, root, &path);
+		let display_bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
+		let display = show_names.then_some(display_bytes.as_slice());
+		let outcome = process_file(matcher, searcher, &path, display, opts, out);
+		any_match |= outcome.any_match;
+		had_error |= outcome.had_error;
+		if pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
+	}
+	SearchOutcome { any_match, had_error }
+}
+
+#[allow(
+	clippy::too_many_arguments,
+	reason = "required by standard walk/configure interfaces and search parameters"
+)]
 fn search_dir<W: Write>(
 	cli: &RgCli,
 	matcher: &RegexMatcher,
@@ -914,10 +1023,11 @@ fn search_dir<W: Write>(
 	opts: &SearchOptions,
 	out: &mut W,
 ) -> SearchOutcome {
-	let mut any_match = false;
-	let mut had_error = false;
-	let builder = match configure_walk(cli, root) {
-		Ok(builder) => builder,
+	if cli.sortr.as_deref() == Some("path") {
+		return search_collected_files(cli, matcher, searcher, operand, root, show_names, opts, out);
+	}
+	let walk = match build_walk(cli, root) {
+		Ok(walk) => walk,
 		Err(err) => {
 			if !opts.no_messages {
 				let _ = writeln!(pi_uutils_ctx::stderr(), "{err}");
@@ -925,61 +1035,132 @@ fn search_dir<W: Write>(
 			return SearchOutcome { any_match: false, had_error: true };
 		},
 	};
-	for result in builder.build() {
-		if opts.quiet && any_match {
-			break;
+	let any_match = std::cell::Cell::new(false);
+	let had_error = std::cell::Cell::new(false);
+	let streamed = match walk.request.for_each_entry_with_heartbeat(
+		|| {
+			if pi_uutils_ctx::is_cancelled() {
+				Err(io::Error::from(io::ErrorKind::Interrupted))
+			} else {
+				Ok::<(), io::Error>(())
+			}
+		},
+		|entry| {
+			if opts.quiet && any_match.get() {
+				return Ok(pi_walker::WalkDecision::Stop);
+			}
+			let path = entry.absolute_path.as_ref();
+			if !walk.filters.includes(path, entry.file_type, entry.size) {
+				return Ok(if entry.file_type == pi_walker::FileType::Dir {
+					pi_walker::WalkDecision::SkipDescend
+				} else {
+					pi_walker::WalkDecision::Skip
+				});
+			}
+			if entry.file_type != pi_walker::FileType::File {
+				return Ok(pi_walker::WalkDecision::Skip);
+			}
+			let display_path = display_path(operand, root, path);
+			let display_bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
+			let display = show_names.then_some(display_bytes.as_slice());
+			let outcome = process_file(matcher, searcher, path, display, opts, out);
+			any_match.set(any_match.get() || outcome.any_match);
+			had_error.set(had_error.get() || outcome.had_error);
+			Ok(if opts.quiet && any_match.get() {
+				pi_walker::WalkDecision::Stop
+			} else {
+				pi_walker::WalkDecision::Include
+			})
+		},
+		|error| {
+			had_error.set(true);
+			if !opts.no_messages {
+				let _ =
+					writeln!(pi_uutils_ctx::stderr(), "rg: {}: {}", error.path.display(), error.error);
+			}
+			Ok(pi_walker::WalkDecision::Include)
+		},
+	) {
+		Ok(pi_walker::WalkStatus::Complete | pi_walker::WalkStatus::Stopped) => {
+			Some(SearchOutcome { any_match: any_match.get(), had_error: had_error.get() })
+		},
+		Err(pi_walker::WalkError::Interrupted(_)) if pi_uutils_ctx::is_cancelled() => {
+			// Harness cancellation; the shell wrapper overrides the exit code
+			// and stay-silent on stderr — no spurious "interrupted" diagnostic.
+			had_error.set(true);
+			Some(SearchOutcome { any_match: any_match.get(), had_error: true })
+		},
+		Err(err) => {
+			had_error.set(true);
+			if !opts.no_messages {
+				let _ = writeln!(pi_uutils_ctx::stderr(), "rg: {err}");
+			}
+			Some(SearchOutcome { any_match: any_match.get(), had_error: had_error.get() })
+		},
+	};
+	streamed.unwrap_or_else(|| {
+		search_collected_files(cli, matcher, searcher, operand, root, show_names, opts, out)
+	})
+}
+
+fn collect_filtered_files(cli: &RgCli, root: &Path) -> Result<Vec<PathBuf>, String> {
+	let walk = build_walk(cli, root)?;
+	let outcome = match walk.request.collect_with_heartbeat(|| {
+		if pi_uutils_ctx::is_cancelled() {
+			Err(io::Error::from(io::ErrorKind::Interrupted))
+		} else {
+			Ok::<(), io::Error>(())
 		}
-		let entry = match result {
-			Ok(entry) => entry,
-			Err(err) => {
-				had_error = true;
-				if !opts.no_messages {
-					let _ = writeln!(pi_uutils_ctx::stderr(), "rg: {err}");
-				}
-				continue;
-			},
-		};
-		if entry.file_type().is_none_or(|kind| !kind.is_file()) {
+	}) {
+		Ok(outcome) => outcome,
+		Err(pi_walker::WalkError::Interrupted(_)) if pi_uutils_ctx::is_cancelled() => {
+			return Err(String::from("rg: cancelled"));
+		},
+		Err(err) => return Err(format!("rg: {err}")),
+	};
+	let mut files = Vec::new();
+	for entry in outcome.entries {
+		if entry.file_type != pi_walker::FileType::File {
 			continue;
 		}
-		let display_path = display_path(operand, root, entry.path());
-		let display_bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
-		let display = show_names.then_some(display_bytes.as_slice());
-		let outcome = process_file(matcher, searcher, entry.path(), display, opts, out);
-		any_match |= outcome.any_match;
-		had_error |= outcome.had_error;
+		let path = entry.absolute_path(root);
+		if walk.filters.includes(&path, entry.file_type, entry.size) {
+			files.push(path);
+		}
 	}
-	SearchOutcome { any_match, had_error }
+	Ok(files)
 }
 
 fn list_files<W: Write>(cli: &RgCli, paths: &[OsString], out: &mut W) -> SearchOutcome {
 	let mut any = false;
 	let mut had_error = false;
+	let mut processed_operand = false;
 	for operand in paths {
+		if processed_operand && pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
+		processed_operand = true;
 		let resolved = pi_uutils_ctx::resolve(operand);
 		match std::fs::metadata(&resolved) {
 			Ok(meta) if meta.is_dir() => {
-				let builder = match configure_walk(cli, &resolved) {
-					Ok(builder) => builder,
+				let mut files = match collect_filtered_files(cli, &resolved) {
+					Ok(files) => files,
+					Err(_) if pi_uutils_ctx::is_cancelled() => {
+						had_error = true;
+						break;
+					},
 					Err(err) => {
 						let _ = writeln!(pi_uutils_ctx::stderr(), "{err}");
 						had_error = true;
 						continue;
 					},
 				};
-				for result in builder.build() {
-					let entry = match result {
-						Ok(entry) => entry,
-						Err(err) => {
-							let _ = writeln!(pi_uutils_ctx::stderr(), "rg: {err}");
-							had_error = true;
-							continue;
-						},
-					};
-					if entry.file_type().is_none_or(|kind| !kind.is_file()) {
-						continue;
-					}
-					let display = display_path(operand.as_os_str(), &resolved, entry.path());
+				if cli.sortr.as_deref() == Some("path") {
+					files.sort_unstable_by(|a, b| b.cmp(a));
+				}
+				for path in files {
+					let display = display_path(operand.as_os_str(), &resolved, &path);
 					let _ = out.write_all(display.as_os_str().as_encoded_bytes());
 					let _ = out.write_all(if cli.null { b"\0" } else { b"\n" });
 					any = true;
@@ -995,6 +1176,10 @@ fn list_files<W: Write>(cli: &RgCli, paths: &[OsString], out: &mut W) -> SearchO
 				let _ = writeln!(pi_uutils_ctx::stderr(), "rg: {}: {err}", operand.to_string_lossy());
 				had_error = true;
 			},
+		}
+		if pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
 		}
 	}
 	SearchOutcome { any_match: any, had_error }
@@ -1090,10 +1275,16 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 	let show_names = show_names_for(&paths, recursive, &cli, &opts);
 	let mut any_match = false;
 	let mut had_error = false;
+	let mut processed_operand = false;
 	for operand in &paths {
 		if opts.quiet && any_match {
 			break;
 		}
+		if processed_operand && pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
+		processed_operand = true;
 		if operand.as_os_str() == OsStr::new("-") {
 			let display = show_names.then_some(b"<stdin>".as_slice());
 			match process_reader(
@@ -1111,6 +1302,10 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 						let _ = writeln!(pi_uutils_ctx::stderr(), "rg: <stdin>: {err}");
 					}
 				},
+			}
+			if pi_uutils_ctx::is_cancelled() {
+				had_error = true;
+				break;
 			}
 			continue;
 		}
@@ -1146,6 +1341,10 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 				}
 			},
 		}
+		if pi_uutils_ctx::is_cancelled() {
+			had_error = true;
+			break;
+		}
 	}
 	let _ = out.flush();
 	if opts.quiet {
@@ -1162,5 +1361,130 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 		0
 	} else {
 		1
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		collections::HashMap,
+		sync::{Arc, atomic::AtomicBool},
+	};
+
+	use parking_lot::Mutex;
+	use pi_uutils_ctx::{ScopeIo, scope};
+
+	use super::*;
+
+	/// Sink that collects writes into a shared buffer for assertions.
+	struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+	impl Write for SharedBuf {
+		fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+			self.0.lock().extend_from_slice(buf);
+			Ok(buf.len())
+		}
+
+		fn flush(&mut self) -> io::Result<()> {
+			Ok(())
+		}
+	}
+
+	/// Run `rg` with the cancel flag pre-set, mirroring the shell wrapper's
+	/// behavior when `abort`/`timeout` fires mid-walk.
+	fn run_rg_cancelled(args: &[&str], cwd: &Path) -> (i32, String, String) {
+		let out = Arc::new(Mutex::new(Vec::new()));
+		let err = Arc::new(Mutex::new(Vec::new()));
+		let io = ScopeIo {
+			stdin:                 Box::new(io::empty()),
+			stdin_fd:              None,
+			stdin_is_search_input: false,
+			stdout:                Box::new(SharedBuf(Arc::clone(&out))),
+			stderr:                Box::new(SharedBuf(Arc::clone(&err))),
+			cwd:                   cwd.to_path_buf(),
+			env:                   HashMap::new(),
+			cancel:                Arc::new(AtomicBool::new(true)),
+		};
+		let argv: Vec<OsString> = std::iter::once("rg")
+			.chain(args.iter().copied())
+			.map(OsString::from)
+			.collect();
+		let code = scope(io, || run(argv));
+		let stdout = String::from_utf8(out.lock().clone()).expect("utf8 stdout");
+		let stderr = String::from_utf8(err.lock().clone()).expect("utf8 stderr");
+		(code, stdout, stderr)
+	}
+
+	fn unique_tree(label: &str) -> PathBuf {
+		let root = std::env::temp_dir().join(format!(
+			"pi-uu-rg-{label}-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.map(|d| d.as_nanos())
+				.unwrap_or(0)
+		));
+		std::fs::create_dir_all(&root).expect("temp tree should be created");
+		root
+	}
+
+	#[test]
+	fn recursive_search_observes_scope_cancellation() {
+		// Regression for #3933: rg's recursive walker used to pass a no-op
+		// heartbeat to pi_walker, so cancellation was not observed during
+		// directory traversal even after the uutils ctx cancel flag was set.
+		let tree = unique_tree("search");
+		let walk_root = tree.join("walk-root");
+		std::fs::create_dir_all(&walk_root).expect("walk root should be created");
+		std::fs::write(walk_root.join("haystack.txt"), "match-me\n").expect("walked file written");
+		let later_file = tree.join("later.txt");
+		std::fs::write(&later_file, "match-me\n").expect("later file written");
+
+		let (code, stdout, stderr) = run_rg_cancelled(
+			&[
+				"match-me",
+				walk_root.to_str().expect("utf8 path"),
+				later_file.to_str().expect("utf8 path"),
+			],
+			&tree,
+		);
+
+		assert!(stdout.is_empty(), "cancelled walk should not output matches: {stdout:?}");
+		assert!(
+			stderr.is_empty(),
+			"cancelled walk should stay silent — diagnostic is the shell's job: {stderr:?}"
+		);
+		assert_eq!(code, 2, "interrupted directory walk should report had_error (exit 2)");
+
+		let _ = std::fs::remove_dir_all(&tree);
+	}
+
+	#[test]
+	fn files_mode_observes_scope_cancellation() {
+		// Regression for #3933: `rg --files <dir>` routes through
+		// `collect_filtered_files`, whose heartbeat was likewise a no-op.
+		let tree = unique_tree("files");
+		let walk_root = tree.join("walk-root");
+		std::fs::create_dir_all(&walk_root).expect("walk root should be created");
+		std::fs::write(walk_root.join("alpha.txt"), "alpha\n").expect("walked file written");
+		let later_file = tree.join("later.txt");
+		std::fs::write(&later_file, "later\n").expect("later file written");
+
+		let (code, stdout, stderr) = run_rg_cancelled(
+			&[
+				"--files",
+				walk_root.to_str().expect("utf8 path"),
+				later_file.to_str().expect("utf8 path"),
+			],
+			&tree,
+		);
+
+		assert!(stdout.is_empty(), "cancelled --files walk should not enumerate paths: {stdout:?}");
+		assert!(stderr.is_empty(), "cancelled --files walk should stay silent: {stderr:?}");
+		// Cancellation is an error for standalone utility status; the shell
+		// wrapper rewrites it to the user-visible cancelled status (130).
+		assert_eq!(code, 2, "cancelled --files walk should stop before later operands");
+
+		let _ = std::fs::remove_dir_all(&tree);
 	}
 }

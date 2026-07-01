@@ -23,7 +23,7 @@ interface ReleaseAsset {
 function parseArgs(argv: readonly string[]): { tag: string; out: string | null } {
 	const rest = [...argv];
 	let out: string | null = null;
-	const outIdx = rest.findIndex(a => a === "--out");
+	const outIdx = rest.indexOf("--out");
 	if (outIdx >= 0) {
 		out = rest[outIdx + 1] ?? null;
 		if (!out) throw new Error("--out requires a path");
@@ -58,8 +58,8 @@ export function renderFormula(version: string, sums: Record<string, string>): st
 	// Each `url` carries `using: :nounzip` because the release assets are bare
 	// Mach-O/ELF executables, not archives. Without it Homebrew's default
 	// CurlDownloadStrategy routes through UnpackStrategy::Uncompressed#extract_nestedly,
-// which nests the file outside the staging CWD; `Dir["omh-*"].first` then
-// returns `nil` and `bin.install nil => "omh"` raises.
+	// which nests the file outside the staging CWD; `Dir["omh-*"].first` then
+	// returns `nil` and `bin.install nil => "omh"` raises.
 	//
 	// `with_env(HOME: buildpath)` redirects the CLI's `os.homedir()` lookup to
 	// the writable staging dir so `generate_completions_from_executable` does

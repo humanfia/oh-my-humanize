@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ProviderPayload, ServiceTier } from "@oh-my-pi/pi-ai";
+import { coerceServiceTierByFamily, type ProviderPayload, type ServiceTierByFamily } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { createBranchSummaryMessage, createCompactionSummaryMessage, createCustomMessage } from "./messages";
 import { type CompactionEntry, EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
@@ -9,7 +9,7 @@ export interface SessionContext {
 	thinkingLevel?: string;
 	/** Configured thinking selector (`"auto"` or a concrete level) from the latest change. */
 	configuredThinkingLevel?: string;
-	serviceTier?: ServiceTier;
+	serviceTier?: ServiceTierByFamily;
 	/** Model roles: { default: "provider/modelId", small: "provider/modelId", ... } */
 	models: Record<string, string>;
 	/** Names of TTSR rules that have been injected this session */
@@ -77,6 +77,17 @@ export interface BuildSessionContextOptions {
  * If leafId is provided, walks from that entry to root.
  * Handles compaction and branch summaries along the path.
  */
+function snapcompactHistoryBlocksForContext(
+	archive: snapcompact.Archive | undefined,
+	options: BuildSessionContextOptions | undefined,
+) {
+	if (!archive) return undefined;
+	return snapcompact.historyBlocks(
+		archive,
+		options?.transcript ? undefined : { maxFrameDataBytes: snapcompact.FRAME_DATA_BYTES_BUDGET },
+	);
+}
+
 export function buildSessionContext(
 	entries: SessionEntry[],
 	leafId?: string | null,
@@ -131,14 +142,15 @@ export function buildSessionContext(
 	const path: SessionEntry[] = [];
 	let current: SessionEntry | undefined = leaf;
 	while (current) {
-		path.unshift(current);
+		path.push(current);
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
+	path.reverse();
 
 	// Extract settings and find compaction
 	let thinkingLevel: string | undefined = "off";
 	let configuredThinkingLevel: string | undefined;
-	let serviceTier: ServiceTier | undefined;
+	let serviceTier: ServiceTierByFamily | undefined;
 	const models: Record<string, string> = {};
 	let compaction: CompactionEntry | null = null;
 	const injectedTtsrRulesSet = new Set<string>();
@@ -169,7 +181,7 @@ export function buildSessionContext(
 				}
 			}
 		} else if (entry.type === "service_tier_change") {
-			serviceTier = entry.serviceTier ?? undefined;
+			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			// Legacy fallback: infer default model from assistant messages only
 			// when no explicit `model_change` (role=default) entry has been
@@ -273,7 +285,7 @@ export function buildSessionContext(
 						entry.shortSummary,
 						undefined,
 						undefined,
-						snapcompactArchive ? snapcompact.historyBlocks(snapcompactArchive) : undefined,
+						snapcompactHistoryBlocksForContext(snapcompactArchive, options),
 					),
 				);
 			} else {
@@ -307,7 +319,7 @@ export function buildSessionContext(
 				compaction.shortSummary,
 				providerPayload,
 				undefined,
-				snapcompactArchive ? snapcompact.historyBlocks(snapcompactArchive) : undefined,
+				snapcompactHistoryBlocksForContext(snapcompactArchive, options),
 			),
 		);
 

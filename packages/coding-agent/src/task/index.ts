@@ -30,6 +30,7 @@ import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: 
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/irc";
 import { formatBytes, formatDuration } from "../tools/render-utils";
+import { DEFAULT_SPAWN_AGENT, resolveSpawnPolicy } from "./spawn-policy";
 import {
 	type AgentDefinition,
 	type AgentProgress,
@@ -187,17 +188,13 @@ function renderDescription(
 	ircEnabled: boolean,
 	parentSpawns: string,
 ): string {
-	const spawningDisabled = parentSpawns === "";
+	const spawnPolicy = resolveSpawnPolicy(parentSpawns);
+	const spawningDisabled = !spawnPolicy.enabled;
 	let filteredAgents = disabledAgents.length > 0 ? agents.filter(a => !disabledAgents.includes(a.name)) : agents;
 	if (spawningDisabled) {
 		filteredAgents = [];
-	} else if (parentSpawns !== "*") {
-		const allowed = new Set(
-			parentSpawns
-				.split(",")
-				.map(s => s.trim())
-				.filter(Boolean),
-		);
+	} else if (spawnPolicy.allowedAgents !== null) {
+		const allowed = new Set(spawnPolicy.allowedAgents);
 		filteredAgents = filteredAgents.filter(a => allowed.has(a.name));
 	}
 	const renderedAgents = filteredAgents.map(agent => ({
@@ -208,6 +205,9 @@ function renderDescription(
 	return prompt.render(taskDescriptionTemplate, {
 		agents: renderedAgents,
 		spawningDisabled,
+		defaultAgent: spawnPolicy.defaultAgent,
+		defaultAgentIsGeneric: spawnPolicy.defaultAgent === DEFAULT_SPAWN_AGENT,
+		allowedAgentsText: spawnPolicy.allowedPromptText,
 		MAX_CONCURRENCY: maxConcurrency,
 		isolationEnabled,
 		batchEnabled,
@@ -256,8 +256,11 @@ function validateShapeParams(batchEnabled: boolean, params: TaskParams): string 
 }
 
 /**
- * Validate the spawn parameter contract against the wire shapes. `agent` is
- * always required. With `task.batch` the model-facing shape is
+ * Validate the spawn parameter contract against the wire shapes. `agent`
+ * defaults to `task` (the schema default; `execute` normalizes the same way for
+ * direct callers), so the missing-`agent` guard only fires for callers that
+ * invoke this validator with an unnormalized blank agent. With `task.batch` the
+ * model-facing shape is
  * `{ agent, context, tasks[] }` — `tasks` non-empty with per-item assignments
  * and unique ids, `context` non-empty, no top-level `assignment` alongside.
  * The flat `{ agent, ...item }` form stays accepted at runtime under either
@@ -349,13 +352,13 @@ function spawnParamsFor(params: TaskParams, item: TaskItem): TaskParams {
 }
 
 /** Generic worker agents whose output sharpens with a tailored `role` rather than the bare type. */
-const GENERIC_SPAWN_AGENTS: ReadonlySet<string> = new Set(["task", "quick_task"]);
+const GENERIC_SPAWN_AGENTS: ReadonlySet<string> = new Set(["task", "sonic"]);
 
 /**
  * Advisory — never a rejection — nudging the spawner toward tailored
  * specialists when it spawns generic role-less workers and still holds spawn
  * capacity (DepthCapacity: it currently has the `task` tool). Fires when a
- * generic `task`/`quick_task` spawn carries no `role`, or when one call clones
+ * generic `task`/`sonic` spawn carries no `role`, or when one call clones
  * the same agent ≥2× all without roles. Returns undefined when no nudge applies.
  */
 export function buildSpecializationAdvisory(
@@ -525,7 +528,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 	get parameters(): TaskToolSchemaInstance {
 		const isolationEnabled = this.session.settings.get("task.isolation.mode") !== "none";
-		return getTaskSchema({ isolationEnabled, batchEnabled: this.#isBatchEnabled() });
+		const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
+		return getTaskSchema({ isolationEnabled, batchEnabled: this.#isBatchEnabled(), defaultAgent });
 	}
 
 	renderCall(args: unknown, options: Parameters<typeof renderTaskCall>[1], theme: Theme) {
@@ -579,7 +583,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
-		const params = repairTaskParams(rawParams as TaskParams);
+		const repaired = repairTaskParams(rawParams as TaskParams);
+		// Schema defaults run for model calls, but internal callers and stale
+		// transcripts can bypass arktype. Normalize once so every downstream path
+		// sees the session's actual default agent.
+		const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
+		const params =
+			typeof repaired.agent === "string" && repaired.agent.trim() !== ""
+				? repaired
+				: { ...repaired, agent: defaultAgent };
 		const batchEnabled = this.#isBatchEnabled();
 		const validationError = validateShapeParams(batchEnabled, params) ?? validateSpawnParams(params, batchEnabled);
 		if (validationError) {
@@ -810,10 +822,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			async ({ jobId: ownJobId, signal: runSignal, reportProgress, markRunning }) => {
 				const startedAt = Date.now();
 				const semaphore = this.#getSpawnSemaphore();
-				await semaphore.acquire();
+				let semaphoreHeld = false;
+				try {
+					await semaphore.acquire(runSignal);
+					semaphoreHeld = true;
+				} catch {
+					// Fall through so an acquire-time abort goes through the same
+					// path as the post-acquire race below: progress + onSettled
+					// have to fire even when the spawn never reached the executor,
+					// otherwise the batch aggregate state stays "running" forever.
+				}
 				const acquiredAt = Date.now();
-				if (runSignal.aborted) {
-					semaphore.release();
+				if (!semaphoreHeld || runSignal.aborted) {
+					if (semaphoreHeld) semaphore.release();
 					progress.status = "aborted";
 					onSettled?.(true);
 					throw new Error("Aborted before execution");
@@ -916,7 +937,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const semaphore = this.#getSpawnSemaphore();
 		if (spawnItems.length === 1) {
 			const invokedAt = Date.now();
-			await semaphore.acquire();
+			await semaphore.acquire(signal);
 			const acquiredAt = Date.now();
 			try {
 				return await this.#executeSync(
@@ -955,7 +976,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			spawnItems.length,
 			async (item, index, workerSignal) => {
 				const invokedAt = Date.now();
-				await semaphore.acquire();
+				await semaphore.acquire(workerSignal);
 				const acquiredAt = Date.now();
 				try {
 					const itemOnUpdate: AgentToolUpdateCallback<TaskToolDetails> | undefined = onUpdate
@@ -1198,18 +1219,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 
 			// Check spawn restrictions from parent
-			const parentSpawns = this.session.getSessionSpawns() ?? "*";
-			const allowedSpawns = parentSpawns.split(",").map(s => s.trim());
-			const isSpawnAllowed = (): boolean => {
-				if (parentSpawns === "") return false; // Empty = deny all
-				if (parentSpawns === "*") return true; // Wildcard = allow all
-				return allowedSpawns.includes(agentName);
-			};
-
-			if (!isSpawnAllowed()) {
-				const allowed = parentSpawns === "" ? "none (spawns disabled for this agent)" : parentSpawns;
+			const spawnPolicy = resolveSpawnPolicy(this.session.getSessionSpawns());
+			const spawnAllowed =
+				spawnPolicy.enabled &&
+				(spawnPolicy.allowedAgents === null || spawnPolicy.allowedAgents.includes(agentName));
+			if (!spawnAllowed) {
 				return {
-					content: [{ type: "text", text: `Cannot spawn '${agentName}'. Allowed: ${allowed}` }],
+					content: [
+						{ type: "text", text: `Cannot spawn '${agentName}'. Allowed: ${spawnPolicy.allowedErrorText}` },
+					],
 					details: { projectAgentsDir, results: [], totalDurationMs: Date.now() - startTime },
 				};
 			}
@@ -1331,11 +1349,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentEvalSessionId,
 				completionLifecycle: this.session.taskAgentCompletionLifecycle,
 				parentAgentId: this.session.getAgentId?.() ?? MAIN_AGENT_ID,
-				// Live source of truth for `serviceTierSubagent: inherit`. When the
-				// session exposes a tier accessor, pass tier-or-null (null = explicit
-				// none, e.g. /fast off); otherwise leave undefined so inherit falls
-				// back to the configured serviceTier setting.
-				parentServiceTier: this.session.getServiceTier ? (this.session.getServiceTier() ?? null) : undefined,
+				// Live source of truth for `tier.subagent: inherit`. When the session
+				// exposes a tier accessor, pass the per-family map or null (null =
+				// explicit none, e.g. /fast off); otherwise leave undefined so inherit
+				// falls back to the subagent's configured tier.* settings.
+				parentServiceTier: this.session.getServiceTierByFamily
+					? (this.session.getServiceTierByFamily() ?? null)
+					: undefined,
 			};
 
 			const runTask = async (): Promise<SingleResult> => {

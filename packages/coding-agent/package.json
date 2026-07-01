@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-coding-agent",
-  "version": "16.2.5",
+  "version": "16.2.12",
   "description": "Oh My Humanize coding-agent CLI with workflow orchestration, tools, and session management",
   "homepage": "https://omh.sh",
   "author": "Can Boluk",
@@ -33,7 +33,8 @@
   },
   "scripts": {
     "build": "bun scripts/build-binary.ts",
-    "check": "biome check . && bun run check:types",
+    "check": "biome check . && bun run check:docs && bun run check:types",
+    "check:docs": "bun scripts/generate-docs-index.ts --check",
     "check:types": "tsgo -p tsconfig.json --noEmit",
     "lint": "biome lint .",
     "test": "bun ../../scripts/ci-test-ts.ts coding-agent-heavy --full",

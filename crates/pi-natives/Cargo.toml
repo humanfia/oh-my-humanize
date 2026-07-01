@@ -18,8 +18,8 @@ arboard.workspace = true
 ast-grep-core.workspace = true
 base64.workspace = true
 clap.workspace = true
-dashmap.workspace = true
 globset.workspace = true
+fontdue.workspace = true
 grep-matcher.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
@@ -33,9 +33,11 @@ napi.workspace = true
 napi-derive.workspace = true
 parking_lot.workspace = true
 phf.workspace = true
+flume.workspace = true
 pi-ast.workspace = true
 pi-iso.workspace = true
 pi-shell.workspace = true
+pi-walker.workspace = true
 pi-uutils-ctx = { path = "../pi-uutils-ctx" }
 portable-pty.workspace = true
 png.workspace = true
@@ -58,6 +60,7 @@ xxhash-rust.workspace = true
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Wdk_Storage_FileSystem", "Win32_Security"] }
 winreg.workspace = true
 
 [build-dependencies]

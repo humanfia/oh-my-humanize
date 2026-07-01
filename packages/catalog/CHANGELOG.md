@@ -5,6 +5,58 @@
 ### Changed
 
 - Changed package metadata links and description from the old Oh My Pi branding to OMH.
+## [16.2.12] - 2026-07-01
+
+### Breaking Changes
+
+- Removed runtime canonical-equivalence APIs from the identity module, including resolveCanonicalVariant, buildCanonicalModelOrder, CanonicalVariantPreferences, and getBundledCanonicalReferenceData. These utilities have been transitioned to a build-time generator script and are no longer exposed in the runtime bundle.
+
+## [16.2.11] - 2026-07-01
+
+### Fixed
+
+- Fixed a potential memory leak caused by dangling timeout timers during model discovery in OpenAI-compatible, vLLM, LiteLLM, and LM Studio catalogs.
+- Widened stream watchdogs for local OpenAI-compatible backends (including llama.cpp, LM Studio, vLLM, and Ollama) to prevent premature timeouts during cold model loads.
+
+## [16.2.10] - 2026-06-30
+
+### Added
+
+- Added Claude Sonnet 3.7, Claude Opus 3, and Claude Sonnet 3 model entries to the Anthropic catalog
+- Added Anthropic Claude Sonnet 5 model entry to the Kilo provider catalog
+- Added first-party catalog discovery support for the Anthropic provider
+- Added Gemini 3.1 Flash Lite Image model entry to the Kilo provider catalog
+- Added Anthropic Claude Sonnet 5 model variants with low, medium, high, xhigh, and max thinking efforts to the Devin provider catalog
+- Added Claude Sonnet 5 model entry to the Anthropic curated catalog.
+
+### Changed
+
+- Updated the base API URL for the Claude Sonnet 5 model in the Anthropic catalog
+- Updated pricing metrics for DeepSeek R1 and DeepSeek V3 model entries to reflect new rates
+
+## [16.2.9] - 2026-06-30
+
+### Added
+
+- Added full capability support for Claude Sonnet 5, aligning it with Claude Opus 4.8 and Fable 5. This includes adaptive thinking display, mid-conversation system messages, sampling parameter and thinking omission API restrictions, and 5-tier adaptive reasoning effort mapping (including xhigh and max levels) across direct APIs, OpenRouter, and Bedrock Converse.
+
+### Changed
+
+- Updated input and output costs for models in the catalog.
+
+## [16.2.7] - 2026-06-30
+
+### Fixed
+
+- Fixed compatibility with Kimi K2.7 Code on native endpoints to ensure thinking mode is preserved and tool choice is not forced.
+- Fixed Cerebras gemma-4-31b dynamic discovery to correctly identify the model as image-capable, enabling proper serialization of attached images.
+
+## [16.2.6] - 2026-06-29
+
+### Fixed
+
+- Fixed namespaced GLM-5.x model IDs on Z.AI/Zhipu OpenAI-compatible endpoints to inherit the widened stream watchdog, avoiding spurious stalled-stream errors during long thinking phases. ([#3819](https://github.com/can1357/oh-my-pi/issues/3819))
+
 ## [16.2.3] - 2026-06-28
 
 ### Added

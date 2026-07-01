@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { STREAMING_REVEAL_FRAME_MS } from "@oh-my-pi/pi-coding-agent/modes/controllers/streaming-reveal";
 import { ToolArgsRevealController } from "@oh-my-pi/pi-coding-agent/modes/controllers/tool-args-reveal";
+import { STREAMING_JSON_PARSE_MIN_GROWTH } from "@oh-my-pi/pi-utils";
 
 class RecordingArgsComponent {
 	frames: Array<Record<string, unknown>> = [];
@@ -33,35 +34,106 @@ function drain(frames: number): void {
 	}
 }
 
+function jsonTarget(options: { fullArgs?: Record<string, unknown>; exposeRawPartialJson?: boolean } = {}) {
+	return {
+		rawInput: false,
+		exposeRawPartialJson: options.exposeRawPartialJson ?? false,
+		fullArgs: options.fullArgs ?? {},
+	};
+}
+
+function rawTarget(fullArgs: Record<string, unknown>) {
+	return { rawInput: true, exposeRawPartialJson: true, fullArgs };
+}
+
 describe("tool args reveal", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 	});
 
-	it("reveals streamed JSON args as monotonic re-parsed prefixes", () => {
+	it("reveals what already arrived on the first setTarget call", () => {
+		const { controller } = makeController();
+		const target = `{"path":"a.ts","content":"abc"}`;
+
+		const initial = controller.setTarget(
+			"call-1",
+			target,
+			jsonTarget({ fullArgs: { path: "a.ts" }, exposeRawPartialJson: true }),
+		);
+
+		// The provider already delivered a complete partialJson chunk; the
+		// controller MUST surface its parsed fields and raw prefix immediately —
+		// pacing applies only to subsequent growth, never to bytes already in hand.
+		expect(initial.path).toBe("a.ts");
+		expect(initial.content).toBe("abc");
+		expect(partialOf(initial)).toBe(target);
+	});
+
+	it("paces growth across successive setTarget calls for raw-prefix renderers", () => {
 		vi.useFakeTimers();
 		const { component, controller } = makeController();
 		const content = "line one\\nline two\\nline three of a streamed write payload";
 		const target = `{"path":"a.ts","content":"${content}"}`;
+		const seed = target.slice(0, 12);
 
-		const initial = controller.setTarget("call-1", target, false, { path: "a.ts" });
-		expect(partialOf(initial)).toBe("");
+		const initial = controller.setTarget(
+			"call-1",
+			seed,
+			jsonTarget({ fullArgs: { path: "a.ts" }, exposeRawPartialJson: true }),
+		);
+		// What arrived is exposed immediately, no empty initial frame.
+		expect(partialOf(initial)).toBe(seed);
 		controller.bind("call-1", component);
+
+		// More bytes arrive later — the controller now paces the new backlog.
+		controller.setTarget("call-1", target, jsonTarget({ fullArgs: { path: "a.ts" }, exposeRawPartialJson: true }));
 		drain(100);
 
 		const partials = component.frames.map(partialOf);
+		expect(partials.length).toBeGreaterThan(0);
 		expect(partials.at(-1)).toBe(target);
-		for (let i = 1; i < partials.length; i++) {
-			expect(partials[i].length).toBeGreaterThanOrEqual(partials[i - 1].length);
-			expect(target.startsWith(partials[i])).toBe(true);
+		let previous = seed.length;
+		for (const partial of partials) {
+			expect(partial.length).toBeGreaterThanOrEqual(previous);
+			expect(target.startsWith(partial)).toBe(true);
+			previous = partial.length;
 		}
-		// The parsed preview field grows with the reveal instead of popping in whole.
-		const contents = component.frames
-			.map(frame => frame.content)
-			.filter((value): value is string => typeof value === "string");
-		const finalContent = contents.at(-1);
-		expect(finalContent).toBeDefined();
-		expect(contents.some(value => value.length < finalContent!.length)).toBe(true);
+	});
+
+	it("throttles JSON re-parses for renderers that do not read raw partial JSON", () => {
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const { component, controller } = makeController({ requestRender });
+		const target = `{"path":"a.ts","content":"${"x".repeat(1200)}"}`;
+		const seed = target.slice(0, 10);
+
+		// Seed: small initial slice, revealed immediately, sets parsedLen=seed.length.
+		const initial = controller.setTarget("call-1", seed, jsonTarget());
+		expect(partialOf(initial)).toBe(seed);
+		controller.bind("call-1", component);
+
+		// Full payload arrives; the controller paces the new growth.
+		controller.setTarget("call-1", target, jsonTarget());
+		expect(component.frames).toHaveLength(0);
+
+		// First paced tick lands inside the small-prefix window
+		// (< STREAMING_JSON_PARSE_MIN_GROWTH), so a re-parse is forced and a
+		// frame fires.
+		drain(1);
+		expect(component.frames).toHaveLength(1);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+		const firstPartial = partialOf(component.frames[0]);
+
+		// The next tick crosses into the throttled window: growth from the last
+		// parse hasn't yet hit STREAMING_JSON_PARSE_MIN_GROWTH, so no frame fires.
+		drain(1);
+		expect(component.frames).toHaveLength(1);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+
+		drain(3);
+		expect(component.frames.length).toBeGreaterThan(1);
+		const secondPartial = partialOf(component.frames[1]);
+		expect(secondPartial.length - firstPartial.length).toBeGreaterThanOrEqual(STREAMING_JSON_PARSE_MIN_GROWTH);
 	});
 
 	it("passes the full target through untouched when smoothing is disabled", () => {
@@ -71,7 +143,7 @@ describe("tool args reveal", () => {
 		const target = `{"path":"a.ts","content":"abc"}`;
 		const fullArgs = { path: "a.ts", content: "abc" };
 
-		const renderArgs = controller.setTarget("call-1", target, false, fullArgs);
+		const renderArgs = controller.setTarget("call-1", target, jsonTarget({ fullArgs }));
 		controller.bind("call-1", component);
 		drain(10);
 
@@ -83,11 +155,16 @@ describe("tool args reveal", () => {
 	it("finish drops the reveal so no further frames are pushed", () => {
 		vi.useFakeTimers();
 		const { component, controller } = makeController();
+		const target = `{"path":"a.ts","content":"${"x".repeat(400)}"}`;
+		const seed = target.slice(0, 5);
 
-		controller.setTarget("call-1", `{"path":"a.ts","content":"abcdefghijklmnop"}`, false, {});
+		controller.setTarget("call-1", seed, jsonTarget());
 		controller.bind("call-1", component);
+		// Backlog of new bytes for the reveal loop to advance through.
+		controller.setTarget("call-1", target, jsonTarget());
 		drain(1);
 		const frames = component.frames.length;
+		expect(frames).toBeGreaterThan(0);
 		controller.finish("call-1");
 		drain(10);
 
@@ -98,9 +175,11 @@ describe("tool args reveal", () => {
 		vi.useFakeTimers();
 		const { component, controller } = makeController();
 		const target = `{"path":"a.ts","content":"${"x".repeat(500)}"}`;
+		const seed = target.slice(0, 5);
 
-		controller.setTarget("call-1", target, false, {});
+		controller.setTarget("call-1", seed, jsonTarget());
 		controller.bind("call-1", component);
+		controller.setTarget("call-1", target, jsonTarget());
 		drain(1);
 		expect(partialOf(component.frames.at(-1)!).length).toBeLessThan(target.length);
 		controller.flushAll();
@@ -115,9 +194,11 @@ describe("tool args reveal", () => {
 		vi.useFakeTimers();
 		const { component, controller } = makeController();
 		const target = `{"content":"${"😀🎉".repeat(40)}"}`;
+		const seed = target.slice(0, 12); // before any surrogate
 
-		controller.setTarget("call-1", target, false, {});
+		controller.setTarget("call-1", seed, jsonTarget({ exposeRawPartialJson: true }));
 		controller.bind("call-1", component);
+		controller.setTarget("call-1", target, jsonTarget({ exposeRawPartialJson: true }));
 		drain(100);
 
 		expect(partialOf(component.frames.at(-1)!)).toBe(target);
@@ -130,11 +211,16 @@ describe("tool args reveal", () => {
 		vi.useFakeTimers();
 		const { component, controller } = makeController();
 		const target = "*** Begin Patch\n*** Update File: a.ts\n-old\n+new\n*** End Patch";
+		const seed = target.slice(0, 5);
 
-		controller.setTarget("call-1", target, true, { input: target });
+		const initial = controller.setTarget("call-1", seed, rawTarget({ input: seed }));
+		expect(initial.input).toBe(seed);
+		expect(partialOf(initial)).toBe(seed);
 		controller.bind("call-1", component);
+		controller.setTarget("call-1", target, rawTarget({ input: target }));
 		drain(100);
 
+		expect(component.frames.length).toBeGreaterThan(0);
 		for (const frame of component.frames) {
 			expect(frame.input).toBe(partialOf(frame));
 		}

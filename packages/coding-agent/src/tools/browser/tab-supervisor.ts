@@ -1,8 +1,8 @@
 import { getPuppeteerDir, logger, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Page, Target } from "puppeteer-core";
 import { callSessionTool } from "../../eval/js/tool-bridge";
-import type { ToolSession } from "../../sdk";
 import { webpExclusionForModel } from "../../utils/image-loading";
+import type { ToolSession } from "../index";
 import { expandPath } from "../path-utils";
 import { ToolAbortError, ToolError } from "../tool-errors";
 import { pickElectronTarget } from "./attach";
@@ -59,6 +59,13 @@ interface TabSessionBase<TBrowser extends BrowserHandle = BrowserHandle> {
 	pending: Map<string, PendingRun>;
 	dialogPolicy?: DialogPolicy;
 	kindTag: BrowserKindTag;
+	/**
+	 * Session id of the caller that CREATED the tab. Preserved across reuse so
+	 * that dispose of the creating session can reap browser resources without
+	 * yanking the tab out from under a subagent that only reused it.
+	 * Undefined when the acquirer did not identify itself.
+	 */
+	ownerSessionId?: string;
 }
 
 export interface WorkerTabSession extends TabSessionBase<PuppeteerBrowserHandle> {
@@ -84,6 +91,12 @@ export interface AcquireTabOptions {
 	timeoutMs: number;
 	dialogs?: DialogPolicy;
 	cmuxSurface?: string;
+	/**
+	 * Session id of the acquirer. Recorded on the tab when created (never on
+	 * reuse) so `releaseTabsForOwner` can walk the shared tabs map on session
+	 * dispose. Optional — omitting it opts the tab out of session-scoped reap.
+	 */
+	ownerSessionId?: string;
 }
 
 export interface AcquireTabResult {
@@ -239,6 +252,16 @@ async function acquireTabImpl(
 		}
 	}
 
+	// If the caller aborted while we were spawning/initializing the worker,
+	// tear the freshly-built worker down before publishing the tab so the
+	// browser refCount (which `holdBrowser` below would take) never grows for
+	// a tab nobody is waiting for.
+	if (opts.signal?.aborted) {
+		await worker.terminate().catch(() => undefined);
+		if (tempHold) await releaseBrowser(browser, { kill: false }).catch(() => undefined);
+		throw new ToolAbortError("Browser tab open aborted");
+	}
+
 	holdBrowser(browser);
 	if (tempHold) await releaseBrowser(browser, { kill: false });
 	const tab: WorkerTabSession = {
@@ -252,6 +275,7 @@ async function acquireTabImpl(
 		pending: new Map(),
 		dialogPolicy: opts.dialogs,
 		kindTag: browser.kind.kind,
+		ownerSessionId: opts.ownerSessionId,
 	};
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 	tabs.set(name, tab);
@@ -303,6 +327,11 @@ async function acquireCmuxTab(
 			await cmuxTab.goto(opts.url, { waitUntil: opts.waitUntil ?? "load", timeoutMs: opts.timeoutMs });
 		}
 		const info = await cmuxTab.readyInfo(opts.viewport ?? DEFAULT_VIEWPORT);
+		// If the caller aborted while we were opening the cmux surface, close the
+		// surface (if we own it) instead of taking a browser hold on it.
+		if (opts.signal?.aborted) {
+			throw new ToolAbortError("Browser tab open aborted");
+		}
 		holdBrowser(browser);
 		const tab: CmuxTabSession = {
 			name,
@@ -317,6 +346,7 @@ async function acquireCmuxTab(
 			dialogPolicy: opts.dialogs,
 			kindTag: browser.kind.kind,
 			cmuxAttachedSurface: attachedSurface,
+			ownerSessionId: opts.ownerSessionId,
 		};
 		tabs.set(name, tab);
 		return { tab, created: true };
@@ -386,12 +416,28 @@ async function runInTabWithSnapshot(
 			timeoutMs: opts.timeoutMs,
 			session: snapshot,
 		});
-		return await raceWithTimeout(
-			promise,
-			opts.timeoutMs + GRACE_MS,
-			"Browser code execution hung past grace; tab killed",
-			async reason => await forceKillTab(name, reason),
-		);
+		try {
+			return await raceWithTimeout(
+				promise,
+				opts.timeoutMs + GRACE_MS,
+				"Browser code execution hung past grace; tab killed",
+				async reason => await forceKillTab(name, reason),
+			);
+		} catch (error) {
+			if (error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ")) {
+				try {
+					if (tab.worker.mode === "inline")
+						await forceKillTab(name, "Browser code execution timed out; tab killed");
+					else await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
+				} catch (recycleError) {
+					logger.warn("Failed to recycle timed-out browser tab worker; killing tab", {
+						error: recycleError instanceof Error ? recycleError.message : String(recycleError),
+					});
+					await forceKillTab(name, "Browser code execution timed out; tab killed");
+				}
+			}
+			throw error;
+		}
 	} finally {
 		opts.signal?.removeEventListener("abort", abort);
 		tab.pending.delete(id);
@@ -465,6 +511,34 @@ export async function releaseAllTabs(opts: ReleaseTabOptions = {}): Promise<numb
 export async function dropHeadlessTabs(): Promise<void> {
 	const names = [...tabs.values()].filter(tab => tab.kindTag === "headless").map(tab => tab.name);
 	for (const name of names) await releaseTab(name);
+}
+
+/**
+ * Release every tab created by the given session id. Invoked from
+ * `AgentSession.dispose()` so headless/spawned Chromium and workers the
+ * session opened do not leak into the long-lived process — the module-global
+ * `tabs`/`browsers` maps that back this tool are not otherwise walked by
+ * session teardown. (Issue #3963.)
+ *
+ * Ownership is recorded ONLY on tab creation (`acquireTab` with
+ * `ownerSessionId`), never on reuse: a subagent re-driving a tab another
+ * session opened will not yank teardown responsibility away from the
+ * creator. Tabs opened with no owner (e.g. from an SDK caller that doesn't
+ * identify a session) are skipped and must be released explicitly.
+ */
+export async function releaseTabsForOwner(ownerId: string, opts: ReleaseTabOptions = {}): Promise<number> {
+	if (!ownerId) return 0;
+	const names = [...tabs.values()].filter(tab => tab.ownerSessionId === ownerId).map(tab => tab.name);
+	let count = 0;
+	for (const name of names) {
+		if (await releaseTab(name, opts)) count++;
+	}
+	return count;
+}
+
+/** Test-only accessor for the module-global tabs map. */
+export function getTabsMapForTest(): ReadonlyMap<string, TabSession> {
+	return tabs;
 }
 
 function isLastSurfaceCloseError(err: unknown): boolean {
@@ -581,6 +655,45 @@ function toErrorPayload(error: unknown): RunErrorPayload {
 		};
 	}
 	return { name: "Error", message: String(error), isAbort: false, isToolError: false };
+}
+
+async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number): Promise<void> {
+	const oldWorker = tab.worker;
+	await oldWorker.terminate().catch(() => undefined);
+	const browserWSEndpoint = tab.browser.browser.wsEndpoint();
+	if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
+	const payload: WorkerInitPayload = {
+		mode: "attach",
+		browserWSEndpoint,
+		safeDir: getPuppeteerDir(),
+		targetId: tab.targetId,
+		dialogs: tab.dialogPolicy,
+	};
+	let worker = await spawnTabWorker();
+	try {
+		const info = await initializeTabWorker(worker, payload, timeoutMs);
+		tab.worker = worker;
+		tab.info = info;
+		tab.state = "alive";
+		worker.onMessage(msg => handleTabMessage(tab, msg));
+	} catch (error) {
+		await worker.terminate().catch(() => undefined);
+		worker = await spawnInlineWorker();
+		try {
+			const info = await initializeTabWorker(worker, payload, timeoutMs);
+			tab.worker = worker;
+			tab.info = info;
+			tab.state = "alive";
+			worker.onMessage(msg => handleTabMessage(tab, msg));
+		} catch (inlineError) {
+			await worker.terminate().catch(() => undefined);
+			const finalError = new ToolError(
+				`Failed to recycle timed-out browser tab worker (inline fallback also failed): ${inlineError instanceof Error ? inlineError.message : String(inlineError)}`,
+			);
+			Object.defineProperty(finalError, "cause", { value: error, configurable: true });
+			throw finalError;
+		}
+	}
 }
 
 async function forceKillTab(name: string, reason: string): Promise<void> {

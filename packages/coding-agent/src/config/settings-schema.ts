@@ -3,6 +3,7 @@ import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
 import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
 import { DEFAULT_RELAY_URL } from "../collab/protocol";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
+import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
 import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
@@ -36,10 +37,14 @@ import {
 import { EDIT_MODES } from "../utils/edit-mode";
 import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_PREFERENCES, type SearchProviderId } from "../web/search/types";
 import {
+	SERVICE_TIER_ANTHROPIC_OPTIONS,
+	SERVICE_TIER_ANTHROPIC_VALUES,
+	SERVICE_TIER_GOOGLE_OPTIONS,
+	SERVICE_TIER_GOOGLE_VALUES,
 	SERVICE_TIER_INHERIT_OPTIONS,
 	SERVICE_TIER_INHERIT_SETTING_VALUES,
-	SERVICE_TIER_OPTIONS,
-	SERVICE_TIER_SETTING_VALUES,
+	SERVICE_TIER_OPENAI_OPTIONS,
+	SERVICE_TIER_OPENAI_VALUES,
 } from "./service-tier";
 
 /** Unified settings schema - single source of truth for all settings.
@@ -140,7 +145,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Developer",
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
-	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Privacy"],
+	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 };
 
 /** Status line segment identifiers */
@@ -280,6 +285,7 @@ const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
 const EMPTY_NUMBER_RECORD: Record<string, number> = {};
 const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
+const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["job", "irc"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
 export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
@@ -317,8 +323,11 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		// `>` must sit outside quoted regions (so `echo "a -> b"` passes) and be
 		// followed by a plausible filename — including `$VAR` targets; `>|`
 		// (clobber) counts as a redirect; `>&2`/`2>&1` style fd duplication is
-		// not matched.
-		pattern: "^\\s*(echo|printf|cat\\s*<<)\\s+(?:[^\"'>]|\"[^\"]*\"|'[^']*')*(?<!\\|)>{1,2}\\|?\\s*[$\\w./~\"'-]",
+		// not matched. Allowed device sinks are consumed while looking for later
+		// real file redirects because the write tool cannot replace shell
+		// output/discard targets.
+		pattern:
+			"^\\s*(echo|printf|cat\\s*<<)\\s+(?:(?:[^\"'>]|\"[^\"]*\"|'[^']*')|(?<!\\|)>{1,2}\\|?\\s*(?:\"/dev/(?:null|tty|stdout|stderr)\"|'/dev/(?:null|tty|stdout|stderr)'|/dev/(?:null|tty|stdout|stderr))(?:[\\s;&|]|$))*(?<!\\|)>{1,2}\\|?\\s*(?!(?:\"/dev/(?:null|tty|stdout|stderr)\"|'/dev/(?:null|tty|stdout|stderr)'|/dev/(?:null|tty|stdout|stderr))(?:[\\s;&|]|$))[$\\w./~\"'-]",
 		tool: "write",
 		message: "Use the `write` tool instead of echo/cat redirection. It handles encoding and provides confirmation.",
 	},
@@ -981,7 +990,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "model",
 			group: "Thinking",
 			label: "Loop Guard",
-			description: "Enable automatic stream loop detection for Gemini and DeepSeek models",
+			description: "Enable automatic stream loop detection for model reasoning and prose",
 		},
 	},
 
@@ -1005,6 +1014,39 @@ export const SETTINGS_SCHEMA = {
 			label: "Loop Guard Tool-Call Reminder",
 			description:
 				"When a Gemini reasoning stream emits many consecutive planning headers without calling a tool, interrupt it and inject a reminder to issue a tool call (requires Loop Guard)",
+		},
+	},
+
+	"model.toolCallLoopGuard.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Tool-Call Loop Guard",
+			description: "Detect consecutive identical tool calls across turns and inject a corrective steer",
+		},
+	},
+
+	"model.toolCallLoopGuard.threshold": {
+		type: "number",
+		default: 5,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Tool-Call Loop Threshold",
+			description: "Consecutive identical tool calls required before the corrective steer is injected",
+		},
+	},
+
+	"model.toolCallLoopGuard.exemptTools": {
+		type: "array",
+		default: DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Tool-Call Loop Exempt Tools",
+			description: "Tool names that may repeat consecutively without triggering the cross-turn loop guard",
 		},
 	},
 
@@ -1211,72 +1253,74 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	serviceTier: {
+	"tier.openai": {
 		type: "enum",
-		values: SERVICE_TIER_SETTING_VALUES,
+		values: SERVICE_TIER_OPENAI_VALUES,
 		default: "none",
 		ui: {
 			tab: "model",
 			group: "Sampling",
-			label: "Service Tier",
+			label: "Service Tier — OpenAI",
 			description:
-				'Processing priority hint (none = omit). OpenAI accepts the tier values directly; Anthropic realizes `priority` as `speed: "fast"` on supported Opus models. Scoped values target one family.',
-			options: SERVICE_TIER_OPTIONS,
+				"Processing tier for OpenAI / OpenAI-Codex requests, and OpenAI-family models routed via OpenRouter (none = omit). Sent as `service_tier`.",
+			options: SERVICE_TIER_OPENAI_OPTIONS,
 		},
 	},
 
-	serviceTierSubagent: {
+	"tier.anthropic": {
+		type: "enum",
+		values: SERVICE_TIER_ANTHROPIC_VALUES,
+		default: "none",
+		ui: {
+			tab: "model",
+			group: "Sampling",
+			label: "Service Tier — Anthropic",
+			description:
+				'Processing tier for Claude requests. `priority` realizes fast mode (`speed: "fast"`) on supported direct Anthropic models; ignored on Bedrock/Vertex Claude and via OpenRouter.',
+			options: SERVICE_TIER_ANTHROPIC_OPTIONS,
+		},
+	},
+
+	"tier.google": {
+		type: "enum",
+		values: SERVICE_TIER_GOOGLE_VALUES,
+		default: "none",
+		ui: {
+			tab: "model",
+			group: "Sampling",
+			label: "Service Tier — Google",
+			description:
+				"Processing tier for Gemini (Google AI Studio + Vertex) requests, and Google-family models routed via OpenRouter (none = omit). Sent as the top-level `serviceTier` field.",
+			options: SERVICE_TIER_GOOGLE_OPTIONS,
+		},
+	},
+
+	"tier.subagent": {
 		type: "enum",
 		values: SERVICE_TIER_INHERIT_SETTING_VALUES,
 		default: "inherit",
 		ui: {
 			tab: "model",
 			group: "Sampling",
-			label: "Service Tier - Subagent",
+			label: "Service Tier — Subagent",
 			description:
-				"Service Tier for spawned task/eval subagents. Inherit = match the main agent's live tier (tracks /fast); pick a value to scope subagents independently.",
+				"Service Tier for spawned task/eval subagents. Inherit = match the main agent's live per-family tiers (tracks /fast); pick a value to apply it to whichever family the subagent's model belongs to.",
 			options: SERVICE_TIER_INHERIT_OPTIONS,
 		},
 	},
 
-	serviceTierAdvisor: {
+	"tier.advisor": {
 		type: "enum",
 		values: SERVICE_TIER_INHERIT_SETTING_VALUES,
 		default: "none",
 		ui: {
 			tab: "model",
 			group: "Sampling",
-			label: "Service Tier - Advisor",
+			label: "Service Tier — Advisor",
 			description:
-				"Service Tier for the advisor model. None = standard processing; Inherit = match the main agent's live tier; pick a value (e.g. Priority) to run the advisor on a faster serving path.",
+				"Service Tier for the advisor model. None = standard processing; Inherit = match the main agent's live per-family tiers; pick a value to apply it to the advisor model's family.",
 			options: SERVICE_TIER_INHERIT_OPTIONS,
 			condition: "advisorEnabled",
-		},
-	},
-
-	fastModeScope: {
-		type: "enum",
-		values: ["both", "openai", "claude"] as const,
-		default: "both",
-		ui: {
-			tab: "model",
-			group: "Sampling",
-			label: "Fast Mode Scope",
-			description:
-				'Which providers `/fast on` (and the fast-mode toggle) target. "both" = priority on every supported provider; "openai"/"claude" scope it to one family (mirrors serviceTier openai-only/claude-only).',
-			options: [
-				{ value: "both", label: "Both", description: "Priority on every supported provider" },
-				{
-					value: "openai",
-					label: "OpenAI only",
-					description: "Priority on OpenAI/OpenAI-Codex requests; ignored elsewhere",
-				},
-				{
-					value: "claude",
-					label: "Claude only",
-					description: "Anthropic fast mode on direct Claude requests; ignored elsewhere",
-				},
-			],
 		},
 	},
 
@@ -1801,6 +1845,19 @@ export const SETTINGS_SCHEMA = {
 			description:
 				"Local on-device speech model. Parakeet TDT v3 (sherpa-onnx) is the SoTA default; Whisper base/small/large-v3-turbo tiers (transformers.js) trade size for multilingual coverage. Downloaded on first use.",
 			options: STT_MODEL_OPTIONS,
+		},
+	},
+	"stt.submitTrigger": {
+		type: "enum",
+		values: STT_SUBMIT_TRIGGER_VALUES,
+		default: "never",
+		ui: {
+			tab: "interaction",
+			group: "Speech",
+			label: "Speech-to-Text Submit Trigger",
+			description:
+				"Choose when speech dictation automatically submits: Never, Release (2+ words), Release with complete sentence, or When I Say Submit.",
+			options: STT_SUBMIT_TRIGGER_OPTIONS,
 		},
 	},
 
@@ -4090,7 +4147,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Subagents",
 			label: "Soft Subagent Request Budget",
 			description:
-				"Soft per-subagent request budget (assistant requests per run). Crossing it injects one steering notice asking the subagent to wrap up; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled explore/quick_task agents use a lower built-in budget.",
+				"Soft per-subagent request budget (assistant requests per run). Crossing it injects one steering notice asking the subagent to wrap up; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled explore/sonic agents use a lower built-in budget.",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "40", label: "40 requests" },
@@ -4559,6 +4616,44 @@ export const SETTINGS_SCHEMA = {
 				{ value: "auto", label: "Auto", description: "Use model/provider default websocket behavior" },
 				{ value: "off", label: "Off", description: "Disable websockets for OpenAI Codex models" },
 				{ value: "on", label: "On", description: "Force websockets for OpenAI Codex models" },
+			],
+		},
+	},
+
+	"providers.streamFirstEventTimeoutSeconds": {
+		type: "number",
+		default: -1,
+		ui: {
+			tab: "providers",
+			group: "Timeouts",
+			label: "Stream First Event Timeout",
+			description:
+				"Seconds to wait for the first model stream event; -1 uses provider/env defaults, 0 disables the watchdog",
+			options: [
+				{ value: "-1", label: "Auto", description: "Use provider defaults and PI_* timeout env vars" },
+				{ value: "0", label: "Off", description: "Disable first-event timeout" },
+				{ value: "300", label: "5 minutes" },
+				{ value: "600", label: "10 minutes" },
+				{ value: "1800", label: "30 minutes" },
+			],
+		},
+	},
+
+	"providers.streamIdleTimeoutSeconds": {
+		type: "number",
+		default: -1,
+		ui: {
+			tab: "providers",
+			group: "Timeouts",
+			label: "Stream Idle Timeout",
+			description:
+				"Seconds a model stream may stay silent between events; -1 uses provider/env defaults, 0 disables the watchdog",
+			options: [
+				{ value: "-1", label: "Auto", description: "Use provider defaults and PI_* timeout env vars" },
+				{ value: "0", label: "Off", description: "Disable idle timeout" },
+				{ value: "300", label: "5 minutes" },
+				{ value: "600", label: "10 minutes" },
+				{ value: "1800", label: "30 minutes" },
 			],
 		},
 	},

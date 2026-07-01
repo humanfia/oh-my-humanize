@@ -14,8 +14,12 @@ path = "src/lib.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 pi-uutils-ctx = { path = "../pi-uutils-ctx" }
+pi-walker = { path = "../pi-walker" }
 grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
 globset = "0.4"
+
+[dev-dependencies]
+parking_lot.workspace = true

@@ -74,8 +74,20 @@ export interface StatusOptions {
 	readonly z?: boolean;
 }
 
+export interface CommitAuthor {
+	readonly date?: string;
+	readonly email: string;
+	readonly name: string;
+}
+
+export interface CommitDetails {
+	readonly author: CommitAuthor;
+	readonly message: string;
+}
+
 export interface CommitOptions {
 	readonly allowEmpty?: boolean;
+	readonly author?: CommitAuthor;
 	readonly files?: readonly string[];
 	readonly signal?: AbortSignal;
 }
@@ -91,6 +103,7 @@ export interface PatchOptions {
 	readonly cached?: boolean;
 	readonly check?: boolean;
 	readonly env?: Record<string, string | undefined>;
+	readonly threeWay?: boolean;
 	readonly signal?: AbortSignal;
 }
 
@@ -162,6 +175,14 @@ const SHORT_LIVED_GIT_CONFIG: readonly (readonly [key: string, value: string])[]
 	["core.untrackedCache", "false"],
 ];
 const REMOTE_ALREADY_EXISTS = /remote .* already exists/i;
+const AMBIENT_GIT_ENV = {
+	GIT_DIR: undefined,
+	GIT_COMMON_DIR: undefined,
+	GIT_WORK_TREE: undefined,
+	GIT_INDEX_FILE: undefined,
+	GIT_OBJECT_DIRECTORY: undefined,
+	GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+} satisfies Record<string, undefined>;
 
 interface CommandOptions {
 	readonly env?: Record<string, string | undefined>;
@@ -175,6 +196,15 @@ function normalizeStdin(input: CommandOptions["stdin"]): "ignore" | Uint8Array {
 	if (typeof input === "string") return new TextEncoder().encode(input);
 	if (input instanceof Uint8Array) return input;
 	return new Uint8Array(input);
+}
+
+function buildGitEnv(overrides?: Record<string, string | undefined>): Record<string, string | undefined> {
+	return {
+		...process.env,
+		GIT_OPTIONAL_LOCKS: "0",
+		...AMBIENT_GIT_ENV,
+		...overrides,
+	};
 }
 
 function ensureAvailable(): void {
@@ -198,7 +228,7 @@ async function git(cwd: string, args: readonly string[], options: CommandOptions
 	const commandArgs = withShortLivedGitConfig(options.readOnly ? withNoOptionalLocks(args) : [...args]);
 	const child = Bun.spawn(["git", ...commandArgs], {
 		cwd,
-		env: options.env ? { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...options.env } : undefined,
+		env: buildGitEnv(options.env),
 		signal: options.signal,
 		stdin: normalizeStdin(options.stdin),
 		stdout: "pipe",
@@ -359,6 +389,7 @@ function buildApplyArgs(patchPath: string, options: PatchOptions): string[] {
 	const args = ["apply"];
 	if (options.check) args.push("--check");
 	if (options.cached) args.push("--cached");
+	if (options.threeWay) args.push("--3way");
 	args.push("--binary", patchPath);
 	return args;
 }
@@ -693,6 +724,7 @@ function resolveHeadStateReftableSync(repository: GitRepository): GitHeadState |
 	const symArgs = withShortLivedGitConfig(withNoOptionalLocks(["symbolic-ref", "HEAD"]));
 	const symResult = Bun.spawnSync(["git", ...symArgs], {
 		cwd: repository.repoRoot,
+		env: buildGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 		windowsHide: true,
@@ -701,6 +733,7 @@ function resolveHeadStateReftableSync(repository: GitRepository): GitHeadState |
 	const revArgs = withShortLivedGitConfig(withNoOptionalLocks(["rev-parse", "--verify", "HEAD"]));
 	const revResult = Bun.spawnSync(["git", ...revArgs], {
 		cwd: repository.repoRoot,
+		env: buildGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 		windowsHide: true,
@@ -734,6 +767,7 @@ function readRefSync(repository: GitRepository, targetRef: string): string | nul
 		const symArgs = withShortLivedGitConfig(withNoOptionalLocks(["symbolic-ref", targetRef]));
 		const symResult = Bun.spawnSync(["git", ...symArgs], {
 			cwd: repository.repoRoot,
+			env: buildGitEnv(),
 			stdout: "pipe",
 			stderr: "pipe",
 			windowsHide: true,
@@ -745,6 +779,7 @@ function readRefSync(repository: GitRepository, targetRef: string): string | nul
 		const revArgs = withShortLivedGitConfig(withNoOptionalLocks(["rev-parse", "--verify", targetRef]));
 		const revResult = Bun.spawnSync(["git", ...revArgs], {
 			cwd: repository.repoRoot,
+			env: buildGitEnv(),
 			stdout: "pipe",
 			stderr: "pipe",
 			windowsHide: true,
@@ -1122,6 +1157,10 @@ export const stage = {
 /** Create a commit with the given message (passed via stdin). */
 export async function commit(cwd: string, message: string, options: CommitOptions = {}): Promise<GitCommandResult> {
 	const args = ["commit", "-F", "-"];
+	if (options.author) {
+		args.push(`--author=${options.author.name} <${options.author.email}>`);
+		if (options.author.date) args.push(`--date=${options.author.date}`);
+	}
 	if (options.allowEmpty) args.push("--allow-empty");
 	if (options.files?.length) args.push("--", ...options.files);
 	return runChecked(cwd, args, { signal: options.signal, stdin: message });
@@ -1195,6 +1234,19 @@ export const show = Object.assign(
 	},
 );
 
+/** Read commit message and author metadata for replay/rewrite flows. */
+export async function commitDetails(cwd: string, revision: string, signal?: AbortSignal): Promise<CommitDetails> {
+	const raw = await runText(cwd, ["show", "-s", "--format=%an%x00%ae%x00%aI%x00%B", revision], {
+		readOnly: true,
+		signal,
+	});
+	const [name = "", email = "", date = "", ...messageParts] = raw.split("\0");
+	return {
+		author: { date, email, name },
+		message: messageParts.join("\0").replace(/\n$/, ""),
+	};
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // API: log
 // ════════════════════════════════════════════════════════════════════════════
@@ -1209,6 +1261,13 @@ export const log = {
 		return splitLines(
 			await runText(cwd, ["log", `-${count}`, "--oneline", "--no-decorate"], { readOnly: true, signal }),
 		);
+	},
+};
+
+export const revList = {
+	/** Commits in `base..head`, oldest first. */
+	async range(cwd: string, base: string, head: string, signal?: AbortSignal): Promise<string[]> {
+		return splitLines(await runText(cwd, ["rev-list", "--reverse", `${base}..${head}`], { readOnly: true, signal }));
 	},
 };
 

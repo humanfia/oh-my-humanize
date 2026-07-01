@@ -6,6 +6,8 @@ import * as path from "node:path";
 
 type Mode =
 	| "all"
+	| "local"
+	| "local-ts"
 	| "workspace"
 	| "native"
 	| "coding-agent-singleton"
@@ -28,27 +30,36 @@ const repoRoot = path.join(import.meta.dir, "..");
 const args = process.argv.slice(2);
 const isDryRun = args.includes("--dry-run");
 const requestedMode = args.find(arg => !arg.startsWith("--")) ?? "all";
-// `--only-failures` is Bun's output filter — it hides passing tests, keeping the
-// log terse, and is the default here (CI and the root `test:ts` aggregate append
-// it). It does NOT skip tests or share any cross-process cache, so chunks are
-// safe to run concurrently. The package-level `test` script passes `--full` for
-// verbose output (every test line); an explicit `--only-failures` still wins.
+// `--only-failures` is Bun's output filter — it hides passing tests within each
+// chunk, keeping the log terse, and is the default here (CI and the root
+// `test:ts` aggregate append it). It does NOT skip tests or share any
+// cross-process cache, so chunks are safe to run concurrently. The package-level
+// `test` script passes `--full` for verbose output (every test line); an explicit
+// `--only-failures` still wins.
 const onlyFailures = args.includes("--only-failures") || !args.includes("--full");
 const onlyFailuresArgs = onlyFailures ? ["--only-failures"] : [];
+// Quiet mode (the default) collapses each parallel chunk to a one-line pass/fail
+// progress entry and replays full stdout/stderr only for chunks that failed, so
+// the failure is never buried under thousands of passing-chunk lines. `--full`
+// opts back into inline replay of every chunk. Tied to `onlyFailures` so the
+// quiet path is whatever the verbose filter is not.
+const quiet = onlyFailures;
 
-const validModes = new Set<Mode>([
-	"all",
-	"workspace",
-	"native",
-	"coding-agent-singleton",
-	"coding-agent-ui",
-	"coding-agent-runtime",
-	"coding-agent-native",
-	"coding-agent-heavy",
-]);
+const validModes: Record<Mode, true> = {
+	all: true,
+	local: true,
+	"local-ts": true,
+	workspace: true,
+	native: true,
+	"coding-agent-singleton": true,
+	"coding-agent-ui": true,
+	"coding-agent-runtime": true,
+	"coding-agent-native": true,
+	"coding-agent-heavy": true,
+};
 
 // `chunkSize` splits a bucket's file list into that-many-file groups, each run as a
-// separate `bun --smol test` child process. A fresh process per chunk resets Bun's
+// separate `bun test` child process. A fresh process per chunk resets Bun's
 // heap and reaps any dangling spawned children between groups, keeping peak RSS
 // under the CI runner's OOM ceiling (a single 170–370-file invocation gets
 // SIGKILLed at 137). The singleton/global-state bucket is left whole: its suites
@@ -84,6 +95,21 @@ const nativeAndIntegrationPackages = [
 	"packages/tui",
 	"packages/collab-web",
 	"packages/typescript-edit-benchmark",
+];
+
+// Packages the CI buckets deliberately skip but a local full run should still
+// cover. mnemopi's embedding suites need a ~270MB fastembed model absent from CI
+// runners (so it flakes/times out there); robomp-web lives under python/robomp
+// and is outside every CI TS bucket.
+const localOnlyWorkspacePackages = ["packages/mnemopi", "python/robomp/web"];
+
+// Repo-level script tests. CI's `workspace` bucket only runs the concurrency
+// regression (it's the GHA-config guard that must gate merges); a local full run
+// also exercises the release-notes and runner-output tests.
+const repoScriptTests = [
+	"scripts/ci-concurrency.test.ts",
+	"scripts/ci-release-notes.test.ts",
+	"scripts/ci-test-ts.test.ts",
 ];
 
 const codingAgentNativePathPatterns = [
@@ -167,13 +193,7 @@ const codingAgentUiContentMarkers = [
 	"renderToString",
 ];
 
-const codingAgentRuntimeContentMarkers = [
-	"AgentSession",
-	"SessionManager",
-	"AuthStorage",
-	"Bun.sleep",
-	"setTimeout(",
-];
+const codingAgentRuntimeContentMarkers = ["AgentSession", "SessionManager", "AuthStorage", "Bun.sleep", "setTimeout("];
 
 let codingAgentTestPartitionPromise: Promise<CodingAgentTestPartition> | null = null;
 
@@ -184,11 +204,24 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-function workspaceTestCommand(pkg: string, parallel: number, smol = false): TestCommand {
+function workspaceTestCommand(pkg: string, parallel: number, options: { extraArgs?: string[] } = {}): TestCommand {
+	const { extraArgs = [] } = options;
 	return {
 		label: pkg,
 		cwd: pkg,
-		command: ["bun", ...(smol ? ["--smol"] : []), "test", `--parallel=${parallel}`],
+		command: ["bun", "test", `--parallel=${parallel}`, ...extraArgs],
+	};
+}
+
+// The Rust suite as one pooled command, so root `bun run test` reports TS and
+// Rust under the same progress stream / failure report. Delegates to
+// run-rs-task.ts, which self-skips when no Rust-affecting files changed locally
+// (printing a one-line notice) and resolves the cargo/nextest invocation.
+function rustTestCommand(): TestCommand {
+	return {
+		label: "rust (cargo nextest; skipped if no Rust changes)",
+		cwd: ".",
+		command: ["bun", "scripts/run-rs-task.ts", "test:rs"],
 	};
 }
 
@@ -229,10 +262,7 @@ function classifyCodingAgentTest(testFile: string, content: string): CodingAgent
 	) {
 		return "native";
 	}
-	if (
-		matchesAnyPath(testFile, codingAgentUiPathPatterns) ||
-		hasAnyMarker(content, codingAgentUiContentMarkers)
-	) {
+	if (matchesAnyPath(testFile, codingAgentUiPathPatterns) || hasAnyMarker(content, codingAgentUiContentMarkers)) {
 		return "ui";
 	}
 	if (
@@ -291,7 +321,7 @@ async function codingAgentTestCommands(bucket: CodingAgentBucket): Promise<TestC
 		commands.push({
 			label: `packages/coding-agent (${plan.label}; ${testFiles.length} files; parallel=${plan.parallel}${chunkLabel}; ${chunk.length} files)`,
 			cwd: "packages/coding-agent",
-			command: ["bun", "--smol", "test", `--parallel=${plan.parallel}`, ...onlyFailuresArgs, ...chunk],
+			command: ["bun", "test", `--parallel=${plan.parallel}`, ...onlyFailuresArgs, ...chunk],
 		});
 	}
 	return commands;
@@ -309,7 +339,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 				},
 			];
 		case "native":
-			return nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, true));
+			return nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, { smol: true }));
 		case "coding-agent-singleton":
 			return await codingAgentTestCommands("singleton");
 		case "coding-agent-ui":
@@ -331,6 +361,28 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 				...(await commandsForMode("native")),
 				...(await commandsForMode("coding-agent-heavy")),
 			];
+		// `local-ts` is the full local TypeScript run that root `bun run test:ts`
+		// drives: every package the old `--workspaces` fan-out covered (the CI
+		// `all` set PLUS mnemopi and robomp-web, which CI omits) and every repo
+		// script test, routed through this one quiet runner so the whole suite
+		// shares one progress stream and one failure report.
+		case "local-ts":
+			return [
+				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8, { extraArgs: onlyFailuresArgs })),
+				...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
+				...localOnlyWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
+				...(await commandsForMode("coding-agent-heavy")),
+				{
+					label: "scripts",
+					cwd: ".",
+					command: ["bun", "test", "--parallel=4", ...onlyFailuresArgs, ...repoScriptTests],
+				},
+			];
+		// `local` is what root `bun run test` drives: the full TS suite plus the
+		// Rust task, so a single invocation reports TS and Rust together. The Rust
+		// command self-skips when no Rust-affecting files changed (see run-rs-task).
+		case "local":
+			return [...(await commandsForMode("local-ts")), rustTestCommand()];
 	}
 }
 
@@ -390,7 +442,7 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 // credential / cloud-config variables scrubbed (see SCRUBBED_ENV_* above) and
 // GITHUB_ACTIONS cleared so suites resolve only against their own fixtures.
 function buildChildEnv(): Record<string, string | undefined> {
-	const env: Record<string, string | undefined> = { ...Bun.env, GITHUB_ACTIONS: "" };
+	const env: Record<string, string | undefined> = { ...Bun.env, GITHUB_ACTIONS: "", BUN_JSC_useConcurrentGC: "0" };
 	for (const key of Object.keys(env)) {
 		if (isScrubbedEnvVar(key)) {
 			delete env[key];
@@ -426,15 +478,162 @@ function testConcurrency(total: number): number {
 	return Math.min(Math.max(1, os.availableParallelism()), total);
 }
 
+// ANSI styling for interactive runs only; disabled when stdout is not a TTY or
+// NO_COLOR is set, so CI logs and piped/aggregated output stay plain text.
+const useColor = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+const paint = (code: string, value: string): string => (useColor ? `\x1b[${code}m${value}\x1b[0m` : value);
+const style = {
+	green: (s: string) => paint("32", s),
+	red: (s: string) => paint("31", s),
+	bold: (s: string) => paint("1", s),
+	dim: (s: string) => paint("2", s),
+};
+
+// Outcome of one finished chunk. `output` is the chunk's combined stdout+stderr,
+// buffered so it can be withheld during a quiet run and replayed only on failure.
+interface ChunkOutcome {
+	label: string;
+	command: string;
+	exitCode: number;
+	seconds: number;
+	output: string;
+}
+
+// Human duration in bun's bracket style: `[264ms]` under a second, `[3.3s]`
+// above. Used by the progress line and footer so timings read like `bun test`.
+function formatDuration(seconds: number): string {
+	return seconds < 1 ? `${Math.round(seconds * 1000)}ms` : `${seconds.toFixed(1)}s`;
+}
+
+// One-line live progress entry in `bun test` style: `✓ <label> [time]` for a
+// pass, `✗ <label> [time]` for a failure (bold red so the eye lands on it in a
+// long scroll). A failure also names the first failing test parsed from the
+// captured output — `— file > test (+N more)` — so the exact break is visible
+// in the stream without waiting for the end-of-run report. Emitted in completion
+// order as each chunk finishes.
+export function formatProgressLine(outcome: ChunkOutcome): string {
+	const time = style.dim(`[${formatDuration(outcome.seconds)}]`);
+	if (outcome.exitCode === 0) {
+		return `${style.green("✓")} ${outcome.label} ${time}`;
+	}
+	const failing = extractFailingTests(outcome.output);
+	const first = failing[0]?.name;
+	const more = failing.length > 1 ? style.dim(` (+${failing.length - 1} more)`) : "";
+	const detail = first ? ` ${style.dim("—")} ${style.red(first)}${more}` : "";
+	return `${style.bold(style.red(`✗ ${outcome.label}`))} ${time}${detail}`;
+}
+
+// Closing tally in `bun test` style, but counting test *chunks* (child commands),
+// not individual tests — the runner never parses child summaries. A green
+// `N chunks passed` line, a `N failed` line (red when non-zero, dim when clean),
+// then the total wall time. Printed after the failure report so a run always
+// ends on an at-a-glance verdict.
+export function formatSummaryFooter(passed: number, failed: number, totalSeconds: number): string {
+	const failLine = failed > 0 ? style.red(`${failed} failed`) : style.dim("0 failed");
+	return [
+		"",
+		` ${style.green(`${passed} chunks passed`)}`,
+		` ${failLine}`,
+		style.dim(`Ran ${passed + failed} test command(s) in ${formatDuration(totalSeconds)}.`),
+	].join("\n");
+}
+
+// A single failing test pulled from a chunk's captured bun output: its
+// `file > test` identifier and the verbatim failure block bun printed for it
+// (source frame, `error:` line, received/expected) — the detail a developer
+// needs to act without re-running.
+export interface FailingTest {
+	name: string;
+	detail: string;
+}
+
+// Parse the failing tests + their detail blocks out of a chunk's captured bun
+// output. Bun emits, per failure, a source code frame and `error:` block
+// *followed by* its `(fail) <name> [<time>]` marker, all under the most recent
+// `<relative/path>.test.ts:` header. We track the current header, buffer the
+// lines since the last marker/header (that's the pending failure's frame), and
+// flush them when the `(fail)` line arrives. ANSI is stripped only to classify
+// lines; the detail keeps bun's original bytes (incl. color). Returns `[]` when
+// the chunk died without per-test markers (e.g. a compile/import crash), so the
+// caller can fall back to replaying the raw log.
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+const FILE_HEADER_RE = /^(\S.*\.test\.[cm]?[jt]sx?):$/;
+const FAIL_MARKER_RE = /^\(fail\)\s+(.*?)(?:\s+\[[\d.]+\s*m?s\])?$/;
+export function extractFailingTests(output: string): FailingTest[] {
+	const failing: FailingTest[] = [];
+	let currentFile = "";
+	let buffer: string[] = [];
+	for (const raw of output.split("\n")) {
+		const line = raw.replace(ANSI_RE, "").trim();
+		const header = FILE_HEADER_RE.exec(line);
+		if (header) {
+			currentFile = header[1];
+			buffer = [];
+			continue;
+		}
+		const fail = FAIL_MARKER_RE.exec(line);
+		if (fail) {
+			failing.push({
+				name: currentFile ? `${currentFile} > ${fail[1]}` : fail[1],
+				detail: buffer.join("\n").trim(),
+			});
+			buffer = [];
+			continue;
+		}
+		buffer.push(raw);
+	}
+	return failing;
+}
+
+// Final report for the chunks that failed. Each chunk lists its failing tests,
+// and under each test name bun's own failure block (source frame + `error:` +
+// received/expected) is reproduced verbatim — caret alignment and diffs intact —
+// so it reads like a direct `bun test` failure. In quiet mode (`replayOutput`)
+// the blocks are shown because the run withheld them; in verbose mode they
+// already streamed inline, so only the names are listed. When a chunk crashed
+// without per-test markers (no parseable failures) the raw log is replayed as a
+// fallback in quiet mode. The banner repeats below so it stays visible whether
+// you scroll to the top or the bottom of the failures.
+export function formatFailureReport(failures: ChunkOutcome[], total: number, replayOutput: boolean): string {
+	const header = `${failures.length} of ${total} test chunk(s) FAILED`;
+	const lines: string[] = ["", style.bold(style.red(`━━━ ${header} ━━━`))];
+	for (const failure of failures) {
+		lines.push(
+			"",
+			style.bold(style.red(`✗ ${failure.label} (exit ${failure.exitCode})`)),
+			style.dim(`$ ${failure.command}`),
+		);
+		const failing = extractFailingTests(failure.output);
+		// Fully attributed only when every failure carries its own bun block;
+		// otherwise (no markers, or a marker with no preceding frame — timeouts,
+		// crashes) name what we can and replay the raw log so no error is lost.
+		const fullyAttributed = failing.length > 0 && failing.every(test => test.detail.length > 0);
+		for (const test of failing) {
+			lines.push("", `  ${style.red("✗")} ${style.bold(test.name)}`);
+			// Flush-left and verbatim so bun's caret/diff alignment is preserved.
+			if (replayOutput && fullyAttributed) {
+				lines.push(test.detail);
+			}
+		}
+		if (replayOutput && !fullyAttributed && failure.output.trim().length > 0) {
+			lines.push("", failure.output.trimEnd());
+		}
+	}
+	lines.push("", style.red(header));
+	return lines.join("\n");
+}
+
 // Run every command through a fixed-width worker pool. Each child's stdout and
 // stderr are drained concurrently (so a chatty test never deadlocks on a full
-// pipe) and flushed as one contiguous block on completion, keeping interleaved
-// processes readable. All failures are collected and reported together instead
-// of failing fast, so one run surfaces every broken chunk.
+// pipe) and buffered. Quiet mode (the default) prints one progress line per
+// finished chunk and replays full output only for failures, in a single report
+// at the end; `--full` streams every chunk's output inline as it completes. All
+// failures are collected and reported together instead of failing fast, so one
+// run surfaces every broken chunk and exits non-zero without a runner stack trace.
 async function runTestCommandsInParallel(commands: TestCommand[], concurrency: number): Promise<void> {
 	const env = buildChildEnv();
 	const queue = [...commands];
-	const failures: { label: string; exitCode: number; command: string }[] = [];
+	const failures: ChunkOutcome[] = [];
 	let completed = 0;
 	console.log(
 		`Running ${commands.length} test command(s), up to ${concurrency} in parallel ` +
@@ -461,36 +660,61 @@ async function runTestCommandsInParallel(commands: TestCommand[], concurrency: n
 				proc.exited,
 			]);
 			completed += 1;
-			const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
-			const status = exitCode === 0 ? "ok" : `FAILED exit ${exitCode}`;
-			process.stdout.write(
-				`\n==> [${completed}/${commands.length}] ${testCommand.label} (${status}, ${seconds}s)\n$ ${renderedCommand}\n${stdout}${stderr}`,
-			);
+			const outcome: ChunkOutcome = {
+				label: testCommand.label,
+				command: renderedCommand,
+				exitCode,
+				seconds: (performance.now() - startedAt) / 1000,
+				output: `${stdout}${stderr}`,
+			};
+			if (quiet) {
+				process.stdout.write(`${formatProgressLine(outcome)}\n`);
+			} else {
+				const status = exitCode === 0 ? "ok" : `FAILED exit ${exitCode}`;
+				process.stdout.write(
+					`\n==> [${completed}/${commands.length}] ${testCommand.label} (${status}, ${outcome.seconds.toFixed(1)}s)\n$ ${renderedCommand}\n${outcome.output}`,
+				);
+			}
 			if (exitCode !== 0) {
-				failures.push({ label: testCommand.label, exitCode, command: renderedCommand });
+				failures.push(outcome);
 			}
 		}
 	}
 
+	const runStartedAt = performance.now();
 	await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
 	if (failures.length > 0) {
-		const summary = failures.map(f => `  - ${f.label} (exit ${f.exitCode}): ${f.command}`).join("\n");
-		throw new Error(`${failures.length} of ${commands.length} test command(s) failed:\n${summary}`);
+		process.stdout.write(`${formatFailureReport(failures, commands.length, quiet)}\n`);
+	}
+	if (quiet) {
+		const totalSeconds = (performance.now() - runStartedAt) / 1000;
+		process.stdout.write(
+			`${formatSummaryFooter(commands.length - failures.length, failures.length, totalSeconds)}\n`,
+		);
+	}
+	if (failures.length > 0) {
+		process.exitCode = 1;
 	}
 }
 
-if (!validModes.has(requestedMode as Mode)) {
-	throw new Error(`Unknown mode ${shellQuote(requestedMode)}. Expected one of: ${[...validModes].join(", ")}`);
-}
+// Skipped when imported (e.g. by the runner's own unit tests), where
+// `process.argv` carries test-file paths rather than a mode/flags.
+if (import.meta.main) {
+	if (!(requestedMode in validModes)) {
+		throw new Error(
+			`Unknown mode ${shellQuote(requestedMode)}. Expected one of: ${Object.keys(validModes).join(", ")}`,
+		);
+	}
 
-const testCommands = await commandsForMode(requestedMode as Mode);
-// Outside CI, fan the independent chunk processes out across cores; CI keeps the
-// sequential, fail-fast path so each memory-capped runner job stays bounded.
-if (!isDryRun && !isCI() && testCommands.length > 1) {
-	await runTestCommandsInParallel(testCommands, testConcurrency(testCommands.length));
-} else {
-	for (const testCommand of testCommands) {
-		await runTestCommand(testCommand);
+	const testCommands = await commandsForMode(requestedMode as Mode);
+	// Outside CI, fan the independent chunk processes out across cores; CI keeps the
+	// sequential, fail-fast path so each memory-capped runner job stays bounded.
+	if (!isDryRun && !isCI() && testCommands.length > 1) {
+		await runTestCommandsInParallel(testCommands, testConcurrency(testCommands.length));
+	} else {
+		for (const testCommand of testCommands) {
+			await runTestCommand(testCommand);
+		}
 	}
 }

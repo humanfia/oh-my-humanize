@@ -92,6 +92,8 @@ import type {
 	ResetCreditRedeemOutcome,
 	ResetCreditTarget,
 	ServiceTier,
+	ServiceTierByFamily,
+	ServiceTierFamily,
 	SimpleStreamOptions,
 	TextContent,
 	ToolCall,
@@ -105,12 +107,15 @@ import {
 	deriveClaudeDeviceId,
 	Effort,
 	parseRateLimitReason,
-	resolveServiceTier,
+	realizesPriorityServiceTier,
+	resolveModelServiceTier,
+	serviceTierFamily,
 	streamSimple,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { GeminiHeaderRunDetector, isGeminiThinkingModel } from "@oh-my-pi/pi-ai/utils/thinking-loop";
+import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -168,7 +173,7 @@ import {
 } from "../config/model-resolver";
 import { MODEL_ROLE_IDS, MODEL_ROLES } from "../config/model-roles";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
-import { resolveServiceTierSetting } from "../config/service-tier";
+import { buildServiceTierByFamily, serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
 import { getDefault, onAppendOnlyModeChanged, validateProviderMaxInFlightRequests } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
@@ -246,6 +251,8 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 	type: "text",
 };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
+import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
+import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
@@ -280,6 +287,7 @@ import {
 	selectDiscoverableToolNamesByServer,
 } from "../tool-discovery/tool-index";
 import { assertEditableFile } from "../tools/auto-generated-guard";
+import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import { normalizeToolNames } from "../tools/builtin-names";
 import type { CheckpointState } from "../tools/checkpoint";
 import { outputMeta, wrapToolWithMetaNotice } from "../tools/output-meta";
@@ -348,6 +356,10 @@ const SESSION_STOP_CONTINUATION_CAP = 8;
 const GEMINI_HEADER_INTERRUPT_REASON = "Interrupted: emit a tool call instead of more planning";
 /** `customType` for the hidden tool-call reminder injected after the interrupt. */
 const GEMINI_TOOL_REMINDER_TYPE = "gemini-tool-call-reminder";
+/** `customType` for the hidden redirect notice injected into a turn retried after a
+ *  thinking/response loop. Steers the model off the repeated content; never displayed. */
+const THINKING_LOOP_REDIRECT_TYPE = "thinking-loop-redirect";
+const TOOL_CALL_LOOP_REDIRECT_TYPE = "tool-call-loop-redirect";
 
 // A side-channel assistant response is signed for the hidden prompt/history that
 // produced it. If we persist that response under a different user turn, native
@@ -524,6 +536,8 @@ export interface AgentSessionConfig {
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	/** Initial session thinking selector. */
 	thinkingLevel?: ConfiguredThinkingLevel;
+	/** Initial per-family service tiers (OpenAI / Anthropic / Google) for the live session. */
+	serviceTierByFamily?: ServiceTierByFamily;
 	/** Prompt templates for expansion */
 	promptTemplates?: PromptTemplate[];
 	/** File-based slash commands for expansion */
@@ -567,6 +581,8 @@ export interface AgentSessionConfig {
 	 * main agent. Defaults to plain `streamSimple` when omitted.
 	 */
 	advisorStreamFn?: StreamFn;
+	/** Hint that OpenAI Codex requests should prefer websocket transport when supported. */
+	preferWebsockets?: boolean;
 	/** Provider payload hook used by the active session request path */
 	onPayload?: SimpleStreamOptions["onPayload"];
 	/** Provider response hook used by the active session request path */
@@ -1498,6 +1514,7 @@ export class AgentSession {
 	#transformProviderContext: ((context: Context, model: Model) => Context | Promise<Context>) | undefined;
 	#sideStreamFn: StreamFn;
 	#advisorStreamFn: StreamFn | undefined;
+	#preferWebsockets: boolean | undefined;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#rebuildSystemPrompt:
 		| ((toolNames: string[], tools: Map<string, AgentTool>) => Promise<{ systemPrompt: string[] }>)
@@ -1571,6 +1588,8 @@ export class AgentSession {
 	 *  `#geminiHeaderGuardActive`); undefined for non-Gemini models or when the
 	 *  guard is off. Fed thinking deltas in the assistant-message interceptor. */
 	#geminiHeaderDetector: GeminiHeaderRunDetector | undefined;
+	#toolCallLoopGuard: ToolCallLoopGuard | undefined;
+	#toolCallLoopGuardSettingsKey: string | undefined;
 	#promptInFlightCount = 0;
 	#abortInProgress = false;
 	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
@@ -1814,6 +1833,7 @@ export class AgentSession {
 		// toggle scopes priority to Fireworks alone, without mutating the shared
 		// session `serviceTier` that drives `/fast` and OpenAI/Anthropic priority.
 		this.agent.serviceTierResolver = model => this.#effectiveServiceTier(model);
+		this.#serviceTierByFamily = config.serviceTierByFamily ?? {};
 		this.#advisorTools = config.advisorTools;
 		this.#advisorWatchdogPrompt = config.advisorWatchdogPrompt;
 		this.#advisorSharedInstructions = config.advisorSharedInstructions;
@@ -1828,6 +1848,7 @@ export class AgentSession {
 		this.#transformProviderContext = config.transformProviderContext;
 		this.#sideStreamFn = config.sideStreamFn ?? streamSimple;
 		this.#advisorStreamFn = config.advisorStreamFn;
+		this.#preferWebsockets = config.preferWebsockets;
 		this.#onPayload = config.onPayload;
 		this.#workflowAgentTaskRunner = config.workflowAgentTaskRunner;
 		this.#workflowScriptEvalRunner = config.workflowScriptEvalRunner;
@@ -1866,6 +1887,13 @@ export class AgentSession {
 			if (rewindReport) {
 				this.#pendingRewindReport = undefined;
 				await this.#applyRewind(rewindReport, messages);
+			}
+			if (context?.message.role === "assistant") {
+				const detection = this.#activeToolCallLoopGuard()?.recordTurn({
+					message: context.message,
+					toolResults: context.toolResults,
+				});
+				if (detection) this.#maybeInjectToolCallLoopRedirect(messages, detection);
 			}
 			this.#advisorPrimaryTurnsCompleted++;
 			if (this.#advisors.length > 0) {
@@ -2075,15 +2103,20 @@ export class AgentSession {
 		const legacy = !this.#advisorConfigs?.length;
 		const roster: AdvisorConfig[] = legacy ? [{ name: "default" }] : this.#advisorConfigs!;
 
-		// Advisor service tier (`serviceTierAdvisor`): "none" (default) runs the
-		// advisor on standard processing; "inherit" tracks the session's live tier
-		// per request (like the main agent, including /fast toggles) via a resolver;
-		// a concrete value pins the advisor to that tier. One value for all advisors.
-		const advisorTierSetting = this.settings.get("serviceTierAdvisor");
-		const advisorServiceTier =
-			advisorTierSetting === "inherit" ? undefined : resolveServiceTierSetting(advisorTierSetting, undefined);
-		const advisorServiceTierResolver =
-			advisorTierSetting === "inherit" ? (model: Model) => this.#effectiveServiceTier(model) : undefined;
+		// Advisor service tier (`tier.advisor`): "none" (default) runs the advisor
+		// on standard processing; "inherit" tracks the session's live per-family
+		// tiers per request (like the main agent, including /fast toggles); a
+		// concrete value is broadcast across families and applied to the advisor
+		// model's family. One value for all advisors.
+		const advisorTierSetting = this.settings.get("tier.advisor");
+		const advisorTierMap =
+			advisorTierSetting === "inherit"
+				? undefined
+				: serviceTierForAllFamilies(serviceTierSettingToTier(advisorTierSetting));
+		const advisorServiceTierResolver = (model: Model): ServiceTier | undefined =>
+			advisorTierSetting === "inherit"
+				? this.#effectiveServiceTier(model)
+				: resolveModelServiceTier(advisorTierMap, model);
 
 		const usedSlugs = new Set<string>();
 		for (const config of roster) {
@@ -2109,11 +2142,7 @@ export class AgentSession {
 					continue;
 				}
 			} else {
-				const sel = resolveAdvisorRoleSelection(
-					this.settings,
-					this.#modelRegistry.getAvailable(),
-					this.#modelRegistry,
-				);
+				const sel = resolveAdvisorRoleSelection(this.settings, this.#modelRegistry.getAvailable());
 				if (!sel) {
 					logger.debug("advisor enabled but no model assigned to the 'advisor' role; advisor inactive", {
 						advisor: config.name,
@@ -2173,6 +2202,7 @@ export class AgentSession {
 				sessionId: advisorSessionId,
 				promptCacheKey: advisorSessionId,
 				providerSessionState: this.#providerSessionState,
+				preferWebsockets: this.#preferWebsockets,
 				getApiKey: requestModel => this.#modelRegistry.resolver(requestModel, advisorSessionId),
 				streamFn: this.#advisorStreamFn,
 				onPayload: this.#onPayload,
@@ -2181,7 +2211,7 @@ export class AgentSession {
 				transformProviderContext: this.#transformProviderContext,
 				intentTracing: false,
 				telemetry: advisorTelemetry,
-				serviceTier: advisorServiceTier,
+				serviceTier: undefined,
 				serviceTierResolver: advisorServiceTierResolver,
 			});
 			advisorAgent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
@@ -2658,6 +2688,11 @@ export class AgentSession {
 		return this.#providerSessionState;
 	}
 
+	/** Hint forwarded to provider calls that support websocket transport. */
+	get preferWebsockets(): boolean | undefined {
+		return this.#preferWebsockets;
+	}
+
 	getHindsightSessionState(): HindsightSessionState | undefined {
 		return this.#hindsightSessionState;
 	}
@@ -2914,10 +2949,10 @@ export class AgentSession {
 	 * the mid-run-compaction planner can ask "is this turn message already on
 	 * the branch?" in O(1) instead of re-walking the branch per check.
 	 *
-	 * The Map's value is the list of branch messages that share a key — almost
-	 * always one. We only need the LIST when content equality matters (rare
-	 * collision tiebreaker via {@link sameMessageContent}); the empty/single-
-	 * entry common case lets the caller's lookup short-circuit at presence.
+	 * The mid-run ordering check uses key identity alone: same-key content
+	 * variants are one logical message at this boundary, because otherwise a
+	 * display-side rewrite can make the assistant look missing after its tool
+	 * results have already persisted.
 	 *
 	 * Pre-#3629 the equivalent was `sessionManager.getBranch()` called twice
 	 * per turn message, each call rebuilding the path via O(n²) `unshift` and
@@ -2925,17 +2960,14 @@ export class AgentSession {
 	 * per `onTurnEnd` on a long session and the load-bearing source of the
 	 * `ui.loop-blocked` warnings in the bug report.
 	 */
-	#indexPersistedMessagesByKey(): Map<string, AgentMessage[]> {
-		const index = new Map<string, AgentMessage[]>();
+	#indexPersistedMessageKeys(): Set<string> {
+		const keys = new Set<string>();
 		for (const entry of this.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
 			const key = sessionMessagePersistenceKey(entry.message);
-			if (key === undefined) continue;
-			const existing = index.get(key);
-			if (existing) existing.push(entry.message);
-			else index.set(key, [entry.message]);
+			if (key !== undefined) keys.add(key);
 		}
-		return index;
+		return keys;
 	}
 
 	/**
@@ -3035,17 +3067,17 @@ export class AgentSession {
 		// JSON-compared every entry per turn message, which on long sessions
 		// turned each `onTurnEnd` into a seconds-long sync block (the
 		// `ui.loop-blocked` warnings tagged `subagent:*` in the bug report).
-		const branchIndex = this.#indexPersistedMessagesByKey();
+		const branchKeys = this.#indexPersistedMessageKeys();
 		const turnKeys = turnMessages.map(sessionMessagePersistenceKey);
 		const persistedKeys = new Set<string>();
 		for (let index = 0; index < turnMessages.length; index++) {
 			const key = turnKeys[index];
 			if (key === undefined) continue;
-			const candidates = branchIndex.get(key);
-			if (!candidates) continue;
-			// Key match only counts when content also matches — two distinct
-			// messages that collided on the cheap key must STILL be persisted.
-			if (candidates.some(persisted => sameMessageContent(persisted, turnMessages[index]))) {
+			// Mid-run ordering is keyed by logical identity. A persisted display
+			// variant (for example, redacted/deobfuscated content) must still count;
+			// otherwise the assistant can look missing while later tool results are
+			// present, producing a false out-of-order skip.
+			if (branchKeys.has(key)) {
 				persistedKeys.add(key);
 			}
 		}
@@ -3259,10 +3291,11 @@ export class AgentSession {
 			if (event.message.role === "assistant") {
 				this.#lastAssistantMessage = event.message;
 				const assistantMsg = event.message as AssistantMessage;
-				const currentGrantsAnthropicPriority =
-					this.serviceTier === "priority" || this.serviceTier === "claude-only";
-				if (assistantMsg.disabledFeatures?.includes("priority") && currentGrantsAnthropicPriority) {
-					this.setServiceTier(undefined);
+				if (
+					assistantMsg.disabledFeatures?.includes("priority") &&
+					this.#serviceTierByFamily.anthropic === "priority"
+				) {
+					this.setServiceTierFamily("anthropic", undefined);
 					this.emitNotice(
 						"warning",
 						"Priority/fast mode rejected for this model; retried without it. Fast mode is now off.",
@@ -4365,6 +4398,58 @@ export class AgentSession {
 		this.#streamingEditFileCache.clear();
 	}
 
+	#activeToolCallLoopGuard(): ToolCallLoopGuard | undefined {
+		if (this.settings.get("model.toolCallLoopGuard.enabled") !== true) {
+			this.#toolCallLoopGuard = undefined;
+			this.#toolCallLoopGuardSettingsKey = undefined;
+			return undefined;
+		}
+
+		const threshold = this.settings.get("model.toolCallLoopGuard.threshold");
+		const exemptTools = this.settings
+			.get("model.toolCallLoopGuard.exemptTools")
+			.filter((tool): tool is string => typeof tool === "string" && tool.length > 0);
+		const settingsKey = `${threshold}:${JSON.stringify(exemptTools)}`;
+		if (!this.#toolCallLoopGuard || this.#toolCallLoopGuardSettingsKey !== settingsKey) {
+			this.#toolCallLoopGuard = new ToolCallLoopGuard({ threshold, exemptTools });
+			this.#toolCallLoopGuardSettingsKey = settingsKey;
+		}
+		return this.#toolCallLoopGuard;
+	}
+
+	#maybeInjectToolCallLoopRedirect(messages: AgentMessage[], detection: RepeatedToolCallDetection): void {
+		const content = prompt.render(toolCallLoopRedirectTemplate, {
+			tool_name: detection.toolName,
+			count: detection.count,
+			arguments_summary: detection.argumentsSummary,
+			result_summary: detection.resultSummary || "(no text result)",
+		});
+		const details = {
+			toolName: detection.toolName,
+			count: detection.count,
+			argumentsSummary: detection.argumentsSummary,
+			resultSummary: detection.resultSummary,
+		};
+		logger.warn("cross-turn tool-call loop detected", {
+			toolName: detection.toolName,
+			count: detection.count,
+		});
+		const redirectMessage: CustomMessage = {
+			role: "custom",
+			customType: TOOL_CALL_LOOP_REDIRECT_TYPE,
+			content,
+			display: false,
+			details,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		messages.push(redirectMessage);
+		if (this.agent.state.messages !== messages) {
+			this.agent.appendMessage(redirectMessage);
+		}
+		this.sessionManager.appendCustomMessageEntry(TOOL_CALL_LOOP_REDIRECT_TYPE, content, false, details, "agent");
+	}
+
 	/**
 	 * Whether the Gemini header-runaway guard applies to the current model: the loop
 	 * guard is on (settings + `PI_NO_THINKING_LOOP_GUARD`), the tool-call reminder is
@@ -5162,6 +5247,28 @@ export class AgentSession {
 		}
 		await disposeRubyKernelSessionsByOwner(this.#evalKernelOwnerId);
 		await disposeJuliaKernelSessionsByOwner(this.#evalKernelOwnerId);
+		// Release headless / spawned Chromium and worker tabs this session
+		// opened via the browser tool. The tool's `tabs`/`browsers` maps are
+		// module-global — subagents and future sessions share them — so we
+		// walk by `ownerSessionId` (assigned at `acquireTab` creation, never on
+		// reuse) and touch only what THIS session created. Bounded so a broken
+		// CDP close cannot stall `/exit`; mirrors the async-job/MCP pattern.
+		// (Issue #3963.)
+		const browserOwnerId = this.sessionManager.getSessionId();
+		if (browserOwnerId) {
+			try {
+				const released = await withTimeout(
+					releaseTabsForOwner(browserOwnerId, { kill: true }),
+					3_000,
+					"Timed out releasing owned browser tabs during dispose",
+				);
+				if (released > 0) {
+					logger.debug("Released owned browser tabs during dispose", { ownerId: browserOwnerId, released });
+				}
+			} catch (error) {
+				logger.warn("Failed to release owned browser tabs during dispose", { error: String(error) });
+			}
+		}
 		await shutdownTinyTitleClient();
 		this.#releasePowerAssertion();
 		// Clean up an empty session created by this session's /move so it doesn't accumulate.
@@ -5286,8 +5393,11 @@ export class AgentSession {
 		return this.#autoResolvedLevel;
 	}
 
-	get serviceTier(): ServiceTier | undefined {
-		return this.agent.serviceTier;
+	#serviceTierByFamily: ServiceTierByFamily = {};
+
+	/** Live per-family service tiers (OpenAI / Anthropic / Google). */
+	get serviceTierByFamily(): ServiceTierByFamily {
+		return this.#serviceTierByFamily;
 	}
 
 	/** Whether agent is currently streaming a response */
@@ -7991,7 +8101,7 @@ export class AgentSession {
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
 		this.sessionManager.appendThinkingLevelChange(this.thinkingLevel, this.configuredThinkingLevel());
-		this.sessionManager.appendServiceTierChange(this.serviceTier ?? null);
+		this.sessionManager.appendServiceTierChange(this.#serviceTierEntry());
 		if (nextDiscoverySessionToolNames) {
 			await this.#applyActiveToolsByName(nextDiscoverySessionToolNames, { persistMCPSelection: false });
 			if (this.getSelectedMCPToolNames().length > 0) {
@@ -8170,7 +8280,7 @@ export class AgentSession {
 	 */
 	async setModelTemporary(
 		model: Model,
-		thinkingLevel?: ThinkingLevel,
+		thinkingLevel?: ConfiguredThinkingLevel,
 		options?: { ephemeral?: boolean },
 	): Promise<void> {
 		const previousEditMode = this.#resolveActiveEditMode();
@@ -8240,7 +8350,6 @@ export class AgentSession {
 			const resolved = resolveModelRoleValue(roleModelStr, availableModels, {
 				settings: this.settings,
 				matchPreferences,
-				modelRegistry: this.#modelRegistry,
 			});
 			if (!resolved.model) continue;
 
@@ -8381,7 +8490,7 @@ export class AgentSession {
 		const all = this.#modelRegistry.getAvailable();
 		const patterns = this.settings.get("enabledModels");
 		if (!patterns || patterns.length === 0) return all;
-		return filterAvailableModelsByEnabledPatterns(all, patterns, this.#modelRegistry);
+		return filterAvailableModelsByEnabledPatterns(all, patterns);
 	}
 
 	// =========================================================================
@@ -8533,38 +8642,36 @@ export class AgentSession {
 	}
 
 	/**
-	 * True when *any* fast-mode-granting service tier is configured, regardless
-	 * of whether the active model's provider actually realizes it. Used by the
-	 * toggle (`/fast on|off`) so re-toggling a scoped tier (`openai-only`,
-	 * `claude-only`) doesn't silently broaden it to unscoped `priority`.
+	 * True when the currently selected model's family is set to `priority` — the
+	 * `/fast` on/off state for the active model. Returns false when no model is
+	 * selected or the model exposes no service-tier family (e.g. Fireworks, which
+	 * has its own Providers › Fireworks Tier toggle).
 	 *
-	 * For "is fast mode actually applied to the next request?" use
-	 * {@link isFastModeActive} instead — that one respects the model's provider.
+	 * For "is priority actually applied to the next request?" use
+	 * {@link isFastModeActive} instead.
 	 */
 	isFastModeEnabled(): boolean {
-		return (
-			this.serviceTier === "priority" || this.serviceTier === "claude-only" || this.serviceTier === "openai-only"
-		);
+		const family = this.model ? serviceTierFamily(this.model) : undefined;
+		return family ? this.#serviceTierByFamily[family] === "priority" : false;
 	}
 
 	/**
-	 * True when the configured `serviceTier` resolves to `"priority"` for the
-	 * *currently selected model's provider*. Returns false for scoped tiers
-	 * that don't match (e.g. `"openai-only"` on an anthropic model) and when
-	 * no model is selected.
+	 * True when `priority` is actually realized on the wire for the currently
+	 * selected model (OpenAI/Google `service_tier`, direct Anthropic fast mode,
+	 * or Fireworks priority). Returns false for tiers the active model can't
+	 * realize and when no model is selected.
 	 */
 	isFastModeActive(): boolean {
-		return resolveServiceTier(this.#effectiveServiceTier(), this.model?.provider) === "priority";
+		const model = this.model;
+		return !!model && realizesPriorityServiceTier(this.#effectiveServiceTier(model), model);
 	}
 
 	/**
-	 * Effective wire service-tier for a request to `model`. Fireworks models
-	 * take the Priority serving path only when the Providers › Fireworks Tier
-	 * setting is `"priority"` — that toggle is the sole opt-in, so a global
-	 * `serviceTier: "priority"` (for OpenAI/Anthropic) never silently incurs
-	 * Fireworks priority costs — and never for `-fast` variants, whose Fast
-	 * serving path is mutually exclusive with Priority. Every other provider
-	 * uses the session `serviceTier` unchanged.
+	 * Effective wire service-tier for a request to `model`. Fireworks models take
+	 * the Priority serving path only when the Providers › Fireworks Tier setting
+	 * is `"priority"` (and never for `-fast` variants, whose Fast serving path is
+	 * mutually exclusive with Priority). Every other model resolves the live
+	 * per-family tier map down to the entry for its family.
 	 */
 	#effectiveServiceTier(model: Model | undefined = this.model): ServiceTier | undefined {
 		if (model?.provider === "fireworks") {
@@ -8572,40 +8679,56 @@ export class AgentSession {
 				? "priority"
 				: undefined;
 		}
-		return this.serviceTier;
+		if (!model) return undefined;
+		return resolveModelServiceTier(this.#serviceTierByFamily, model);
 	}
 
-	setServiceTier(serviceTier: ServiceTier | undefined): void {
-		if (this.serviceTier === serviceTier) return;
-		// Re-arming priority on Anthropic? Clear the per-session auto-fallback
-		// sticky disable so the next request actually carries `speed: "fast"`
-		// again. Without this, `/fast on` (or user switching to a tier that
-		// grants anthropic priority) after an auto-disable is a silent no-op
-		// and the warning notice fires every turn.
-		if (serviceTier === "priority" || serviceTier === "claude-only") {
+	/** The live per-family tier map, or `null` when empty (for session persistence). */
+	#serviceTierEntry(): ServiceTierByFamily | null {
+		return Object.keys(this.#serviceTierByFamily).length > 0 ? this.#serviceTierByFamily : null;
+	}
+
+	/** Set one family's tier (or clear it with `undefined`); persists the change. */
+	setServiceTierFamily(family: ServiceTierFamily, tier: ServiceTier | undefined): void {
+		if (this.#serviceTierByFamily[family] === tier) return;
+		const next: ServiceTierByFamily = { ...this.#serviceTierByFamily };
+		if (tier) next[family] = tier;
+		else delete next[family];
+		this.#applyServiceTierByFamily(next);
+	}
+
+	/** Replace the whole per-family tier map; persists + re-arms Anthropic fast mode. */
+	#applyServiceTierByFamily(next: ServiceTierByFamily): void {
+		// Re-arming Anthropic priority clears the per-session fast-mode auto-disable
+		// so the next request actually carries `speed: "fast"` again.
+		if (next.anthropic === "priority" && this.#serviceTierByFamily.anthropic !== "priority") {
 			clearAnthropicFastModeFallback(this.#providerSessionState);
 		}
-		this.agent.serviceTier = serviceTier;
-		this.sessionManager.appendServiceTierChange(serviceTier ?? null);
+		this.#serviceTierByFamily = next;
+		this.sessionManager.appendServiceTierChange(this.#serviceTierEntry());
 	}
 
+	/**
+	 * `/fast on|off` targets the family of the currently selected model: it sets
+	 * (or clears) that family's `priority` tier. Models without a service-tier
+	 * family (Fireworks, or providers with no tier knob) have nothing to toggle.
+	 */
 	setFastMode(enabled: boolean): void {
-		if (enabled && this.isFastModeEnabled()) {
-			// Already on under any scope — keep the user's scoped value.
+		const family = this.model ? serviceTierFamily(this.model) : undefined;
+		if (!family) {
+			this.emitNotice("info", "The current model has no service-tier control for /fast to toggle.", "priority");
 			return;
 		}
 		if (!enabled) {
-			this.setServiceTier(undefined);
+			if (this.#serviceTierByFamily[family] === "priority") this.setServiceTierFamily(family, undefined);
 			return;
 		}
-		const scope = this.settings.get("fastModeScope");
-		this.setServiceTier(scope === "openai" ? "openai-only" : scope === "claude" ? "claude-only" : "priority");
+		this.setServiceTierFamily(family, "priority");
 	}
 
 	toggleFastMode(): boolean {
-		const enabled = !this.isFastModeEnabled();
-		this.setFastMode(enabled);
-		return enabled;
+		this.setFastMode(!this.isFastModeEnabled());
+		return this.isFastModeEnabled();
 	}
 
 	/**
@@ -8970,6 +9093,8 @@ export class AgentSession {
 			const wantsSnapcompact =
 				compactionPrep.kind !== "fromHook" && effectiveSettings.strategy === "snapcompact" && !customInstructions;
 			const snapcompactReady = wantsSnapcompact;
+			const snapcompactShapeSetting = this.settings.get("snapcompact.shape");
+			let snapcompactShape: snapcompact.Shape | undefined;
 			if (wantsSnapcompact && !this.model.input.includes("image")) {
 				this.emitNotice(
 					"warning",
@@ -8978,8 +9103,16 @@ export class AgentSession {
 				);
 				throw new Error(`snapcompact cannot run locally: ${this.model.id} is text-only.`);
 			} else if (snapcompactReady) {
-				const text = snapcompact.serializeConversation(convertToLlm(preparation.messagesToSummarize));
-				const renderScan = snapcompact.scanRenderability(text);
+				const text = snapcompact.serializeConversation(
+					convertToLlm(preparation.messagesToSummarize.concat(preparation.turnPrefixMessages)),
+				);
+				const probeText = snapcompact.renderabilityProbeText(
+					text,
+					preparation.previousPreserveData,
+					preparation.previousSummary,
+				);
+				snapcompactShape = snapcompact.resolveShapeForText(probeText, this.model, snapcompactShapeSetting);
+				const renderScan = snapcompact.scanRenderability(probeText, { shape: snapcompactShape });
 				if (!renderScan.isSafe) {
 					const percent = (renderScan.unrenderableRatio * 100).toFixed(1);
 					this.emitNotice(
@@ -9017,12 +9150,32 @@ export class AgentSession {
 					);
 					throw new Error("snapcompact cannot run locally: kept history alone exceeds the context budget.");
 				} else {
+					const shape = snapcompactShape;
+					if (!shape) {
+						throw new Error("snapcompact shape was not resolved before rendering.");
+					}
 					snapcompactResult = await snapcompact.compact(preparation, {
 						convertToLlm,
 						model: this.model,
-						shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
+						...(snapcompactShapeSetting === "auto" ? {} : { shape }),
 						maxFrames,
 					});
+					const framePayloadBytes = this.#snapcompactFramePayloadBytes(snapcompactResult);
+					if (framePayloadBytes > snapcompact.FRAME_DATA_BYTES_BUDGET) {
+						logger.warn("Snapcompact exceeded the per-request frame payload budget", {
+							model: this.model?.id,
+							framePayloadBytes,
+							budget: snapcompact.FRAME_DATA_BYTES_BUDGET,
+						});
+						this.emitNotice(
+							"warning",
+							"snapcompact produced too much standing image payload. No LLM fallback was attempted.",
+							"compaction",
+						);
+						throw new Error(
+							"snapcompact cannot run locally: standing image payload exceeds the per-request budget.",
+						);
+					}
 					const ctxWindow = this.model?.contextWindow ?? 0;
 					const budget =
 						ctxWindow > 0
@@ -10751,7 +10904,6 @@ export class AgentSession {
 		return resolveModelRoleValue(roleModelStr, availableModels, {
 			settings: this.settings,
 			matchPreferences: getModelMatchPreferences(this.settings),
-			modelRegistry: this.#modelRegistry,
 		});
 	}
 
@@ -10985,7 +11137,7 @@ export class AgentSession {
 	 */
 	#computeSnapcompactMaxFrames(preparation: CompactionPreparation, settings: CompactionSettings): number {
 		const ctxWindow = this.model?.contextWindow ?? 0;
-		if (ctxWindow <= 0) return snapcompact.MAX_FRAMES_DEFAULT;
+		if (ctxWindow <= 0) return Math.min(snapcompact.MAX_FRAMES_DEFAULT, snapcompact.maxFramesForDataBudget());
 		const reserve = effectiveReserveTokens(ctxWindow, settings);
 		let baseTokens = computeNonMessageTokens(this);
 		for (const message of preparation.recentMessages) {
@@ -11024,7 +11176,16 @@ export class AgentSession {
 		const capReserve = textEdgeTokens + SUMMARY_TEMPLATE_TOKENS;
 		const frameBudget = totalBudget - baseTokens - capReserve;
 		if (frameBudget < snapcompact.FRAME_TOKEN_ESTIMATE) return 1;
-		return Math.min(Math.floor(frameBudget / snapcompact.FRAME_TOKEN_ESTIMATE), snapcompact.MAX_FRAMES_DEFAULT);
+		return Math.min(
+			Math.floor(frameBudget / snapcompact.FRAME_TOKEN_ESTIMATE),
+			snapcompact.MAX_FRAMES_DEFAULT,
+			snapcompact.maxFramesForDataBudget(),
+		);
+	}
+
+	#snapcompactFramePayloadBytes(result: snapcompact.CompactionResult): number {
+		const archive = snapcompact.getPreservedArchive(result.preserveData);
+		return archive ? snapcompact.frameDataBytes(archive.frames) : 0;
 	}
 
 	/**
@@ -11037,7 +11198,9 @@ export class AgentSession {
 	 */
 	#projectSnapcompactContextTokens(preparation: CompactionPreparation, result: snapcompact.CompactionResult): number {
 		const archive = snapcompact.getPreservedArchive(result.preserveData);
-		const blocks = archive ? snapcompact.historyBlocks(archive) : undefined;
+		const blocks = archive
+			? snapcompact.historyBlocks(archive, { maxFrameDataBytes: snapcompact.FRAME_DATA_BYTES_BUDGET })
+			: undefined;
 		const summaryMessage = createCompactionSummaryMessage(
 			result.summary,
 			result.tokensBefore,
@@ -11129,6 +11292,52 @@ export class AgentSession {
 	}
 
 	/**
+	 * Last-resort reducer when {@link #runAutoCompaction} would otherwise dead-end.
+	 * The summarizer cut at the only available turn boundary, but the kept tail is
+	 * still over the recovery band because a single recent turn (a large
+	 * tool-result, a heavy fenced/XML block) is itself bigger than the band and
+	 * `findCutPoint` cannot cut inside one message. `shake("elide")` reaches INSIDE
+	 * that tail — it offloads heavy tool-result / block content to one
+	 * `artifact://` blob and leaves a recoverable placeholder — so residual context
+	 * genuinely drops instead of the guard pausing maintenance and looping the
+	 * warning. Without it the guard would pause/warn here; with it the caller
+	 * re-tests its progress predicate after the elide pass and only falls through
+	 * to the warning when residual stays over.
+	 *
+	 * Image-only tails are out of scope: `collectShakeRegions` skips image-only
+	 * tool results and user-message images aren't counted by the local estimate
+	 * that gates the dead-end, so those still surface the warning (remedy:
+	 * `/shake images`).
+	 *
+	 * Returns the elide {@link ShakeResult} when something was offloaded (so the
+	 * caller can re-test and report), or `undefined` when nothing was eligible or
+	 * the pass aborted/failed.
+	 */
+	async #tryShakeRescueForDeadEnd(signal: AbortSignal): Promise<ShakeResult | undefined> {
+		if (signal.aborted) return undefined;
+		try {
+			const result = await this.shake("elide", { signal });
+			return result.toolResultsDropped + result.blocksDropped > 0 ? result : undefined;
+		} catch (error) {
+			logger.warn("Dead-end shake rescue failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return undefined;
+		}
+	}
+
+	/** Notice describing a successful dead-end elide rescue. */
+	#emitShakeRescueNotice(result: ShakeResult): void {
+		const elided = result.toolResultsDropped + result.blocksDropped;
+		const sink = result.artifactId ? "an artifact" : "placeholders";
+		this.emitNotice(
+			"info",
+			`Compaction dead-end recovery: elided ${elided} heavy block${elided === 1 ? "" : "s"} (~${result.tokensFreed.toLocaleString()} tokens) to ${sink} so maintenance could make progress.`,
+			"compaction",
+		);
+	}
+
+	/**
 	 * Internal: Run auto-compaction with events.
 	 *
 	 * @param allowDefer If true (default), threshold-driven handoff strategy is allowed to
@@ -11161,6 +11370,7 @@ export class AgentSession {
 		const shouldAutoContinue =
 			!suppressContinuation && options.autoContinue !== false && compactionSettings.autoContinue !== false;
 		const suppressHandoff = options.suppressHandoff === true;
+		let fallbackFromShake = false;
 		// Shake runs inline (cheap, no remote LLM). On overflow recovery, if shake
 		// reclaims nothing we fall through to the summary-compaction body below so
 		// the oversized input still gets resolved.
@@ -11174,6 +11384,7 @@ export class AgentSession {
 				suppressContinuation,
 			);
 			if (outcome !== "fallback") return outcome;
+			fallbackFromShake = true;
 		}
 		// "overflow" and "incomplete" force inline execution because they are recovery
 		// paths the caller wants resolved before scheduling the next turn. "idle" is
@@ -11372,7 +11583,14 @@ export class AgentSession {
 				const text = snapcompact.serializeConversation(
 					convertToLlm(preparation.messagesToSummarize.concat(preparation.turnPrefixMessages)),
 				);
-				const renderScan = snapcompact.scanRenderability(text);
+				const probeText = snapcompact.renderabilityProbeText(
+					text,
+					preparation.previousPreserveData,
+					preparation.previousSummary,
+				);
+				const shapeSetting = this.settings.get("snapcompact.shape");
+				const shape = snapcompact.resolveShapeForText(probeText, this.model, shapeSetting);
+				const renderScan = snapcompact.scanRenderability(probeText, { shape });
 				if (!renderScan.isSafe) {
 					const percent = (renderScan.unrenderableRatio * 100).toFixed(1);
 					logger.warn("Snapcompact disabled: high non-ASCII rate detected", {
@@ -11392,9 +11610,20 @@ export class AgentSession {
 						snapcompactResult = await snapcompact.compact(preparation, {
 							convertToLlm,
 							model: this.model,
-							shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
+							...(shapeSetting === "auto" ? {} : { shape }),
 							maxFrames,
 						});
+						const framePayloadBytes = this.#snapcompactFramePayloadBytes(snapcompactResult);
+						if (framePayloadBytes > snapcompact.FRAME_DATA_BYTES_BUDGET) {
+							logger.warn("Snapcompact exceeded the per-request frame payload budget", {
+								model: this.model?.id,
+								framePayloadBytes,
+								budget: snapcompact.FRAME_DATA_BYTES_BUDGET,
+							});
+							snapcompactBlocker =
+								"snapcompact produced too much standing image payload; using context-full auto-compaction instead.";
+							snapcompactResult = undefined;
+						}
 						if (snapcompactResult) {
 							const ctxWindow = this.model?.contextWindow ?? 0;
 							const budget =
@@ -11654,7 +11883,15 @@ export class AgentSession {
 				// won't include) is excluded. Reusing the auto-continue recovery band
 				// here turned recoverable overflows into manual dead-ends (#3412 review),
 				// so use the looser fit budget.
-				if (this.#compactionCreatedRetryFit()) {
+				let retryFits = this.#compactionCreatedRetryFit();
+				if (!retryFits && !fallbackFromShake) {
+					const rescue = await this.#tryShakeRescueForDeadEnd(autoCompactionSignal);
+					if (rescue && this.#compactionCreatedRetryFit()) {
+						retryFits = true;
+						this.#emitShakeRescueNotice(rescue);
+					}
+				}
+				if (retryFits) {
 					this.#scheduleAgentContinue({ delayMs: 100, generation });
 					continuationScheduled = true;
 				} else {
@@ -11668,7 +11905,15 @@ export class AgentSession {
 				// when auto-continue is disabled, a no-headroom threshold pass must still
 				// block later automatic continuations (todo reminders/session_stop hooks)
 				// from re-entering the same oversized context.
-				if (this.#compactionCreatedHeadroom()) {
+				let hasHeadroom = this.#compactionCreatedHeadroom();
+				if (!hasHeadroom && !fallbackFromShake) {
+					const rescue = await this.#tryShakeRescueForDeadEnd(autoCompactionSignal);
+					if (rescue && this.#compactionCreatedHeadroom()) {
+						hasHeadroom = true;
+						this.#emitShakeRescueNotice(rescue);
+					}
+				}
+				if (hasHeadroom) {
 					if (shouldAutoContinue) {
 						this.#scheduleAutoContinuePrompt(generation);
 						continuationScheduled = true;
@@ -11692,7 +11937,7 @@ export class AgentSession {
 			if (noProgressDeadEnd) {
 				this.emitNotice(
 					"warning",
-					"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. The most recent turn alone is too large to reduce further; shrink it (e.g. clear large tool output) or switch to a larger-context model.",
+					"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. The most recent turn alone is too large to reduce further; clear large tool output, run `/shake images` to drop attached images, or switch to a larger-context model.",
 					"compaction",
 				);
 			}
@@ -12535,6 +12780,11 @@ export class AgentSession {
 		// Remove the failed assistant message from active context before retrying.
 		this.#removeAssistantMessageFromActiveContext(message);
 
+		// A thinking/response loop retried into identical context loops again. Inject a
+		// hidden redirect so the retried turn sees a directive to break the repeated
+		// pattern instead of re-sampling the same stalled reasoning.
+		this.#maybeInjectThinkingLoopRedirect(id);
+
 		// Wait with exponential backoff (abortable).
 		const retryAbortController = new AbortController();
 		this.#retryAbortController?.abort();
@@ -12589,6 +12839,35 @@ export class AgentSession {
 			return stopDetails.type === "stream_interrupted_after_content";
 		}
 		return /\bstream_interrupted_after_content\b/iu.test(message.errorMessage ?? "");
+	}
+
+	/**
+	 * Inject a hidden redirect notice when a thinking/response loop is being retried, so
+	 * the retried turn carries an instruction to break the repeated pattern instead of
+	 * re-sampling the same stalled context. Injected on every {@link AIError.Flag.ThinkingLoop}
+	 * retry (the failed assistant is dropped each attempt, so the notice does not accumulate
+	 * unboundedly). No-op unless `id` carries the ThinkingLoop flag and the loop guard is
+	 * enabled. The notice is generic on purpose — the detector's detail can quote raw model
+	 * text, which must not be interpolated into a higher-priority developer message.
+	 */
+	#maybeInjectThinkingLoopRedirect(id: number): void {
+		if (!AIError.is(id, AIError.Flag.ThinkingLoop)) return;
+		if (this.settings.get("model.loopGuard.enabled") !== true) return;
+		this.agent.appendMessage({
+			role: "custom",
+			customType: THINKING_LOOP_REDIRECT_TYPE,
+			content: thinkingLoopRedirectTemplate,
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		this.sessionManager.appendCustomMessageEntry(
+			THINKING_LOOP_REDIRECT_TYPE,
+			thinkingLoopRedirectTemplate,
+			false,
+			undefined,
+			"agent",
+		);
 	}
 
 	/**
@@ -12983,6 +13262,50 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
+	 * Surfaces (and consumes) IRC incoming asides that have reached this running
+	 * session but have not yet been folded into the next model step.
+	 *
+	 * The inbox tool injects the formatted body into the tool result, so the
+	 * model sees it once via the result. Leaving the record in
+	 * {@link #pendingIrcAsides} would let the aside provider deliver it a second
+	 * time at the next step boundary — including on `peek`, which is why peek
+	 * also drains here.
+	 */
+	drainPendingIrcInboxMessages(agentId: string): IrcMessage[] {
+		const messages: IrcMessage[] = [];
+		const remaining: CustomMessage[] = [];
+		for (const record of this.#pendingIrcAsides) {
+			if (record.customType !== "irc:incoming") {
+				remaining.push(record);
+				continue;
+			}
+			const details = record.details;
+			if (!details || typeof details !== "object") {
+				remaining.push(record);
+				continue;
+			}
+			const id = Reflect.get(details, "id");
+			const from = Reflect.get(details, "from");
+			const body = Reflect.get(details, "message");
+			const replyTo = Reflect.get(details, "replyTo");
+			if (typeof id !== "string" || typeof from !== "string" || typeof body !== "string") {
+				remaining.push(record);
+				continue;
+			}
+			messages.push({
+				id,
+				from,
+				to: agentId,
+				body,
+				ts: record.timestamp,
+				...(typeof replyTo === "string" ? { replyTo } : {}),
+			});
+		}
+		this.#pendingIrcAsides = remaining;
+		return messages;
+	}
+
+	/**
 	 * Deliver an IRC message into this session (recipient side; called by the
 	 * IrcBus). Emits the `irc_message` session event for UI cards and injects
 	 * the rendered message into the model's context as an `irc:incoming`
@@ -13293,7 +13616,15 @@ export class AgentSession {
 		// Flush pending writes before switching so restore snapshots reflect committed state.
 		await this.sessionManager.flush();
 		const previousSessionState = this.sessionManager.captureState();
-		const previousSessionContext = this.buildDisplaySessionContext();
+		// Only same-session reloads compare against the prior context to detect
+		// rollback edits (`#didSessionMessagesChange` below). Building it for a
+		// different-session switch is a pure waste — and on huge pre-fix sessions
+		// it materializes every persisted snapcompact frame plus the
+		// `openaiRemoteCompaction.replacementHistory` payload into messages,
+		// blowing the heap before the new session even loads (issue #3846). The
+		// error-recovery path rebuilds the context on demand from the restored
+		// state instead.
+		const previousSessionContext = switchingToDifferentSession ? undefined : this.buildDisplaySessionContext();
 		// switchSession replaces these arrays wholesale during load/rollback, so retaining
 		// the existing message objects is sufficient and avoids structured-clone failures for
 		// extension/custom metadata that is valid to persist but not cloneable.
@@ -13306,7 +13637,7 @@ export class AgentSession {
 		const previousThinkingLevel = this.#thinkingLevel;
 		const previousAutoThinking = this.#autoThinking;
 		const previousAutoResolvedLevel = this.#autoResolvedLevel;
-		const previousServiceTier = this.agent.serviceTier;
+		const previousServiceTierByFamily = this.#serviceTierByFamily;
 		const previousSelectedMCPToolNames = new Set(this.#selectedMCPToolNames);
 		const previousTools = [...this.agent.state.tools];
 		const previousBaseSystemPrompt = this.#baseSystemPrompt;
@@ -13332,7 +13663,7 @@ export class AgentSession {
 
 			const sessionContext = this.buildDisplaySessionContext();
 			const didReloadConversationChange =
-				!switchingToDifferentSession &&
+				previousSessionContext !== undefined &&
 				this.#didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
 			const fallbackSelectedMCPToolNames = this.#getSessionDefaultSelectedMCPToolNames(sessionPath);
 			await this.#restoreMCPSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
@@ -13392,7 +13723,11 @@ export class AgentSession {
 				.getBranch()
 				.some(entry => entry.type === "service_tier_change");
 			const defaultThinkingLevel = parseConfiguredThinkingLevel(this.settings.get("defaultThinkingLevel"));
-			const configuredServiceTier = this.settings.get("serviceTier");
+			const configuredServiceTierByFamily = buildServiceTierByFamily(
+				this.settings.get("tier.openai"),
+				this.settings.get("tier.anthropic"),
+				this.settings.get("tier.google"),
+			);
 			// Restore the thinking selector. Each change persists the configured
 			// selector (`auto` or a concrete level), so prefer it: an `auto` session
 			// resumes in auto mode (reclassifying the next turn) instead of freezing at
@@ -13421,11 +13756,9 @@ export class AgentSession {
 				this.#thinkingLevel = resolveThinkingLevelForModel(this.model, restoredThinkingLevel);
 			}
 			this.#applyThinkingLevelToAgent(this.#thinkingLevel);
-			this.agent.serviceTier = hasServiceTierEntry
-				? sessionContext.serviceTier
-				: configuredServiceTier === "none"
-					? undefined
-					: configuredServiceTier;
+			this.#serviceTierByFamily = hasServiceTierEntry
+				? (sessionContext.serviceTier ?? {})
+				: configuredServiceTierByFamily;
 
 			if (switchingToDifferentSession) {
 				await this.#resetMemoryContextForNewTranscript();
@@ -13448,7 +13781,12 @@ export class AgentSession {
 			this.#rekeyMnemopiMemoryForCurrentSessionId();
 			let restoreMcpError: unknown;
 			try {
-				await this.#restoreMCPSelectionsForSessionContext(previousSessionContext, {
+				// `previousSessionContext` was skipped on different-session switches to
+				// avoid materializing the previous session's heavy compaction payload
+				// in the success path; rebuild it here on demand from the restored
+				// state so MCP selection restoration still has its inputs.
+				const mcpRestoreContext = previousSessionContext ?? this.buildDisplaySessionContext();
+				await this.#restoreMCPSelectionsForSessionContext(mcpRestoreContext, {
 					fallbackSelectedMCPToolNames: previousFallbackSelectedMCPToolNames,
 				});
 			} catch (mcpError) {
@@ -13477,7 +13815,7 @@ export class AgentSession {
 			this.#autoThinking = previousAutoThinking;
 			this.#autoResolvedLevel = previousAutoResolvedLevel;
 			this.#applyThinkingLevelToAgent(previousThinkingLevel);
-			this.agent.serviceTier = previousServiceTier;
+			this.#serviceTierByFamily = previousServiceTierByFamily;
 			this.#syncTodoPhasesFromBranch();
 			this.#resetAllAdvisorRuntimes();
 			this.#reconnectToAgent();
@@ -14431,7 +14769,7 @@ export class AgentSession {
 		const payload = {
 			model: this.agent.state.model ?? null,
 			thinkingLevel: this.#thinkingLevel ?? null,
-			serviceTier: this.agent.serviceTier ?? null,
+			serviceTier: this.#serviceTierEntry(),
 			systemPrompt: this.agent.state.systemPrompt,
 			tools: this.agent.state.tools.map(tool => ({
 				name: tool.name,

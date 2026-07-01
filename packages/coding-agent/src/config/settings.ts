@@ -172,19 +172,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function shallowStringRecord(value: unknown): Record<string, string> {
-	if (!isRecord(value)) return {};
-
-	const result: Record<string, string> = {};
-	for (const key in value) {
-		if (!Object.hasOwn(value, key)) continue;
-		const item = value[key];
-		if (typeof item === "string") {
-			result[key] = item;
-		}
-	}
-	return result;
-}
+type EditVariantEntry = {
+	patternLower: string;
+	mode: EditMode;
+};
 
 function resolvePathScopedStringArray(settingPath: SettingPath, value: unknown, cwd: string): string[] | undefined {
 	if (!PATH_SCOPED_ARRAY_SETTINGS.has(settingPath) || !Array.isArray(value)) return undefined;
@@ -247,6 +238,7 @@ export class Settings {
 	#merged: RawSettings = {};
 	/** Cached resolved values from the merged view, including defaults/path scoping */
 	#resolvedCache = new Map<SettingPath, unknown>();
+	#editVariantCache: readonly EditVariantEntry[] | undefined;
 
 	/** Paths modified during this session (for partial save) */
 	#modified = new Set<string>();
@@ -536,17 +528,42 @@ export class Settings {
 	 */
 	getEditVariantForModel(model: string | undefined): EditMode | null {
 		if (!model) return null;
-		const variants = shallowStringRecord(getByPath(this.#merged, ["edit", "modelVariants"]));
+		const variants = this.#getEditVariantEntries();
+		if (variants.length === 0) return null;
+
 		const modelLower = model.toLowerCase();
-		for (const pattern in variants) {
-			if (modelLower.includes(pattern.toLowerCase())) {
-				const value = normalizeEditMode(variants[pattern]);
-				if (value) {
-					return value;
-				}
+
+		for (let i = 0; i < variants.length; i++) {
+			const variant = variants[i];
+			if (modelLower.includes(variant.patternLower)) {
+				return variant.mode;
 			}
 		}
 		return null;
+	}
+
+	#getEditVariantEntries(): readonly EditVariantEntry[] {
+		if (this.#editVariantCache !== undefined) return this.#editVariantCache;
+
+		const value = getByPath(this.#merged, ["edit", "modelVariants"]);
+		if (!isRecord(value)) {
+			this.#editVariantCache = [];
+			return this.#editVariantCache;
+		}
+
+		const variants: EditVariantEntry[] = [];
+		for (const pattern in value) {
+			if (!Object.hasOwn(value, pattern)) continue;
+			const rawMode = value[pattern];
+			if (typeof rawMode !== "string") continue;
+			const mode = normalizeEditMode(rawMode);
+			if (mode) {
+				variants.push({ patternLower: pattern.toLowerCase(), mode });
+			}
+		}
+
+		this.#editVariantCache = variants;
+		return variants;
 	}
 
 	/**
@@ -556,11 +573,26 @@ export class Settings {
 		return this.get("bashInterceptor.patterns");
 	}
 
+	#modelRolesFromLayer(layer: RawSettings): Record<string, string> {
+		const value = getByPath(layer, ["modelRoles"]);
+		if (!isRecord(value)) return {};
+
+		const roles: Record<string, string> = {};
+		for (const role in value) {
+			if (!Object.hasOwn(value, role)) continue;
+			const modelId = value[role];
+			if (typeof modelId === "string") {
+				roles[role] = modelId;
+			}
+		}
+		return roles;
+	}
+
 	/**
 	 * Set a model role (helper for modelRoles record).
 	 */
 	setModelRole(role: ModelRole | string, modelId: string): void {
-		const current = shallowStringRecord(getByPath(this.#global, ["modelRoles"]));
+		const current = this.#modelRolesFromLayer(this.#global);
 		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
 		const updateRuntimeOverride =
 			!!runtimeOverrides &&
@@ -568,10 +600,13 @@ export class Settings {
 			!Array.isArray(runtimeOverrides) &&
 			Object.hasOwn(runtimeOverrides, role);
 
-		this.set("modelRoles", { ...current, [role]: modelId });
+		current[role] = modelId;
+		this.set("modelRoles", current);
 
 		if (updateRuntimeOverride) {
-			this.override("modelRoles", { ...shallowStringRecord(runtimeOverrides), [role]: modelId });
+			const nextRuntimeOverride = this.#modelRolesFromLayer(this.#overrides);
+			nextRuntimeOverride[role] = modelId;
+			this.override("modelRoles", nextRuntimeOverride);
 		}
 	}
 
@@ -594,7 +629,7 @@ export class Settings {
 	 * Override model roles (helper for modelRoles record).
 	 */
 	overrideModelRoles(roles: ReadOnlyDict<string>): void {
-		const next = shallowStringRecord(getByPath(this.#overrides, ["modelRoles"]));
+		const next = this.#modelRolesFromLayer(this.#overrides);
 		for (const [role, modelId] of Object.entries(roles)) {
 			if (modelId) {
 				next[role] = modelId;
@@ -1148,6 +1183,53 @@ export class Settings {
 		// the incoherent "hashline edits without addressable anchors" state.
 		delete raw.readHashLines;
 
+		// serviceTier (single enum with scoped openai-only/claude-only sentinels)
+		// → per-family tier.openai/tier.anthropic/tier.google; serviceTierSubagent
+		// → tier.subagent; serviceTierAdvisor → tier.advisor. `fastModeScope` is
+		// dropped — per-family scoping is now expressed by the three tier settings.
+		const tierObj = isRecord(raw.tier) ? raw.tier : {};
+		let tierTouched = false;
+		const setTier = (family: string, value: unknown): void => {
+			if (value !== undefined && !(family in tierObj)) {
+				tierObj[family] = value;
+				tierTouched = true;
+			}
+		};
+		if (typeof raw.serviceTier === "string") {
+			switch (raw.serviceTier) {
+				case "priority":
+					setTier("openai", "priority");
+					setTier("anthropic", "priority");
+					setTier("google", "priority");
+					break;
+				case "openai-only":
+					setTier("openai", "priority");
+					break;
+				case "claude-only":
+					setTier("anthropic", "priority");
+					break;
+				case "auto":
+				case "default":
+				case "flex":
+				case "scale":
+					setTier("openai", raw.serviceTier);
+					break;
+			}
+			delete raw.serviceTier;
+		}
+		const mapInheritTier = (value: unknown): unknown =>
+			value === "openai-only" || value === "claude-only" ? "priority" : value;
+		if ("serviceTierSubagent" in raw) {
+			setTier("subagent", mapInheritTier(raw.serviceTierSubagent));
+			delete raw.serviceTierSubagent;
+		}
+		if ("serviceTierAdvisor" in raw) {
+			setTier("advisor", mapInheritTier(raw.serviceTierAdvisor));
+			delete raw.serviceTierAdvisor;
+		}
+		if (tierTouched) raw.tier = tierObj;
+		delete raw.fastModeScope;
+
 		return raw;
 	}
 
@@ -1234,6 +1316,7 @@ export class Settings {
 		this.#merged = this.#deepMerge(this.#merged, this.#configOverlay);
 		this.#merged = this.#deepMerge(this.#merged, this.#overrides);
 		this.#resolvedCache.clear();
+		this.#editVariantCache = undefined;
 	}
 
 	#fireAllHooks(): void {

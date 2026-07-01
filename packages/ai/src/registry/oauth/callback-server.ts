@@ -26,6 +26,20 @@ export interface OAuthCallbackFlowOptions {
 	callbackHostname?: string;
 	/** Exact redirect URI advertised to the provider; disables port fallback. */
 	redirectUri?: string;
+	/**
+	 * Whether the flow may bind to a random port when {@link preferredPort} is
+	 * unavailable. Defaults to `true` so historical AI-provider flows (which
+	 * pick uncommon ports and tolerate any loopback callback) keep working.
+	 *
+	 * Set to `false` for providers that validate the redirect URI against a
+	 * registered callback — silently advertising a random-port URI would be
+	 * rejected by the authorization server, leaving the browser on an opaque
+	 * 500 page and the local callback waiting until the 5-minute timeout fires.
+	 * With fallback disabled, {@link OAuthCallbackFlow.login} throws a
+	 * {@link AIError.ConfigurationError} immediately so the caller can surface
+	 * an actionable message before opening the browser.
+	 */
+	allowPortFallback?: boolean;
 }
 
 /**
@@ -37,6 +51,7 @@ export abstract class OAuthCallbackFlow {
 	callbackPath: string;
 	callbackHostname: string;
 	redirectUri?: string;
+	allowPortFallback: boolean;
 	#callbackResolve?: (result: CallbackResult) => void;
 	#callbackReject?: (error: string) => void;
 
@@ -50,6 +65,7 @@ export abstract class OAuthCallbackFlow {
 			this.preferredPort = preferredPortOrOptions;
 			this.callbackPath = callbackPath;
 			this.callbackHostname = DEFAULT_HOSTNAME;
+			this.allowPortFallback = true;
 			return;
 		}
 
@@ -57,6 +73,7 @@ export abstract class OAuthCallbackFlow {
 		this.callbackPath = preferredPortOrOptions.callbackPath ?? CALLBACK_PATH;
 		this.callbackHostname = preferredPortOrOptions.callbackHostname ?? DEFAULT_HOSTNAME;
 		this.redirectUri = preferredPortOrOptions.redirectUri;
+		this.allowPortFallback = preferredPortOrOptions.allowPortFallback ?? true;
 	}
 
 	/**
@@ -87,18 +104,29 @@ export abstract class OAuthCallbackFlow {
 			.join("");
 	}
 
+	#loginCancelledError(): AIError.LoginCancelledError {
+		return new AIError.LoginCancelledError(`OAuth callback cancelled: ${this.ctrl.signal?.reason}`);
+	}
+
+	#throwIfCancelled(): void {
+		if (this.ctrl.signal?.aborted) throw this.#loginCancelledError();
+	}
+
 	/**
 	 * Execute the OAuth login flow.
 	 */
 	async login(): Promise<OAuthCredentials> {
 		const state = this.generateState();
+		this.#throwIfCancelled();
 
 		// Start callback server first to get actual redirect URI
 		const { server, redirectUri } = await this.#startCallbackServer(state);
 
 		try {
+			this.#throwIfCancelled();
 			// Generate auth URL with the ACTUAL redirect URI (may differ from expected if port was busy)
 			const { url: authUrl, instructions } = await this.generateAuthUrl(state, redirectUri);
+			this.#throwIfCancelled();
 
 			// Notify controller that auth is ready
 			this.ctrl.onAuth?.({ url: authUrl, instructions });
@@ -106,6 +134,7 @@ export abstract class OAuthCallbackFlow {
 
 			// Wait for callback or manual input
 			const { code } = await this.#waitForCallback(state);
+			this.#throwIfCancelled();
 
 			this.ctrl.onProgress?.("Exchanging authorization code for tokens...");
 
@@ -126,10 +155,17 @@ export abstract class OAuthCallbackFlow {
 			}
 			const redirectUri = `http://${this.callbackHostname}:${this.preferredPort}${this.callbackPath}`;
 			return { server, redirectUri };
-		} catch {
+		} catch (cause) {
 			if (this.redirectUri) {
 				throw new AIError.ConfigurationError(
-					`OAuth callback port ${this.preferredPort} unavailable; cannot fall back to a random port when oauth.redirectUri is set`,
+					`OAuth callback port ${this.preferredPort} is in use, but oauth.redirectUri (${this.redirectUri}) requires this exact port. Free port ${this.preferredPort} (e.g. stop the process bound to it) and retry, or change oauth.redirectUri to point at an available port.`,
+					{ cause },
+				);
+			}
+			if (!this.allowPortFallback) {
+				throw new AIError.ConfigurationError(
+					`OAuth callback port ${this.preferredPort} is in use. The OAuth provider validates redirect URIs against its registered callback, so falling back to a random port would be rejected. Free port ${this.preferredPort} (e.g. stop the process bound to it) and retry, or set oauth.callbackPort/oauth.redirectUri to a port the provider has registered.`,
+					{ cause },
 				);
 			}
 			const server = this.#createServer(0, expectedState);
@@ -208,17 +244,18 @@ export abstract class OAuthCallbackFlow {
 	#waitForCallback(expectedState: string): Promise<CallbackResult> {
 		const timeoutSignal = AbortSignal.timeout(DEFAULT_TIMEOUT);
 		const signal = this.ctrl.signal ? AbortSignal.any([this.ctrl.signal, timeoutSignal]) : timeoutSignal;
+		if (signal.aborted) return Promise.reject(this.#loginCancelledError());
 
-		const callbackPromise = new Promise<CallbackResult>((resolve, reject) => {
-			this.#callbackResolve = resolve;
-			this.#callbackReject = reject;
+		const callback = Promise.withResolvers<CallbackResult>();
+		this.#callbackResolve = callback.resolve;
+		this.#callbackReject = callback.reject;
 
-			signal.addEventListener("abort", () => {
-				this.#callbackResolve = undefined;
-				this.#callbackReject = undefined;
-				reject(new AIError.LoginCancelledError(`OAuth callback cancelled: ${signal.reason}`));
-			});
+		signal.addEventListener("abort", () => {
+			this.#callbackResolve = undefined;
+			this.#callbackReject = undefined;
+			callback.reject(new AIError.LoginCancelledError(`OAuth callback cancelled: ${signal.reason}`));
 		});
+		const callbackPromise = callback.promise;
 
 		// Manual input race (if supported)
 		if (this.ctrl.onManualCodeInput) {

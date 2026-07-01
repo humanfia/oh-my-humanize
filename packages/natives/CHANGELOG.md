@@ -5,6 +5,25 @@
 ### Changed
 
 - Changed package metadata links from the old Oh My Pi site/repository to the OMH site/repository.
+## [16.2.11] - 2026-07-01
+
+### Fixed
+
+- Fixed high memory usage in native `astGrep` and `astMatch` by retaining only the requested page window of match payloads during broad searches while preserving exact totals.
+
+## [16.2.10] - 2026-06-30
+
+### Added
+
+- Added a platform-native no-ignore filesystem traversal path for `glob`/`grep` scans, using `getattrlistbulk` on macOS, `getdents64`/`statx` on Linux, and `NtQueryDirectoryFile` with `FileIdFullDirectoryInformation` on Windows while preserving the existing `WalkBuilder` path for gitignore-aware scans.
+
+## [16.2.7] - 2026-06-30
+
+### Added
+
+- Added embedded Silver TrueType font rendering support to `renderSnapcompactPng`, featuring automatic per-glyph fallback for missing bitmap characters and anti-aliased scaling for East Asian wide code points.
+- Added the `snapcompactSupportedChars` function to check font capability for specific characters.
+
 ## [16.2.5] - 2026-06-28
 
 ### Fixed

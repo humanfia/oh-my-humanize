@@ -1,7 +1,8 @@
 //! AST-aware structural search and rewrite powered by ast-grep.
 
 use std::{
-	collections::{BTreeMap, BTreeSet, HashMap},
+	cmp::Ordering,
+	collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap},
 	path::{Path, PathBuf},
 };
 
@@ -13,7 +14,7 @@ use pi_ast::{
 	ops::{self as shared_ops},
 };
 
-use crate::{fs_cache, glob_util, task};
+use crate::{glob_util, iofs, task};
 
 const DEFAULT_FIND_LIMIT: u32 = 50;
 
@@ -109,6 +110,124 @@ pub struct AstFindMatch {
 	pub end_column:     u32,
 	/// Meta-variable name to captured text, when `includeMeta` was enabled.
 	pub meta_variables: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct AstFindOrderKey {
+	path:         String,
+	start_line:   u32,
+	start_column: u32,
+	end_line:     u32,
+	end_column:   u32,
+	byte_start:   u32,
+	byte_end:     u32,
+	sequence:     u64,
+}
+
+impl Ord for AstFindOrderKey {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self
+			.path
+			.cmp(&other.path)
+			.then(self.start_line.cmp(&other.start_line))
+			.then(self.start_column.cmp(&other.start_column))
+			.then(self.end_line.cmp(&other.end_line))
+			.then(self.end_column.cmp(&other.end_column))
+			.then(self.byte_start.cmp(&other.byte_start))
+			.then(self.byte_end.cmp(&other.byte_end))
+			.then(self.sequence.cmp(&other.sequence))
+	}
+}
+
+impl PartialOrd for AstFindOrderKey {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+#[derive(Eq, PartialEq)]
+struct RetainedAstFindMatch {
+	key:            AstFindOrderKey,
+	text:           String,
+	meta_variables: Option<HashMap<String, String>>,
+}
+
+impl Ord for RetainedAstFindMatch {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self.key.cmp(&other.key)
+	}
+}
+
+impl PartialOrd for RetainedAstFindMatch {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+fn retained_find_capacity(offset: u32, limit: u32) -> usize {
+	usize::try_from(offset.saturating_add(limit).saturating_add(1)).unwrap_or(usize::MAX)
+}
+
+fn should_retain_match(
+	retained: &BinaryHeap<RetainedAstFindMatch>,
+	capacity: usize,
+	key: &AstFindOrderKey,
+) -> bool {
+	if retained.len() < capacity {
+		return true;
+	}
+	retained
+		.peek()
+		.is_some_and(|worst_retained| key.cmp(&worst_retained.key).is_lt())
+}
+
+fn retain_bounded_match(
+	retained: &mut BinaryHeap<RetainedAstFindMatch>,
+	capacity: usize,
+	candidate: RetainedAstFindMatch,
+) {
+	if retained.len() < capacity {
+		retained.push(candidate);
+		return;
+	}
+	if let Some(mut worst_retained) = retained.peek_mut()
+		&& candidate.key.cmp(&worst_retained.key).is_lt()
+	{
+		*worst_retained = candidate;
+	}
+}
+
+fn page_retained_matches(
+	retained: BinaryHeap<RetainedAstFindMatch>,
+	offset: u32,
+	limit: u32,
+) -> (Vec<RetainedAstFindMatch>, bool) {
+	let mut retained_matches = retained.into_vec();
+	retained_matches.sort_by(|left, right| left.key.cmp(&right.key));
+	let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+	let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+	let limit_reached = retained_matches.len().saturating_sub(offset) > limit;
+	let matches = retained_matches
+		.into_iter()
+		.skip(offset)
+		.take(limit)
+		.collect::<Vec<_>>();
+	(matches, limit_reached)
+}
+
+fn retained_to_find_match(retained: RetainedAstFindMatch) -> AstFindMatch {
+	let RetainedAstFindMatch { key, text, meta_variables } = retained;
+	AstFindMatch {
+		path: key.path,
+		text,
+		byte_start: key.byte_start,
+		byte_end: key.byte_end,
+		start_line: key.start_line,
+		start_column: key.start_column,
+		end_line: key.end_line,
+		end_column: key.end_column,
+		meta_variables,
+	}
 }
 
 /// Aggregated search statistics and any parse or compile diagnostics.
@@ -341,33 +460,6 @@ fn normalize_search_path(path: Option<String>) -> Result<PathBuf> {
 	Ok(std::fs::canonicalize(&absolute).unwrap_or(absolute))
 }
 
-fn collect_from_entries(
-	root: &Path,
-	entries: &[fs_cache::GlobMatch],
-	glob_set: Option<&globset::GlobSet>,
-	mentions_node_modules: bool,
-	ct: &task::CancelToken,
-) -> Result<Vec<FileCandidate>> {
-	let mut files = Vec::new();
-	for entry in entries {
-		ct.heartbeat()?;
-		if entry.file_type != fs_cache::FileType::File {
-			continue;
-		}
-		let relative = entry.path.replace('\\', "/");
-		if fs_cache::should_skip_path(Path::new(&relative), mentions_node_modules) {
-			continue;
-		}
-		if let Some(glob_set) = glob_set
-			&& !glob_set.is_match(&relative)
-		{
-			continue;
-		}
-		files.push(FileCandidate { absolute_path: root.join(&relative), display_path: relative });
-	}
-	Ok(files)
-}
-
 fn collect_candidates(
 	path: Option<String>,
 	glob: Option<&str>,
@@ -393,44 +485,37 @@ fn collect_candidates(
 		)));
 	}
 
-	let glob_set = glob_util::try_compile_glob(glob, false)?;
 	let mentions_node_modules = glob.is_some_and(|value| value.contains("node_modules"));
-	let skip_node_modules = !mentions_node_modules;
-	let scan = fs_cache::get_or_scan(
-		&search_path,
-		fs_cache::ScanOptions {
-			include_hidden: true,
-			use_gitignore: true,
-			skip_node_modules,
-			follow_links: false,
-			detail: fs_cache::ScanDetail::Minimal,
-		},
-		ct,
-	)?;
-	let mut files = collect_from_entries(
-		&search_path,
-		&scan.entries,
-		glob_set.as_ref(),
-		mentions_node_modules,
-		ct,
-	)?;
-
-	if files.is_empty() && scan.cache_age_ms >= fs_cache::empty_recheck_ms() {
-		let fresh = fs_cache::force_rescan(
-			&search_path,
-			fs_cache::ScanOptions {
-				include_hidden: true,
-				use_gitignore: true,
-				skip_node_modules,
-				follow_links: false,
-				detail: fs_cache::ScanDetail::Minimal,
-			},
-			true,
-			ct,
-		)?;
-		files =
-			collect_from_entries(&search_path, &fresh, glob_set.as_ref(), mentions_node_modules, ct)?;
+	let mut filter =
+		pi_walker::WalkFilter::files_only().node_modules_unless_mentioned(mentions_node_modules);
+	if let Some(glob) = glob.map(str::trim).filter(|value| !value.is_empty()) {
+		let pattern = glob_util::build_glob_pattern(glob, false);
+		let compiled = pi_walker::CompiledWalkGlob::new([pattern])
+			.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
+		filter = filter.glob(compiled);
 	}
+	let request = pi_walker::WalkRequest::new(&search_path)
+		.hidden(true)
+		.gitignore(true)
+		.skip_git(true)
+		.follow_links(pi_walker::FollowLinks::Never)
+		.detail(pi_walker::WalkDetail::Minimal)
+		.order(pi_walker::WalkOrder::Path)
+		.emit_root(false)
+		.depth(1, usize::MAX)
+		.directory_errors(pi_walker::DirectoryErrorMode::SkipSkippable)
+		.cache(true)
+		.empty_recheck(pi_walker::EmptyRecheck::Configured)
+		.filter(filter);
+	let mut files: Vec<_> = request
+		.collect_files_with_heartbeat(|| ct.heartbeat())
+		.map_err(iofs::map_walker_error)?
+		.into_iter()
+		.map(|entry| FileCandidate {
+			absolute_path: entry.absolute_path(&search_path),
+			display_path:  entry.path,
+		})
+		.collect();
 
 	files.sort_by(|a, b| a.display_path.cmp(&b.display_path));
 	Ok(files)
@@ -610,9 +695,11 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 			compile_find_patterns(&patterns, &languages, selector.as_deref(), &strictness, &ct)?;
 		let files_searched = to_u32(resolved_candidates.len());
 
-		let mut all_matches = Vec::new();
+		let retained_capacity = retained_find_capacity(normalized_offset, normalized_limit);
+		let mut retained_matches = BinaryHeap::new();
 		let mut parse_errors = Vec::new();
 		let mut total_matches = 0u32;
+		let mut match_sequence = 0u64;
 		let mut files_with_matches = BTreeSet::new();
 		for resolved in resolved_candidates {
 			ct.heartbeat()?;
@@ -665,55 +752,55 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 				));
 			}
 
+			let mut file_had_match = false;
 			for (_, pattern) in runnable_patterns {
 				ct.heartbeat()?;
 				for matched in ast.root().find_all(pattern.clone()) {
 					ct.heartbeat()?;
 					total_matches = total_matches.saturating_add(1);
+					if !file_had_match {
+						files_with_matches.insert(candidate.display_path.clone());
+						file_had_match = true;
+					}
 					let range = matched.range();
 					let start = matched.start_pos();
 					let end = matched.end_pos();
-					let meta_variables = if include_meta {
-						Some(HashMap::<String, String>::from(matched.get_env().clone()))
-					} else {
-						None
-					};
-					all_matches.push(AstFindMatch {
-						path: candidate.display_path.clone(),
-						text: matched.text().into_owned(),
-						byte_start: to_u32(range.start),
-						byte_end: to_u32(range.end),
-						start_line: to_u32(start.line().saturating_add(1)),
+					let key = AstFindOrderKey {
+						path:         candidate.display_path.clone(),
+						start_line:   to_u32(start.line().saturating_add(1)),
 						start_column: to_u32(start.column(matched.get_node()).saturating_add(1)),
-						end_line: to_u32(end.line().saturating_add(1)),
-						end_column: to_u32(end.column(matched.get_node()).saturating_add(1)),
-						meta_variables,
-					});
-					files_with_matches.insert(candidate.display_path.clone());
+						end_line:     to_u32(end.line().saturating_add(1)),
+						end_column:   to_u32(end.column(matched.get_node()).saturating_add(1)),
+						byte_start:   to_u32(range.start),
+						byte_end:     to_u32(range.end),
+						sequence:     match_sequence,
+					};
+					match_sequence = match_sequence.saturating_add(1);
+					if should_retain_match(&retained_matches, retained_capacity, &key) {
+						let meta_variables = if include_meta {
+							Some(HashMap::<String, String>::from(matched.get_env().clone()))
+						} else {
+							None
+						};
+						retain_bounded_match(
+							&mut retained_matches,
+							retained_capacity,
+							RetainedAstFindMatch {
+								key,
+								text: matched.text().into_owned(),
+								meta_variables,
+							},
+						);
+					}
 				}
 			}
 		}
 
-		all_matches.sort_by(|left, right| {
-			left
-				.path
-				.cmp(&right.path)
-				.then(left.start_line.cmp(&right.start_line))
-				.then(left.start_column.cmp(&right.start_column))
-				.then(left.end_line.cmp(&right.end_line))
-				.then(left.end_column.cmp(&right.end_column))
-				.then(left.byte_start.cmp(&right.byte_start))
-				.then(left.byte_end.cmp(&right.byte_end))
-		});
-
-		let visible_matches = all_matches
+		let (matches, limit_reached) =
+			page_retained_matches(retained_matches, normalized_offset, normalized_limit);
+		let matches = matches
 			.into_iter()
-			.skip(normalized_offset as usize)
-			.collect::<Vec<_>>();
-		let limit_reached = visible_matches.len() > normalized_limit as usize;
-		let matches = visible_matches
-			.into_iter()
-			.take(normalized_limit as usize)
+			.map(retained_to_find_match)
 			.collect::<Vec<_>>();
 
 		Ok(AstFindResult {
@@ -773,8 +860,10 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 			}
 		}
 
-		let mut all_matches = Vec::new();
+		let retained_capacity = retained_find_capacity(normalized_offset, normalized_limit);
+		let mut retained_matches = BinaryHeap::new();
 		let mut total_matches = 0u32;
+		let mut match_sequence = 0u64;
 		if !compiled_patterns.is_empty() {
 			let ast = language.ast_grep(&source);
 			if ast.root().dfs().any(|node| node.is_error()) {
@@ -788,45 +877,42 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 					let range = matched.range();
 					let start = matched.start_pos();
 					let end = matched.end_pos();
-					let meta_variables = if include_meta {
-						Some(HashMap::<String, String>::from(matched.get_env().clone()))
-					} else {
-						None
-					};
-					all_matches.push(AstFindMatch {
-						path: String::new(),
-						text: matched.text().into_owned(),
-						byte_start: to_u32(range.start),
-						byte_end: to_u32(range.end),
-						start_line: to_u32(start.line().saturating_add(1)),
+					let key = AstFindOrderKey {
+						path:         String::new(),
+						start_line:   to_u32(start.line().saturating_add(1)),
 						start_column: to_u32(start.column(matched.get_node()).saturating_add(1)),
-						end_line: to_u32(end.line().saturating_add(1)),
-						end_column: to_u32(end.column(matched.get_node()).saturating_add(1)),
-						meta_variables,
-					});
+						end_line:     to_u32(end.line().saturating_add(1)),
+						end_column:   to_u32(end.column(matched.get_node()).saturating_add(1)),
+						byte_start:   to_u32(range.start),
+						byte_end:     to_u32(range.end),
+						sequence:     match_sequence,
+					};
+					match_sequence = match_sequence.saturating_add(1);
+					if should_retain_match(&retained_matches, retained_capacity, &key) {
+						let meta_variables = if include_meta {
+							Some(HashMap::<String, String>::from(matched.get_env().clone()))
+						} else {
+							None
+						};
+						retain_bounded_match(
+							&mut retained_matches,
+							retained_capacity,
+							RetainedAstFindMatch {
+								key,
+								text: matched.text().into_owned(),
+								meta_variables,
+							},
+						);
+					}
 				}
 			}
 		}
 
-		all_matches.sort_by(|left, right| {
-			left
-				.start_line
-				.cmp(&right.start_line)
-				.then(left.start_column.cmp(&right.start_column))
-				.then(left.end_line.cmp(&right.end_line))
-				.then(left.end_column.cmp(&right.end_column))
-				.then(left.byte_start.cmp(&right.byte_start))
-				.then(left.byte_end.cmp(&right.byte_end))
-		});
-
-		let visible_matches = all_matches
+		let (matches, limit_reached) =
+			page_retained_matches(retained_matches, normalized_offset, normalized_limit);
+		let matches = matches
 			.into_iter()
-			.skip(normalized_offset as usize)
-			.collect::<Vec<_>>();
-		let limit_reached = visible_matches.len() > normalized_limit as usize;
-		let matches = visible_matches
-			.into_iter()
-			.take(normalized_limit as usize)
+			.map(retained_to_find_match)
 			.collect::<Vec<_>>();
 
 		Ok(AstMatchResult {
@@ -1100,6 +1186,47 @@ mod tests {
 		fs::write(root.join("nested").join("b.ts"), "const b = 2;\n")
 			.expect("temp file nested/b.ts should be written");
 		TempTree { root }
+	}
+
+	fn retained_test_match(line: u32) -> RetainedAstFindMatch {
+		RetainedAstFindMatch {
+			key:            AstFindOrderKey {
+				path:         "file.ts".to_string(),
+				start_line:   line,
+				start_column: 1,
+				end_line:     line,
+				end_column:   2,
+				byte_start:   line - 1,
+				byte_end:     line,
+				sequence:     u64::from(line),
+			},
+			text:           String::new(),
+			meta_variables: None,
+		}
+	}
+
+	#[test]
+	fn retained_find_matches_keep_only_page_window() {
+		let capacity = retained_find_capacity(1, 2);
+		let mut retained = BinaryHeap::new();
+		let mut materialized_payloads = 0usize;
+		for line in 1..=100 {
+			let candidate = retained_test_match(line);
+			if should_retain_match(&retained, capacity, &candidate.key) {
+				materialized_payloads += 1;
+				retain_bounded_match(&mut retained, capacity, candidate);
+			}
+		}
+
+		let (page, limit_reached) = page_retained_matches(retained, 1, 2);
+		let lines = page
+			.into_iter()
+			.map(|retained| retained.key.start_line)
+			.collect::<Vec<_>>();
+
+		assert_eq!(materialized_payloads, capacity);
+		assert!(limit_reached);
+		assert_eq!(lines, vec![2, 3]);
 	}
 
 	#[test]

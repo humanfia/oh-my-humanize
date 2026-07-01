@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
-import { $ } from "bun";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { $ } from "bun";
 
 const DEFAULT_BIN_NAMES = ["omh", "omp"] as const;
 

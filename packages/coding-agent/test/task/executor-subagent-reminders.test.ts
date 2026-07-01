@@ -675,7 +675,7 @@ describe("runSubprocess yield reminders", () => {
 		expect(result.rawOutput).toContain('"ok": true');
 	});
 
-	it("does not abort the subagent session after a successful yield", async () => {
+	it("cleans up the subagent session after a successful parked yield", async () => {
 		const abortSpy = vi.fn(async () => {});
 		const session = createMockSession(({ emit }) => {
 			emit({
@@ -701,7 +701,7 @@ describe("runSubprocess yield reminders", () => {
 
 		expect(result.exitCode).toBe(0);
 		expect(result.abortReason).toBeUndefined();
-		expect(abortSpy).not.toHaveBeenCalled();
+		expect(abortSpy).toHaveBeenCalledTimes(1);
 	});
 	it("uses provided thinking level when model override has no explicit suffix", async () => {
 		vi.clearAllMocks();

@@ -162,7 +162,7 @@ export declare function __ompInstallTokioRuntime(): void
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV16_2_5(): void
+export declare function __piNativesV16_2_12(): void
 
 /**
  * Apply conservative pre-execution rewrites to a bash command.
@@ -610,7 +610,7 @@ export interface FuzzyFindOptions {
   hidden?: boolean
   /** Respect .gitignore (default: true). */
   gitignore?: boolean
-  /** Enable shared filesystem scan cache (default: false). */
+  /** Enable walker scan caching (default: false). */
   cache?: boolean
   /** Maximum number of matches to return (default: 100). */
   maxResults?: number
@@ -645,9 +645,9 @@ export declare function getWorkProfile(lastSeconds: number): WorkProfile
  * Resolves the search root, scans entries, applies glob and optional file-type
  * filters, and optionally streams each accepted match through `on_match`.
  *
- * If `sortByMtime` is enabled with a finite `maxResults`, uncached scans keep
- * only the current top results while traversing instead of collecting the full
- * tree.
+ * When `sortByMtime` is enabled, the walker ranks matches by mtime before the
+ * native layer applies final symlink-aware file-type filtering and callback
+ * emission.
  *
  * # Errors
  * Returns an error when the search path cannot be resolved, the path is not a
@@ -662,10 +662,7 @@ export interface GlobMatch {
   path: string
   /** Resolved filesystem type for the match. */
   fileType: FileType
-  /**
-   * Modification time in milliseconds since Unix epoch (from
-   * `symlink_metadata`).
-   */
+  /** Modification time in milliseconds since Unix epoch. */
   mtime?: number
   /** File size in bytes for regular files. */
   size?: number
@@ -690,7 +687,7 @@ export interface GlobOptions {
   maxResults?: number
   /** Respect .gitignore files (default: true). */
   gitignore?: boolean
-  /** Enable shared filesystem scan cache (default: false). */
+  /** Enable walker scan caching (default: false). */
   cache?: boolean
   /** Sort results by mtime (most recent first) before applying limit. */
   sortByMtime?: boolean
@@ -890,13 +887,13 @@ export interface HtmlToMarkdownOptions {
 }
 
 /**
- * Invalidate the filesystem scan cache.
+ * Invalidate the walker scan cache.
  *
  * When called with a path, removes entries for roots containing that path.
  * When called without a path, clears the entire cache.
  *
- * Intended to be called after agent file mutations (write, edit, rename,
- * delete).
+ * Intended to be called after agent file mutations: write, edit, rename, or
+ * delete.
  */
 export declare function invalidateFsScanCache(path?: string | undefined | null): void
 
@@ -1315,13 +1312,15 @@ export declare function readImageFromClipboard(): Promise<ClipboardImage | undef
  * The bitmap height hugs the rows the text actually occupies
  * (`usedRows * lineRepeat * cellHeight`), so a partially filled frame never
  * pays for blank padding rows. The glyph grid holds `floor(size/cellWidth) *
- * floor(size/cellHeight/lineRepeat)` characters; input beyond that is ignored
- * (the caller chunks text to capacity). Native-cell shapes encode as 4-bit
- * indexed PNG; stretched shapes (target cell != font cell) encode as RGB.
- * `stretch: false` pins the indexed path, printing natural-size glyphs on the
- * requested cell box; `columns: 2` flows pre-wrapped newline-separated lines
- * down two newspaper columns. `U+000E`/`U+000F` in `text` toggle dim-gray ink
- * spans without occupying a cell.
+ * floor(size/cellHeight/lineRepeat)` characters; input beyond that is ignored.
+ * Native-cell bitmap-font shapes encode as indexed PNG; stretched bitmap-font
+ * shapes (target cell != font cell) encode as RGB. TrueType shapes encode RGB
+ * directly from grayscale coverage.
+ * `stretch: false` pins bitmap fonts to the indexed path, printing
+ * natural-size glyphs on the requested cell box; `columns: 2` flows
+ * pre-wrapped newline-separated lines down two newspaper columns.
+ * `U+000E`/`U+000F` in `text` toggle dim-gray ink spans without occupying a
+ * cell.
  * Returns a promise for the PNG encoded as base64, created as a one-byte
  * (Latin-1) JS string straight from native code — no `Uint8Array` hop or
  * JS-side re-encode.
@@ -1468,8 +1467,8 @@ export interface SnapcompactRenderOptions {
    */
   size: number
   /**
-   * Bundled font: `"5x8"`, `"6x12"`, `"8x13"` (X.org BDF) or `"8x8"`
-   * (unscii-8). Default `"5x8"`.
+   * Bundled font: `"5x8"`, `"6x12"`, `"8x13"` (X.org BDF), `"8x8"`
+   * (unscii-8), or `"silver"` (embedded TrueType). Default `"5x8"`.
    */
   font?: string
   /**
@@ -1503,6 +1502,15 @@ export interface SnapcompactRenderOptions {
    */
   columns?: number
 }
+
+/**
+ * Return the subset of `chars` that the named snapcompact font can render.
+ *
+ * The TypeScript normalizer uses this to keep Unicode text intact only when
+ * the selected native font has a glyph for it; renderer control codes are
+ * considered renderable because they are interpreted outside font lookup.
+ */
+export declare function snapcompactSupportedChars(font: string, chars: string): string
 
 export declare function summarizeCode(options: SummaryOptions): SummaryResult
 

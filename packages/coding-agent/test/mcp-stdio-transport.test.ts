@@ -70,7 +70,57 @@ describe("resolveStdioSpawnCommand", () => {
 		}
 	});
 
-	it("launches npm .cmd shims through node so CodeGraph owns the stdio pipes", async () => {
+	it("keeps PATH-resolved npx.cmd on the cmd.exe path so npm preserves stdio semantics", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-npx-"));
+		try {
+			const shim = path.join(tempDir, "npx.cmd");
+			await Bun.write(
+				shim,
+				[
+					"@ECHO off",
+					"GOTO start",
+					":find_dp0",
+					"SET dp0=%~dp0",
+					"EXIT /b",
+					":start",
+					"SETLOCAL",
+					"CALL :find_dp0",
+					"",
+					'IF EXIST "%dp0%\\node.exe" (',
+					'  SET "_prog=%dp0%\\node.exe"',
+					") ELSE (",
+					'  SET "_prog=node"',
+					"  SET PATHEXT=%PATHEXT:;.JS;=;%",
+					")",
+					"",
+					'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\\node_modules\\npm\\bin\\npx-cli.js" %*',
+					"",
+				].join("\r\n"),
+			);
+
+			const result = await resolveStdioSpawnCommand(
+				{ type: "stdio", command: "npx", args: ["-y", "mcp-gdb"] },
+				{
+					cwd: tempDir,
+					env: {
+						COMSPEC: "C:\\Windows\\System32\\cmd.exe",
+						PATH: tempDir,
+						PATHEXT: ".cmd",
+					},
+					platform: "win32",
+					hostHasInheritableConsole: true,
+				},
+			);
+
+			expect(result.cmd).toEqual(["C:\\Windows\\System32\\cmd.exe", "/d", "/s", "/c", `""${shim}" "-y" "mcp-gdb""`]);
+			expect(result.windowsHide).toBe(false);
+			expect(result.detached).toBe(false);
+		} finally {
+			await removeWithRetries(tempDir);
+		}
+	});
+
+	it("still launches non-npx npm .cmd shims through node so stdio stays owned by the server process", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-codegraph-"));
 		try {
 			const shim = path.join(tempDir, "codegraph.cmd");

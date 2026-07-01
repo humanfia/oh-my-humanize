@@ -7,7 +7,7 @@ import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-regis
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ModelSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/model-selector";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
+import { AUTO_THINKING, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
 import type { TUI } from "@oh-my-pi/pi-tui";
 
 function normalizeRenderedText(text: string): string {
@@ -18,7 +18,6 @@ function createSelector(model: Model, settings: Settings): ModelSelectorComponen
 	const modelRegistry = {
 		getAll: () => [model],
 		getDiscoverableProviders: () => [],
-		getCanonicalModelSelections: () => [],
 	} as unknown as ModelRegistry;
 	const ui = {
 		requestRender: vi.fn(),
@@ -73,7 +72,6 @@ function createScopedSelector(
 	const modelRegistry = {
 		getAll: () => models,
 		getDiscoverableProviders: () => [],
-		getCanonicalModelSelections: () => [],
 	} as unknown as ModelRegistry;
 	const ui = {
 		requestRender: vi.fn(),
@@ -154,6 +152,26 @@ describe("ModelSelector role badge thinking display", () => {
 		expect(rendered).toContain("Thinking for: Default (gpt-5.5)");
 		expect(rendered).toContain("low medium high xhigh");
 		expect(rendered).not.toContain("low medium high max");
+	});
+
+	test("reloads DEFAULT(auto) from defaultThinkingLevel", async () => {
+		installTestTheme();
+		const model = getBundledModel("openai", "gpt-5.5");
+		if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
+
+		const settings = Settings.isolated({
+			defaultThinkingLevel: AUTO_THINKING,
+			modelRoles: {
+				default: `${model.provider}/${model.id}`,
+			},
+		});
+
+		const selector = createSelector(model, settings);
+		await Bun.sleep(0);
+		installTestTheme();
+
+		const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(rendered).toContain("DEFAULT (auto)");
 	});
 
 	test("shows compact auto badges for unconfigured role defaults", async () => {
@@ -253,7 +271,6 @@ describe("ModelSelector role badge thinking display", () => {
 			getError: () => undefined,
 			getAvailable: () => [cachedModel],
 			getDiscoverableProviders: () => [],
-			getCanonicalModelSelections: () => [],
 		} as unknown as ModelRegistry;
 		const ui = {
 			requestRender: vi.fn(),
@@ -292,7 +309,6 @@ describe("ModelSelector role badge thinking display", () => {
 			getError: () => undefined,
 			getAvailable: () => availableModels,
 			getDiscoverableProviders: () => [],
-			getCanonicalModelSelections: () => [],
 		} as unknown as ModelRegistry;
 		const ui = {
 			requestRender: vi.fn(),
@@ -337,7 +353,6 @@ describe("ModelSelector role badge thinking display", () => {
 			getError: () => undefined,
 			getAvailable: () => availableModels,
 			getDiscoverableProviders: () => ["ollama-cloud"],
-			getCanonicalModelSelections: () => [],
 			getProviderDiscoveryState: () => ({
 				provider: "ollama-cloud",
 				status: "idle",
@@ -365,7 +380,6 @@ describe("ModelSelector role badge thinking display", () => {
 		const initialRendered = normalizeRenderedText(selector.render(220).join("\n"));
 		expect(initialRendered).toContain("OLLAMA CLOUD");
 
-		selector.handleInput("\t");
 		selector.handleInput("\t");
 		await Bun.sleep(125);
 		installTestTheme();
@@ -399,7 +413,6 @@ describe("ModelSelector role badge thinking display", () => {
 			getError: () => undefined,
 			getAvailable: () => availableModels,
 			getDiscoverableProviders: () => ["ollama-cloud"],
-			getCanonicalModelSelections: () => [],
 			getProviderDiscoveryState: () => ({
 				provider: "ollama-cloud",
 				status: "idle",
@@ -424,7 +437,6 @@ describe("ModelSelector role badge thinking display", () => {
 		await Bun.sleep(0);
 		installTestTheme();
 
-		selector.handleInput("\t");
 		selector.handleInput("\t");
 
 		// Core regression: tab switch must not synchronously enter provider refresh.

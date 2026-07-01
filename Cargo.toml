@@ -4,7 +4,7 @@ exclude = ["crates/vendor/brush-core", "crates/vendor/brush-builtins", "temp/pla
 resolver = "3"
 
 [workspace.package]
-version = "16.2.5"
+version = "16.2.12"
 edition = "2024"
 license = "MIT"
 authors = ["Can Boluk"]
@@ -171,6 +171,7 @@ too_many_lines = "allow"     # Arbitrary limits don't account for necessary comp
 pi-ast = { path = "crates/pi-ast" }
 pi-iso = { path = "crates/pi-iso" }
 pi-shell = { path = "crates/pi-shell" }
+pi-walker = { path = "crates/pi-walker" }
 brush-core = { path = "crates/vendor/brush-core" }
 brush-builtins = { path = "crates/vendor/brush-builtins" }
 
@@ -183,6 +184,7 @@ parking_lot = "0.12.5"
 rayon = "1.12"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["full"] }
+flume = "0.11"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Serialization & Data Formats
@@ -210,6 +212,7 @@ regex = "1"
 similar = "3.1.0"
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
+fontdue = { version = "0.9", default-features = false }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data Structures - Collections

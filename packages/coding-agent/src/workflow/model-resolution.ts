@@ -1,11 +1,6 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
-import {
-	type CanonicalModelRegistry,
-	type ModelMatchPreferences,
-	resolveAgentModelPatterns,
-	resolveModelRoleValue,
-} from "../config/model-resolver";
+import { type ModelMatchPreferences, resolveAgentModelPatterns, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import type {
 	WorkflowDefinition,
@@ -26,7 +21,6 @@ export interface WorkflowModelResolutionOptions {
 	availableModels: Model<Api>[];
 	settings?: Settings;
 	matchPreferences?: ModelMatchPreferences;
-	modelRegistry?: CanonicalModelRegistry;
 	agentModel?: string | string[];
 	parentActiveModelPattern?: string;
 	activationModel?: WorkflowModelContext;
@@ -241,7 +235,6 @@ function resolveFirstPattern(
 		const resolved = resolveModelRoleValue(pattern, options.availableModels, {
 			settings: options.settings,
 			matchPreferences: options.matchPreferences,
-			modelRegistry: options.modelRegistry,
 		});
 		if (!resolved.model) continue;
 		return {

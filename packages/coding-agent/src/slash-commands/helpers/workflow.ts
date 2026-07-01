@@ -1577,7 +1577,6 @@ function createWorkflowModelResolution(runtime: SlashCommandRuntime): WorkflowRu
 	return {
 		availableModels,
 		settings: runtime.settings,
-		modelRegistry: runtime.session.modelRegistry,
 		parentActiveModelPattern: runtime.session.model ? formatModelString(runtime.session.model) : undefined,
 	};
 }
@@ -2043,7 +2042,6 @@ function resolveRuntimeBindingModelAudit(
 		availableModels: modelResolution?.availableModels ?? [],
 		settings: modelResolution?.settings,
 		matchPreferences: modelResolution?.matchPreferences,
-		modelRegistry: modelResolution?.modelRegistry,
 		parentActiveModelPattern: modelResolution?.parentActiveModelPattern,
 		agentModel: modelResolution === undefined ? undefined : workflowRuntimeAgentModelPattern(modelResolution, node),
 	});

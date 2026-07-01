@@ -147,21 +147,6 @@ function resolveWindowsShimPath(value: string, shimDir: string): string | null {
 	return path.join(shimDir, ...suffix.split(/[\\/]+/).filter(Boolean));
 }
 
-function extractWindowsNpmShimTarget(content: string): string | null {
-	const match = /"%_prog%"\s+"([^"]+)"\s+%\*/i.exec(content);
-	return match?.[1] ?? null;
-}
-
-/**
- * Extract the shim's PATH-fallback interpreter (`SET "_prog=node"`). The
- * `IF EXIST` branch assigns a `%dp0%`-prefixed value, so requiring a
- * non-`%`-leading value picks the bare program name.
- */
-function extractWindowsNpmShimProg(content: string): string | null {
-	const match = /SET\s+"_prog=([^%"][^"]*)"/i.exec(content);
-	return match?.[1] ?? null;
-}
-
 async function resolveWindowsNpmShimCommand(
 	command: string,
 	args: readonly string[],
@@ -171,6 +156,11 @@ async function resolveWindowsNpmShimCommand(
 	if (!isWindowsBatchCommand(command)) return null;
 	if (!hasPathSegment(command)) return null;
 	const commandPath = path.resolve(cwd, command);
+	const commandName = path
+		.basename(commandPath)
+		.replace(/\.cmd$/i, "")
+		.toLowerCase();
+	if (commandName === "npx") return null;
 
 	let content: string;
 	try {
@@ -181,7 +171,9 @@ async function resolveWindowsNpmShimCommand(
 
 	// cmd-shim emits the same invocation line for every interpreter; only
 	// bypass cmd.exe when the shim's fallback interpreter is actually node.
-	const prog = extractWindowsNpmShimProg(content);
+	// The IF EXIST branch assigns a %dp0%-prefixed value, so requiring a
+	// non-%-leading SET value picks the bare PATH-fallback program name.
+	const prog = /SET\s+"_prog=([^%"][^"]*)"/i.exec(content)?.[1];
 	if (
 		!prog ||
 		path
@@ -191,7 +183,7 @@ async function resolveWindowsNpmShimCommand(
 	)
 		return null;
 
-	const rawTarget = extractWindowsNpmShimTarget(content);
+	const rawTarget = /"%_prog%"\s+"([^"]+)"\s+%\*/i.exec(content)?.[1];
 	if (!rawTarget) return null;
 
 	const target = resolveWindowsShimPath(rawTarget, path.dirname(commandPath));
@@ -583,17 +575,27 @@ export class StdioTransport implements MCPTransport {
 
 		const stdin = this.#process.stdin;
 		const message = `${JSON.stringify(request)}\n`;
-		try {
-			// Await both: Bun's FileSink can surface a broken pipe either as a
-			// synchronous throw or as a rejected Promise (the EPIPE arrives on a
-			// processTicksAndRejections tick). Awaiting funnels both into this catch
-			// so the request rejects cleanly instead of leaving a floating rejected
-			// promise that crashes the process via the unhandledRejection handler.
-			await stdin.write(message);
-			await stdin.flush();
-		} catch (error: unknown) {
+		const failFromSend = (error: unknown) => {
+			if (settled) return;
 			cleanup();
 			reject(error instanceof Error ? error : new Error(String(error)));
+		};
+		try {
+			// Never `await` write/flush. Bun's FileSink returns a pending Promise
+			// once the OS pipe buffer fills (default ~64 KB on POSIX), and a
+			// subprocess that stops draining stdin will park those awaits forever.
+			// Awaiting here would keep the async fn stuck above `return promise`,
+			// past the timeout timer and the abort handler, orphaning the deferred
+			// rejection and hanging the caller (#3945). Route sync throws (Windows
+			// EPIPE) and async rejections (POSIX EPIPE on processTicksAndRejections)
+			// into `reject()` while leaving the returned promise free to settle
+			// from the response, timer, abort signal, or read-loop transport-close.
+			const wrote = stdin.write(message);
+			if (isThenable(wrote)) wrote.then(undefined, failFromSend);
+			const flushed = stdin.flush();
+			if (isThenable(flushed)) flushed.then(undefined, failFromSend);
+		} catch (error) {
+			failFromSend(error);
 		}
 
 		return promise;

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { getWorkflowMonitorCacheDir } from "@oh-my-pi/pi-utils";
-import type { CanonicalModelRegistry, ModelMatchPreferences } from "../config/model-resolver";
+import type { ModelMatchPreferences } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import type { WorkflowDefinition, WorkflowNode } from "./definition";
 import type { FlowFreeze, FlowFreezeResourceSnapshot } from "./freeze";
@@ -69,7 +69,6 @@ export interface WorkflowRunnerModelResolutionOptions {
 	availableModels: Model<Api>[];
 	settings?: Settings;
 	matchPreferences?: ModelMatchPreferences;
-	modelRegistry?: CanonicalModelRegistry;
 	parentActiveModelPattern?: string;
 	agentModels?: Record<string, string | string[]>;
 }
@@ -877,7 +876,6 @@ function resolveModelAudit(
 		availableModels: modelResolution.availableModels,
 		settings: modelResolution.settings,
 		matchPreferences: modelResolution.matchPreferences,
-		modelRegistry: modelResolution.modelRegistry,
 		parentActiveModelPattern: modelResolution.parentActiveModelPattern,
 		agentModel: resolveAgentModelPattern(modelResolution, node),
 	}).audit;

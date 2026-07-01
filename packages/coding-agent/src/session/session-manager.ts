@@ -1,6 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ImageContent, Message, MessageAttribution, ServiceTier, TextContent, Usage } from "@oh-my-pi/pi-ai";
+import type {
+	ImageContent,
+	Message,
+	MessageAttribution,
+	ServiceTierByFamily,
+	TextContent,
+	Usage,
+} from "@oh-my-pi/pi-ai";
 import {
 	directoryExists,
 	getBlobsDir,
@@ -67,6 +74,8 @@ import {
 import { type SessionTitleUpdate, serializeTitleSlot } from "./session-title-slot";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
+const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
+const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
 
 function mintSessionId(): string {
 	return Bun.randomUUIDv7();
@@ -234,9 +243,10 @@ class SessionEntryIndex {
 
 		while (cursor && !seen.has(cursor.id)) {
 			seen.add(cursor.id);
-			branch.unshift(cursor);
+			branch.push(cursor);
 			cursor = cursor.parentId ? this.#entriesById.get(cursor.parentId) : undefined;
 		}
+		branch.reverse();
 
 		return branch;
 	}
@@ -501,6 +511,26 @@ export class SessionManager {
 
 	#shouldHaveSessionFile(): boolean {
 		return this.#forceFileCreation || this.#fileIsCurrent || this.#historyContainsAssistantMessage();
+	}
+
+	#elideSupersededCompactionsOnBranch(leafId: string | null): boolean {
+		if (!leafId) return false;
+		let changed = false;
+		for (const entry of this.#index.pathTo(leafId)) {
+			if (entry.type !== "compaction") continue;
+			if (
+				entry.summary === SUPERSEDED_COMPACTION_SUMMARY &&
+				entry.shortSummary === SUPERSEDED_COMPACTION_SHORT_SUMMARY &&
+				entry.preserveData === undefined
+			) {
+				continue;
+			}
+			entry.summary = SUPERSEDED_COMPACTION_SUMMARY;
+			entry.shortSummary = SUPERSEDED_COMPACTION_SHORT_SUMMARY;
+			entry.preserveData = undefined;
+			changed = true;
+		}
+		return changed;
 	}
 
 	/**
@@ -1026,14 +1056,18 @@ export class SessionManager {
 	}
 
 	/**
-	 * Synchronously flush all in-memory entries to disk. Use when the process may
-	 * exit before an async flush settles (Ctrl+C in the TUI). Software-crash
-	 * durable; not atomic and not power-loss safe — a same-process crash never
-	 * lands mid-`writeFileSync`.
+	 * Synchronously makes the current append-only session durable. Avoid rewriting
+	 * an already-current file: large restored sessions can contain GiB of compacted
+	 * history, and Ctrl+C must not rebuild the whole JSONL string just to flush.
 	 */
 	flushSync(): void {
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#diskFailure) throw this.#diskFailure;
+		if (this.#fileIsCurrent && !this.#rewriteRequired) {
+			const writerError = this.#writer?.getError();
+			if (writerError) throw writerError;
+			return;
+		}
 		this.#rewriteSynchronously();
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
@@ -1262,7 +1296,7 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	appendServiceTierChange(serviceTier: ServiceTier | null): string {
+	appendServiceTierChange(serviceTier: ServiceTierByFamily | null): string {
 		const entry: ServiceTierChangeEntry = { type: "service_tier_change", ...this.#freshEntryFields(), serviceTier };
 		this.#recordEntry(entry);
 		return entry.id;
@@ -1308,6 +1342,7 @@ export class SessionManager {
 		fromExtension?: boolean,
 		preserveData?: Record<string, unknown>,
 	): string {
+		const elidedSupersededCompactions = this.#elideSupersededCompactionsOnBranch(this.#index.leafId());
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
 			...this.#freshEntryFields(),
@@ -1320,6 +1355,9 @@ export class SessionManager {
 			preserveData,
 		};
 		this.#recordEntry(entry);
+		if (elidedSupersededCompactions) {
+			void this.#rewriteAtomically().catch(err => this.#noteDiskFailure(err));
+		}
 		return entry.id;
 	}
 

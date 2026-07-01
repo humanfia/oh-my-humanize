@@ -9,10 +9,12 @@
 
 import {
 	bareModelId,
+	isAnthropicAdaptiveGenAtLeast,
 	isFableOrMythos,
 	parseAnthropicModel,
 	parseGlmModel,
 	parseKnownModel,
+	parseOpenAIModel,
 	semverGte,
 } from "./classify";
 
@@ -122,6 +124,22 @@ export const isOpenAIModelId = memo((modelId: string): boolean => {
 });
 
 /**
+ * OpenAI Codex models that honor `reasoning.context: "all_turns"` (full
+ * cross-turn reasoning replay). The `reasoning.context` field itself exists for
+ * the whole gpt-5/o-series family, but the `all_turns` value is only accepted
+ * from gpt-5.4 onward; earlier ids (`gpt-5.1-codex`, `gpt-5.3-codex`, and
+ * `gpt-5.3-codex-spark`) reject it with
+ * `Unsupported value: 'all_turns' is not supported with this model`. Version
+ * floor (not an allowlist) so 5.6/6.x inherit support automatically. Callers
+ * fall back to omitting `context`, letting the server default to `current_turn`.
+ */
+export const supportsAllTurnsReasoningContext = memo((modelId: string): boolean => {
+	const parsed = parseOpenAIModel(bareModelId(modelId));
+	if (!parsed) return false;
+	return semverGte(parsed.version, "5.4");
+});
+
+/**
  * Reasoning-capable GLM coding SKUs: glm-4.5 and up on the base / `-air` /
  * `-turbo` lines. Excludes the vision (`…v`) shape, the non-reasoning
  * `-flash`/`-flashx`/`-preview` variants, and pre-4.5 ids. Matching the family
@@ -184,41 +202,38 @@ export const modelFamilyToken = memo((modelId: string): string => {
 });
 
 /**
- * Adaptive thinking `display` is supported starting with Claude Opus 4.7 and
- * the Claude Fable/Mythos 5 generation. Older adaptive-thinking models
- * (Opus 4.6, Sonnet 4.6+) reject the field. Classifier-based, so dotted and
- * dashed version forms both match while bare dated ids
+ * Adaptive thinking `display` is supported starting with Claude Opus 4.7+,
+ * Sonnet 5+, and the Claude Fable/Mythos 5 generation. Older adaptive-thinking
+ * models (Opus 4.6, Sonnet 4.6) reject the field. Classifier-based, so dotted
+ * and dashed version forms both match while bare dated ids
  * (`claude-opus-4-20250514` = Opus 4.0) stay excluded.
  */
 export const supportsAdaptiveThinkingDisplay = memo((modelId: string): boolean => {
 	const parsed = parseAnthropicModel(bareModelId(modelId));
-	if (!parsed) return false;
-	if (isFableOrMythos(parsed.kind)) return semverGte(parsed.version, "5");
-	return parsed.kind === "opus" && semverGte(parsed.version, "4.7");
+	return parsed !== null && isAnthropicAdaptiveGenAtLeast(parsed, "4.7");
 });
 
 /**
- * Returns true for Anthropic models with Opus 4.7+/Fable/Mythos API restrictions:
+ * Returns true for Anthropic models with Opus 4.7+, Sonnet 5+, and Fable/Mythos 5+
+ * API restrictions:
  * - Sampling parameters (temperature/top_p/top_k) return 400 error
  * - Thinking content is omitted by default (needs display: "summarized")
  */
 export const hasOpus47ApiRestrictions = memo((modelId: string): boolean => {
 	const parsed = parseAnthropicModel(bareModelId(modelId));
-	if (!parsed) return false;
-	return (parsed.kind === "opus" && semverGte(parsed.version, "4.7")) || isFableOrMythos(parsed.kind);
+	return parsed !== null && isAnthropicAdaptiveGenAtLeast(parsed, "4.7");
 });
 
 /**
  * Mid-conversation `role: "system"` messages (system instructions appended at
  * non-first positions in the `messages` array) are supported starting with
- * Claude Opus 4.8 and the Claude Fable/Mythos 5 generation. Earlier Claude
- * models reject the role.
+ * Claude Opus 4.8+, Sonnet 5+, and the Claude Fable/Mythos 5 generation.
+ * Earlier Claude models reject the role.
  * @see https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
  */
 export const supportsMidConversationSystemMessages = memo((modelId: string): boolean => {
 	const parsed = parseAnthropicModel(bareModelId(modelId));
-	if (!parsed) return false;
-	return (parsed.kind === "opus" && semverGte(parsed.version, "4.8")) || isFableOrMythos(parsed.kind);
+	return parsed !== null && isAnthropicAdaptiveGenAtLeast(parsed, "4.8");
 });
 
 export const isAnthropicFableOrMythosModel = memo((modelId: string): boolean => {

@@ -6,8 +6,10 @@ import type {
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
 	Model,
+	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
-import { type BenchModelRegistry, runBenchCommand } from "@oh-my-pi/pi-coding-agent/cli/bench-cli";
+import { type BenchModelRegistry, type BenchSummary, runBenchCommand } from "@oh-my-pi/pi-coding-agent/cli/bench-cli";
+import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
 function fakeModel(provider: string, id: string): Model<Api> {
 	return {
@@ -57,8 +59,6 @@ function emptyStream(): AssistantMessageEventStream {
 interface FakeRegistryOptions {
 	models: Model<Api>[];
 	authedProviders: string[];
-	canonicalId?: (model: Model<Api>) => string | undefined;
-	canonicalVariants?: Record<string, Model<Api>[]>;
 }
 
 function fakeRegistry(opts: FakeRegistryOptions): BenchModelRegistry {
@@ -68,16 +68,6 @@ function fakeRegistry(opts: FakeRegistryOptions): BenchModelRegistry {
 		hasConfiguredAuth: model => authed.has(model.provider),
 		getApiKey: async model => (authed.has(model.provider) ? "sk-test" : undefined),
 		resolver: () => (() => Promise.resolve("sk-test")) as unknown as ApiKeyResolver,
-		getCanonicalId: opts.canonicalId,
-		getCanonicalVariants: opts.canonicalVariants
-			? canonicalId =>
-					(opts.canonicalVariants?.[canonicalId] ?? []).map(model => ({
-						canonicalId,
-						selector: `${model.provider}/${model.id}`,
-						model,
-						source: "bundled" as const,
-					}))
-			: undefined,
 	};
 }
 
@@ -119,24 +109,20 @@ describe("bench credential-aware provider selection", () => {
 		expect(stderr).toContain("openrouter/openai/gpt-oss-20b");
 	});
 
-	it("redirects across providers whose local ids differ, via canonical variants", async () => {
-		// Bare `gpt-oss-20b` resolves to fireworks (unauthed) by flat-id match; the
-		// only authenticated equivalent is openrouter under a *different* local id,
-		// so the swap must travel through the canonical variant index.
-		const fireworks = fakeModel("fireworks", "gpt-oss-20b");
-		const openrouter = fakeModel("openrouter", "openai/gpt-oss-20b");
+	it("does not redirect across providers whose local ids differ", async () => {
+		// Bare `gpt-oss-20b` resolves to fireworks (unauthed) by flat-id match.
+		// The authenticated openrouter entry has a different local id, so it is
+		// not considered an equivalent fallback.
 		const registry = fakeRegistry({
-			models: [fireworks, openrouter],
+			models: [fakeModel("fireworks", "gpt-oss-20b"), fakeModel("openrouter", "openai/gpt-oss-20b")],
 			authedProviders: ["openrouter"],
-			canonicalId: model => (model === fireworks || model === openrouter ? "gpt-oss-20b" : undefined),
-			canonicalVariants: { "gpt-oss-20b": [fireworks, openrouter] },
 		});
 
-		const { summary, stderr } = await runBench("gpt-oss-20b", registry);
+		const { summary } = await runBench("gpt-oss-20b", registry);
 
-		expect(summary.models[0].model).toBe("openrouter/openai/gpt-oss-20b");
-		expect(summary.failures).toBe(0);
-		expect(stderr).toContain('no credentials for "fireworks"');
+		expect(summary.models[0].model).toBe("fireworks/gpt-oss-20b");
+		expect(summary.failures).toBe(1);
+		expect(summary.models[0].results[0]).toMatchObject({ ok: false });
 	});
 
 	it("honors an explicitly pinned provider even without credentials", async () => {
@@ -166,5 +152,104 @@ describe("bench empty-output guard", () => {
 		expect(run.ok).toBe(false);
 		if (!run.ok) expect(run.error).toContain("no output");
 		expect(summary.models[0].average).toBeNull();
+	});
+});
+
+function settingsStub(serviceTier: string | undefined): Settings | undefined {
+	if (serviceTier === undefined) return undefined;
+	return {
+		get: (key: string) =>
+			key === "tier.openai" ? serviceTier : key === "tier.anthropic" || key === "tier.google" ? "none" : undefined,
+	} as unknown as Settings;
+}
+
+async function captureServiceTier(opts: {
+	flag?: string;
+	setting?: string;
+}): Promise<{ wire: SimpleStreamOptions["serviceTier"]; summary: BenchSummary["serviceTierByFamily"] }> {
+	const registry = fakeRegistry({ models: [fakeModel("openai-codex", "gpt-5.5")], authedProviders: ["openai-codex"] });
+	let captured: SimpleStreamOptions | undefined;
+	const summary = await runBenchCommand(
+		{
+			models: ["openai-codex/gpt-5.5"],
+			flags: { runs: 1, maxTokens: 64, json: true, serviceTier: opts.flag },
+		},
+		{
+			createRuntime: async () => ({
+				modelRegistry: registry,
+				settings: settingsStub(opts.setting),
+				close: () => {},
+			}),
+			randomSessionId: () => "sess-1",
+			writeStdout: () => {},
+			writeStderr: () => {},
+			setExitCode: () => {},
+			streamSimple: (_model, _context, options) => {
+				captured = options;
+				return fakeStream();
+			},
+			now: () => 0,
+			stdoutIsTTY: false,
+		},
+	);
+	return { wire: captured?.serviceTier, summary: summary.serviceTierByFamily };
+}
+
+describe("bench provider session state and websocket preference", () => {
+	it("sends providerSessionState and preferWebsockets to the stream", async () => {
+		const registry = fakeRegistry({
+			models: [fakeModel("openai-codex", "gpt-5.5")],
+			authedProviders: ["openai-codex"],
+		});
+		let captured: SimpleStreamOptions | undefined;
+		await runBenchCommand(
+			{ models: ["openai-codex/gpt-5.5"], flags: { runs: 1, maxTokens: 64, json: true } },
+			{
+				createRuntime: async () => ({
+					modelRegistry: registry,
+					settings: undefined,
+					close: () => {},
+				}),
+				randomSessionId: () => "sess-1",
+				writeStdout: () => {},
+				writeStderr: () => {},
+				setExitCode: () => {},
+				streamSimple: (_model, _context, options) => {
+					captured = options;
+					return fakeStream();
+				},
+				now: () => 0,
+				stdoutIsTTY: false,
+			},
+		);
+		expect(captured?.providerSessionState).toBeInstanceOf(Map);
+		expect(captured?.providerSessionState?.size).toBe(0);
+		expect(captured?.preferWebsockets).toBe(true);
+	});
+});
+
+describe("bench service tier", () => {
+	it("sends the configured serviceTier setting when no flag is passed", async () => {
+		const { wire, summary } = await captureServiceTier({ setting: "flex" });
+		expect(wire).toBe("flex");
+		expect(summary).toEqual({ openai: "flex" });
+	});
+
+	it("lets an explicit --service-tier override the configured setting", async () => {
+		const { wire, summary } = await captureServiceTier({ flag: "priority", setting: "flex" });
+		expect(wire).toBe("priority");
+		expect(summary).toEqual({ openai: "priority", anthropic: "priority", google: "priority" });
+	});
+
+	it("omits service_tier when the setting is none and no flag is passed", async () => {
+		const { wire, summary } = await captureServiceTier({ setting: "none" });
+		expect(wire).toBeUndefined();
+		expect(summary).toEqual({});
+	});
+
+	it("omits service_tier when neither flag nor settings are present", async () => {
+		const { wire, summary } = await captureServiceTier({});
+		expect(wire).toBeUndefined();
+		expect(summary).toEqual({});
 	});
 });
