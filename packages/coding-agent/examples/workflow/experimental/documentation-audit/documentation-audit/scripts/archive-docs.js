@@ -236,10 +236,9 @@ async function readOptionalText(filePath) {
 }
 
 async function consolidatedAuditEvidenceText() {
-	return await firstEvidenceText([
-		"workflow-output/documentation-audit-digest.md",
-		"workflow-output/omh-runtime/artifacts/*/1-consolidateAudit.md",
-	]);
+	const consolidatedAudit = await firstGlobText("workflow-output/omh-runtime/artifacts/*/1-consolidateAudit.md");
+	const digest = await readOptionalText("workflow-output/documentation-audit-digest.md");
+	return [consolidatedAudit, digest ? `# Supporting Audit Digest\n\n${digest}` : ""].filter(text => text.trim()).join("\n\n");
 }
 
 async function patchEvidenceText() {

@@ -254,8 +254,20 @@ describe("documentation-audit flow contract", () => {
 			[
 				"# Consolidated Documentation Audit",
 				"",
+				"rankedDeduplicatedFindings:",
 				"selectedRepair.projectTargets: docs/a.md, docs/b.md",
+				"changedFileTargets: docs/a.md, docs/b.md",
+				"reviewerDecision: repair accepted",
 				"Finding: docs/a.md and docs/b.md drift from tested CLI help.",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/documentation-audit-digest.md"),
+			[
+				"# Documentation Audit Digest",
+				"",
+				"Digest-only truncated summary that must not replace the consolidator artifact.",
 				"",
 			].join("\n"),
 		);
@@ -324,7 +336,13 @@ describe("documentation-audit flow contract", () => {
 
 		expect(result.summary).toBe("archived documentation audit evidence");
 		expect(archive).toContain("## Consolidated Audit Findings");
+		expect(archive).toContain("rankedDeduplicatedFindings:");
 		expect(archive).toContain("selectedRepair.projectTargets: docs/a.md, docs/b.md");
+		expect(archive).toContain("changedFileTargets: docs/a.md, docs/b.md");
+		expect(archive).toContain("reviewerDecision: repair accepted");
+		expect(archive.indexOf("rankedDeduplicatedFindings:")).toBeLessThan(
+			archive.indexOf("Digest-only truncated summary"),
+		);
 		expect(archive).toContain("## Patch Rationale");
 		expect(archive).toContain("docs/a.md: refreshed copyable command output");
 		expect(archive).toContain("## Reviewer Verdict");
