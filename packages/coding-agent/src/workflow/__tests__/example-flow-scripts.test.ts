@@ -6252,6 +6252,62 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("does not partially match performance artifact glob cleanup patterns as durable declarations", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-glob-cleanup-artifacts-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching candidate",
+				"",
+				"Rollback cleanup: remove workflow-output/perf-caching*.json, workflow-output/perf-caching*.diff, and workflow-output/perf-caching.md.",
+				"Candidate patch: workflow-output/perf-caching-candidate.diff",
+				"Benchmark artifact: workflow-output/perf-caching-benchmark.json",
+				"benchmark-relevance: yes",
+				"final-selection: no",
+				"no-win-result: no",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/perf-caching-candidate.diff`, "candidate patch\n");
+		await Bun.write(`${cwd}/workflow-output/perf-caching-benchmark.json`, "{}\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "pass",
+			benchmarkExitCode: 0,
+			validationExitCode: 0,
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).not.toContain(
+			"workflow-output/perf-caching",
+		);
+	});
+
 	it("blocks performance benchmark joins when lane scratch lives inside the project tree", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-project-scratch-guard-");
 		const cwd = tempDir.path();

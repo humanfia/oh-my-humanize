@@ -342,7 +342,7 @@ async function missingDeclaredWorkflowArtifacts() {
 
 function declaredWorkflowArtifacts(text) {
 	const artifacts = new Set();
-	for (const match of text.matchAll(/\bworkflow-output\/perf-(?:algorithmic|caching|io|no-win)(?:[./-][^\s`"'<>),;]+)?/giu)) {
+	for (const match of text.matchAll(/\bworkflow-output\/perf-(?:algorithmic|caching|io|no-win)[^\s`"'<>),;]*/giu)) {
 		const artifactPath = trimPathPunctuation(match[0] ?? "");
 		if (artifactPath && !hasGlobSyntax(artifactPath)) artifacts.add(artifactPath);
 	}

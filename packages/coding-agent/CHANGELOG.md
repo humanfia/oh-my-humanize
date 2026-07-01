@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental performance-optimization-search flow treating glob cleanup patterns such as `workflow-output/perf-caching*.json` as missing durable artifacts.
 - Fixed isolated workflow agent nodes losing lane-local `workflow-output/**` files that are referenced from declared text reports but omitted from the explicit artifact list.
 - Fixed the experimental refactor-migration-plan flow treating recursive glob scope fences such as `tests/**` as out-of-scope changes during review and archive checks.
 - Fixed the experimental release-hardening flow treating stale structured compatibility status fields as unresolved release blockers after reviewer-approved repair evidence.
