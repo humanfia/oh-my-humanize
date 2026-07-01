@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed the experimental documentation-audit archive baseline waiver missing Python exception signatures such as `AttributeError`, which caused same-baseline validation failures to block docs-only archives.
+- Fixed the experimental release-hardening flow relying on prompt-only read-only audit instructions; scope, audit, and review nodes now use the existing read-only workspace and isolated no-merge workflow contracts so validation byproducts cannot be cleaned up from the shared workspace by audit nodes.
 - Fixed workflow node `timeoutMs` not reaching spawned task/reviewer agents, and bounded the experimental test-generation-hardening reviewer node so stalled reviews checkpoint instead of running without a node deadline.
 - Fixed the experimental documentation-audit archive allowing baseline validation waivers only when optional exit-code fields were present, and fixed the experimental release-hardening gate treating false-valued structured audit fields as blockers.
 - Fixed the experimental performance-optimization-search flow treating glob cleanup patterns such as `workflow-output/perf-caching*.json` as missing durable artifacts.

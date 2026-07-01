@@ -183,6 +183,45 @@ edges: []
 		expect(capturedRequest?.timeoutMs).toBe(600_000);
 	});
 
+	it("passes workflow review node isolation to task runners", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "review completed in isolated read lane" }),
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "releaseReview",
+			type: "review",
+			prompt: "Review release evidence without mutating the shared workspace.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "finish",
+			isolation: {
+				enabled: true,
+				apply: false,
+				merge: false,
+			},
+		};
+		await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(capturedRequest?.isolated).toBe(true);
+		expect(capturedRequest?.apply).toBe(false);
+		expect(capturedRequest?.merge).toBe(false);
+	});
+
 	it("preserves captured patch metadata when branch state already names a patch", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",

@@ -72,6 +72,11 @@ nodes:
     agent: task
     model:
       role: releaser
+    workspaceAccess: read
+    isolation:
+      enabled: true
+      apply: false
+      merge: false
     reads:
       - /task
     prompt:
@@ -83,6 +88,11 @@ nodes:
     agent: task
     model:
       role: releaser
+    workspaceAccess: read
+    isolation:
+      enabled: true
+      apply: false
+      merge: false
     reads:
       - /task
       - /scope
@@ -95,6 +105,11 @@ nodes:
     agent: task
     model:
       role: releaser
+    workspaceAccess: read
+    isolation:
+      enabled: true
+      apply: false
+      merge: false
     reads:
       - /task
       - /scope
@@ -144,6 +159,11 @@ nodes:
     agent: reviewer
     model:
       role: reviewer
+    workspaceAccess: read
+    isolation:
+      enabled: true
+      apply: false
+      merge: false
     reads:
       - /task
       - /scope

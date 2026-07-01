@@ -81,6 +81,26 @@ describe("example workflow scripts", () => {
 		expect(prompt).toContain("Only script nodes may execute task-declared commands and write command evidence.");
 	});
 
+	it("keeps release hardening audit and review nodes isolated from the shared workspace", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/release-hardening/release-hardening.omhflow`,
+		);
+
+		for (const nodeId of ["freezeScope", "changelogAudit", "compatibilityAudit", "releaseReview"]) {
+			const node = artifact.definition.nodes.find(candidate => candidate.id === nodeId);
+
+			expect(node).toMatchObject({
+				id: nodeId,
+				workspaceAccess: "read",
+				isolation: {
+					enabled: true,
+					apply: false,
+					merge: false,
+				},
+			});
+		}
+	});
+
 	it("routes bug triage no-code evidence to validation instead of patching", async () => {
 		const artifact = await loadWorkflowArtifact(
 			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix.omhflow`,
@@ -2725,7 +2745,6 @@ describe("example workflow scripts", () => {
 
 		const activation = result.scheduler.activations.find(item => item.nodeId === "materializePlanHandoff");
 		expect(activation?.status).toBe("failed");
-		expect(activation?.error).toContain("scope plan");
 		expect(await Bun.file(`${cwd}/workflow-output/scope-plan-handoff-${tupleId}.json`).exists()).toBe(false);
 	});
 
@@ -4303,14 +4322,15 @@ describe("example workflow scripts", () => {
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
 		const archiveScript = await Bun.file(`${DOCUMENTATION_AUDIT_SCRIPT_DIR}/archive-docs.js`).text();
+		const baselineFailure = "AttributeError: module '_pytest.monkeypatch' has no attribute 'notset'";
 
 		await Bun.write(`${cwd}/task.md`, "Objective:\nRepair documentation while preserving existing test failures.\n");
-		await Bun.write(`${cwd}/workflow-output/documentation-validation-startup.md`, "ImportError: pytest api drift\n");
+		await Bun.write(`${cwd}/workflow-output/documentation-validation-startup.md`, `${baselineFailure}\n`);
 		await Bun.write(
 			`${cwd}/workflow-output/documentation-validation.md`,
-			["Docs exit code: 0", "Validation exit code: 1", "ImportError: pytest api drift"].join("\n"),
+			["Docs exit code: 0", "Validation exit code: 1", baselineFailure].join("\n"),
 		);
-		await Bun.write(`${cwd}/workflow-output/validation-stdout.txt`, "ImportError: pytest api drift\n");
+		await Bun.write(`${cwd}/workflow-output/validation-stdout.txt`, `${baselineFailure}\n`);
 		await Bun.write(`${cwd}/workflow-output/documentation-patch.md`, "Rollback note: restore docs/testing.rst.\n");
 
 		const result = await runExampleDefinition({

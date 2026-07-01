@@ -135,7 +135,10 @@ function failureSignatures(text) {
 
 function isUsefulFailureSignature(line) {
 	if (line.length < 16) return false;
-	return /\b(error|failed|failure|exception|importerror|modulenotfounderror|traceback|cannot import)\b/iu.test(line);
+	return (
+		/\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\b/u.test(line) ||
+		/\b(error|failed|failure|exception|importerror|modulenotfounderror|traceback|cannot import)\b/iu.test(line)
+	);
 }
 
 function priorContinueReviewFeedback() {
