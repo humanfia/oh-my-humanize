@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed workflow node `timeoutMs` not reaching spawned task/reviewer agents, and bounded the experimental test-generation-hardening reviewer node so stalled reviews checkpoint instead of running without a node deadline.
+- Fixed the experimental documentation-audit archive allowing baseline validation waivers only when optional exit-code fields were present, and fixed the experimental release-hardening gate treating false-valued structured audit fields as blockers.
 - Fixed the experimental performance-optimization-search flow treating glob cleanup patterns such as `workflow-output/perf-caching*.json` as missing durable artifacts.
 - Fixed isolated workflow agent nodes losing lane-local `workflow-output/**` files that are referenced from declared text reports but omitted from the explicit artifact list.
 - Fixed the experimental refactor-migration-plan flow treating recursive glob scope fences such as `tests/**` as out-of-scope changes during review and archive checks.

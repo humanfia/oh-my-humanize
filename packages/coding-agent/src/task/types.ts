@@ -186,6 +186,8 @@ export interface TaskParams {
 	modelOverride?: string | string[];
 	/** Internal workflow exactness flag; false prevents auth fallback to the parent model. */
 	modelOverrideAuthFallback?: boolean;
+	/** Internal workflow deadline override for this spawned subagent. */
+	maxRuntimeMs?: number;
 }
 
 export interface TaskPatchCapture {

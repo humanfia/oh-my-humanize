@@ -344,6 +344,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem): TaskParams {
 	if (params.modelOverrideAuthFallback !== undefined) {
 		spawn.modelOverrideAuthFallback = params.modelOverrideAuthFallback;
 	}
+	if (params.maxRuntimeMs !== undefined) spawn.maxRuntimeMs = params.maxRuntimeMs;
 	return spawn;
 }
 
@@ -1299,6 +1300,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				persistArtifacts: !!artifactsDir,
 				artifactsDir: effectiveArtifactsDir,
 				enableLsp: subagentLspEnabled,
+				maxRuntimeMs: params.maxRuntimeMs,
 				signal,
 				eventBus: this.session.eventBus,
 				onProgress: (progress: AgentProgress) => {

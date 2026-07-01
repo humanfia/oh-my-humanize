@@ -127,6 +127,7 @@ nodes:
   - id: testReview
     type: review
     agent: reviewer
+    timeoutMs: 600000
     model:
       role: reviewer
     reads:

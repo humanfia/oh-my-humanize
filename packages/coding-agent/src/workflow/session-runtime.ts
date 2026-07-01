@@ -52,6 +52,7 @@ export interface WorkflowAgentTaskRequest {
 	nodeId: string;
 	modelOverride?: string;
 	modelOverrideAuthFallback?: boolean;
+	timeoutMs?: number;
 	isolated?: boolean;
 	apply?: boolean;
 	merge?: boolean;
@@ -175,6 +176,9 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				request.modelOverride = input.modelOverride;
 				request.modelOverrideAuthFallback = false;
 			}
+			if (input.node.timeoutMs !== undefined) {
+				request.timeoutMs = input.node.timeoutMs;
+			}
 			if (input.signal !== undefined) {
 				request.signal = input.signal;
 			}
@@ -269,6 +273,9 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				if (input.modelOverride !== undefined) {
 					request.modelOverride = input.modelOverride;
 					request.modelOverrideAuthFallback = false;
+				}
+				if (input.node.timeoutMs !== undefined) {
+					request.timeoutMs = input.node.timeoutMs;
 				}
 				if (input.signal !== undefined) {
 					request.signal = input.signal;

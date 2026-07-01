@@ -91,12 +91,15 @@ return {
 
 async function baselineValidationWaiver(finalValidation, startupValidation) {
 	if (finalValidation.status === "pass") return { status: "not-needed" };
-	if (Number(finalValidation.docsExitCode ?? 0) !== 0) return { status: "rejected" };
-	if (startupValidation.status !== "startable-command-failed") return { status: "rejected" };
-	if (startupValidation.validationExitCode === undefined || finalValidation.validationExitCode === undefined) {
+	if (finalValidation.docsExitCode !== undefined && Number(finalValidation.docsExitCode) !== 0) {
 		return { status: "rejected" };
 	}
-	if (Number(startupValidation.validationExitCode) !== Number(finalValidation.validationExitCode)) {
+	if (startupValidation.status !== "startable-command-failed") return { status: "rejected" };
+	if (
+		startupValidation.validationExitCode !== undefined &&
+		finalValidation.validationExitCode !== undefined &&
+		Number(startupValidation.validationExitCode) !== Number(finalValidation.validationExitCode)
+	) {
 		return { status: "rejected" };
 	}
 	const startupText = await readOptionalText(

@@ -150,6 +150,39 @@ edges: []
 		]);
 	});
 
+	it("passes workflow node deadlines to task runners", async () => {
+		let capturedRequest: WorkflowAgentTaskRequest | undefined;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				capturedRequest = request;
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "review completed inside workflow deadline" }),
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "testReview",
+			type: "review",
+			prompt: "Review generated tests.",
+			timeoutMs: 600_000,
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(capturedRequest?.timeoutMs).toBe(600_000);
+	});
+
 	it("preserves captured patch metadata when branch state already names a patch", async () => {
 		const host = createSessionWorkflowRuntimeHost({
 			cwd: "/workspace",

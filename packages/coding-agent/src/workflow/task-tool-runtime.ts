@@ -23,6 +23,9 @@ export function createTaskToolAgentRunner(toolSession: ToolSession): WorkflowAge
 		if (request.modelOverrideAuthFallback !== undefined) {
 			params.modelOverrideAuthFallback = request.modelOverrideAuthFallback;
 		}
+		if (request.timeoutMs !== undefined) {
+			params.maxRuntimeMs = request.timeoutMs;
+		}
 		if (request.isolated !== undefined) params.isolated = request.isolated;
 		if (request.apply !== undefined) params.apply = request.apply;
 		if (request.merge !== undefined) params.merge = request.merge;

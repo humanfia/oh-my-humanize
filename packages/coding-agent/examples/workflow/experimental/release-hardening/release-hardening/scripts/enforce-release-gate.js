@@ -81,6 +81,7 @@ function auditBlockers(value, source) {
 function flattenEvidence(value) {
 	if (value === undefined || value === null) return [];
 	if (typeof value === "string") return [value];
+	if (value === false) return [];
 	if (typeof value === "number" || typeof value === "boolean") return [String(value)];
 	if (Array.isArray(value)) return value.flatMap(flattenEvidence);
 	if (typeof value !== "object") return [];

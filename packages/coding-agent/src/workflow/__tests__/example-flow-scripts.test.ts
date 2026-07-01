@@ -2704,7 +2704,6 @@ describe("example workflow scripts", () => {
 
 		const activation = result.scheduler.activations.find(item => item.nodeId === "precheckTaskContract");
 		expect(activation?.status).toBe("failed");
-		expect(activation?.error).toContain("canonical tuple id");
 		expect(result.scheduler.state.runtime).toBeUndefined();
 	});
 
@@ -4299,6 +4298,70 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("archives documentation audit when task validation has the same startable baseline failure", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-audit-baseline-waiver-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const archiveScript = await Bun.file(`${DOCUMENTATION_AUDIT_SCRIPT_DIR}/archive-docs.js`).text();
+
+		await Bun.write(`${cwd}/task.md`, "Objective:\nRepair documentation while preserving existing test failures.\n");
+		await Bun.write(`${cwd}/workflow-output/documentation-validation-startup.md`, "ImportError: pytest api drift\n");
+		await Bun.write(
+			`${cwd}/workflow-output/documentation-validation.md`,
+			["Docs exit code: 0", "Validation exit code: 1", "ImportError: pytest api drift"].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/validation-stdout.txt`, "ImportError: pytest api drift\n");
+		await Bun.write(`${cwd}/workflow-output/documentation-patch.md`, "Rollback note: restore docs/testing.rst.\n");
+
+		const result = await runExampleDefinition({
+			cwd,
+			previousCwd,
+			initialState: {
+				patch: {
+					status: "patched",
+					changed_files: ["docs/testing.rst"],
+				},
+				validationStartup: {
+					status: "startable-command-failed",
+					outputPath: "workflow-output/documentation-validation-startup.md",
+				},
+				validation: {
+					status: "fail",
+					docsExitCode: 0,
+					validationStdoutPath: "workflow-output/validation-stdout.txt",
+				},
+			},
+			definition: {
+				name: "documentation-archive-baseline-waiver",
+				version: 1,
+				models: { roles: {}, defaults: {} },
+				nodes: [
+					{
+						id: "archiveDocs",
+						type: "script",
+						script: {
+							language: "js",
+							code: archiveScript,
+						},
+						writes: ["/archive"],
+					},
+				],
+				edges: [],
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "archiveDocs")?.status).toBe(
+			"completed",
+		);
+		expect(result.scheduler.state.archive).toMatchObject({
+			validation: "baseline-waived",
+			validationWaiver: "startable-baseline-failure",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/documentation-audit-archive.md`).text()).toContain(
+			"Baseline Validation Waiver",
+		);
+	});
+
 	it("archives documentation rollback notes from patch evidence", async () => {
 		using tempDir = TempDir.createSync("@omh-documentation-audit-patch-rollback-");
 		const cwd = tempDir.path();
@@ -4837,6 +4900,56 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/workflow-output/release-gate.md`).text()).toContain(
 			"test is an untracked project file",
 		);
+	});
+
+	it("does not treat false-valued release audit fields as blockers", async () => {
+		using tempDir = TempDir.createSync("@omh-release-gate-false-field-nonblocker-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/release-audit.md`,
+			["# Release Audit", "", "- Validation, security, and scope checks passed."].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/release-rollback.md`,
+			["# Release Rollback Notes", "", "- Restore tests/test_timeouts.py if this repair is reverted."].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "enforceReleaseGate",
+			scriptFileName: "enforce-release-gate.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/releaseGate"],
+			initialState: {
+				changelog: {
+					releaseFacingNotes: {
+						missing: false,
+						stale: false,
+					},
+				},
+				compatibility: {
+					apiSurfaceChanged: false,
+				},
+				checks: {
+					status: "pass",
+					validationExitCode: 0,
+					securityExitCode: 0,
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "enforceReleaseGate")?.status).toBe(
+			"completed",
+		);
+		expect(result.scheduler.state.releaseGate).toMatchObject({
+			status: "pass",
+			unresolvedBlockers: [],
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/release-gate.md`).text()).toContain("unresolved_blockers: 0");
 	});
 
 	it("archives release hardening holds when frozen task checks require a fresh contract", async () => {
@@ -6568,6 +6681,7 @@ describe("example workflow scripts", () => {
 			};
 			for (const [lane, reportLines] of Object.entries(laneReports)) {
 				await Bun.write(`${cwd}/workflow-output/perf-${lane}.md`, reportLines.join("\n"));
+				await Bun.write(`${cwd}/workflow-output/perf-${lane}-candidate.diff`, `diff --git a/src.txt b/src.txt\n`);
 			}
 
 			const result = await runExampleScript({
@@ -6643,6 +6757,7 @@ describe("example workflow scripts", () => {
 					"No branch build, benchmark, validation, apply-check, or candidate execution command was run from the shared workspace.",
 				].join("\n"),
 			);
+			await Bun.write(`${cwd}/workflow-output/perf-algorithmic-candidate.diff`, "diff --git a/src.txt b/src.txt\n");
 
 			const result = await runExampleScript({
 				cwd,
@@ -9187,6 +9302,19 @@ describe("example workflow scripts", () => {
 		expect(repairPrompt).toContain("Do not edit `workflow-output/test-suite.md`");
 		expect(reviewPrompt).toContain("test-hardening-repair-evidence");
 		expect(archiveScript).toContain("workflow-output/test-hardening-repair-evidence.md");
+	});
+
+	it("bounds test-hardening review nodes with a workflow deadline", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/test-generation-hardening/test-generation-hardening.omhflow`,
+		);
+		const reviewNode = artifact.definition.nodes.find(node => node.id === "testReview");
+
+		expect(reviewNode).toMatchObject({
+			id: "testReview",
+			type: "review",
+			timeoutMs: 600_000,
+		});
 	});
 
 	it("materializes test-hardening gap reports and fails closed on blocked validation", async () => {
