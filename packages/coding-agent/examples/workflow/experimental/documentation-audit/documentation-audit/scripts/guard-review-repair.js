@@ -123,12 +123,19 @@ function patchChangedFiles(value) {
 }
 
 function selectedAuditProjectTargets(value) {
-	const repair = value.selectedSmallestCoherentRepair;
+	const repairCandidates = [
+		value.selectedSmallestCoherentRepair,
+		value.selected_smallest_coherent_repair,
+		value.selectedRepair,
+		value.selected_repair,
+	];
 	const targets = [
-		...stringArrayField(repair, "changedFileTargets"),
-		...stringArrayField(repair, "changed_file_targets"),
 		...stringArrayField(value, "changedFileTargets"),
 		...stringArrayField(value, "changed_file_targets"),
+		...repairCandidates.flatMap(repair => [
+			...stringArrayField(repair, "changedFileTargets"),
+			...stringArrayField(repair, "changed_file_targets"),
+		]),
 	];
 	return uniqueProjectPaths(targets.map(normalizeProjectPath).filter(isProjectChangedFile));
 }

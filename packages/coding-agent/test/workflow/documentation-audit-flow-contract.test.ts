@@ -39,6 +39,9 @@ interface WorkflowContext {
 			resolved_review_feedback?: string[];
 		};
 		audit?: {
+			selectedRepair?: {
+				changedFileTargets?: string[];
+			};
 			selectedSmallestCoherentRepair?: {
 				changedFileTargets?: string[];
 			};
@@ -68,6 +71,32 @@ afterEach(async () => {
 });
 
 describe("documentation-audit flow contract", () => {
+	it("fails closed when selectedRepair targets are not covered by the docs patch", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });
+		await Bun.write(path.join(cwd, "docs/a.md"), "old a\n");
+		await Bun.write(path.join(cwd, "docs/b.md"), "old b\n");
+		await runCommand(["git", "add", "docs/a.md", "docs/b.md"], cwd);
+		await runCommand(["git", "commit", "-m", "baseline"], cwd);
+		await Bun.write(path.join(cwd, "docs/a.md"), "new a\n");
+
+		await expect(
+			runScriptFile(cwd, "guard-review-repair.js", {
+				audit: {
+					selectedRepair: {
+						changedFileTargets: ["docs/a.md", "docs/b.md"],
+					},
+				},
+				patch: {
+					changed_files: ["docs/a.md"],
+					rollback_notes: ["Restore docs/a.md."],
+					resolved_review_feedback: [],
+				},
+				review: "No previous documentation review yet.",
+			}),
+		).rejects.toThrow(/documentation patch did not cover selected audit targets.*docs\/b\.md/iu);
+	});
+
 	it("fails closed when a docs patch omits selected audit targets", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });

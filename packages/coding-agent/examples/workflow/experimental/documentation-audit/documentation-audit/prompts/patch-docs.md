@@ -25,10 +25,12 @@ audit and task scope. Keep the project reviewable. Do not change the
 task-declared validation command. Write rollback notes if the change is not
 obvious from the diff.
 
-If the consolidated audit declares selected changed-file targets, cover every
-selected project target in `changed_files` during this patch pass, or return
-`"status": "blocked"` with the concrete blocker. Do not silently patch only the
-first selected finding when the audit selected a coherent multi-file repair.
+If the consolidated audit declares selected changed-file targets under
+`selectedRepair`, `selectedSmallestCoherentRepair`, or top-level
+`changedFileTargets`, cover every selected project target in `changed_files`
+during this patch pass, or return `"status": "blocked"` with the concrete
+blocker. Do not silently patch only the first selected finding when the audit
+selected a coherent multi-file repair.
 
 If prior review feedback contains a `continue` decision or asks for a concrete
 repair, treat that feedback as the highest-priority patch input. Do not rerun
