@@ -3932,6 +3932,50 @@ describe("example workflow scripts", () => {
 		);
 	});
 
+	it("accepts documentation audit selected target objects as patch coverage requirements", async () => {
+		using tempDir = TempDir.createSync("@omh-documentation-selected-target-objects-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await Bun.write(`${cwd}/docs/api.md`, "status helpers\n");
+		await runGit(cwd, ["add", "docs/api.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/docs/api.md`, "status helpers\ncodes helpers\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardReviewRepair",
+			scriptFileName: "guard-review-repair.js",
+			scriptDir: DOCUMENTATION_AUDIT_SCRIPT_DIR,
+			writes: ["/reviewRepair"],
+			initialState: {
+				patch: {
+					status: "patched",
+					changed_files: ["docs/api.md"],
+				},
+				audit: {
+					selectedTargets: [
+						{
+							file: "docs/api.md",
+							patchRationale: "Expose tested status-code helper behavior.",
+						},
+					],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.reviewRepair).toMatchObject({
+			status: "pass",
+			selectedAuditTargets: ["docs/api.md"],
+			selectedAuditTargetsCovered: true,
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/documentation-review-repair.md`).text()).toContain("- docs/api.md");
+	});
+
 	it("initializes documentation patch state before reviewer binding", async () => {
 		using tempDir = TempDir.createSync("@omh-documentation-audit-patch-state-");
 		const cwd = tempDir.path();
@@ -5695,6 +5739,56 @@ describe("example workflow scripts", () => {
 			source_node: "mapDependencies",
 			summary: expect.stringContaining("renderer imports legacyCanvas"),
 		});
+	});
+
+	it("keeps refactor migration task field boundaries out of command values", async () => {
+		using tempDir = TempDir.createSync("@omh-refactor-precheck-inline-field-boundary-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Validate command parsing when metadata fields use inline values.",
+				"",
+				"Validation Command:",
+				"PYTHONPATH=src python -c \"print('validation')\"",
+				"",
+				"Compatibility Command:",
+				"PYTHONPATH=src python -c \"print('compatibility')\"",
+				"",
+				"Lane Ownership: not applicable",
+				"Scope Fence:",
+				"Allowed paths: src.txt, workflow-output/**, task.md.",
+			].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "precheckTaskContract",
+			scriptFileName: "precheck-task-contract.js",
+			scriptDir: REFACTOR_MIGRATION_SCRIPT_DIR,
+			writes: ["/task", "/runtime", "/review", "/validation"],
+		});
+
+		expect(result.scheduler.activations.find(item => item.nodeId === "precheckTaskContract")?.status).toBe(
+			"completed",
+		);
+		expect(result.scheduler.state.task).toMatchObject({
+			validationCommand: "PYTHONPATH=src python -c \"print('validation')\"",
+			compatibilityCommand: "PYTHONPATH=src python -c \"print('compatibility')\"",
+		});
+		const precheck = await Bun.file(`${cwd}/workflow-output/refactor-migration-precheck.md`).text();
+		expect(precheck).not.toContain("Lane Ownership: not applicable");
+		expect(precheck).toContain("PYTHONPATH=src python -c \"print('compatibility')\"");
 	});
 
 	it("materializes research claims before evidence guards", async () => {

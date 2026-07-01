@@ -130,21 +130,35 @@ function selectedAuditProjectTargets(value) {
 		value.selected_repair,
 	];
 	const targets = [
-		...stringArrayField(value, "changedFileTargets"),
-		...stringArrayField(value, "changed_file_targets"),
+		...pathArrayField(value, "changedFileTargets"),
+		...pathArrayField(value, "changed_file_targets"),
+		...pathArrayField(value, "selectedTargets"),
+		...pathArrayField(value, "selected_targets"),
 		...repairCandidates.flatMap(repair => [
-			...stringArrayField(repair, "changedFileTargets"),
-			...stringArrayField(repair, "changed_file_targets"),
+			...pathArrayField(repair, "changedFileTargets"),
+			...pathArrayField(repair, "changed_file_targets"),
+			...pathArrayField(repair, "selectedTargets"),
+			...pathArrayField(repair, "selected_targets"),
 		]),
 	];
 	return uniqueProjectPaths(targets.map(normalizeProjectPath).filter(isProjectChangedFile));
 }
 
-function stringArrayField(value, key) {
+function pathArrayField(value, key) {
 	if (!value || typeof value !== "object") return [];
 	const field = value[key];
 	if (!Array.isArray(field)) return [];
-	return field.filter(item => typeof item === "string");
+	return field.map(pathFromTargetEntry).filter(Boolean);
+}
+
+function pathFromTargetEntry(item) {
+	if (typeof item === "string") return item;
+	if (!item || typeof item !== "object") return "";
+	for (const key of ["file", "path", "target"]) {
+		const value = item[key];
+		if (typeof value === "string") return value;
+	}
+	return "";
 }
 
 function uniqueProjectPaths(paths) {

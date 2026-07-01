@@ -165,7 +165,7 @@ function followingSingleLineCommand(lines, startIndex, label) {
 }
 
 function isTaskSectionHeading(line) {
-	return line.startsWith("#") || /^[A-Z][A-Za-z /-]{0,80}:\s*$/u.test(line);
+	return line.startsWith("#") || /^[A-Za-z][A-Za-z0-9 /()_-]{0,80}:\s*(?:\S.*)?$/u.test(line);
 }
 
 function runtimeFromTaskContract() {
