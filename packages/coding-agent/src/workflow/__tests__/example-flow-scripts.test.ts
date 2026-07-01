@@ -174,6 +174,51 @@ describe("example workflow scripts", () => {
 		expect(reconciliation).toContain("isolateCause");
 	});
 
+	it("fails bug triage closed when reproduction passes but no-code is not authorized", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-passing-repro-without-no-code-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Investigate a reported behavior that must have a failing reproduction before patching.",
+			"",
+			"Reproduction Command:",
+			"python -c \"print('current behavior passes')\"",
+			"",
+			"Validation Command:",
+			"python -c \"print('validated')\"",
+		].join("\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "classifyResolutionRoute",
+			scriptFileName: "classify-resolution-route.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/resolution", "/patch"],
+			initialState: {
+				task: {
+					taskText,
+					reproductionCommand: "python -c \"print('current behavior passes')\"",
+					validationCommand: "python -c \"print('validated')\"",
+				},
+				repro: {
+					exitCode: 0,
+					outputPath: "workflow-output/reproduction.md",
+				},
+				cause: {
+					narrowest_fix_boundary: "router edge handling",
+				},
+			},
+		});
+
+		expect(
+			result.scheduler.activations.find(activation => activation.nodeId === "classifyResolutionRoute")?.status,
+		).toBe("failed");
+		expect(result.scheduler.state.resolution).toBeUndefined();
+		expect(result.scheduler.state.patch).toBeUndefined();
+	});
+
 	it("routes explicit bug triage no-code cause evidence away from patching", async () => {
 		using tempDir = TempDir.createSync("@omh-bug-triage-no-code-cause-route-");
 		const cwd = tempDir.path();

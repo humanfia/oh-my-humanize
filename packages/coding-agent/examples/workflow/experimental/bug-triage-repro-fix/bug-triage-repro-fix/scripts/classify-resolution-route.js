@@ -7,6 +7,11 @@ const reproductionExitCode = typeof repro.exitCode === "number" ? repro.exitCode
 const allowedNoCodeResolution = allowsNoCodeResolution(task);
 const noCodeCauseResolution = hasNoCodeCauseResolution(cause);
 const reproductionPassed = reproductionExitCode === 0;
+if (reproductionPassed && !allowedNoCodeResolution && !noCodeCauseResolution) {
+	throw new Error(
+		"bug triage reproduction exited successfully but the task contract does not permit no-code resolution; provide a failing reproduction command or declare `No-Code Resolution: allowed`",
+	);
+}
 const route = allowedNoCodeResolution && (reproductionPassed || noCodeCauseResolution) ? "no-code" : "patch";
 const noCodeBasis = reproductionPassed
 	? "the task-declared reproduction command exited successfully"
