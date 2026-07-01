@@ -77,9 +77,12 @@ export interface WorkflowNodeRuntimeOptions {
 }
 
 export class WorkflowNodeRuntimeError extends Error {
-	constructor(message: string) {
+	artifacts: string[] | undefined;
+
+	constructor(message: string, options: { artifacts?: string[] } = {}) {
 		super(message);
 		this.name = "WorkflowNodeRuntimeError";
+		this.artifacts = options.artifacts;
 	}
 }
 

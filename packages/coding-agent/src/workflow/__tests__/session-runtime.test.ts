@@ -660,6 +660,56 @@ edges: []
 		expect(progress).not.toContain(`local://${cwd}/.agent-output/build.md`);
 	});
 
+	it("keeps failed agent node transcripts in workflow observability", async () => {
+		using tempDir = TempDir.createSync("@omh-workflow-observability-failed-agent-");
+		const cwd = tempDir.path();
+		const outputPath = `${cwd}/.agent-output/build.md`;
+		const sessionFile = `${cwd}/.omh/sessions/build.jsonl`;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd,
+			runAgentTask: async () => {
+				await Bun.write(outputPath, "partial build transcript before abort");
+				await Bun.write(sessionFile, '{"type":"session","status":"aborted"}\n');
+				return {
+					exitCode: 1,
+					output: "aborted after operator stop",
+					error: "exit code 1",
+					agentId: "agent-build",
+					outputPath,
+					sessionFile,
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "build", type: "agent", prompt: "Build the thing." };
+		await expect(
+			host.runAgentNode({
+				node,
+				activation: workflowActivation(node.id),
+				agent: "builder",
+				prompt: node.prompt,
+			}),
+		).rejects.toThrow('workflow agent node "build" failed: exit code 1');
+
+		const mirroredOutput = "workflow-output/omh-runtime/artifacts/build_activation-1/1-build.md";
+		const mirroredSession = "workflow-output/omh-runtime/artifacts/build_activation-1/2-build.jsonl";
+		const observability = await Bun.file(`${cwd}/workflow-output/omh-runtime/observability.json`).json();
+		expect(observability.activations[0]).toMatchObject({
+			activationId: "build:activation-1",
+			nodeId: "build",
+			type: "agent",
+			status: "failed",
+			artifacts: ["agent-output://agent-build", mirroredOutput, mirroredSession],
+		});
+		expect(await Bun.file(`${cwd}/${mirroredOutput}`).text()).toBe("partial build transcript before abort");
+		expect(await Bun.file(`${cwd}/${mirroredSession}`).text()).toBe('{"type":"session","status":"aborted"}\n');
+		const progress = await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text();
+		expect(progress).toContain("Failed Activations");
+		expect(progress).toContain("agent-output://agent-build");
+		expect(progress).toContain(mirroredSession);
+	});
+
 	it("keeps runtime observability authoritative when agents write the runtime directory", async () => {
 		using tempDir = TempDir.createSync("@omh-workflow-observability-owned-");
 		const cwd = tempDir.path();

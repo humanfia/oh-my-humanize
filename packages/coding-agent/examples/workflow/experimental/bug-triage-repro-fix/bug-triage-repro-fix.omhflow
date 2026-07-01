@@ -30,6 +30,7 @@ stateSchema:
     resolution: object
     /resolution/route: string
     patch: object
+    /patch/mode: string
     regression: object
     review: string
     runtime: object
@@ -50,6 +51,8 @@ resources:
   - path: prompts/isolate-cause.md
     kind: prompt
   - path: prompts/patch-fix.md
+    kind: prompt
+  - path: prompts/no-code-evidence-repair.md
     kind: prompt
   - path: prompts/fix-review.md
     kind: prompt
@@ -156,6 +159,31 @@ nodes:
               activation: latest-completed
     writes:
       - /patch
+  - id: noCodeEvidenceRepair
+    type: agent
+    agent: task
+    model:
+      role: builder
+    reads:
+      - /task
+      - /bug
+      - /repro
+      - /cause
+      - /patch
+      - /regression
+      - /review
+      - /summary
+    prompt:
+      template:
+        file: prompts/no-code-evidence-repair.md
+        bindings:
+          previousReviewSummary:
+            output:
+              node: fixReview
+              path: /summary
+              activation: latest-completed
+    writes:
+      - /patch
   - id: runRegression
     type: script
     reads:
@@ -225,11 +253,17 @@ edges:
     to: runRegression
   - from: patchFix
     to: runRegression
+  - from: noCodeEvidenceRepair
+    to: runRegression
   - from: runRegression
     to: fixReview
   - from: fixReview
+    to: noCodeEvidenceRepair
+    when: outputs.fixReview.verdict == "continue" && state.patch.mode == "no-code"
+    label: repair no-code evidence
+  - from: fixReview
     to: patchFix
-    when: outputs.fixReview.verdict == "continue"
+    when: outputs.fixReview.verdict == "continue" && state.patch.mode != "no-code"
     label: review requests another fix
   - from: fixReview
     to: archiveBugfix

@@ -116,6 +116,33 @@ describe("example workflow scripts", () => {
 		expect(patchTargets).toEqual(["initialPatchFix"]);
 	});
 
+	it("routes bug triage no-code review repairs away from patching", async () => {
+		const artifact = await loadWorkflowArtifact(
+			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix.omhflow`,
+		);
+		const reviewOutgoing = artifact.definition.edges.filter(edge => edge.from === "fixReview");
+		const targetsFor = (state: unknown, verdict: "continue" | "finish") =>
+			reviewOutgoing
+				.filter(edge =>
+					edge.condition === undefined
+						? true
+						: evaluateWorkflowCondition(edge.condition.source, {
+								state,
+								outputs: { fixReview: { verdict } },
+							}),
+				)
+				.map(edge => edge.to);
+
+		expect(targetsFor({ patch: { mode: "no-code" } }, "continue")).toEqual(["noCodeEvidenceRepair"]);
+		expect(targetsFor({ patch: { mode: "patch" } }, "continue")).toEqual(["patchFix"]);
+		expect(targetsFor({ patch: { mode: "no-code" } }, "finish")).toEqual(["archiveBugfix"]);
+
+		const repairTargets = artifact.definition.edges
+			.filter(edge => edge.from === "noCodeEvidenceRepair")
+			.map(edge => edge.to);
+		expect(repairTargets).toEqual(["runRegression"]);
+	});
+
 	it("materializes bug triage no-code evidence before validation", async () => {
 		using tempDir = TempDir.createSync("@omh-bug-triage-no-code-route-");
 		const cwd = tempDir.path();

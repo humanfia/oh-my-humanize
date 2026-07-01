@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { WorkflowNode } from "./definition";
 import type { WorkflowCheckpointWorkspaceSnapshot } from "./lifecycle";
-import type { WorkflowReviewNodeOutput } from "./node-runtime";
+import { WorkflowNodeRuntimeError, type WorkflowReviewNodeOutput } from "./node-runtime";
 import type { WorkflowActivation } from "./scheduler";
 import type { WorkflowActivationOutput, WorkflowActivationRetryHistoryEntry } from "./state";
 
@@ -184,7 +184,7 @@ function workflowObservabilityFailedActivation(
 		status: "failed",
 		summary: message,
 		error: message,
-		artifacts: [],
+		artifacts: workflowObservabilityErrorArtifacts(error),
 	};
 }
 
@@ -193,6 +193,11 @@ function workflowObservabilityErrorMessage(error: unknown): string {
 	if (typeof error === "string" && error.trim().length > 0) return error.trim();
 	if (error !== undefined && error !== null) return String(error);
 	return "workflow activation failed";
+}
+
+function workflowObservabilityErrorArtifacts(error: unknown): string[] {
+	if (!(error instanceof WorkflowNodeRuntimeError)) return [];
+	return error.artifacts?.map(artifact => artifact) ?? [];
 }
 
 function workflowObservabilityRetryHistory(

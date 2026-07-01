@@ -782,7 +782,9 @@ function isObjectSummaryOnly(value: Record<string, unknown>): boolean {
 function activationOutputFromTaskResult(nodeId: string, result: WorkflowAgentTaskResult): WorkflowActivationOutput {
 	if (result.exitCode !== 0) {
 		const reason = result.error || result.stderr || `exit code ${result.exitCode}`;
-		throw new WorkflowNodeRuntimeError(`workflow agent node "${nodeId}" failed: ${reason}`);
+		throw new WorkflowNodeRuntimeError(`workflow agent node "${nodeId}" failed: ${reason}`, {
+			artifacts: taskResultArtifactReferences(result),
+		});
 	}
 	const artifacts = taskResultArtifactReferences(result);
 	if (result.data !== undefined) {
@@ -928,7 +930,9 @@ function reviewOutputFromTaskResult(
 		const recovered = recoverReviewOutputFromSchemaViolation(nodeId, result, gates, fallbackVerdict);
 		if (recovered !== undefined) return recovered;
 		const reason = result.error || result.stderr || `exit code ${result.exitCode}`;
-		throw new WorkflowNodeRuntimeError(`workflow review node "${nodeId}" failed: ${reason}`);
+		throw new WorkflowNodeRuntimeError(`workflow review node "${nodeId}" failed: ${reason}`, {
+			artifacts: taskResultArtifactReferences(result),
+		});
 	}
 	const parsed = parseReviewTaskOutput(nodeId, result.output, gates, fallbackVerdict);
 	const boundedSummary = boundWorkflowSummary(parsed.summary, parsed.verdict);
