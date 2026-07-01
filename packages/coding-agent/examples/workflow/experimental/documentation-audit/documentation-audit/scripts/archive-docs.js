@@ -22,10 +22,23 @@ if (priorReviewFeedback.length > 0 && resolvedReviewFeedback.length === 0) {
 
 const archivePath = "workflow-output/documentation-audit-archive.md";
 const taskText = await readOptionalText("task.md");
+const consolidatedAuditText = await consolidatedAuditEvidenceText();
+const patchEvidence = await patchEvidenceText();
+const reviewerVerdictText = await finalReviewerVerdictText();
 const validationText = await readOptionalText("workflow-output/documentation-validation.md");
+const reviewRepairText = await reviewRepairEvidenceText();
 const rollbackText = await rollbackEvidenceText();
 const changedFiles = projectChangedFilesFromPatch(patch);
 
+if (!consolidatedAuditText.trim()) {
+	throw new Error("cannot archive documentation audit flow without consolidated audit findings evidence");
+}
+if (changedFiles.length > 0 && !patchEvidence.trim()) {
+	throw new Error(`cannot archive documentation audit with changed files but no patch rationale evidence: ${changedFiles.join(", ")}`);
+}
+if (!reviewerVerdictText.trim()) {
+	throw new Error("cannot archive documentation audit flow without final reviewer verdict evidence");
+}
 if (changedFiles.length > 0 && !rollbackText.trim()) {
 	throw new Error(
 		`cannot archive documentation audit with changed files but no rollback evidence: ${changedFiles.join(", ")}`,
@@ -45,6 +58,18 @@ await Bun.write(
 		"",
 		boundedLines(validationText, 160),
 		"",
+		"## Consolidated Audit Findings",
+		"",
+		boundedLines(consolidatedAuditText, 180),
+		"",
+		"## Patch Rationale",
+		"",
+		patchEvidence.trim() ? boundedLines(patchEvidence, 180) : "No project documentation patch was retained.",
+		"",
+		"## Reviewer Verdict",
+		"",
+		boundedLines(reviewerVerdictText, 120),
+		"",
 		...(validationWaiver.status === "accepted"
 			? [
 					"## Baseline Validation Waiver",
@@ -63,9 +88,7 @@ await Bun.write(
 		"",
 		"## Review Repair Evidence",
 		"",
-		resolvedReviewFeedback.length > 0
-			? resolvedReviewFeedback.map(item => `- ${item}`).join("\n")
-			: "No prior continue review required explicit repair evidence.",
+		reviewRepairText,
 		"",
 	].join("\n"),
 );
@@ -84,6 +107,9 @@ return {
 					: {}),
 				resolvedReviewFeedback,
 				rollbackEvidence: rollbackText.trim() ? "present" : "not-required",
+				consolidatedAuditEvidence: "present",
+				patchEvidence: patchEvidence.trim() ? "present" : "not-required",
+				reviewerVerdictEvidence: "present",
 			},
 		},
 	],
@@ -207,6 +233,63 @@ async function readOptionalText(filePath) {
 	} catch {
 		return "";
 	}
+}
+
+async function consolidatedAuditEvidenceText() {
+	return await firstEvidenceText([
+		"workflow-output/documentation-audit-digest.md",
+		"workflow-output/omh-runtime/artifacts/*/1-consolidateAudit.md",
+	]);
+}
+
+async function patchEvidenceText() {
+	return await firstEvidenceText([
+		"workflow-output/documentation-patch.md",
+		"workflow-output/omh-runtime/artifacts/*/1-patchDocs.md",
+	]);
+}
+
+async function finalReviewerVerdictText() {
+	const artifactText = await firstEvidenceText(["workflow-output/omh-runtime/artifacts/*/1-consistencyReview.md"]);
+	const activationText = finalReviewerVerdictFromActivations();
+	return [artifactText, activationText].filter(Boolean).join("\n\n");
+}
+
+async function reviewRepairEvidenceText() {
+	const guardText = (await readOptionalText("workflow-output/documentation-review-repair.md")).trim();
+	const feedbackText =
+		resolvedReviewFeedback.length > 0
+			? resolvedReviewFeedback.map(item => `- ${item}`).join("\n")
+			: "No prior continue review required explicit repair evidence.";
+	return [guardText, feedbackText].filter(Boolean).join("\n\n");
+}
+
+async function firstEvidenceText(patterns) {
+	for (const pattern of patterns) {
+		const text = pattern.includes("*") ? await firstGlobText(pattern) : await readOptionalText(pattern);
+		if (text.trim()) return text;
+	}
+	return "";
+}
+
+async function firstGlobText(pattern) {
+	const glob = new Bun.Glob(pattern);
+	for await (const filePath of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
+		const text = await readOptionalText(filePath);
+		if (text.trim()) return text;
+	}
+	return "";
+}
+
+function finalReviewerVerdictFromActivations() {
+	const activations = Array.isArray(workflowContext.completedActivations) ? workflowContext.completedActivations : [];
+	const finalReview = activations
+		.filter(activation => activation?.nodeId === "consistencyReview" && activation.status === "completed")
+		.filter(activation => verdictFromOutput(activation.output) === "finish")
+		.at(-1);
+	if (!finalReview) return "";
+	const summary = summaryFromOutput(finalReview.output);
+	return ["verdict finish", summary].filter(Boolean).join("\n");
 }
 
 async function rollbackEvidenceText() {

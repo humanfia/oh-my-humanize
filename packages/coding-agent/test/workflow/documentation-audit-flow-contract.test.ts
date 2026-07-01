@@ -159,6 +159,8 @@ describe("documentation-audit flow contract", () => {
 	it("archives accepted docs repairs when task validation has the same startable baseline failure", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-8"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-12"), { recursive: true });
 		await Bun.write(
 			path.join(cwd, "task.md"),
 			[
@@ -167,6 +169,25 @@ describe("documentation-audit flow contract", () => {
 				"Docs Command: python -m py_compile src/flask/app.py",
 				"",
 			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-8/1-consolidateAudit.md"),
+			"Consolidated finding: docs/config.rst needs a copyable example repair.\n",
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/documentation-patch.md"),
+			[
+				"# Documentation Patch Evidence",
+				"",
+				"## Patch rationale",
+				"",
+				"- docs/config.rst: added the missing copyable example.",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-12/1-consistencyReview.md"),
+			"verdict finish\nThe docs repair addresses the copyable example feedback.\n",
 		);
 		await Bun.write(
 			path.join(cwd, "workflow-output/documentation-validation-startup.md"),
@@ -213,6 +234,103 @@ describe("documentation-audit flow contract", () => {
 		});
 		expect(archive).toContain("Baseline Validation Waiver");
 		expect(archive).toContain("ImportError: cannot import name 'notset'");
+	});
+
+	it("archives consolidated findings, patch rationale, and final reviewer verdict", async () => {
+		const cwd = await createTempDir();
+		await fs.mkdir(path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-8"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-9"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-12"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"Objective: archive documentation audit evidence.",
+				"Validation Command: python -m pytest tests/test_docs.py",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-8/1-consolidateAudit.md"),
+			[
+				"# Consolidated Documentation Audit",
+				"",
+				"selectedRepair.projectTargets: docs/a.md, docs/b.md",
+				"Finding: docs/a.md and docs/b.md drift from tested CLI help.",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/documentation-patch.md"),
+			[
+				"# Documentation Patch Evidence",
+				"",
+				"## Patch rationale",
+				"",
+				"- docs/a.md: refreshed copyable command output.",
+				"- docs/b.md: added missing required argument section.",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/omh-runtime/artifacts/activation-12/1-consistencyReview.md"),
+			["verdict finish", "The docs diff covers every selected target and validation passed.", ""].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/documentation-review-repair.md"),
+			[
+				"# Documentation Review Repair Guard",
+				"",
+				"## Selected Audit Target Coverage",
+				"",
+				"- docs/a.md",
+				"- docs/b.md",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/documentation-validation.md"),
+			validationEvidence("python -m pytest tests/test_docs.py", 0, "2 passed"),
+		);
+		await Bun.write(path.join(cwd, "workflow-output/documentation-rollback.md"), "Revert docs/a.md and docs/b.md.");
+
+		const result = await runScriptFile(
+			cwd,
+			"archive-docs.js",
+			{
+				validation: {
+					status: "pass",
+					docsExitCode: 0,
+					validationExitCode: 0,
+				},
+				patch: {
+					changed_files: ["docs/a.md", "docs/b.md"],
+					rollback_notes: ["Revert docs/a.md and docs/b.md."],
+					resolved_review_feedback: [],
+				},
+				review: "finish",
+			},
+			[
+				{
+					nodeId: "consistencyReview",
+					status: "completed",
+					output: {
+						verdict: "finish",
+						summary: "finish after selected docs targets and validation passed",
+					},
+				},
+			],
+		);
+		const archive = await Bun.file(path.join(cwd, "workflow-output/documentation-audit-archive.md")).text();
+
+		expect(result.summary).toBe("archived documentation audit evidence");
+		expect(archive).toContain("## Consolidated Audit Findings");
+		expect(archive).toContain("selectedRepair.projectTargets: docs/a.md, docs/b.md");
+		expect(archive).toContain("## Patch Rationale");
+		expect(archive).toContain("docs/a.md: refreshed copyable command output");
+		expect(archive).toContain("## Reviewer Verdict");
+		expect(archive).toContain("verdict finish");
+		expect(archive).toContain("## Review Repair Evidence");
+		expect(archive).toContain("docs/b.md");
 	});
 });
 

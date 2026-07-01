@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental documentation-audit flow archiving incomplete final evidence by requiring consolidated findings, patch rationale, reviewer verdict, and review-repair evidence in the final archive.
 - Fixed the experimental performance-optimization-search flow running Python `src/` layout benchmarks without binding source roots, which could measure host site-packages instead of the task-declared benchmark target.
 - Fixed the experimental performance-optimization-search flow starting parallel branch work when the task's benchmark target path was outside its allowed project edit scope.
 - Fixed the experimental documentation-audit flow allowing a review to finish after patching only one file from a multi-target consolidated repair plan, including audits that report selected targets under `selectedRepair`.
