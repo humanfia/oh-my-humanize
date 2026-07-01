@@ -437,18 +437,25 @@ async function missingDeclaredWorkflowArtifacts() {
 function declaredWorkflowArtifacts(text) {
 	const artifacts = new Set();
 	for (const line of text.split(/\r?\n/u)) {
-		for (const match of line.matchAll(/\bworkflow-output\/perf-(?:algorithmic|caching|io|no-win)[^\s`"'<>),;]*/giu)) {
+		const fieldValue = durableArtifactFieldValue(line);
+		if (!fieldValue) continue;
+		for (const match of fieldValue.matchAll(/\bworkflow-output\/perf-(?:algorithmic|caching|io|no-win)[^\s`"'<>),;]*/giu)) {
 			const artifactPath = trimPathPunctuation(match[0] ?? "");
 			if (
 				artifactPath &&
 				!hasGlobSyntax(artifactPath) &&
-				!isNegatedArtifactReference(line, artifactPath)
+				!isNegatedArtifactReference(fieldValue, artifactPath)
 			) {
 				artifacts.add(artifactPath);
 			}
 		}
 	}
 	return [...artifacts].sort();
+}
+
+function durableArtifactFieldValue(line) {
+	const match = line.match(/^\s*(?:[-*]\s*)?(?:candidate\s+patch(?:\s+path)?|benchmark\s+log|validation\s+log)\s*:\s*(.+?)\s*$/iu);
+	return match?.[1] ?? "";
 }
 
 function isNegatedArtifactReference(line, artifactPath) {

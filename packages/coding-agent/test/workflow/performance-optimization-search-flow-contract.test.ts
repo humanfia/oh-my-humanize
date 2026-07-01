@@ -397,6 +397,19 @@ describe("performance-optimization-search flow contract", () => {
 				"",
 			].join("\n"),
 		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-io.md"),
+			[
+				"# IO branch",
+				"status: no-win blocked",
+				"final-selection: no",
+				"no-win-result: yes",
+				"Candidate patch file intentionally absent: workflow-output/perf-io-candidate.diff.",
+				"Candidate patch: no candidate patch was produced at workflow-output/perf-io-candidate.diff",
+				"Verified with `git status --short -- workflow-output/perf-io.md workflow-output/perf-io-candidate.diff`: only workflow-output/perf-io.md was listed; workflow-output/perf-io-candidate.diff was absent.",
+				"",
+			].join("\n"),
+		);
 
 		const result = await runScriptFile(cwd, "run-benchmark-validation.js", {
 			task: {
