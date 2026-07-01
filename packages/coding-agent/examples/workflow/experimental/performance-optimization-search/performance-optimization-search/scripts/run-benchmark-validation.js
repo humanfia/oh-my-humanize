@@ -8,6 +8,7 @@ if (typeof benchmarkCommand !== "string" || benchmarkCommand.trim() === "") {
 if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 	throw new Error("performance-optimization-search requires /task.validationCommand before benchmarkCandidates");
 }
+const sourceRoots = benchmarkSourceRoots(task);
 
 await materializeBranchStateReports(workflowContext.state);
 
@@ -204,14 +205,22 @@ if (missingDeclaredArtifacts.length > 0) {
 	};
 }
 
-const benchmark = await runShell(benchmarkCommand);
-const validation = await runShell(validationCommand);
+const benchmark = await runShell(benchmarkCommand, sourceRoots);
+const validation = await runShell(validationCommand, sourceRoots);
 const benchmarkFailureDiagnostic = benchmarkCommandFailureDiagnostic(benchmark);
 const validationFailureDiagnostic = commandFailureDiagnostic(validation);
 const outputPath = "workflow-output/performance-benchmark.md";
 await Bun.write(
 	outputPath,
-	evidenceMarkdown(benchmarkCommand, benchmark, benchmarkFailureDiagnostic, validationCommand, validation, validationFailureDiagnostic),
+	evidenceMarkdown(
+		benchmarkCommand,
+		validationCommand,
+		sourceRoots,
+		benchmark,
+		benchmarkFailureDiagnostic,
+		validation,
+		validationFailureDiagnostic,
+	),
 );
 const benchmarkPassed = benchmark.exitCode === 0 && !benchmarkFailureDiagnostic;
 const validationPassed = validation.exitCode === 0 && !validationFailureDiagnostic;
@@ -225,6 +234,7 @@ return {
 			path: "/benchmark",
 			value: {
 				benchmarkCommand,
+				benchmarkSourceRoots: sourceRoots,
 				benchmarkExitCode: benchmark.exitCode,
 				benchmarkFailureDiagnostic,
 				validationCommand,
@@ -715,9 +725,10 @@ async function pathHasChildren(path) {
 	return false;
 }
 
-async function runShell(command) {
+async function runShell(command, sourceRoots = []) {
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: process.cwd(),
+		env: sourceRootEnv(sourceRoots),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -733,11 +744,49 @@ async function runShell(command) {
 	};
 }
 
+function benchmarkSourceRoots(task) {
+	const roots = Array.isArray(task?.benchmarkSourceRoots)
+		? task.benchmarkSourceRoots.filter(root => typeof root === "string" && root.trim() !== "")
+		: [];
+	return [...new Set(roots.map(normalizeProjectPathPattern).filter(root => root && !root.includes("*")))];
+}
+
+function sourceRootEnv(sourceRoots) {
+	const env = { ...process.env };
+	const absoluteRoots = sourceRoots.map(root => normalizeProjectRoot(root)).filter(Boolean);
+	if (absoluteRoots.length === 0) return env;
+	const separator = pathSeparator();
+	const current = typeof process.env.PYTHONPATH === "string" && process.env.PYTHONPATH !== "" ? process.env.PYTHONPATH : "";
+	env.PYTHONPATH = [...absoluteRoots, current].filter(Boolean).join(separator);
+	return env;
+}
+
+function pathSeparator() {
+	return process.platform === "win32" ? ";" : ":";
+}
+
+function normalizeProjectRoot(root) {
+	const normalized = normalizeProjectPathPattern(root);
+	if (!normalized || normalized.includes("*")) return "";
+	return `${process.cwd().replace(/\/+$/u, "")}/${normalized}`;
+}
+
+function normalizeProjectPathPattern(value) {
+	return String(value)
+		.replace(/^`|`$/gu, "")
+		.replace(/[.;]\s*$/u, "")
+		.replace(/\\/gu, "/")
+		.replace(/^\.\/+/u, "")
+		.replace(/\/{2,}/gu, "/")
+		.trim();
+}
+
 function evidenceMarkdown(
 	benchmarkCommand,
+	validationCommand,
+	sourceRoots,
 	benchmark,
 	benchmarkFailureDiagnostic,
-	validationCommand,
 	validation,
 	validationFailureDiagnostic,
 ) {
@@ -749,6 +798,10 @@ function evidenceMarkdown(
 		"```sh",
 		benchmarkCommand,
 		"```",
+		"",
+		"## Source Root Environment",
+		"",
+		sourceRootEnvironmentMarkdown(sourceRoots),
 		"",
 		`Exit code: ${benchmark.exitCode}`,
 		"",
@@ -778,6 +831,14 @@ function evidenceMarkdown(
 		lines.push("### Validation Fatal Command Diagnostic", "", validationFailureDiagnostic, "");
 	}
 	return lines.join("\n");
+}
+
+function sourceRootEnvironmentMarkdown(sourceRoots) {
+	if (sourceRoots.length === 0) return "- none";
+	return [
+		...sourceRoots.map(root => `- source root: ${root}`),
+		`- PYTHONPATH prefix: ${sourceRoots.map(root => normalizeProjectRoot(root)).filter(Boolean).join(pathSeparator())}`,
+	].join("\n");
 }
 
 function commandFailureDiagnostic(result) {

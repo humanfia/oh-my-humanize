@@ -61,6 +61,10 @@ Return `finish` only when:
   identifies the declared benchmark target path it changed, instrumented, or
   directly probed. A wrapper, shim, or import-location edit is not sufficient
   unless the evidence shows the declared target path itself is covered;
+- when `task.benchmarkSourceRoots` is non-empty, retained positive benchmark
+  evidence comes from a source-root-bound environment. Default-environment
+  measurements that imported host site-packages, globally installed packages, or
+  any source outside the task checkout are not acceptable positive evidence;
 - any unselected branch that reported a positive benchmark-like result records
   `benchmark-relevance: no`, `off-benchmark: yes`, or equivalent explicit
   rejection evidence explaining why the result is outside the task benchmark or

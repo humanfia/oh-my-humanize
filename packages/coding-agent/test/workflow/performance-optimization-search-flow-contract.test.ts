@@ -17,6 +17,7 @@ interface WorkflowContext {
 			validationCommand?: string;
 			allowedProjectPaths?: string[];
 			benchmarkTargetPaths?: string[];
+			benchmarkSourceRoots?: string[];
 		};
 		runtime?: {
 			sharedProjectFilesBeforeBranches?: string[];
@@ -62,6 +63,7 @@ interface ScriptResult {
 			missingDeclaredArtifacts?: string[];
 			allowedProjectPaths?: string[];
 			benchmarkTargetPaths?: string[];
+			benchmarkSourceRoots?: string[];
 		};
 	}>;
 }
@@ -142,6 +144,49 @@ describe("performance-optimization-search flow contract", () => {
 		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-precheck.md")).text();
 		expect(evidence).toContain("## Benchmark Target Paths");
 		expect(evidence).not.toContain("Benchmark Target Path Violation");
+	});
+
+	it("runs benchmark commands with inferred source roots for src target paths", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "src/localpkg"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "src/localpkg/__init__.py"), "VALUE = 'local-src'\n");
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"# Performance task",
+				"",
+				"Benchmark Command: python -c \"import localpkg; print(localpkg.VALUE, '3 loops 1 usec')\"",
+				"Baseline Command: python -c \"import localpkg; print(localpkg.VALUE, '3 loops 1 usec')\"",
+				"Validation Command: python -c \"import localpkg; print('validation', localpkg.VALUE)\"",
+				`Scratch Directory: ${path.join(cwd, "scratch")}`,
+				"Allowed paths:",
+				"- src/localpkg/__init__.py",
+				"- workflow-output/**",
+				"- task.md",
+				"Benchmark Target Paths:",
+				"- src/localpkg/__init__.py",
+				"",
+			].join("\n"),
+		);
+
+		const precheck = await runScriptFile(cwd, "precheck-task-contract.js", {});
+		const task = precheck.statePatch?.find(patch => patch.path === "/task")?.value;
+		if (!task) throw new Error("precheck did not return a task patch");
+
+		expect(task).toMatchObject({
+			benchmarkTargetPaths: ["src/localpkg/__init__.py"],
+			benchmarkSourceRoots: ["src"],
+		});
+
+		const baseline = await runScriptFile(cwd, "capture-baseline.js", { task });
+
+		expect(baseline.summary).toBe("captured performance baseline; exit=0");
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-baseline.md")).text();
+		expect(evidence).toContain("## Source Root Environment");
+		expect(evidence).toContain("PYTHONPATH");
+		expect(evidence).toContain("src");
+		expect(evidence).toContain("local-src 3 loops 1 usec");
 	});
 
 	it("requires benchmark target paths when task allowed paths restrict project files", async () => {

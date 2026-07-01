@@ -3,11 +3,12 @@ const command = task?.baselineCommand || task?.benchmarkCommand;
 if (typeof command !== "string" || command.trim() === "") {
 	throw new Error("performance-optimization-search requires /task.baselineCommand before captureBaseline");
 }
+const sourceRoots = benchmarkSourceRoots(task);
 
-const result = await runShell(command);
+const result = await runShell(command, sourceRoots);
 const outputPath = "workflow-output/performance-baseline.md";
 const failureDiagnostic = commandFailureDiagnostic(result);
-await Bun.write(outputPath, evidenceMarkdown("Baseline", command, result, failureDiagnostic));
+await Bun.write(outputPath, evidenceMarkdown("Baseline", command, sourceRoots, result, failureDiagnostic));
 
 if (result.exitCode !== 0) {
 	throw new Error(
@@ -31,6 +32,7 @@ return {
 			path: "/baseline",
 			value: {
 				command,
+				benchmarkSourceRoots: sourceRoots,
 				exitCode: result.exitCode,
 				failureDiagnostic,
 				outputPath,
@@ -92,9 +94,10 @@ function isAllowedWorkflowMetadataPath(filePath) {
 	);
 }
 
-async function runShell(command) {
+async function runShell(command, sourceRoots = []) {
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: process.cwd(),
+		env: sourceRootEnv(sourceRoots),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -110,7 +113,7 @@ async function runShell(command) {
 	};
 }
 
-function evidenceMarkdown(label, command, result, failureDiagnostic) {
+function evidenceMarkdown(label, command, sourceRoots, result, failureDiagnostic) {
 	const lines = [
 		`# Performance ${label} Evidence`,
 		"",
@@ -119,6 +122,10 @@ function evidenceMarkdown(label, command, result, failureDiagnostic) {
 		"```sh",
 		command,
 		"```",
+		"",
+		"## Source Root Environment",
+		"",
+		sourceRootEnvironmentMarkdown(sourceRoots),
 		"",
 		`Exit code: ${result.exitCode}`,
 		"",
@@ -139,6 +146,51 @@ function evidenceMarkdown(label, command, result, failureDiagnostic) {
 		lines.push("## Fatal Command Diagnostic", "", failureDiagnostic, "");
 	}
 	return lines.join("\n");
+}
+
+function benchmarkSourceRoots(task) {
+	const roots = Array.isArray(task?.benchmarkSourceRoots)
+		? task.benchmarkSourceRoots.filter(root => typeof root === "string" && root.trim() !== "")
+		: [];
+	return [...new Set(roots.map(normalizeProjectPathPattern).filter(root => root && !root.includes("*")))];
+}
+
+function sourceRootEnvironmentMarkdown(sourceRoots) {
+	if (sourceRoots.length === 0) return "- none";
+	return [
+		...sourceRoots.map(root => `- source root: ${root}`),
+		`- PYTHONPATH prefix: ${sourceRoots.map(root => normalizeProjectRoot(root)).filter(Boolean).join(pathSeparator())}`,
+	].join("\n");
+}
+
+function sourceRootEnv(sourceRoots) {
+	const env = { ...process.env };
+	const absoluteRoots = sourceRoots.map(root => normalizeProjectRoot(root)).filter(Boolean);
+	if (absoluteRoots.length === 0) return env;
+	const separator = pathSeparator();
+	const current = typeof process.env.PYTHONPATH === "string" && process.env.PYTHONPATH !== "" ? process.env.PYTHONPATH : "";
+	env.PYTHONPATH = [...absoluteRoots, current].filter(Boolean).join(separator);
+	return env;
+}
+
+function pathSeparator() {
+	return process.platform === "win32" ? ";" : ":";
+}
+
+function normalizeProjectRoot(root) {
+	const normalized = normalizeProjectPathPattern(root);
+	if (!normalized || normalized.includes("*")) return "";
+	return `${process.cwd().replace(/\/+$/u, "")}/${normalized}`;
+}
+
+function normalizeProjectPathPattern(value) {
+	return String(value)
+		.replace(/^`|`$/gu, "")
+		.replace(/[.;]\s*$/u, "")
+		.replace(/\\/gu, "/")
+		.replace(/^\.\/+/u, "")
+		.replace(/\/{2,}/gu, "/")
+		.trim();
 }
 
 function bounded(text) {

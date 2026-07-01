@@ -20,6 +20,11 @@ that a branch is blocked/no-win because the useful implementation path is
 outside the task contract. Do not plan wrapper, shim, or import-location edits
 as positive optimization work unless the benchmark target paths also cover the
 changed implementation path.
+If `task.benchmarkSourceRoots` is non-empty, the precheck, baseline, and join
+benchmark run with those roots bound into the source import environment. Do not
+count measurements from a default shell environment that imports a host
+site-packages package, globally installed package, or any source outside the
+task checkout as positive evidence for this workflow.
 
 The workflow runtime branch isolation worktree is already a lane-local
 execution surface. The task contract JSON also contains `scratchRoot`; extra

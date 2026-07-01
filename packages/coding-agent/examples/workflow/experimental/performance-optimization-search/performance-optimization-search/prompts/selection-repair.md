@@ -87,6 +87,11 @@ that the reviewer can evaluate:
   unless the repair evidence explains how the declared target path is actually
   exercised by the candidate. Revert and record a no-win/blocker if the only
   promising hot path is outside the allowed project paths;
+- when `task.benchmarkSourceRoots` is non-empty, retained positive evidence
+  must come from commands run with those source roots bound into the import
+  environment. Reject default-environment benchmark results that imported a host
+  site-packages package, globally installed package, or any source outside the
+  task checkout;
 - mark every losing, reverted, conflict-only, or unselected branch with
   `final-selection: no` and rollback evidence;
 - when a losing or unselected branch reported a positive benchmark-like result,
@@ -135,6 +140,8 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
   positive benchmark-like result;
 - when declared, the exact benchmark target path covered by the retained
   candidate, or the reason no retained candidate could cover it;
+- when declared, the benchmark source roots used by the retained measurement, or
+  why no retained candidate could produce source-root-bound evidence;
 - the branch report files you updated.
 
 Also ensure the relevant `workflow-output/perf-*.md` files contain the final

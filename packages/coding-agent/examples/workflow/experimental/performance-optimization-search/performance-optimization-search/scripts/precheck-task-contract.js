@@ -5,6 +5,7 @@ const baselineCommand = optionalCommand(taskText, "Baseline Command") || benchma
 const scratchRoot = requiredScratchRoot(taskText);
 const allowedProjectPaths = projectPathList(taskText, "Allowed paths");
 const benchmarkTargetPaths = projectPathList(taskText, "Benchmark Target Paths", "Benchmark Target Path");
+const benchmarkSourceRoots = benchmarkSourceRootsFromTask(taskText, benchmarkTargetPaths);
 const benchmarkTargetViolation = benchmarkTargetPathViolation(allowedProjectPaths, benchmarkTargetPaths);
 const sharedGitWorktrees = await currentSharedGitWorktreePaths();
 const runtime = runtimeFromTaskContract(taskText);
@@ -23,6 +24,7 @@ if (commandScratchViolations.length > 0) {
 			scratchRoot,
 			allowedProjectPaths,
 			benchmarkTargetPaths,
+			benchmarkSourceRoots,
 			sharedGitWorktrees,
 			commandScratchViolations,
 			benchmarkTargetViolation: null,
@@ -41,6 +43,7 @@ if (benchmarkTargetViolation) {
 			scratchRoot,
 			allowedProjectPaths,
 			benchmarkTargetPaths,
+			benchmarkSourceRoots,
 			sharedGitWorktrees,
 			commandScratchViolations: [],
 			benchmarkTargetViolation,
@@ -49,7 +52,7 @@ if (benchmarkTargetViolation) {
 	);
 	throw new Error(benchmarkTargetViolation.message);
 }
-const validationPreflight = await runShell(validationCommand);
+const validationPreflight = await runShell(validationCommand, benchmarkSourceRoots);
 
 await Bun.write(
 	"workflow-output/performance-precheck.md",
@@ -60,6 +63,7 @@ await Bun.write(
 		scratchRoot,
 		allowedProjectPaths,
 		benchmarkTargetPaths,
+		benchmarkSourceRoots,
 		sharedGitWorktrees,
 		commandScratchViolations: [],
 		benchmarkTargetViolation: null,
@@ -94,6 +98,7 @@ return {
 				scratchRoot,
 				allowedProjectPaths,
 				benchmarkTargetPaths,
+				benchmarkSourceRoots,
 				sharedGitWorktrees,
 				validationPreflight: {
 					exitCode: validationPreflight.exitCode,
@@ -264,6 +269,17 @@ function benchmarkTargetPathViolation(allowedProjectPaths, benchmarkTargetPaths)
 	};
 }
 
+function benchmarkSourceRootsFromTask(taskContract, benchmarkTargetPaths) {
+	const explicitSourceRoots = projectPathList(taskContract, "Benchmark Source Roots", "Benchmark Source Root");
+	if (explicitSourceRoots.length > 0) return explicitSourceRoots;
+	return [...new Set(benchmarkTargetPaths.map(inferSourceRoot).filter(Boolean))];
+}
+
+function inferSourceRoot(targetPath) {
+	if (targetPath === "src" || targetPath.startsWith("src/")) return "src";
+	return "";
+}
+
 function projectPathCovers(pattern, target) {
 	if (pattern === target) return true;
 	if (pattern.endsWith("/**")) {
@@ -307,6 +323,7 @@ function precheckMarkdown({
 	scratchRoot,
 	allowedProjectPaths,
 	benchmarkTargetPaths,
+	benchmarkSourceRoots,
 	sharedGitWorktrees,
 	commandScratchViolations,
 	benchmarkTargetViolation,
@@ -344,6 +361,10 @@ function precheckMarkdown({
 		"## Benchmark Target Paths",
 		"",
 		benchmarkTargetPaths.length > 0 ? benchmarkTargetPaths.map(value => `- ${value}`).join("\n") : "- not declared",
+		"",
+		"## Benchmark Source Roots",
+		"",
+		benchmarkSourceRoots.length > 0 ? benchmarkSourceRoots.map(value => `- ${value}`).join("\n") : "- not declared",
 		"",
 		"## Shared Git Worktrees At Start",
 		"",
@@ -396,9 +417,10 @@ function disallowedTaskCommandScratchReference(command) {
 	return "";
 }
 
-async function runShell(command) {
+async function runShell(command, sourceRoots = []) {
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: process.cwd(),
+		env: sourceRootEnv(sourceRoots),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -408,6 +430,22 @@ async function runShell(command) {
 		proc.exited,
 	]);
 	return { stdout, stderr, exitCode };
+}
+
+function sourceRootEnv(sourceRoots) {
+	const env = { ...process.env };
+	const absoluteRoots = sourceRoots.map(root => normalizeProjectRoot(root)).filter(Boolean);
+	if (absoluteRoots.length === 0) return env;
+	const separator = process.platform === "win32" ? ";" : ":";
+	const current = typeof process.env.PYTHONPATH === "string" && process.env.PYTHONPATH !== "" ? process.env.PYTHONPATH : "";
+	env.PYTHONPATH = [...absoluteRoots, current].filter(Boolean).join(separator);
+	return env;
+}
+
+function normalizeProjectRoot(root) {
+	const normalized = normalizeProjectPathPattern(root);
+	if (!normalized || normalized.includes("*")) return "";
+	return `${process.cwd().replace(/\/+$/u, "")}/${normalized}`;
 }
 
 function commandEvidenceMarkdown(command, result) {
