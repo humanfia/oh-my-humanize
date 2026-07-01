@@ -38,4 +38,13 @@ a passing benchmark and validation, do not invent a new broad optimization
 search. Instead, write a compact repair plan assigning the three branches to
 retain, revert, or document no-win evidence for their existing work.
 
+If the previous performance review says `continue`, `incorrect`, or names a
+specific behavior risk, the next round is review-feedback repair, not a fresh
+open search. Extract each concrete reviewer concern into explicit acceptance
+criteria. For every named public surface, include the exact probe or test that
+would prove it is fixed. Put those criteria in the returned plan under a
+`review_feedback_constraints` field and assign branches only to repair or
+disprove those constraints. A branch may still reject the previous candidate,
+but it must explain how it addressed the reviewer concern.
+
 Do not edit project files in this node.

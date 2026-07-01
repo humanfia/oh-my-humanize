@@ -69,6 +69,13 @@ that the reviewer can evaluate:
   selected branch report or in `performance-selection-repair.md`. If you cannot
   produce such evidence, revert the candidate and record a no-win or blocker
   instead of marking `final-selection: yes`;
+- when previous reviewer feedback requested `continue`, a retained positive
+  candidate must also record `review-feedback-addressed: yes` plus
+  `review feedback evidence: ...` in the selected branch report or
+  `performance-selection-repair.md`. The evidence must name the reviewer
+  concern and the exact probe, command, or test that exercises that public
+  surface. If you cannot prove the feedback was addressed, revert or reject the
+  candidate instead of retaining it;
 - a positive retained candidate must also prove that the task-declared
   Benchmark Command covers the retained optimization. Record
   `benchmark-relevance: yes` in the selected branch report, with a short
@@ -115,6 +122,8 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 - exact rollback/no-change evidence;
 - exact semantic probe evidence for the retained candidate, or why no candidate
   could be safely retained;
+- exact previous-review feedback evidence for the retained candidate, or why no
+  retained candidate remains;
 - exact benchmark relevance evidence for the retained candidate, and explicit
   off-benchmark rejection evidence for any unselected branch that reported a
   positive benchmark-like result;
@@ -126,6 +135,10 @@ positive benchmark-like losing branches, the downstream guard expects the losing
 branch report itself to contain either `off-benchmark: yes`,
 `benchmark-relevance: no`, or `benchmark-covered rejection: yes`; natural
 language only in `performance-selection-repair.md` is not enough.
+When previous reviewer feedback is `continue`, the downstream guard also
+expects the retained selected branch evidence to contain
+`review-feedback-addressed: yes` and `review feedback evidence: ...`; natural
+language that repeats the review is not enough.
 
 Do not write terminal workflow artifacts. The script nodes own final selection
 and archive evidence. In particular, do not write

@@ -87,6 +87,12 @@ a no-win result lacks explicit task authorization, or the optimization is
 speculative. Exception: a no-win result with no retained project changes,
 explicit no-win authorization, rollback/no-change evidence, and preserved
 validation-blocked evidence should `finish` instead of looping.
+When returning `continue`, name each concrete acceptance criterion for the next
+round. If a specific public surface is at risk, include the exact probe or test
+shape that would demonstrate resolution. The next planning and selection guard
+will require a retained positive candidate to record
+`review-feedback-addressed: yes` with matching evidence before returning to
+review.
 
 Write a concise review first, then put exactly one token on the final non-empty
 line: `continue` or `finish`.

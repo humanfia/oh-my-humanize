@@ -3,6 +3,7 @@ const task = state.task && typeof state.task === "object" ? state.task : {};
 const benchmark = state.benchmark && typeof state.benchmark === "object" ? state.benchmark : {};
 const selectionRepair = state.selectionRepair && typeof state.selectionRepair === "object" ? state.selectionRepair : {};
 const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
+const reviewResolutionRequired = previousReviewRequiresResolution(state.review);
 
 const terminalArtifacts = await findPrematureTerminalArtifacts();
 const changedFiles = await gitStatusHeadChangedFiles();
@@ -42,6 +43,15 @@ const benchmarkRelevanceBlockers = [
 				`${report.name} reported positive benchmark evidence without off-benchmark rejection or comparative rejection evidence`,
 		),
 ];
+const reviewFeedbackBlockers =
+	reviewResolutionRequired && selectedBranches.length > 0
+		? selectedBranches
+				.filter((report) => !reviewFeedbackAddressed(`${reportEvidenceText(report, selectionRepairText)}\n${selectionRepairText}`))
+				.map(
+					(report) =>
+						`${report.name} selected candidate does not record resolution for previous continue review feedback`,
+				)
+		: [];
 const validationPassed = validationCommandPassed(benchmark, selectionRepair, selectionRepairText);
 const benchmarkPassed = benchmarkCommandPassed(benchmark, selectionRepair, selectionRepairText);
 const outputPath = "workflow-output/performance-selection-guard.md";
@@ -61,6 +71,8 @@ await Bun.write(
 		`offBenchmarkRejectedBranches: ${offBenchmarkRejectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`benchmarkCoveredRejectedBranches: ${benchmarkCoveredRejectedBranches.map((report) => report.name).join(", ") || "none"}`,
 		`benchmarkRelevanceBlockers: ${benchmarkRelevanceBlockers.join("; ") || "none"}`,
+		`reviewResolutionRequired: ${reviewResolutionRequired ? "yes" : "no"}`,
+		`reviewFeedbackBlockers: ${reviewFeedbackBlockers.join("; ") || "none"}`,
 		`terminalArtifacts: ${terminalArtifacts.join(", ") || "none"}`,
 		`selectionRepairStatus: ${String(selectionRepair.status ?? "unknown")}`,
 		"",
@@ -79,6 +91,10 @@ if (terminalArtifacts.length > 0) {
 
 if (benchmarkRelevanceBlockers.length > 0) {
 	throw new Error(`performance selection benchmark relevance contract failed: ${benchmarkRelevanceBlockers.join("; ")}`);
+}
+
+if (reviewFeedbackBlockers.length > 0) {
+	throw new Error(`performance selection review feedback contract failed: ${reviewFeedbackBlockers.join("; ")}`);
 }
 
 if (benchmarkPassed && !validationPassed && projectChangedFiles.length > 0) {
@@ -110,6 +126,8 @@ return {
 				offBenchmarkRejectedBranches: offBenchmarkRejectedBranches.map((report) => report.name),
 				benchmarkCoveredRejectedBranches: benchmarkCoveredRejectedBranches.map((report) => report.name),
 				benchmarkRelevanceBlockers,
+				reviewResolutionRequired,
+				reviewFeedbackBlockers,
 				hasRollbackEvidence: /\brollback\b/iu.test(joinedText),
 			},
 		},
@@ -359,6 +377,33 @@ function dismissesPositiveBenchmarkEvidence(line) {
 		/\b(?:selected|retained|winning|chosen)\b.{0,120}\bpositive[^\S\r\n]+benchmark(?:[- ]covered)?[^\S\r\n]+(?:movement|result|candidate|optimization|win)\b/iu.test(
 			line,
 		)
+	);
+}
+
+function previousReviewRequiresResolution(review) {
+	if (review === undefined || review === null) return false;
+	const text = reviewText(review);
+	const normalized = text.toLowerCase();
+	const correctness =
+		review && typeof review === "object" && typeof review.overall_correctness === "string"
+			? review.overall_correctness.toLowerCase().trim()
+			: "";
+	return (
+		correctness === "incorrect" ||
+		/\b(verdict|decision|gate)\s*:\s*continue\b/iu.test(text) ||
+		/^\s*continue\b/imu.test(text) ||
+		/\bshould\s+continue\s+rather\s+than\s+finish\b/iu.test(normalized)
+	);
+}
+
+function reviewText(review) {
+	return typeof review === "string" ? review : JSON.stringify(review, null, 2);
+}
+
+function reviewFeedbackAddressed(text) {
+	return (
+		/\breview-feedback-addressed\s*:\s*(?:yes|true|pass|passed)\b/iu.test(text) &&
+		/\breview feedback evidence\s*:/iu.test(text)
 	);
 }
 

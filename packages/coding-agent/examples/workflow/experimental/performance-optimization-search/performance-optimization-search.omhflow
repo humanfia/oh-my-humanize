@@ -324,6 +324,7 @@ sequence:
                 - /task
                 - /benchmark
                 - /selectionRepair
+                - /review
               writes:
                 - /selectionGuard
       review:

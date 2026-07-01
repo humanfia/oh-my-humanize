@@ -66,6 +66,15 @@ If the previous review or shared hypotheses ask for selection/rollback repair,
 do not start a fresh broad optimization attempt. Limit this branch to the
 requested retain/revert/no-win evidence work, update its branch note, and avoid
 touching files owned by another branch.
+If the previous review or shared hypotheses contain `review_feedback_constraints`,
+that feedback is mandatory for this branch when it touches the selected
+candidate's area. Do not reselect a benchmark-fast candidate until you have
+run the exact public-surface probe requested by the reviewer, or until you have
+recorded why this branch rejects the candidate. If this branch claims the
+feedback is resolved, write both markers in `workflow-output/perf-{{strategy}}.md`:
+`review-feedback-addressed: yes` and `review feedback evidence: ...` with the
+actual probe, command, or test result. If the feedback is not applicable to
+this branch, write `review-feedback-addressed: not-applicable` plus the reason.
 
 Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 
@@ -82,6 +91,10 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 - rollback instructions for this branch;
 - `benchmark-relevance: yes` or `benchmark-relevance: no`, plus one sentence
   explaining what benchmark path is or is not covered;
+- when previous review feedback exists, `review-feedback-addressed: yes` with
+  concrete evidence for the selected candidate, or
+  `review-feedback-addressed: not-applicable` with the reason for losing/no-win
+  branches;
 - `final-selection: yes` only if this branch is the single retained candidate
   after the selection/repair node applies it in the shared workspace;
 - `final-selection: no` for losing, reverted, conflict-only, or no-win

@@ -308,6 +308,85 @@ describe("performance-optimization-search flow contract", () => {
 		});
 	});
 
+	it("requires retained selections to address previous continue review feedback", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "src/click/core.py"), "def core():\n    return 'old'\n");
+		await runCommand(["git", "add", "src/click/core.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(path.join(cwd, "src/click/core.py"), "def core():\n    return 'faster'\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-caching.md"),
+			[
+				"# Caching branch",
+				"final-selection: yes",
+				"no-win-result: no",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: normal parse and help output still work.",
+				"rollback evidence: git apply -R workflow-output/perf-caching-candidate.diff",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/performance-selection-repair.md"),
+			[
+				"# Performance Selection Repair",
+				"",
+				"selected branch: caching",
+				"benchmark command exited 0",
+				"validation command exited 0",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: normal parse and help output still work.",
+				"",
+			].join("\n"),
+		);
+
+		const state = {
+			review:
+				"overall_correctness: incorrect\nverdict: continue\nCustom generated help option prefixes must still drive shell completion.",
+			benchmark: { status: "pass", benchmarkExitCode: 0, validationExitCode: 0 },
+			selectionRepair: {
+				benchmark: { status: "pass", exitCode: 0 },
+				validation: { status: "pass", exitCode: 0 },
+			},
+		};
+
+		await expect(runScriptFile(cwd, "guard-selection-repair.js", state)).rejects.toThrow(
+			"selected candidate does not record resolution for previous continue review feedback",
+		);
+
+		await Bun.write(
+			path.join(cwd, "workflow-output/performance-selection-repair.md"),
+			[
+				"# Performance Selection Repair",
+				"",
+				"selected branch: caching",
+				"benchmark command exited 0",
+				"validation command exited 0",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: normal parse and help output still work.",
+				"review-feedback-addressed: yes",
+				"review feedback evidence: custom generated help option prefixes still populate shell completion prefix detection.",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "guard-selection-repair.js", state);
+		const guard = result.statePatch?.find(patch => patch.path === "/selectionGuard")?.value;
+
+		expect(result.summary).toBe("performance selection repair guard passed");
+		expect(guard).toMatchObject({
+			status: "pass",
+			selectedBranches: ["caching"],
+			positiveUnselectedBranches: [],
+			benchmarkRelevanceBlockers: [],
+		});
+	});
+
 	it("finalizes a natural-language authorized no-win search without ghost branches", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
