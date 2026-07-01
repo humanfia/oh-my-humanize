@@ -20,6 +20,7 @@
  */
 import * as path from "node:path";
 import type * as natives from "@oh-my-pi/pi-natives";
+import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../tools";
 import { generateCommitMessage } from "../utils/commit-message-generator";
 import * as git from "../utils/git";
@@ -127,6 +128,7 @@ export interface IsolatedWorktreeResult {
 	patchPath?: string;
 	branchName?: string;
 	nestedPatches?: NestedRepoPatch[];
+	extractedToolData?: Record<string, unknown[]>;
 }
 
 export interface IsolatedWorktreeRunOptions<Result extends IsolatedWorktreeResult> {
@@ -188,6 +190,20 @@ export async function runIsolatedWorktree<Result extends IsolatedWorktreeResult>
 		handle = await ensureIsolation(opts.context.repoRoot, opts.agentId, opts.preferredBackend);
 		const isolationDir = handle.mergedDir;
 		const result = await opts.run(isolationDir);
+		if (result.exitCode === 0 && result.error === undefined && result.aborted !== true) {
+			const materialized = await materializeDeclaredWorkflowArtifacts({
+				parentRoot: opts.context.repoRoot,
+				isolationDir,
+				result,
+			});
+			if (materialized.missing.length > 0) {
+				return {
+					...result,
+					exitCode: 1,
+					error: `Declared workflow artifacts missing from isolated worktree: ${materialized.missing.join(", ")}`,
+				};
+			}
+		}
 		if (opts.mergeMode === "branch" && result.exitCode === 0) {
 			try {
 				const commitResult = await commitToBranch(
@@ -233,6 +249,112 @@ export async function runIsolatedWorktree<Result extends IsolatedWorktreeResult>
 			await cleanupIsolation(handle);
 		}
 	}
+}
+
+export interface DeclaredWorkflowArtifactMaterialization {
+	copied: string[];
+	missing: string[];
+}
+
+export async function materializeDeclaredWorkflowArtifacts(input: {
+	parentRoot: string;
+	isolationDir: string;
+	result: IsolatedWorktreeResult;
+}): Promise<DeclaredWorkflowArtifactMaterialization> {
+	const refs = declaredWorkflowArtifactRefs(input.result);
+	const copied: string[] = [];
+	const missing: string[] = [];
+	for (const ref of refs) {
+		const source = path.join(input.isolationDir, ...ref.split("/"));
+		const target = path.join(input.parentRoot, ...ref.split("/"));
+		try {
+			await Bun.write(target, await Bun.file(source).arrayBuffer());
+			copied.push(ref);
+		} catch (error) {
+			if (isEnoent(error)) {
+				missing.push(ref);
+				continue;
+			}
+			throw error;
+		}
+	}
+	return { copied, missing };
+}
+
+function declaredWorkflowArtifactRefs(result: IsolatedWorktreeResult): string[] {
+	const data = finalSuccessfulYieldData(result.extractedToolData);
+	if (data === undefined) return [];
+	const refs = new Set<string>();
+	collectExplicitArtifactRefs(data.artifacts, refs);
+	collectStatePatchPathRefs(data.statePatch, refs);
+	collectPathFieldRefs(data.data, refs);
+	return [...refs];
+}
+
+function finalSuccessfulYieldData(
+	extractedToolData: Record<string, unknown[]> | undefined,
+): Record<string, unknown> | undefined {
+	const yieldItems = extractedToolData?.yield;
+	if (!Array.isArray(yieldItems)) return undefined;
+	for (let index = yieldItems.length - 1; index >= 0; index -= 1) {
+		const item = yieldItems[index];
+		if (!isRecord(item) || item.status === "aborted") continue;
+		if (isRecord(item.data)) return item.data;
+	}
+	return undefined;
+}
+
+function collectExplicitArtifactRefs(value: unknown, refs: Set<string>): void {
+	if (!Array.isArray(value)) return;
+	for (const item of value) {
+		if (typeof item !== "string") continue;
+		addWorkflowOutputArtifactRef(item, refs);
+	}
+}
+
+function collectStatePatchPathRefs(value: unknown, refs: Set<string>): void {
+	if (!Array.isArray(value)) return;
+	for (const item of value) {
+		if (!isRecord(item)) continue;
+		collectPathFieldRefs(item.value, refs);
+	}
+}
+
+function collectPathFieldRefs(value: unknown, refs: Set<string>): void {
+	if (Array.isArray(value)) {
+		for (const item of value) collectPathFieldRefs(item, refs);
+		return;
+	}
+	if (!isRecord(value)) return;
+	for (const [key, item] of Object.entries(value)) {
+		if (typeof item === "string" && isWorkflowArtifactPathField(key)) {
+			addWorkflowOutputArtifactRef(item, refs);
+			continue;
+		}
+		if (typeof item === "object" && item !== null) collectPathFieldRefs(item, refs);
+	}
+}
+
+function isWorkflowArtifactPathField(key: string): boolean {
+	return /(?:Path|File|Log|Artifact)$/u.test(key);
+}
+
+function addWorkflowOutputArtifactRef(input: string, refs: Set<string>): void {
+	const ref = normalizeWorkflowOutputArtifactRef(input);
+	if (ref !== undefined) refs.add(ref);
+}
+
+function normalizeWorkflowOutputArtifactRef(input: string): string | undefined {
+	if (!input.startsWith("workflow-output/")) return undefined;
+	if (input.startsWith("workflow-output/omh-runtime/")) return undefined;
+	if (/[*?[\]\\]/u.test(input)) return undefined;
+	const normalized = path.posix.normalize(input);
+	if (normalized === "workflow-output" || !normalized.startsWith("workflow-output/")) return undefined;
+	return normalized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export interface IsolationMergeOptions {

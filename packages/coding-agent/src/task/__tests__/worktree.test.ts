@@ -46,7 +46,9 @@ describe("worktree patch capture filters", () => {
 		await $`git init`.cwd(cwd).quiet();
 		await Bun.write(`${cwd}/src/main.rs`, "fn main() {}\n");
 		await $`git add src/main.rs`.cwd(cwd).quiet();
-		await $`git -c user.name=OMH -c user.email=omh@example.test commit -m init`.cwd(cwd).quiet();
+		await $`git -c user.name=OMH -c user.email=omh@example.test -c commit.gpgsign=false commit -m init`
+			.cwd(cwd)
+			.quiet();
 		await Bun.write(`${cwd}/target/debug/cache`, "compiled\n");
 		await Bun.write(`${cwd}/notes.txt`, "candidate note\n");
 
