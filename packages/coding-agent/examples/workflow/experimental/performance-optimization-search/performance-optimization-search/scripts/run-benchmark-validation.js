@@ -206,7 +206,7 @@ if (missingDeclaredArtifacts.length > 0) {
 
 const benchmark = await runShell(benchmarkCommand);
 const validation = await runShell(validationCommand);
-const benchmarkFailureDiagnostic = commandFailureDiagnostic(benchmark);
+const benchmarkFailureDiagnostic = benchmarkCommandFailureDiagnostic(benchmark);
 const validationFailureDiagnostic = commandFailureDiagnostic(validation);
 const outputPath = "workflow-output/performance-benchmark.md";
 await Bun.write(
@@ -788,6 +788,19 @@ function commandFailureDiagnostic(result) {
 		if (isFatalCommandDiagnostic(diagnostic)) return diagnostic;
 	}
 	return "";
+}
+
+function benchmarkCommandFailureDiagnostic(result) {
+	const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+	if (!output) return "benchmark command produced no output";
+	const diagnostic = commandFailureDiagnostic(result);
+	if (diagnostic) return diagnostic;
+	if (!hasNumericMeasurement(output)) return "benchmark command produced no numeric measurement";
+	return "";
+}
+
+function hasNumericMeasurement(output) {
+	return /\d/u.test(output);
 }
 
 function isFatalCommandDiagnostic(line) {

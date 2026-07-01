@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental performance-optimization-search flow accepting benchmark validation commands that exited successfully without benchmark output or numeric measurement evidence.
 - Fixed workflow graceful stops being forwarded directly into active node runtime signals; active nodes now receive node deadlines, max-runtime, lifecycle stop-deadline aborts, and sibling fail-fast aborts while scheduler stops only stop new scheduling before checkpointing.
 - Fixed workflow read-only workspace guards treating external monitor assignment variants such as `monitor-assignment-2.json` as project mutations while preserving project file mutation checks.
 - Fixed the experimental performance-optimization-search flow accepting truncated here-document benchmark commands and empty benchmark output as valid baseline evidence.

@@ -112,6 +112,52 @@ describe("performance-optimization-search flow contract", () => {
 		expect(evidence).toContain("Fatal Command Diagnostic");
 	});
 
+	it("fails closed when benchmark validation exits without observable benchmark output", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+
+		const result = await runScriptFile(cwd, "run-benchmark-validation.js", {
+			task: {
+				benchmarkCommand: 'python -c ""',
+				validationCommand: "python -c \"print('validation')\"",
+			},
+			runtime: { sharedProjectFilesBeforeBranches: [] },
+		});
+		const benchmark = result.statePatch?.find(patch => patch.path === "/benchmark")?.value;
+
+		expect(result.summary).toBe("benchmark=fail validation=pass");
+		expect(benchmark).toMatchObject({
+			status: "fail",
+			benchmarkFailureDiagnostic: "benchmark command produced no output",
+		});
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-benchmark.md")).text();
+		expect(evidence).toContain("benchmark command produced no output");
+		expect(evidence).toContain("Benchmark Fatal Command Diagnostic");
+	});
+
+	it("fails closed when benchmark validation output has no measurement", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+
+		const result = await runScriptFile(cwd, "run-benchmark-validation.js", {
+			task: {
+				benchmarkCommand: "python -c \"print('benchmark complete')\"",
+				validationCommand: "python -c \"print('validation')\"",
+			},
+			runtime: { sharedProjectFilesBeforeBranches: [] },
+		});
+		const benchmark = result.statePatch?.find(patch => patch.path === "/benchmark")?.value;
+
+		expect(result.summary).toBe("benchmark=fail validation=pass");
+		expect(benchmark).toMatchObject({
+			status: "fail",
+			benchmarkFailureDiagnostic: "benchmark command produced no numeric measurement",
+		});
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-benchmark.md")).text();
+		expect(evidence).toContain("benchmark command produced no numeric measurement");
+		expect(evidence).toContain("Benchmark Fatal Command Diagnostic");
+	});
+
 	it("fails closed when a branch report advertises missing durable artifacts", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });

@@ -156,7 +156,12 @@ function commandFailureDiagnostic(result) {
 		if (!diagnostic) continue;
 		if (isFatalCommandDiagnostic(diagnostic)) return diagnostic;
 	}
+	if (!hasNumericMeasurement(output)) return "benchmark command produced no numeric measurement";
 	return "";
+}
+
+function hasNumericMeasurement(output) {
+	return /\d/u.test(output);
 }
 
 function isFatalCommandDiagnostic(line) {
