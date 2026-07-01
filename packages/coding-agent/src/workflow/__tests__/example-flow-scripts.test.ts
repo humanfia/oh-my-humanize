@@ -4866,6 +4866,63 @@ describe("example workflow scripts", () => {
 		expect(gate).not.toContain("rollback_or_hold_criteria");
 	});
 
+	it("does not treat camelCase release hold criteria checklists as unresolved audit blockers", async () => {
+		using tempDir = TempDir.createSync("@omh-release-gate-camel-hold-criteria-checklist-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(
+			`${cwd}/workflow-output/release-audit.md`,
+			[
+				"# Release Audit Resolution",
+				"",
+				"Resolved timeout validation failure and archived validation, security, changed-files, and rollback evidence.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/release-rollback.md`,
+			[
+				"# Release Rollback Notes",
+				"",
+				"- Revert httpx/_content.py if the timeout cleanup repair is abandoned.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "enforceReleaseGate",
+			scriptFileName: "enforce-release-gate.js",
+			scriptDir: RELEASE_HARDENING_SCRIPT_DIR,
+			writes: ["/releaseGate"],
+			initialState: {
+				compatibility: {
+					rollbackOrHoldCriteria: {
+						holdCriteria: [
+							"Hold if validation/security/release-note evidence cannot be separated in the release archive, or if changed-files evidence is missing.",
+							"Hold if files outside the allowed release-hardening paths are changed.",
+						],
+					},
+				},
+				checks: {
+					status: "pass",
+					validationExitCode: 0,
+					securityExitCode: 0,
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.releaseGate).toMatchObject({
+			status: "pass",
+			unresolvedBlockers: [],
+		});
+		const gate = await Bun.file(`${cwd}/workflow-output/release-gate.md`).text();
+		expect(gate).toContain("status: pass");
+		expect(gate).not.toContain("rollbackOrHoldCriteria");
+		expect(gate).not.toContain("holdCriteria");
+	});
+
 	it("blocks release gates with untracked project files outside workflow artifacts", async () => {
 		using tempDir = TempDir.createSync("@omh-release-gate-untracked-project-file-");
 		const cwd = tempDir.path();

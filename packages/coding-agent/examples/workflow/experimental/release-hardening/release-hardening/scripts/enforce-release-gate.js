@@ -92,16 +92,24 @@ function flattenEvidence(value) {
 }
 
 function isAdvisoryEvidenceKey(key) {
+	const normalized = normalizedEvidenceKey(key);
 	return [
-		"commands_run",
-		"coverage_gaps_to_note",
-		"project_native_validation",
-		"public_interfaces_inspected",
-		"risk_coverage",
-		"rollback_or_hold_criteria",
+		"commandsnotrun",
+		"commandsrun",
+		"coveragegapstonote",
+		"holdcriteria",
+		"projectnativevalidation",
+		"publicinterfacesinspected",
+		"riskcoverage",
+		"rollbackcriteria",
+		"rollbackorholdcriteria",
 		"status",
 		"verdict",
-	].includes(key.toLowerCase());
+	].includes(normalized);
+}
+
+function normalizedEvidenceKey(key) {
+	return key.toLowerCase().replaceAll(/[^a-z0-9]/gu, "");
 }
 
 function isStructuredFinding(value) {
