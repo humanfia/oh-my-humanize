@@ -884,9 +884,15 @@ function applyTaskResultStatePatchMetadata(
 		const nextValue = { ...operation.value };
 		let operationChanged = false;
 		for (const [key, value] of Object.entries(metadata)) {
-			if (nextValue[key] !== undefined) continue;
-			nextValue[key] = value;
-			operationChanged = true;
+			if (nextValue[key] === undefined) {
+				nextValue[key] = value;
+				operationChanged = true;
+				continue;
+			}
+			if (key === "patchPath" && nextValue[key] !== value && nextValue.capturedPatchPath === undefined) {
+				nextValue.capturedPatchPath = value;
+				operationChanged = true;
+			}
 		}
 		if (!operationChanged) return operation;
 		changed = true;

@@ -6125,6 +6125,133 @@ describe("example workflow scripts", () => {
 		expect(await Bun.file(`${cwd}/src.txt`).text()).toBe("baseline\n");
 	});
 
+	it("prefers captured performance branch patches over branch-local patch hints", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-captured-branch-patch-");
+		using patchDir = TempDir.createSync("@omh-performance-captured-patch-artifact-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const patchPath = `${patchDir.path()}/caching.patch`;
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			patchPath,
+			[
+				"diff --git a/workflow-output/perf-caching.md b/workflow-output/perf-caching.md",
+				"new file mode 100644",
+				"index 0000000..1111111",
+				"--- /dev/null",
+				"+++ b/workflow-output/perf-caching.md",
+				"@@ -0,0 +1,7 @@",
+				"+# Caching candidate",
+				"+",
+				"+Candidate patch path: workflow-output/perf-caching-candidate.diff",
+				"+benchmark-relevance: yes",
+				"+final-selection: no",
+				"+no-win-result: no",
+				"+No writable bare /tmp execution surface was used.",
+				"diff --git a/workflow-output/perf-caching-candidate.diff b/workflow-output/perf-caching-candidate.diff",
+				"new file mode 100644",
+				"index 0000000..2222222",
+				"--- /dev/null",
+				"+++ b/workflow-output/perf-caching-candidate.diff",
+				"@@ -0,0 +1 @@",
+				"+candidate patch",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+				},
+				caching: {
+					patchPath: "workflow-output/perf-caching-candidate.diff",
+					capturedPatchPath: patchPath,
+					changesApplied: null,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "pass",
+			benchmarkExitCode: 0,
+			validationExitCode: 0,
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/perf-caching.md`).text()).toContain("# Caching candidate");
+		expect(await Bun.file(`${cwd}/workflow-output/perf-caching-candidate.diff`).text()).toBe("candidate patch\n");
+		expect(await Bun.file(`${cwd}/src.txt`).text()).toBe("baseline\n");
+	});
+
+	it("does not treat performance benchmark fixture paths as durable artifact declarations", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-fixture-path-artifacts-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			[
+				"# IO candidate",
+				"",
+				"Benchmark command: cargo run -- workflow-output/perf-tree/src/file_$i.rs >/dev/null",
+				"Validation command: cargo test --all --locked",
+				"benchmark-relevance: yes",
+				"final-selection: no",
+				"no-win-result: no",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "echo benchmark",
+					validationCommand: "echo validation",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "pass",
+			benchmarkExitCode: 0,
+			validationExitCode: 0,
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).not.toContain(
+			"Durable Branch Evidence Violation",
+		);
+	});
+
 	it("blocks performance benchmark joins when lane scratch lives inside the project tree", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-project-scratch-guard-");
 		const cwd = tempDir.path();

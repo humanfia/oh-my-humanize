@@ -260,8 +260,10 @@ async function materializeBranchEvidenceFromPatch(strategy, value) {
 
 function branchPatchPath(value) {
 	const parsed = parseJsonObject(branchStateText(value));
-	const patchPath = parsed?.patchPath;
-	return typeof patchPath === "string" && patchPath.trim() !== "" ? patchPath.trim() : "";
+	for (const candidate of [parsed?.capturedPatchPath, parsed?.patchPath, parsed?.candidatePatchPath]) {
+		if (typeof candidate === "string" && candidate.trim() !== "") return candidate.trim();
+	}
+	return "";
 }
 
 async function runGitApply(patchPath, args) {
@@ -340,15 +342,19 @@ async function missingDeclaredWorkflowArtifacts() {
 
 function declaredWorkflowArtifacts(text) {
 	const artifacts = new Set();
-	for (const match of text.matchAll(/\bworkflow-output\/perf-[^\s`"'<>),;]+/giu)) {
+	for (const match of text.matchAll(/\bworkflow-output\/perf-(?:algorithmic|caching|io|no-win)(?:[./-][^\s`"'<>),;]+)?/giu)) {
 		const artifactPath = trimPathPunctuation(match[0] ?? "");
-		if (artifactPath) artifacts.add(artifactPath);
+		if (artifactPath && !hasGlobSyntax(artifactPath)) artifacts.add(artifactPath);
 	}
 	return [...artifacts].sort();
 }
 
 function trimPathPunctuation(filePath) {
 	return filePath.replace(/[.:\]]+$/gu, "");
+}
+
+function hasGlobSyntax(filePath) {
+	return /[*?[\]{}]/u.test(filePath);
 }
 
 async function changedProjectFiles() {
