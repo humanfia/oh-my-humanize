@@ -848,10 +848,14 @@ function applyTaskResultMetadata(
 	output: WorkflowActivationOutput,
 	result: WorkflowAgentTaskResult,
 ): WorkflowActivationOutput {
+	const statePatch = applyTaskResultStatePatchMetadata(output.statePatch, result);
 	const data = output.data === undefined ? {} : { ...output.data };
 	applyTaskResultData(data, result);
-	if (Object.keys(data).length === 0) return output;
-	return { ...output, data };
+	if (Object.keys(data).length === 0 && statePatch === output.statePatch) return output;
+	const nextOutput: WorkflowActivationOutput = { ...output };
+	if (Object.keys(data).length > 0) nextOutput.data = data;
+	if (statePatch !== output.statePatch) nextOutput.statePatch = statePatch;
+	return nextOutput;
 }
 
 function applyTaskResultData(data: Record<string, unknown>, result: WorkflowAgentTaskResult): void {
@@ -864,6 +868,41 @@ function applyTaskResultData(data: Record<string, unknown>, result: WorkflowAgen
 	if (result.retryHistory !== undefined && result.retryHistory.length > 0) {
 		data.retryHistory = result.retryHistory.map(entry => ({ ...entry }));
 	}
+}
+
+function applyTaskResultStatePatchMetadata(
+	statePatch: WorkflowActivationOutput["statePatch"],
+	result: WorkflowAgentTaskResult,
+): WorkflowActivationOutput["statePatch"] {
+	const metadata = taskResultStateMetadata(result);
+	if (metadata === undefined || statePatch === undefined) return statePatch;
+	let changed = false;
+	const patched = statePatch.map(operation => {
+		if (!isPlainRecord(operation.value)) return operation;
+		const nextValue = { ...operation.value };
+		let operationChanged = false;
+		for (const [key, value] of Object.entries(metadata)) {
+			if (nextValue[key] !== undefined) continue;
+			nextValue[key] = value;
+			operationChanged = true;
+		}
+		if (!operationChanged) return operation;
+		changed = true;
+		return { ...operation, value: nextValue };
+	});
+	return changed ? patched : statePatch;
+}
+
+function taskResultStateMetadata(result: WorkflowAgentTaskResult): Record<string, unknown> | undefined {
+	const metadata: Record<string, unknown> = {};
+	if (result.patchPath !== undefined) metadata.patchPath = result.patchPath;
+	if (result.branchName !== undefined) metadata.branchName = result.branchName;
+	if (result.changesApplied !== undefined) metadata.changesApplied = result.changesApplied;
+	return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function activationOutputFromHumanInputResult(result: WorkflowHumanInputResult): WorkflowActivationOutput {

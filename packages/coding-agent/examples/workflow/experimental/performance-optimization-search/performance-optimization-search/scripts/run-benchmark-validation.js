@@ -11,30 +11,6 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 
 await materializeBranchStateReports(workflowContext.state);
 
-const missingDeclaredArtifacts = await missingDeclaredWorkflowArtifacts();
-if (missingDeclaredArtifacts.length > 0) {
-	const outputPath = "workflow-output/performance-benchmark.md";
-	await Bun.write(outputPath, missingDeclaredArtifactsMarkdown(missingDeclaredArtifacts));
-	return {
-		summary: `branch evidence materialization violation: ${missingDeclaredArtifacts.length} missing durable artifact(s)`,
-		data: { evidenceViolation: true, missingDeclaredArtifacts },
-		statePatch: [
-			{
-				op: "set",
-				path: "/benchmark",
-				value: {
-					status: "fail",
-					evidenceViolation: true,
-					missingDeclaredArtifacts,
-					benchmarkCommand,
-					validationCommand,
-					outputPath,
-				},
-			},
-		],
-	};
-}
-
 const projectChangedFiles = projectFilesChangedAfterBranchStart(await changedProjectFiles(), runtime);
 if (projectChangedFiles.length > 0) {
 	const outputPath = "workflow-output/performance-benchmark.md";
@@ -195,6 +171,30 @@ if (sharedWorkspaceExecutionReferences.length > 0) {
 					status: "fail",
 					isolationViolation: true,
 					sharedWorkspaceExecutionReferences,
+					benchmarkCommand,
+					validationCommand,
+					outputPath,
+				},
+			},
+		],
+	};
+}
+
+const missingDeclaredArtifacts = await missingDeclaredWorkflowArtifacts();
+if (missingDeclaredArtifacts.length > 0) {
+	const outputPath = "workflow-output/performance-benchmark.md";
+	await Bun.write(outputPath, missingDeclaredArtifactsMarkdown(missingDeclaredArtifacts));
+	return {
+		summary: `branch evidence materialization violation: ${missingDeclaredArtifacts.length} missing durable artifact(s)`,
+		data: { evidenceViolation: true, missingDeclaredArtifacts },
+		statePatch: [
+			{
+				op: "set",
+				path: "/benchmark",
+				value: {
+					status: "fail",
+					evidenceViolation: true,
+					missingDeclaredArtifacts,
 					benchmarkCommand,
 					validationCommand,
 					outputPath,

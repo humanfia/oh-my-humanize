@@ -5733,6 +5733,7 @@ describe("example workflow scripts", () => {
 		await runGit(cwd, ["config", "user.name", "OMH Test"]);
 		await runGit(cwd, ["add", "src.txt", "task.md"]);
 		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/workflow-output/perf-algorithmic-candidate.diff`, "candidate patch\n");
 
 		const result = await runExampleScript({
 			cwd,
@@ -5818,6 +5819,27 @@ describe("example workflow scripts", () => {
 				"+final-selection: no",
 				"+no-win-result: no",
 				"+No writable bare /tmp execution surface was used.",
+				"diff --git a/workflow-output/perf-algorithmic-candidate.diff b/workflow-output/perf-algorithmic-candidate.diff",
+				"new file mode 100644",
+				"index 0000000..2222222",
+				"--- /dev/null",
+				"+++ b/workflow-output/perf-algorithmic-candidate.diff",
+				"@@ -0,0 +1 @@",
+				"+candidate patch",
+				"diff --git a/workflow-output/perf-algorithmic-benchmark.md b/workflow-output/perf-algorithmic-benchmark.md",
+				"new file mode 100644",
+				"index 0000000..3333333",
+				"--- /dev/null",
+				"+++ b/workflow-output/perf-algorithmic-benchmark.md",
+				"@@ -0,0 +1 @@",
+				"+benchmark log",
+				"diff --git a/workflow-output/perf-algorithmic-validation.md b/workflow-output/perf-algorithmic-validation.md",
+				"new file mode 100644",
+				"index 0000000..4444444",
+				"--- /dev/null",
+				"+++ b/workflow-output/perf-algorithmic-validation.md",
+				"@@ -0,0 +1 @@",
+				"+validation log",
 				"diff --git a/src.txt b/src.txt",
 				"index df967b9..0000000 100644",
 				"--- a/src.txt",
@@ -5857,6 +5879,9 @@ describe("example workflow scripts", () => {
 			validationExitCode: 0,
 		});
 		expect(await Bun.file(`${cwd}/workflow-output/perf-algorithmic.md`).text()).toContain("# Algorithmic candidate");
+		expect(await Bun.file(`${cwd}/workflow-output/perf-algorithmic-candidate.diff`).text()).toBe("candidate patch\n");
+		expect(await Bun.file(`${cwd}/workflow-output/perf-algorithmic-benchmark.md`).text()).toBe("benchmark log\n");
+		expect(await Bun.file(`${cwd}/workflow-output/perf-algorithmic-validation.md`).text()).toBe("validation log\n");
 		expect(await Bun.file(`${cwd}/src.txt`).text()).toBe("baseline\n");
 	});
 

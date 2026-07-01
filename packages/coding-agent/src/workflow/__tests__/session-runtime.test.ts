@@ -101,6 +101,55 @@ edges: []
 		});
 	});
 
+	it("attaches isolated patch metadata to object state handoffs", async () => {
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async () => ({
+				exitCode: 0,
+				output: "",
+				data: {
+					summary: "branch completed",
+					statePatch: [{ op: "set", path: "/branch", value: { status: "done" } }],
+				},
+				patchPath: "/workspace/.omh/artifacts/branch.patch",
+				changesApplied: null,
+			}),
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = {
+			id: "branch",
+			type: "agent",
+			agent: "task",
+			prompt: "Try a lane-local change.",
+			writes: ["/branch"],
+			isolation: {
+				enabled: true,
+				apply: false,
+				merge: false,
+				capture: { include: ["workflow-output/branch/**"] },
+			},
+		};
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+
+		expect(output.statePatch).toEqual([
+			{
+				op: "set",
+				path: "/branch",
+				value: {
+					status: "done",
+					patchPath: "/workspace/.omh/artifacts/branch.patch",
+					changesApplied: null,
+				},
+			},
+		]);
+	});
+
 	it("adds a structured state handoff contract for agent nodes with declared writes", async () => {
 		let capturedRequest: WorkflowAgentTaskRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
