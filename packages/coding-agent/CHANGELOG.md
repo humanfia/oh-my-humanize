@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Fixed workflow runner stop handling preserving explicit node abort signals and waiting for node abort before checkpointing graceful stops.
+- Fixed successful subagent yields parking history-only sessions without aborting the completed session.
 - Fixed completed workflow attempts surfacing only `workflow completed`, so final node summaries now remind users where generated artifacts were saved.
 - Fixed the experimental performance-optimization-search flow treating a committed positive selection with a clean worktree as a no-win outcome during finalize/archive.
 - Fixed the experimental research-reproduction flow assuming comparison agent summaries automatically materialized `/comparison` before review prompts.

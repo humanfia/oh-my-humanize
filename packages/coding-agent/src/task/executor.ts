@@ -1202,7 +1202,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 							args: eventArgs,
 							result: event.result,
 							isError: event.isError,
-						})
+						}) &&
+						!(event.toolName === "yield" && yieldCalled)
 					) {
 						requestAbort("terminate");
 					}
@@ -1830,11 +1831,11 @@ export async function finalizeSubagentLifecycle(args: {
 	}
 
 	if (args.isolated) {
-		// Isolated run: the worktree is merged + cleaned after the run, so
-		// the session is not resumable. Park the ref WITHOUT adopting — the
+		// Isolated successful run: the worktree is merged + cleaned after the run,
+		// so the session is not resumable. Park the ref WITHOUT adopting — the
 		// transcript stays reachable (history://), but ensureLive will throw.
-		// Status must flip to "parked" before dispose so the sdk dispose
-		// wrapper skips unregister.
+		// Status must flip to "parked" before dispose so the sdk dispose wrapper
+		// skips unregister.
 		registry.setRevivalPolicy(args.id, "history-only");
 		registry.setStatus(args.id, "parked");
 		await disposeSession();

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed XDG directory probing to continue using existing `omp` app roots after the app name changed to `omh`, restoring XDG cache, state, and profile paths.
+
 ## [16.2.3] - 2026-06-28
 
 ### Added
