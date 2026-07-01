@@ -12,6 +12,30 @@ const sourceRoots = benchmarkSourceRoots(task);
 
 await materializeBranchStateReports(workflowContext.state);
 
+const blockedPositiveBranches = await blockedPositiveBranchViolations();
+if (blockedPositiveBranches.length > 0) {
+	const outputPath = "workflow-output/performance-benchmark.md";
+	await Bun.write(outputPath, blockedPositiveBranchViolationMarkdown(blockedPositiveBranches));
+	return {
+		summary: `branch hypothesis contract violation: ${blockedPositiveBranches.length} blocked positive branch(es)`,
+		data: { branchContractViolation: true, blockedPositiveBranches },
+		statePatch: [
+			{
+				op: "set",
+				path: "/benchmark",
+				value: {
+					status: "fail",
+					branchContractViolation: true,
+					blockedPositiveBranches: blockedPositiveBranches.map(branch => branch.name),
+					benchmarkCommand,
+					validationCommand,
+					outputPath,
+				},
+			},
+		],
+	};
+}
+
 const projectChangedFiles = projectFilesChangedAfterBranchStart(await changedProjectFiles(), runtime);
 if (projectChangedFiles.length > 0) {
 	const outputPath = "workflow-output/performance-benchmark.md";
@@ -325,6 +349,54 @@ function parseJsonObject(text) {
 	} catch {
 		return undefined;
 	}
+}
+
+async function blockedPositiveBranchViolations() {
+	const hypotheses = parseJsonObject(await readOptionalText("workflow-output/performance-hypotheses.json"));
+	const blockedBranches = hypothesisBranches(hypotheses).filter(branch => isBlockedPositiveBranchStatus(branch.status));
+	const violations = [];
+	for (const branch of blockedBranches) {
+		const file = `workflow-output/perf-${branch.name}.md`;
+		const text = await readOptionalText(file);
+		if (branchReportHasRetainedPositiveCandidate(text)) violations.push({ ...branch, file });
+	}
+	return violations;
+}
+
+function hypothesisBranches(value) {
+	const candidateArrays = [value?.branches, value?.data?.branches];
+	return candidateArrays
+		.filter(Array.isArray)
+		.flatMap(branches => branches)
+		.map(hypothesisBranch)
+		.filter(branch => branch.name !== "");
+}
+
+function hypothesisBranch(value) {
+	const name = normalizeBranchName(value?.name ?? value?.strategy ?? value?.branch);
+	const status = typeof value?.status === "string" ? value.status.trim() : "";
+	return { name, status };
+}
+
+function normalizeBranchName(value) {
+	const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+	if (text === "algorithmic" || text === "caching" || text === "io" || text === "no-win") return text;
+	if (text === "no_win" || text === "nowin") return "no-win";
+	return "";
+}
+
+function isBlockedPositiveBranchStatus(status) {
+	return /(?:blocked|no[-_ ]?win|no[_-]?code|negative)/iu.test(status);
+}
+
+function branchReportHasRetainedPositiveCandidate(text) {
+	if (!text.trim()) return false;
+	return (
+		/\bstatus\s*:\s*retained-candidate\b/iu.test(text) ||
+		/\bfinal-selection\s*:\s*yes\b/iu.test(text) ||
+		(/\bcandidate\s+patch\s*:\s*(?!no\b|none\b|not\b|\(none\))/iu.test(text) &&
+			/\b(?:benchmark-relevance\s*:\s*yes|benchmark improvement|positive benchmark|retained candidate)\b/iu.test(text))
+	);
 }
 
 function appendBranchSelectionMarker(lines, marker, value) {
@@ -996,6 +1068,23 @@ function sharedWorkspaceExecutionViolationMarkdown(sharedWorkspaceExecutionRefer
 	].join("\n");
 }
 
+function blockedPositiveBranchViolationMarkdown(blockedPositiveBranches) {
+	return [
+		"# Performance Benchmark Evidence",
+		"",
+		"## Blocked Positive Branch Violation",
+		"",
+		"Branches whose materialized hypothesis status is blocked, no-win, or negative may archive no-win evidence, but they must not produce retained positive candidates or candidate patches.",
+		"",
+		"## Violating Branches",
+		"",
+		blockedPositiveBranches
+			.map(branch => `- ${branch.name}: status=${branch.status || "(missing)"} file=${branch.file}`)
+			.join("\n"),
+		"",
+	].join("\n");
+}
+
 function isolationViolationMarkdown(projectChangedFiles) {
 	return [
 		"# Performance Benchmark Evidence",
@@ -1010,6 +1099,14 @@ function isolationViolationMarkdown(projectChangedFiles) {
 		projectChangedFiles.map((file) => `- ${file}`).join("\n"),
 		"",
 	].join("\n");
+}
+
+async function readOptionalText(filePath) {
+	try {
+		return await Bun.file(filePath).text();
+	} catch {
+		return "";
+	}
 }
 
 function bounded(text) {

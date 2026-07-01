@@ -60,6 +60,8 @@ interface ScriptResult {
 			positiveUnselectedBranches?: string[];
 			benchmarkRelevanceBlockers?: string[];
 			evidenceViolation?: boolean;
+			branchContractViolation?: boolean;
+			blockedPositiveBranches?: string[];
 			missingDeclaredArtifacts?: string[];
 			allowedProjectPaths?: string[];
 			benchmarkTargetPaths?: string[];
@@ -374,6 +376,60 @@ describe("performance-optimization-search flow contract", () => {
 				"workflow-output/perf-caching-validation.log",
 			],
 		});
+	});
+
+	it("fails closed when a blocked hypothesis branch reports a retained positive candidate", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "README.md"), "perf fixture\n");
+		await runCommand(["git", "add", "README.md"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(
+			path.join(cwd, "workflow-output/performance-hypotheses.json"),
+			JSON.stringify({
+				data: {
+					branches: [
+						{
+							name: "io",
+							status: "blocked_no_win_for_positive_optimization",
+						},
+					],
+				},
+			}),
+		);
+		await Bun.write(path.join(cwd, "workflow-output/perf-io-candidate.diff"), "");
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-io.md"),
+			[
+				"# IO branch",
+				"status: retained-candidate",
+				"candidate patch: workflow-output/perf-io-candidate.diff",
+				"benchmark-relevance: yes",
+				"benchmark improvement: candidate is faster on the declared benchmark.",
+				"final-selection: no",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "run-benchmark-validation.js", {
+			task: {
+				benchmarkCommand: "python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
+				validationCommand: "python -c \"print('validation')\"",
+			},
+			runtime: { sharedProjectFilesBeforeBranches: [] },
+		});
+		const benchmark = result.statePatch?.find(patch => patch.path === "/benchmark")?.value;
+
+		expect(result.summary).toBe("branch hypothesis contract violation: 1 blocked positive branch(es)");
+		expect(benchmark).toMatchObject({
+			status: "fail",
+			branchContractViolation: true,
+			blockedPositiveBranches: ["io"],
+		});
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-benchmark.md")).text();
+		expect(evidence).toContain("Blocked Positive Branch Violation");
+		expect(evidence).toContain("io");
+		expect(evidence).toContain("blocked_no_win_for_positive_optimization");
 	});
 
 	it("accepts a positive retained branch when an unselected branch records no-win evidence", async () => {

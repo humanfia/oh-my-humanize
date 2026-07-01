@@ -14,6 +14,14 @@ Shared hypotheses:
 Previous review, if any:
 {{jsonStringify review}}
 
+If the shared hypotheses object for strategy `{{strategy}}` has a `status`
+containing `blocked`, `no-win`, `no_win`, `negative`, or equivalent wording,
+this branch is not authorized to create a positive candidate. Do not edit
+project files, do not write a candidate patch, and do not mark
+`benchmark-relevance: yes` as retained positive evidence. Write only a durable
+no-win/blocker branch report under `workflow-output/perf-{{strategy}}.md` with
+the exact reason this branch is blocked for the current task.
+
 The workflow runtime runs this branch in an isolated lane worktree and captures
 its diff as branch state metadata such as `patchPath`; it does not apply branch
 changes back to the shared workspace before the join. Treat your current
