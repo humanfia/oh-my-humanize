@@ -98,6 +98,8 @@ function isAdvisoryEvidenceKey(key) {
 		"public_interfaces_inspected",
 		"risk_coverage",
 		"rollback_or_hold_criteria",
+		"status",
+		"verdict",
 	].includes(key.toLowerCase());
 }
 

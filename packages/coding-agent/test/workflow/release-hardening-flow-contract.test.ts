@@ -193,6 +193,60 @@ describe("release-hardening flow contract", () => {
 		expect(gate).toContain("README.md stale Python support wording");
 		expect(gate).toContain("Text.from_ansi compatibility risk");
 	});
+
+	it("does not fail the release gate on resolved stale compatibility hold state", async () => {
+		const cwd = await createGitRepo();
+		const taskText = [
+			"Objective: harden scoped release docs.",
+			"",
+			"Validation Command: true",
+			"Security Command: true",
+			"Allowed paths: docs/**, workflow-output/**, task.md.",
+		].join("\n");
+		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), taskText);
+		await Bun.write(path.join(cwd, "docs", "introduction.rst"), "Python 3.8.0\n");
+		await runCommand(["git", "add", "task.md", "docs/introduction.rst"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(path.join(cwd, "docs", "introduction.rst"), "Python 3.9.0\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "release-audit.md"),
+			[
+				"# Release Audit",
+				"",
+				"Resolved stale Python support docs in docs/introduction.rst.",
+				"Waived README-family stale Python support wording as outside this scoped task and requiring a fresh contract.",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "release-rollback.md"),
+			"Rollback: revert docs/introduction.rst Python support wording.\n",
+		);
+
+		const result = await runScript(cwd, "enforce-release-gate.js", {
+			review: "finish",
+			checks: { status: "pass" },
+			task: { taskText },
+			compatibility: {
+				status: "hold-before-review",
+				risks: [
+					"stale Python support docs in docs/introduction.rst",
+					"README-family stale Python support wording should use a fresh task contract",
+				],
+			},
+		});
+		const releaseGate = result.statePatch?.find(patch => patch.path === "/releaseGate")?.value;
+		const gate = await Bun.file(path.join(cwd, "workflow-output", "release-gate.md")).text();
+
+		expect(result.summary).toBe("release gate passed");
+		expect(releaseGate).toMatchObject({
+			status: "pass",
+			unresolvedBlockers: [],
+		});
+		expect(gate).toContain("resolved_blockers: 2");
+		expect(gate).toContain("unresolved_blockers: 0");
+		expect(gate).not.toContain("compatibility: status: hold-before-review");
+	});
 });
 
 async function runScript(cwd: string, scriptName: string, state: WorkflowContext["state"]): Promise<ScriptResult> {
