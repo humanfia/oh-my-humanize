@@ -11,7 +11,7 @@ const suiteText = await readOptionalText("workflow-output/test-suite.md");
 const repairEvidenceText = await readOptionalText("workflow-output/test-hardening-repair-evidence.md");
 const rollbackText = await readOptionalText("workflow-output/test-hardening-rollback.md");
 const sourceEditGuard = await testOnlyChangeGuard(taskText);
-const reviewerDecision = reviewerDecisionEvidence(state);
+const reviewerDecision = await reviewerDecisionEvidence(state);
 
 if (sourceEditGuard.status !== "pass") {
 	throw new Error(`cannot archive test hardening with unauthorized source edits: ${sourceEditGuard.blockers.join(", ")}`);
@@ -100,13 +100,32 @@ function assertSchedulerLineage(requiredNodeIds, label) {
 	}
 }
 
-function reviewerDecisionEvidence(state) {
+async function reviewerDecisionEvidence(state) {
 	const reviewActivation = latestCompletedActivation("testReview");
+	const activationId = typeof reviewActivation?.id === "string" ? reviewActivation.id : "";
+	const activationSummary =
+		typeof reviewActivation?.summary === "string" ? reviewActivation.summary.trim() : "";
 	return {
 		stateVerdict: typeof state.review === "string" ? state.review.trim() : "",
-		activationSummary: typeof reviewActivation?.summary === "string" ? reviewActivation.summary.trim() : "",
-		activationId: typeof reviewActivation?.id === "string" ? reviewActivation.id : "",
+		activationSummary: activationSummary || (await reviewActivationArtifactSummary(activationId)),
+		activationId,
 	};
+}
+
+async function reviewActivationArtifactSummary(activationId) {
+	if (!activationId) return "";
+	for (const artifactPath of reviewActivationArtifactCandidates(activationId)) {
+		const text = await readOptionalText(artifactPath);
+		if (text.trim()) return text.trim();
+	}
+	return "";
+}
+
+function reviewActivationArtifactCandidates(activationId) {
+	return Array.from({ length: 20 }, (_, index) => {
+		const suffix = index === 0 ? "" : `-${index + 1}`;
+		return `workflow-output/omh-runtime/artifacts/${activationId}/1-testReview${suffix}.md`;
+	});
 }
 
 function latestCompletedActivation(nodeId) {

@@ -125,6 +125,59 @@ describe("test-generation-hardening flow contract", () => {
 		expect(archive).toContain("verdict finish");
 		expect(archive).toContain("## Suite Evidence");
 	});
+
+	it("archives reviewer artifact evidence when the activation summary is absent", async () => {
+		const cwd = await createTempDir();
+		await initGitRepo(cwd);
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			["Objective:", "Add focused test coverage.", "", "Validation Command:", "python -m pytest tests -q"].join(
+				"\n",
+			),
+		);
+		await fs.mkdir(path.join(cwd, "tests"), { recursive: true });
+		await Bun.write(path.join(cwd, "tests", "test_parser.py"), "def test_parser_edge():\n\tassert True\n");
+		await git(cwd, ["add", "task.md"]);
+		await git(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "test-suite.md"),
+			["# Test Suite Evidence", "", "Command: python -m pytest tests -q", "Exit code: 0"].join("\n"),
+		);
+		await Bun.write(path.join(cwd, "workflow-output", "test-hardening-repair-evidence.md"), "# Repair Evidence\n");
+		await Bun.write(path.join(cwd, "workflow-output", "test-hardening-rollback.md"), "# Rollback\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", "omh-runtime", "artifacts", "activation-12", "1-testReview-3.md"),
+			[
+				"{",
+				'  "overall_correctness": "correct",',
+				'  "explanation": "verdict finish\\nGenerated tests are task-scoped and pass validation.",',
+				'  "confidence": 0.9,',
+				'  "findings": []',
+				"}",
+			].join("\n"),
+		);
+
+		const result = await runArchiveTestsWithActivations(
+			cwd,
+			{
+				suite: { status: "pass" },
+				review: "finish",
+			},
+			[
+				{ nodeId: "inspectCoverage", status: "completed", summary: "coverage inspected" },
+				{ nodeId: "materializeGapReport", status: "completed", summary: "gap report materialized" },
+				{ nodeId: "generateTests", status: "completed", summary: "tests generated" },
+				{ nodeId: "runTestSuite", status: "completed", summary: "validation passed" },
+				{ id: "activation-12", nodeId: "testReview", status: "completed" },
+			],
+		);
+		const archive = await Bun.file(path.join(cwd, "workflow-output", "test-hardening-archive.md")).text();
+
+		expect(result.summary).toContain("archived test hardening evidence");
+		expect(archive).toContain("Activation: activation-12");
+		expect(archive).toContain("Generated tests are task-scoped and pass validation.");
+		expect(archive).not.toContain("(missing)");
+	});
 });
 
 async function runMaterializeGapReport(cwd: string, state: WorkflowContext["state"]): Promise<ScriptResult> {
@@ -132,13 +185,21 @@ async function runMaterializeGapReport(cwd: string, state: WorkflowContext["stat
 }
 
 async function runArchiveTests(cwd: string, state: WorkflowContext["state"]): Promise<ScriptResult> {
-	return await runScript(cwd, "archive-tests.js", state, [
+	return await runArchiveTestsWithActivations(cwd, state, [
 		{ nodeId: "inspectCoverage", status: "completed", summary: "coverage inspected" },
 		{ nodeId: "materializeGapReport", status: "completed", summary: "gap report materialized" },
 		{ nodeId: "generateTests", status: "completed", summary: "tests generated" },
 		{ nodeId: "runTestSuite", status: "completed", summary: "validation passed" },
 		{ nodeId: "testReview", status: "completed", summary: "verdict finish\nGenerated tests cover the task." },
 	]);
+}
+
+async function runArchiveTestsWithActivations(
+	cwd: string,
+	state: WorkflowContext["state"],
+	completedActivations: unknown[],
+): Promise<ScriptResult> {
+	return await runScript(cwd, "archive-tests.js", state, completedActivations);
 }
 
 async function runScript(
