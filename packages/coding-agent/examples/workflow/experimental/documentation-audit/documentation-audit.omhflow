@@ -255,6 +255,7 @@ sequence:
               id: guardReviewRepair
               type: script
               reads:
+                - /audit
                 - /review
                 - /patch
               script:

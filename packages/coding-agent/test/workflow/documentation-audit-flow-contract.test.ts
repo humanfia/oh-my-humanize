@@ -38,6 +38,11 @@ interface WorkflowContext {
 			rollback_notes?: string[];
 			resolved_review_feedback?: string[];
 		};
+		audit?: {
+			selectedSmallestCoherentRepair?: {
+				changedFileTargets?: string[];
+			};
+		};
 		review?: string;
 	};
 }
@@ -47,10 +52,7 @@ interface ScriptResult {
 	statePatch?: Array<{
 		op: "set";
 		path: string;
-		value: {
-			validation?: string;
-			validationWaiver?: string;
-		};
+		value: Record<string, unknown>;
 	}>;
 }
 
@@ -66,6 +68,65 @@ afterEach(async () => {
 });
 
 describe("documentation-audit flow contract", () => {
+	it("fails closed when a docs patch omits selected audit targets", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });
+		await Bun.write(path.join(cwd, "docs/a.md"), "old a\n");
+		await Bun.write(path.join(cwd, "docs/b.md"), "old b\n");
+		await runCommand(["git", "add", "docs/a.md", "docs/b.md"], cwd);
+		await runCommand(["git", "commit", "-m", "baseline"], cwd);
+		await Bun.write(path.join(cwd, "docs/a.md"), "new a\n");
+
+		await expect(
+			runScriptFile(cwd, "guard-review-repair.js", {
+				audit: {
+					selectedSmallestCoherentRepair: {
+						changedFileTargets: ["docs/a.md", "docs/b.md", "workflow-output/documentation-audit-repair.md"],
+					},
+				},
+				patch: {
+					changed_files: ["docs/a.md"],
+					rollback_notes: ["Restore docs/a.md."],
+					resolved_review_feedback: [],
+				},
+				review: "No previous documentation review yet.",
+			}),
+		).rejects.toThrow(/documentation patch did not cover selected audit targets.*docs\/b\.md/iu);
+	});
+
+	it("accepts docs patches that cover selected audit targets", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });
+		await Bun.write(path.join(cwd, "docs/a.md"), "old a\n");
+		await Bun.write(path.join(cwd, "docs/b.md"), "old b\n");
+		await runCommand(["git", "add", "docs/a.md", "docs/b.md"], cwd);
+		await runCommand(["git", "commit", "-m", "baseline"], cwd);
+		await Bun.write(path.join(cwd, "docs/a.md"), "new a\n");
+		await Bun.write(path.join(cwd, "docs/b.md"), "new b\n");
+
+		const result = await runScriptFile(cwd, "guard-review-repair.js", {
+			audit: {
+				selectedSmallestCoherentRepair: {
+					changedFileTargets: ["docs/a.md", "docs/b.md", "workflow-output/documentation-audit-repair.md"],
+				},
+			},
+			patch: {
+				changed_files: ["docs/a.md", "docs/b.md"],
+				rollback_notes: ["Restore docs/a.md and docs/b.md."],
+				resolved_review_feedback: [],
+			},
+			review: "No previous documentation review yet.",
+		});
+		const reviewRepair = result.statePatch?.find(patch => patch.path === "/reviewRepair")?.value;
+
+		expect(result.summary).toBe("no prior continue review feedback requires repair evidence");
+		expect(reviewRepair).toMatchObject({
+			status: "pass",
+			selectedAuditTargetsCovered: true,
+			selectedAuditTargets: ["docs/a.md", "docs/b.md"],
+		});
+	});
+
 	it("archives accepted docs repairs when task validation has the same startable baseline failure", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
@@ -92,7 +153,7 @@ describe("documentation-audit flow contract", () => {
 		);
 		await Bun.write(path.join(cwd, "workflow-output/validation-stderr.txt"), "");
 
-		const result = await runScript(cwd, {
+		const result = await runArchiveScript(cwd, {
 			validationStartup: {
 				status: "startable-command-failed",
 				docsExitCode: 0,
@@ -126,10 +187,37 @@ describe("documentation-audit flow contract", () => {
 	});
 });
 
-async function runScript(cwd: string, state: WorkflowContext["state"]): Promise<ScriptResult> {
+async function runArchiveScript(cwd: string, state: WorkflowContext["state"]): Promise<ScriptResult> {
+	return runScriptFile(cwd, "archive-docs.js", state, [
+		{
+			nodeId: "consistencyReview",
+			status: "completed",
+			output: {
+				verdict: "continue",
+				summary: "continue until copyable example is repaired",
+			},
+		},
+		{
+			nodeId: "consistencyReview",
+			status: "completed",
+			output: {
+				verdict: "finish",
+				summary: "finish with the same known baseline validation failure",
+			},
+		},
+	]);
+}
+
+async function runScriptFile(
+	cwd: string,
+	scriptFileName: string,
+	state: WorkflowContext["state"],
+	completedActivations: WorkflowActivation[] = [],
+): Promise<ScriptResult> {
 	const scriptPath = path.resolve(
 		import.meta.dir,
-		"../../examples/workflow/experimental/documentation-audit/documentation-audit/scripts/archive-docs.js",
+		"../../examples/workflow/experimental/documentation-audit/documentation-audit/scripts",
+		scriptFileName,
 	);
 	const script = await Bun.file(scriptPath).text();
 	const execute = new ScriptFunctionConstructor("workflowContext", script);
@@ -137,25 +225,8 @@ async function runScript(cwd: string, state: WorkflowContext["state"]): Promise<
 	try {
 		process.chdir(cwd);
 		return await execute({
-			activation: { id: "activation-archiveDocs" },
-			completedActivations: [
-				{
-					nodeId: "consistencyReview",
-					status: "completed",
-					output: {
-						verdict: "continue",
-						summary: "continue until copyable example is repaired",
-					},
-				},
-				{
-					nodeId: "consistencyReview",
-					status: "completed",
-					output: {
-						verdict: "finish",
-						summary: "finish with the same known baseline validation failure",
-					},
-				},
-			],
+			activation: { id: `activation-${scriptFileName}` },
+			completedActivations,
 			state,
 		});
 	} finally {
@@ -167,6 +238,27 @@ async function createTempDir(): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omh-documentation-audit-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+async function createGitRepo(): Promise<string> {
+	const dir = await createTempDir();
+	await runCommand(["git", "init"], dir);
+	await runCommand(["git", "config", "user.email", "test@example.com"], dir);
+	await runCommand(["git", "config", "user.name", "Test User"], dir);
+	await runCommand(["git", "config", "commit.gpgsign", "false"], dir);
+	return dir;
+}
+
+async function runCommand(command: string[], cwd: string): Promise<void> {
+	const proc = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`${command.join(" ")} failed: ${stderr || stdout}`);
+	}
 }
 
 function validationEvidence(command: string, exitCode: number, stdout: string): string {

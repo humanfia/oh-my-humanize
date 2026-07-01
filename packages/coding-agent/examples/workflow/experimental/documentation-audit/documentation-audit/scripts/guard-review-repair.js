@@ -1,9 +1,17 @@
 const state = workflowContext.state && typeof workflowContext.state === "object" ? workflowContext.state : {};
+const audit = state.audit && typeof state.audit === "object" ? state.audit : {};
 const review = state.review;
 const patch = state.patch && typeof state.patch === "object" ? state.patch : {};
 const priorFeedback = priorReviewFeedback(review);
 const resolvedReviewFeedback = resolvedReviewFeedbackFromPatch(patch);
-const missingPatchFiles = missingProjectChangedFiles(await projectChangedFilesFromStatus(), patchChangedFiles(patch));
+const patchProjectFiles = patchChangedFiles(patch).filter(isProjectChangedFile);
+const selectedAuditTargets = selectedAuditProjectTargets(audit);
+const missingSelectedAuditTargets = missingProjectChangedFiles(selectedAuditTargets, patchProjectFiles);
+const missingPatchFiles = missingProjectChangedFiles(await projectChangedFilesFromStatus(), patchProjectFiles);
+
+if (patchStatus(patch) === "blocked") {
+	throw new Error("documentation patch reported blocked before validation; reviewer must continue or operator must change task/flow");
+}
 
 if (priorFeedback && resolvedReviewFeedback.length === 0) {
 	throw new Error(
@@ -11,6 +19,16 @@ if (priorFeedback && resolvedReviewFeedback.length === 0) {
 			"documentation patch did not resolve prior reviewer feedback",
 			`prior feedback: ${truncateText(priorFeedback, 600)}`,
 			"patch must include resolved_review_feedback evidence before validation can run",
+		].join("; "),
+	);
+}
+
+if (missingSelectedAuditTargets.length > 0) {
+	throw new Error(
+		[
+			"documentation patch did not cover selected audit targets",
+			`missing targets: ${missingSelectedAuditTargets.join(", ")}`,
+			"patch changed_files must cover selected project targets from /audit.selectedSmallestCoherentRepair.changedFileTargets or return blocked",
 		].join("; "),
 	);
 }
@@ -43,6 +61,12 @@ await Bun.write(
 		"",
 		"Patch changed_files covers all tracked and untracked project files reported by git status.",
 		"",
+		"## Selected Audit Target Coverage",
+		"",
+		selectedAuditTargets.length > 0
+			? selectedAuditTargets.map(item => `- ${item}`).join("\n")
+			: "The consolidated audit did not declare selected project targets.",
+		"",
 	].join("\n"),
 );
 
@@ -60,10 +84,18 @@ return {
 				priorFeedbackRequired: Boolean(priorFeedback),
 				resolvedReviewFeedback,
 				changedFilesCovered: true,
+				selectedAuditTargets,
+				selectedAuditTargetsCovered: true,
 			},
 		},
 	],
 };
+
+function patchStatus(value) {
+	const status = value.status ?? value.result;
+	if (typeof status !== "string") return "";
+	return status.trim().toLowerCase();
+}
 
 function priorReviewFeedback(value) {
 	if (typeof value !== "string") return "";
@@ -88,6 +120,28 @@ function patchChangedFiles(value) {
 	const field = value.changed_files ?? value.changedFiles;
 	if (!Array.isArray(field)) return [];
 	return field.filter(item => typeof item === "string").map(normalizeProjectPath).filter(Boolean);
+}
+
+function selectedAuditProjectTargets(value) {
+	const repair = value.selectedSmallestCoherentRepair;
+	const targets = [
+		...stringArrayField(repair, "changedFileTargets"),
+		...stringArrayField(repair, "changed_file_targets"),
+		...stringArrayField(value, "changedFileTargets"),
+		...stringArrayField(value, "changed_file_targets"),
+	];
+	return uniqueProjectPaths(targets.map(normalizeProjectPath).filter(isProjectChangedFile));
+}
+
+function stringArrayField(value, key) {
+	if (!value || typeof value !== "object") return [];
+	const field = value[key];
+	if (!Array.isArray(field)) return [];
+	return field.filter(item => typeof item === "string");
+}
+
+function uniqueProjectPaths(paths) {
+	return [...new Set(paths)].sort((left, right) => left.localeCompare(right, "en"));
 }
 
 function missingProjectChangedFiles(actualFiles, patchFiles) {
@@ -135,6 +189,7 @@ function isProjectChangedFile(filePath) {
 		filePath === "progress.md" ||
 		filePath === "manifest-entry.json" ||
 		filePath === "monitor-assignment.json" ||
+		/^monitor-assignment(?:-[^/]+)?\.json$/u.test(filePath) ||
 		filePath === "evidence-ledger.jsonl" ||
 		filePath.startsWith("workflow-output/") ||
 		filePath.startsWith("transcripts/") ||
