@@ -9,6 +9,7 @@
  * depends only on the yield type and the output-schema validator.
  */
 import { dereferenceJsonSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { isRecord } from "@oh-my-pi/pi-utils";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import type { YieldItem } from "./types";
 
@@ -107,15 +108,11 @@ export function arrayValuedLabels(outputSchema: unknown): ReadonlySet<string> {
 	const { jsonSchema } = buildOutputValidator(outputSchema);
 	if (jsonSchema === undefined) return labels;
 	const dereferenced = dereferenceJsonSchema(jsonSchema);
-	const labelSchema =
-		dereferenced !== null && typeof dereferenced === "object" && !Array.isArray(dereferenced)
-			? (dereferenced as Record<string, unknown>)
-			: jsonSchema;
+	const labelSchema = isRecord(dereferenced) ? dereferenced : jsonSchema;
 	const properties = labelSchema.properties;
-	if (properties === null || typeof properties !== "object" || Array.isArray(properties)) return labels;
-	const propertyMap = properties as Record<string, unknown>;
-	for (const key in propertyMap) {
-		if (isArrayTypedSchema(propertyMap[key])) labels.add(key);
+	if (!isRecord(properties)) return labels;
+	for (const key in properties) {
+		if (isArrayTypedSchema(properties[key])) labels.add(key);
 	}
 	return labels;
 }

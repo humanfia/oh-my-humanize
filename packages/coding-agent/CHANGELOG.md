@@ -69,6 +69,8 @@
 
 ### Fixed
 
+- Fixed ctrl+p role-model cycling getting stuck on one transition and skipping every other role: a session-branch traversal regression returned entries leaf-to-root, so the cycle (and session model restore) read the oldest recorded model change instead of the newest.
+- Fixed ctrl+p cycling from a stale slot after the model was switched through another surface (alt+m, /model, retry fallback): the recorded role is now trusted only while its resolved model is still the active model, falling back to matching by model.
 - Fixed the apply_patch tool to prevent silently overwriting pre-existing files during creation or renaming, rejecting upfront with an error instead.
 - Fixed multi-file apply_patch to stop at the first failing file, surface applied vs. skipped paths, and correctly report the error to the agent loop.
 - Fixed process termination (SIGTERM, SIGHUP, uncaught exceptions) skipping editor draft saves, session shutdown events, and background job cleanup.
@@ -110,6 +112,12 @@
 - Added retry-path diagnostics for assistant-tail removal and scheduled continuations after transient provider errors.
 - Fixed CJK history rendering issues across repeated compactions.
 - Fixed user-invoked skills failing to identify themselves or resolve relative paths across various execution paths.
+- Fixed type errors introduced by the merge sweep: restored the ask row-budget priority field, narrowed dereferenced schema property access, and updated stale test API usage.
+- Fixed git clone and fetch being killed by the 5-minute local-command timeout; network transfers now use a separate 30-minute deadline, overridable per call.
+- Fixed the TUI collab guest (omp join) silently dropping host ask/selector UI requests; they now present through the standard dialog flow and round-trip responses, with cancellation and resync replay handled.
+- Fixed transcript rebuilds (theme change, /shake, focus replay) showing stale streamed write/edit/eval content by sharing the partial-JSON decode between the live streaming path and every rebuild path.
+- Fixed an explicitly configured compaction.reserveTokens equal to the built-in default being silently replaced by the proportional small-window fallback; the setting now defaults to unset and explicit values are always honored.
+- Fixed user-configured LiteLLM discovery providers keeping stale reseller display-name suffixes for up to 24 hours after upgrade by invalidating the warm model cache.
 
 ## [16.2.13] - 2026-07-01
 
