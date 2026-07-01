@@ -393,6 +393,7 @@ describe("performance-optimization-search flow contract", () => {
 				"Candidate patch path: none; no `workflow-output/perf-caching-candidate.diff` was produced.",
 				"Benchmark log: none; no workflow-output/perf-caching-benchmark.log was produced.",
 				"Validation log: none; no workflow-output/perf-caching-validation.log was produced.",
+				"No candidate patch was produced. `workflow-output/perf-io-candidate.diff` was not produced and is mentioned here only as a negative no-win statement.",
 				"",
 			].join("\n"),
 		);

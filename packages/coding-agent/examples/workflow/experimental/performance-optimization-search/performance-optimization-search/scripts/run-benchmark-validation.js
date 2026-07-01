@@ -445,7 +445,13 @@ function isNegatedArtifactReference(line, artifactPath) {
 	const pathStart = normalizedLine.indexOf(normalizedPath);
 	if (pathStart < 0) return false;
 	const beforePath = normalizedLine.slice(Math.max(0, pathStart - 96), pathStart);
-	return /\b(?:no|none|not|without|missing)\b[^.!?\n]*$/u.test(beforePath);
+	const afterPath = normalizedLine.slice(pathStart + normalizedPath.length, pathStart + normalizedPath.length + 96);
+	return (
+		/\b(?:no|none|not|without|missing)\b[^.!?\n]*$/u.test(beforePath) ||
+		/^[^.!?\n]*\b(?:not|never)\s+produced\b/u.test(afterPath) ||
+		/^[^.!?\n]*\bnot\s+as\s+(?:an\s+)?advertised\b/u.test(afterPath) ||
+		/^[^.!?\n]*\bnegative\s+no-win\s+statement\b/u.test(afterPath)
+	);
 }
 
 function trimPathPunctuation(filePath) {

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental performance-optimization-search flow treating post-path no-win branch artifact negations as missing durable artifacts.
 - Fixed the experimental performance-optimization-search flow treating negated no-win branch artifact references as missing durable artifacts.
 - Fixed the experimental performance-optimization-search flow allowing branches planned as blocked/no-win to report retained positive candidates before selection.
 - Fixed the experimental documentation-audit flow archiving incomplete final evidence by requiring consolidated findings, patch rationale, reviewer verdict, and review-repair evidence in the final archive.
