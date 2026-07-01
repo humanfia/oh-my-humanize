@@ -603,7 +603,7 @@ function hasBareTmpExecutionSurface(line) {
 }
 
 function hasSharedWorkspaceExecutionSurface(line, workspaceRoot) {
-	const executionWords = /\b(?:benchmark|validation|validate|test|tests|apply-check|build|cargo|bun|npm|pnpm|yarn|make|command|run|ran|running|execute|executed|execution)\b/iu;
+	const executionWords = /\b(?:benchmark|validation|validate|test|tests|apply-check|build|cargo|bun|npm|pnpm|yarn|make|command|execute|executed|execution)\b/iu;
 	if (!executionWords.test(line)) return false;
 	if (
 		/\b(?:shared|unmodified|task|project|current)\s+(?:workspace|project directory|project tree)\b/iu.test(line)

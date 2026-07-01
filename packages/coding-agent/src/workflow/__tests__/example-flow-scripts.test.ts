@@ -6588,6 +6588,78 @@ describe("example workflow scripts", () => {
 		}
 	});
 
+	it("does not treat rollback instructions as shared workspace execution evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-rollback-shared-workspace-wording-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		const runTmp = `${cwd}/run-tmp`;
+		process.env.OMH_RUN_TMP = runTmp;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			await Bun.write(
+				`${cwd}/task.md`,
+				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+			await Bun.write(`${cwd}/workflow-output/perf-io-candidate.diff`, "candidate patch\n");
+			await Bun.write(
+				`${cwd}/workflow-output/perf-io.md`,
+				[
+					"# IO candidate",
+					"",
+					`Benchmark command cwd: ${runTmp}/branches/io/worktree`,
+					`Validation command cwd: ${runTmp}/branches/io/worktree`,
+					"candidate patch path: workflow-output/perf-io-candidate.diff",
+					"",
+					"## Rollback instructions",
+					"From the lane or selected shared workspace root, run:",
+					"",
+					"```sh",
+					"git apply -R workflow-output/perf-io-candidate.diff",
+					"```",
+				].join("\n"),
+			);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "benchmarkCandidates",
+				scriptFileName: "run-benchmark-validation.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/benchmark"],
+				initialState: {
+					task: {
+						text: await Bun.file(`${cwd}/task.md`).text(),
+						scratchRoot: runTmp,
+						benchmarkCommand: "echo benchmark",
+						validationCommand: "echo validation",
+					},
+				},
+			});
+
+			expect(result.scheduler.state.benchmark).toMatchObject({
+				status: "pass",
+				benchmarkExitCode: 0,
+				validationExitCode: 0,
+			});
+			expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).not.toContain(
+				"Shared Workspace Execution Violation",
+			);
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
 	it("refuses performance repair reports that try to override lane isolation violations", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-repair-report-finalize-");
 		const cwd = tempDir.path();
