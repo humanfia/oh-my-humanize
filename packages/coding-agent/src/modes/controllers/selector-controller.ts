@@ -79,7 +79,7 @@ import { UserMessageSelectorComponent } from "../components/user-message-selecto
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
 
-const MANUAL_LOGIN_TIP = "Tip: You can complete pairing with /login <redirect URL>.";
+const MANUAL_LOGIN_TIP = "Tip: Paste the code directly here, or use /login <redirect URL>.";
 
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { claudeCodeVersion } from "@oh-my-pi/pi-ai/providers/anthropic";
-import { AnthropicOAuthFlow, refreshAnthropicToken } from "@oh-my-pi/pi-ai/registry/oauth/anthropic";
+import { claudeCodeVersion } from "@oh-my-pi/pi-ai/providers/anthropic-version";
+import {
+	AnthropicCodeOAuthFlow,
+	AnthropicOAuthFlow,
+	refreshAnthropicToken,
+} from "@oh-my-pi/pi-ai/registry/oauth/anthropic";
 import {
 	buildAnthropicAuthConfig,
 	buildAnthropicSearchHeaders,
@@ -27,6 +31,35 @@ describe("anthropic oauth alignment", () => {
 		);
 		expect(authUrl.searchParams.get("state")).toBe(state);
 		expect(authUrl.searchParams.get("redirect_uri")).toBe(redirectUri);
+		expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+	});
+
+	it("generates Console code auth URL with fixed platform callback", async () => {
+		const flow = new AnthropicCodeOAuthFlow({}, "console");
+		const state = "state-console";
+
+		const { url } = await flow.generateAuthUrl(state);
+		const authUrl = new URL(url);
+
+		expect(authUrl.origin + authUrl.pathname).toBe("https://platform.claude.com/oauth/authorize");
+		expect(authUrl.searchParams.get("scope")).toBe(
+			"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
+		);
+		expect(authUrl.searchParams.get("state")).toBe(state);
+		expect(authUrl.searchParams.get("redirect_uri")).toBe("https://platform.claude.com/oauth/code/callback");
+		expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+	});
+
+	it("generates Claude code auth URL with fixed platform callback", async () => {
+		const flow = new AnthropicCodeOAuthFlow({}, "claudeai");
+		const state = "state-claudeai";
+
+		const { url } = await flow.generateAuthUrl(state);
+		const authUrl = new URL(url);
+
+		expect(authUrl.origin + authUrl.pathname).toBe("https://claude.com/cai/oauth/authorize");
+		expect(authUrl.searchParams.get("state")).toBe(state);
+		expect(authUrl.searchParams.get("redirect_uri")).toBe("https://platform.claude.com/oauth/code/callback");
 		expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
 	});
 
@@ -108,6 +141,39 @@ describe("anthropic oauth alignment", () => {
 		await flow.generateAuthUrl("state-123", "http://localhost:54545/callback");
 		await flow.exchangeToken("code-123#", "state-explicit", "http://localhost:54545/callback");
 
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("exchanges pasted Console callback URL with fixed platform redirect", async () => {
+		const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+			expect(typeof input === "string" ? input : input.toString()).toBe("https://api.anthropic.com/v1/oauth/token");
+			const payload = JSON.parse(String(init?.body));
+			expect(payload.code).toBe("code-123");
+			expect(payload.state).toBe("state-url");
+			expect(payload.redirect_uri).toBe("https://platform.claude.com/oauth/code/callback");
+			return new Response(
+				JSON.stringify({
+					access_token: "access-token",
+					refresh_token: "refresh-token",
+					expires_in: 3600,
+					account: {
+						uuid: "11111111-2222-3333-4444-555555555555",
+						email_address: "user@example.com",
+					},
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+
+		const flow = new AnthropicCodeOAuthFlow({ fetch: fetchMock as unknown as typeof fetch }, "console");
+		await flow.generateAuthUrl("state-console");
+		const result = await flow.exchangeToken(
+			"https://platform.claude.com/oauth/code/callback?code=code-123&state=state-url",
+			"state-console",
+		);
+
+		expect(result.access).toBe("access-token");
+		expect(result.refresh).toBe("refresh-token");
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 	it("uses api.anthropic.com token URL and CC headers for refresh", async () => {

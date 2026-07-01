@@ -644,6 +644,14 @@ export class InputController {
 
 			if (!text && !hasPendingImages) return;
 
+			if (!hasPendingImages && this.ctx.oauthManualInput?.hasPending()) {
+				this.ctx.editor.clearDraft();
+				if (this.ctx.oauthManualInput.submit(text)) {
+					this.ctx.showStatus("OAuth callback received; completing login…");
+				}
+				return;
+			}
+
 			// Continue shortcuts: "." or "c" resume the agent with a hidden agent-authored
 			// developer directive (no visible user message) instead of an empty turn, so the
 			// model continues the prior intent rather than second-guessing the interrupt.

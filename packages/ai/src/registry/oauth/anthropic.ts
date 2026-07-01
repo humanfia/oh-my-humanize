@@ -2,27 +2,32 @@
  * Anthropic OAuth flow (Claude Pro/Max)
  */
 
+import { z } from "zod/v4";
 import * as AIError from "../../error";
-import { claudeCodeVersion } from "../../providers/anthropic";
+import { claudeCodeVersion } from "../../providers/anthropic-version";
 import type { FetchImpl } from "../../types";
-import { OAuthCallbackFlow } from "./callback-server";
+import { OAuthCallbackFlow, parseCallbackInput } from "./callback-server";
 import { generatePKCE } from "./pkce";
 import type { OAuthController, OAuthCredentials } from "./types";
 
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
-const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
+const LOOPBACK_AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
+const CLAUDEAI_CODE_AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
+const CONSOLE_AUTHORIZE_URL = "https://platform.claude.com/oauth/authorize";
 const TOKEN_URL = "https://api.anthropic.com/v1/oauth/token";
 const BOOTSTRAP_URL = "https://api.anthropic.com/api/claude_cli/bootstrap";
 const CLAUDE_CODE_BOOTSTRAP_MODEL = "claude-opus-4-8";
 const CLAUDE_CODE_BOOTSTRAP_USER_AGENT = `claude-code/${claudeCodeVersion}`;
 const CALLBACK_PORT = 54545;
 const CALLBACK_PATH = "/callback";
+const CODE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 // Scopes required for direct OAuth-token inference (user:inference) plus account/session management.
-// platform.claude.com/oauth/authorize issues console tokens (org:create_api_key only) and does not
-// grant user:inference — the claude.ai endpoint is required for direct inference access.
+// Claude Code uses the same requested scope set for both browser callback and pasted-code logins.
 const SCOPES =
 	"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+
+export type AnthropicCodeLoginSource = "claudeai" | "console";
 
 function formatErrorDetails(error: unknown): string {
 	if (error instanceof Error) {
@@ -68,29 +73,40 @@ async function postJson(
 	return responseBody;
 }
 
-/**
- * Decoded shape of Anthropic's `/v1/oauth/token` response (both
- * `authorization_code` exchange and `refresh_token` refresh return the same
- * envelope). Newer responses inline `account`; older/stale credentials can
- * recover the same identity from `/api/claude_cli/bootstrap`.
- */
-interface AnthropicTokenResponse {
-	access_token: string;
-	refresh_token: string;
-	expires_in: number;
-	account?: { uuid?: string; email_address?: string };
-}
+const AnthropicTokenResponseSchema = z
+	.object({
+		access_token: z.string(),
+		refresh_token: z.string(),
+		expires_in: z.number(),
+		account: z
+			.object({
+				uuid: z.string().optional(),
+				email_address: z.string().optional(),
+			})
+			.passthrough()
+			.optional(),
+	})
+	.passthrough();
 
-interface AnthropicBootstrapResponse {
-	oauth_account?: {
-		account_uuid?: string;
-		account_email?: string;
-	};
-}
+type AnthropicTokenResponse = z.infer<typeof AnthropicTokenResponseSchema>;
+
+const AnthropicBootstrapResponseSchema = z
+	.object({
+		oauth_account: z
+			.object({
+				account_uuid: z.string().optional(),
+				account_email: z.string().optional(),
+			})
+			.passthrough()
+			.optional(),
+	})
+	.passthrough();
+
+type AnthropicBootstrapResponse = z.infer<typeof AnthropicBootstrapResponseSchema>;
 
 function parseOAuthTokenResponse(responseBody: string, operation: string): AnthropicTokenResponse {
 	try {
-		return JSON.parse(responseBody) as AnthropicTokenResponse;
+		return AnthropicTokenResponseSchema.parse(JSON.parse(responseBody));
 	} catch (error) {
 		throw new AIError.OAuthError(
 			`Anthropic ${operation} returned invalid JSON. url=${TOKEN_URL}; body=${responseBody}; details=${formatErrorDetails(error)}`,
@@ -143,7 +159,7 @@ async function fetchBootstrapIdentity(
 	}
 	let data: AnthropicBootstrapResponse;
 	try {
-		data = JSON.parse(responseBody) as AnthropicBootstrapResponse;
+		data = AnthropicBootstrapResponseSchema.parse(JSON.parse(responseBody));
 	} catch (error) {
 		throw new AIError.OAuthError(
 			`Anthropic bootstrap returned invalid JSON. url=${url}; body=${responseBody}; details=${formatErrorDetails(error)}`,
@@ -175,6 +191,74 @@ async function resolveAccountIdentity(
 	}
 }
 
+function generateState(): string {
+	const bytes = new Uint8Array(16);
+	crypto.getRandomValues(bytes);
+	return Array.from(bytes)
+		.map(value => value.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+function buildAnthropicAuthorizeUrl(
+	authorizeUrl: string,
+	state: string,
+	redirectUri: string,
+	challenge: string,
+): string {
+	const authParams = new URLSearchParams({
+		code: "true",
+		client_id: CLIENT_ID,
+		response_type: "code",
+		redirect_uri: redirectUri,
+		scope: SCOPES,
+		code_challenge: challenge,
+		code_challenge_method: "S256",
+		state,
+	});
+	return `${authorizeUrl}?${authParams.toString()}`;
+}
+
+function normalizeAuthorizationCodeInput(code: string, state: string): { code: string; state: string } {
+	const parsed = parseCallbackInput(code);
+	return {
+		code: parsed.code ?? code,
+		state: parsed.state && parsed.state.length > 0 ? parsed.state : state,
+	};
+}
+
+async function exchangeAnthropicAuthorizationCode(args: {
+	code: string;
+	state: string;
+	redirectUri: string;
+	verifier: string;
+	fetchImpl: FetchImpl;
+}): Promise<AnthropicTokenResponse> {
+	const { code, state, redirectUri, verifier, fetchImpl } = args;
+	const normalized = normalizeAuthorizationCodeInput(code, state);
+	let responseBody: string;
+	try {
+		responseBody = await postJson(
+			TOKEN_URL,
+			{
+				grant_type: "authorization_code",
+				client_id: CLIENT_ID,
+				code: normalized.code,
+				state: normalized.state,
+				redirect_uri: redirectUri,
+				code_verifier: verifier,
+			},
+			fetchImpl,
+		);
+	} catch (error) {
+		throw new AIError.OAuthError(
+			`Token exchange request failed. url=${TOKEN_URL}; redirect_uri=${redirectUri}; response_type=authorization_code; details=${formatErrorDetails(error)}`,
+			{ kind: "token-exchange", provider: "anthropic", cause: error },
+		);
+	}
+
+	return parseOAuthTokenResponse(responseBody, "token exchange");
+}
+
 export class AnthropicOAuthFlow extends OAuthCallbackFlow {
 	#verifier: string = "";
 	#challenge: string = "";
@@ -190,17 +274,7 @@ export class AnthropicOAuthFlow extends OAuthCallbackFlow {
 		this.#verifier = pkce.verifier;
 		this.#challenge = pkce.challenge;
 
-		const authParams = new URLSearchParams({
-			code: "true",
-			client_id: CLIENT_ID,
-			response_type: "code",
-			redirect_uri: redirectUri,
-			scope: SCOPES,
-			code_challenge: this.#challenge,
-			code_challenge_method: "S256",
-			state,
-		});
-		const url = `${AUTHORIZE_URL}?${authParams.toString()}`;
+		const url = buildAnthropicAuthorizeUrl(LOOPBACK_AUTHORIZE_URL, state, redirectUri, this.#challenge);
 
 		return {
 			url,
@@ -210,39 +284,13 @@ export class AnthropicOAuthFlow extends OAuthCallbackFlow {
 	}
 
 	async exchangeToken(code: string, state: string, redirectUri: string): Promise<OAuthCredentials> {
-		let exchangeCode = code;
-		let exchangeState = state;
-		const codeFragmentIndex = code.indexOf("#");
-		if (codeFragmentIndex >= 0) {
-			exchangeCode = code.slice(0, codeFragmentIndex);
-			const codeFragmentState = code.slice(codeFragmentIndex + 1);
-			if (codeFragmentState.length > 0) {
-				exchangeState = codeFragmentState;
-			}
-		}
-
-		let responseBody: string;
-		try {
-			responseBody = await postJson(
-				TOKEN_URL,
-				{
-					grant_type: "authorization_code",
-					client_id: CLIENT_ID,
-					code: exchangeCode,
-					state: exchangeState,
-					redirect_uri: redirectUri,
-					code_verifier: this.#verifier,
-				},
-				this.#fetch,
-			);
-		} catch (error) {
-			throw new AIError.OAuthError(
-				`Token exchange request failed. url=${TOKEN_URL}; redirect_uri=${redirectUri}; response_type=authorization_code; details=${formatErrorDetails(error)}`,
-				{ kind: "token-exchange", provider: "anthropic", cause: error },
-			);
-		}
-
-		const tokenData = parseOAuthTokenResponse(responseBody, "token exchange");
+		const tokenData = await exchangeAnthropicAuthorizationCode({
+			code,
+			state,
+			redirectUri,
+			verifier: this.#verifier,
+			fetchImpl: this.#fetch,
+		});
 		const { accountId, email } = await resolveAccountIdentity(tokenData, this.#fetch);
 
 		return {
@@ -255,11 +303,105 @@ export class AnthropicOAuthFlow extends OAuthCallbackFlow {
 	}
 }
 
+export class AnthropicCodeOAuthFlow {
+	#verifier: string = "";
+	#challenge: string = "";
+	#fetch: FetchImpl;
+	#source: AnthropicCodeLoginSource;
+	ctrl: OAuthController;
+
+	constructor(ctrl: OAuthController, source: AnthropicCodeLoginSource) {
+		this.ctrl = ctrl;
+		this.#source = source;
+		this.#fetch = ctrl.fetch ?? fetch;
+	}
+
+	async generateAuthUrl(state: string): Promise<{ url: string; instructions?: string }> {
+		const pkce = await generatePKCE();
+		this.#verifier = pkce.verifier;
+		this.#challenge = pkce.challenge;
+
+		const authorizeUrl = this.#source === "console" ? CONSOLE_AUTHORIZE_URL : CLAUDEAI_CODE_AUTHORIZE_URL;
+		const label = this.#source === "console" ? "Anthropic Console" : "Claude";
+		return {
+			url: buildAnthropicAuthorizeUrl(authorizeUrl, state, CODE_REDIRECT_URI, this.#challenge),
+			instructions: `Complete ${label} login in a browser, then paste the authorization code shown by Anthropic.`,
+		};
+	}
+
+	async exchangeToken(code: string, state: string): Promise<OAuthCredentials> {
+		const tokenData = await exchangeAnthropicAuthorizationCode({
+			code,
+			state,
+			redirectUri: CODE_REDIRECT_URI,
+			verifier: this.#verifier,
+			fetchImpl: this.#fetch,
+		});
+		const { accountId, email } = await resolveAccountIdentity(tokenData, this.#fetch);
+
+		return {
+			refresh: tokenData.refresh_token,
+			access: tokenData.access_token,
+			expires: Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000,
+			accountId,
+			email,
+		};
+	}
+
+	async login(): Promise<OAuthCredentials> {
+		const state = generateState();
+		const { url, instructions } = await this.generateAuthUrl(state);
+		this.ctrl.onAuth?.({ url, instructions });
+		this.ctrl.onProgress?.("Waiting for pasted authorization code...");
+		const input = await this.#waitForCode(state);
+		this.ctrl.onProgress?.("Exchanging authorization code for tokens...");
+		return this.exchangeToken(input.code, input.state);
+	}
+
+	async #waitForCode(expectedState: string): Promise<{ code: string; state: string }> {
+		while (true) {
+			if (this.ctrl.signal?.aborted) {
+				throw new AIError.LoginCancelledError(`OAuth login cancelled: ${this.ctrl.signal.reason}`);
+			}
+			const input = await this.#readCodeInput();
+			const parsed = parseCallbackInput(input);
+			if (!parsed.code) {
+				this.ctrl.onProgress?.("No authorization code found in pasted input. Try again.");
+				continue;
+			}
+			if (parsed.state && parsed.state !== expectedState) {
+				this.ctrl.onProgress?.("Pasted authorization state did not match this login attempt. Try again.");
+				continue;
+			}
+			return { code: parsed.code, state: parsed.state ?? expectedState };
+		}
+	}
+
+	#readCodeInput(): Promise<string> {
+		if (this.ctrl.onManualCodeInput) return this.ctrl.onManualCodeInput();
+		if (this.ctrl.onPrompt) {
+			return this.ctrl.onPrompt({ message: "Paste the authorization code (or full redirect URL):" });
+		}
+		throw new AIError.ConfigurationError("Anthropic pasted-code OAuth requires a manual code input callback.");
+	}
+}
+
 /**
- * Login with Anthropic OAuth
+ * Login with Anthropic OAuth using a local callback server.
  */
 export async function loginAnthropic(ctrl: OAuthController): Promise<OAuthCredentials> {
 	const flow = new AnthropicOAuthFlow(ctrl);
+	return flow.login();
+}
+
+/**
+ * Login with Anthropic OAuth using Claude Code's pasted-code redirect page.
+ */
+export async function loginAnthropicCode(
+	ctrl: OAuthController,
+	source: AnthropicCodeLoginSource = "claudeai",
+): Promise<OAuthCredentials> {
+	const flow = new AnthropicCodeOAuthFlow(ctrl, source);
 	return flow.login();
 }
 
