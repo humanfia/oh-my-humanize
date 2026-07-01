@@ -12595,9 +12595,23 @@ export class AgentSession {
 	 * Cancel in-progress retry.
 	 */
 	abortRetry(): void {
-		this.#retryAbortController?.abort();
-		// Note: _retryAttempt is reset in the catch block of _autoRetry
-		this.#resolveRetry();
+		const attempt = this.#retryAttempt;
+		const retryAbortController = this.#retryAbortController;
+		this.#retryAttempt = 0;
+		this.#retryAbortController = undefined;
+		retryAbortController?.abort();
+		if (attempt <= 0) {
+			this.#resolveRetry();
+			return;
+		}
+		void this.#emitSessionEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt,
+			finalError: "Retry cancelled",
+		}).finally(() => {
+			this.#resolveRetry();
+		});
 	}
 
 	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice }): Promise<void> {

@@ -317,6 +317,41 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("counts declared research reproduction output signals as exercised evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-output-signal-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "reproduceBaseline",
+			scriptFileName: "run-reproduction.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/reproduction"],
+			initialState: {
+				task: {
+					reproductionCommand: "printf 'read\\n'",
+					reproductionSignal: "read",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.reproduction).toMatchObject({
+			status: "pass",
+			exercised: true,
+			exitCode: 0,
+			stdoutPreview: "read\n",
+		});
+		expect(await Bun.file(`${cwd}/workflow-output/reproduction-baseline.json`).json()).toMatchObject({
+			expectedSignal: "read",
+			exerciseSummary: {
+				exercised: true,
+				positiveSignals: ["declared-output-signal"],
+			},
+		});
+	});
+
 	it("keeps research reproduction baseline streams in artifacts instead of inline state", async () => {
 		using tempDir = TempDir.createSync("@omh-research-reproduction-baseline-output-state-");
 		const cwd = tempDir.path();
@@ -528,8 +563,14 @@ describe("example workflow scripts", () => {
 				"Reproduction Command:",
 				"python -m pytest tests/test_signer.py -q",
 				"",
+				"Reproduction Signal:",
+				"signature round trip",
+				"",
 				"Validation Command:",
 				"python -m pytest tests/test_signer.py -q",
+				"",
+				"Validation Signal:",
+				"tests/test_signer.py",
 			].join("\n"),
 		);
 
@@ -552,6 +593,8 @@ describe("example workflow scripts", () => {
 			].join("\n"),
 			reproductionCommand: "python -m pytest tests/test_signer.py -q",
 			validationCommand: "python -m pytest tests/test_signer.py -q",
+			reproductionSignal: "signature round trip",
+			validationSignal: "tests/test_signer.py",
 		});
 	});
 
@@ -1242,6 +1285,60 @@ describe("example workflow scripts", () => {
 		expect(evidence).toContain("variant exercised");
 		expect(evidence).toContain("### Validation stdout");
 		expect(evidence).toContain("896 passed");
+	});
+
+	it("counts declared research reproduction variant and validation output signals as evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-variant-validation-signals-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runVariant",
+			scriptFileName: "run-variant.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/variant"],
+			initialState: {
+				task: {
+					variantCommand: "printf 'variant-ok\\n'",
+					variantSignal: "variant-ok",
+					validationCommand: "printf 'validation-ok\\n'",
+					validationSignal: "validation-ok",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.variant).toMatchObject({
+			status: "pass",
+			variantExerciseSummary: {
+				exercised: true,
+				positiveSignals: ["declared-output-signal"],
+			},
+			exerciseSummary: {
+				exercised: true,
+				positiveSignals: ["declared-output-signal"],
+			},
+			variantCommandEvidence: {
+				expectedSignal: "variant-ok",
+			},
+			validationCommandEvidence: {
+				expectedSignal: "validation-ok",
+			},
+		});
+		const evidence = await Bun.file(`${cwd}/workflow-output/reproduction-variant.json`).json();
+		expect(evidence).toMatchObject({
+			variantSignal: "variant-ok",
+			validationSignal: "validation-ok",
+			variantExerciseSummary: {
+				exercised: true,
+				positiveSignals: ["declared-output-signal"],
+			},
+			validationExerciseSummary: {
+				exercised: true,
+				positiveSignals: ["declared-output-signal"],
+			},
+		});
 	});
 
 	it("records absent research reproduction variant command evidence as null", async () => {
@@ -4958,6 +5055,35 @@ describe("example workflow scripts", () => {
 		expect(evidence).toContain("missing dependency");
 	});
 
+	it("fails performance optimization closed when a zero-exit baseline reports a fatal diagnostic", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-baseline-diagnostic-fail-closed-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "captureBaseline",
+			scriptFileName: "capture-baseline.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/baseline"],
+			initialState: {
+				task: {
+					baselineCommand: "printf \"Search path 'needle' is not a directory\\n\" >&2",
+				},
+			},
+		});
+
+		expect(result.scheduler.activations.find(activation => activation.nodeId === "captureBaseline")?.status).toBe(
+			"failed",
+		);
+		expect(result.scheduler.state.baseline).toBeUndefined();
+		const evidence = await Bun.file(`${cwd}/workflow-output/performance-baseline.md`).text();
+		expect(evidence).toContain("Exit code: 0");
+		expect(evidence).toContain("Fatal Command Diagnostic");
+		expect(evidence).toContain("Search path 'needle' is not a directory");
+	});
+
 	it("records shared project files after successful performance baseline as the pre-branch snapshot", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-baseline-snapshot-");
 		const cwd = tempDir.path();
@@ -5543,6 +5669,48 @@ describe("example workflow scripts", () => {
 			validationExitCode: 0,
 		});
 		expect(result.scheduler.state.benchmark).not.toHaveProperty("isolationViolation");
+	});
+
+	it("fails performance benchmark joins when a zero-exit benchmark reports a fatal diagnostic", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-benchmark-diagnostic-fail-closed-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await Bun.write(`${cwd}/src.txt`, "baseline\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+		);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src.txt", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "benchmarkCandidates",
+			scriptFileName: "run-benchmark-validation.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/benchmark"],
+			initialState: {
+				task: {
+					benchmarkCommand: "printf \"Search path 'needle' is not a directory\\n\" >&2",
+					validationCommand: "echo validation",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.benchmark).toMatchObject({
+			status: "fail",
+			benchmarkExitCode: 0,
+			benchmarkFailureDiagnostic: "Search path 'needle' is not a directory",
+			validationExitCode: 0,
+		});
+		const evidence = await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text();
+		expect(evidence).toContain("Benchmark Fatal Command Diagnostic");
+		expect(evidence).toContain("Search path 'needle' is not a directory");
 	});
 
 	it("blocks performance benchmark joins when shared project edits are newer than the pre-branch snapshot", async () => {

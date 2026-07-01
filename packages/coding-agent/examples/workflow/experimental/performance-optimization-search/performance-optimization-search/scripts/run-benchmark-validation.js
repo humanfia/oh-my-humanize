@@ -206,14 +206,19 @@ if (missingDeclaredArtifacts.length > 0) {
 
 const benchmark = await runShell(benchmarkCommand);
 const validation = await runShell(validationCommand);
+const benchmarkFailureDiagnostic = commandFailureDiagnostic(benchmark);
+const validationFailureDiagnostic = commandFailureDiagnostic(validation);
 const outputPath = "workflow-output/performance-benchmark.md";
-await Bun.write(outputPath, evidenceMarkdown(benchmarkCommand, benchmark, validationCommand, validation));
+await Bun.write(
+	outputPath,
+	evidenceMarkdown(benchmarkCommand, benchmark, benchmarkFailureDiagnostic, validationCommand, validation, validationFailureDiagnostic),
+);
+const benchmarkPassed = benchmark.exitCode === 0 && !benchmarkFailureDiagnostic;
+const validationPassed = validation.exitCode === 0 && !validationFailureDiagnostic;
 
 return {
-	summary: `benchmark=${benchmark.exitCode === 0 ? "pass" : "fail"} validation=${
-		validation.exitCode === 0 ? "pass" : "fail"
-	}`,
-	data: { benchmark, validation },
+	summary: `benchmark=${benchmarkPassed ? "pass" : "fail"} validation=${validationPassed ? "pass" : "fail"}`,
+	data: { benchmark, validation, benchmarkFailureDiagnostic, validationFailureDiagnostic },
 	statePatch: [
 		{
 			op: "set",
@@ -221,9 +226,11 @@ return {
 			value: {
 				benchmarkCommand,
 				benchmarkExitCode: benchmark.exitCode,
+				benchmarkFailureDiagnostic,
 				validationCommand,
 				validationExitCode: validation.exitCode,
-				status: benchmark.exitCode === 0 && validation.exitCode === 0 ? "pass" : "fail",
+				validationFailureDiagnostic,
+				status: benchmarkPassed && validationPassed ? "pass" : "fail",
 				outputPath,
 			},
 		},
@@ -720,8 +727,15 @@ async function runShell(command) {
 	};
 }
 
-function evidenceMarkdown(benchmarkCommand, benchmark, validationCommand, validation) {
-	return [
+function evidenceMarkdown(
+	benchmarkCommand,
+	benchmark,
+	benchmarkFailureDiagnostic,
+	validationCommand,
+	validation,
+	validationFailureDiagnostic,
+) {
+	const lines = [
 		"# Performance Benchmark Evidence",
 		"",
 		"## Benchmark Command",
@@ -736,6 +750,11 @@ function evidenceMarkdown(benchmarkCommand, benchmark, validationCommand, valida
 		benchmark.stdout || benchmark.stderr || "(empty)",
 		"```",
 		"",
+	];
+	if (benchmarkFailureDiagnostic) {
+		lines.push("### Benchmark Fatal Command Diagnostic", "", benchmarkFailureDiagnostic, "");
+	}
+	lines.push(
 		"## Validation Command",
 		"",
 		"```sh",
@@ -748,7 +767,32 @@ function evidenceMarkdown(benchmarkCommand, benchmark, validationCommand, valida
 		validation.stdout || validation.stderr || "(empty)",
 		"```",
 		"",
-	].join("\n");
+	);
+	if (validationFailureDiagnostic) {
+		lines.push("### Validation Fatal Command Diagnostic", "", validationFailureDiagnostic, "");
+	}
+	return lines.join("\n");
+}
+
+function commandFailureDiagnostic(result) {
+	const text = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+	for (const line of text.split(/\r?\n/u)) {
+		const diagnostic = line.trim();
+		if (!diagnostic) continue;
+		if (isFatalCommandDiagnostic(diagnostic)) return diagnostic;
+	}
+	return "";
+}
+
+function isFatalCommandDiagnostic(line) {
+	return (
+		/\b(?:command not found|no such file or directory|not a directory|is not a directory|permission denied)\b/iu.test(
+			line,
+		) ||
+		/\b(?:unknown|unrecognized|invalid)\s+(?:option|flag|argument|parameter)\b/iu.test(line) ||
+		/^usage:\s+/iu.test(line) ||
+		/\b(?:traceback \(most recent call last\)|syntaxerror|modulenotfounderror|importerror)\b/u.test(line)
+	);
 }
 
 function projectLocalScratchIsolationViolationMarkdown(projectLocalScratchPaths) {

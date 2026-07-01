@@ -5,11 +5,12 @@ if (typeof command !== "string" || command.trim() === "") {
 }
 
 const result = await runShell(command);
-const exerciseSummary = analyzeExercise(result, command);
+const expectedSignal = task?.reproductionSignal;
+const exerciseSummary = analyzeExercise(result, command, expectedSignal);
 const outputPath = "workflow-output/reproduction-baseline.md";
 const evidencePath = "workflow-output/reproduction-baseline.json";
-await Bun.write(outputPath, evidenceMarkdown("Reproduction", command, result));
-await writeStructuredEvidence(evidencePath, { label: "Reproduction", command, result, exerciseSummary });
+await Bun.write(outputPath, evidenceMarkdown("Reproduction", command, result, expectedSignal));
+await writeStructuredEvidence(evidencePath, { label: "Reproduction", command, result, expectedSignal, exerciseSummary });
 
 return {
 	summary: `reproduction ${result.exitCode === 0 && exerciseSummary.exercised ? "pass" : "fail"}`,
@@ -43,13 +44,15 @@ function stateValue(command, result, outputPath, evidencePath, exerciseSummary) 
 	};
 }
 
-function evidenceMarkdown(label, command, result) {
+function evidenceMarkdown(label, command, result, expectedSignal) {
 	return [
 		`# ${label}`,
 		"",
 		"```sh",
 		command,
 		"```",
+		"",
+		`Declared output signal: ${stringValue(expectedSignal) || "(not provided)"}`,
 		"",
 		`Exit code: ${result.exitCode}`,
 		"",
@@ -75,12 +78,16 @@ function statePreview(text) {
 function nonExercisingOutput(result) {
 	const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
 	if (hasExercisingSignal(text)) return false;
-	return !analyzeExercise(result, "").exercised;
+	return !analyzeExercise(result, "", undefined).exercised;
 }
 
-function analyzeExercise(result, command) {
-	const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
+function analyzeExercise(result, command, expectedSignal) {
+	const outputText = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+	const text = outputText.toLowerCase();
 	const positiveSignals = exerciseSignals(text);
+	if (result.exitCode === 0 && outputIncludesSignal(outputText, expectedSignal)) {
+		positiveSignals.push("declared-output-signal");
+	}
 	if (result.exitCode === 0 && assertionBackedCommand(command) && text.trim().length > 0) {
 		positiveSignals.push("assertion-backed-command");
 	}
@@ -105,6 +112,15 @@ function analyzeExercise(result, command) {
 
 function hasExercisingSignal(text) {
 	return exerciseSignals(text).length > 0;
+}
+
+function outputIncludesSignal(outputText, expectedSignal) {
+	const signal = stringValue(expectedSignal);
+	return signal !== "" && outputText.includes(signal);
+}
+
+function stringValue(value) {
+	return typeof value === "string" ? value.trim() : "";
 }
 
 function exerciseSignals(text) {

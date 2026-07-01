@@ -1163,6 +1163,87 @@ describe("AgentSession retry delay cap", () => {
 		});
 	});
 
+	it("settles auto-retry when abortRetry cancels an in-flight retry continuation", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) {
+			throw new Error("Expected bundled Anthropic test model to exist");
+		}
+
+		const mock = createMockModel();
+		let attempts = 0;
+		let retryStream: AssistantMessageEventStream | undefined;
+		const retryContinuationStarted = Promise.withResolvers<void>();
+		const retryEnded = Promise.withResolvers<void>();
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				attempts += 1;
+				if (attempts === 1) {
+					mock.push({ throw: "502 Bad Gateway upstream_error" });
+					return mock.stream(requestedModel, context, options);
+				}
+				retryStream = new AssistantMessageEventStream();
+				retryContinuationStarted.resolve();
+				return retryStream;
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxDelayMs": 5_000,
+			"retry.maxRetries": 1,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const retryEndEvents: AutoRetryEndEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_end") {
+				retryEndEvents.push(event);
+				retryEnded.resolve();
+			}
+		});
+
+		const currentSession = session;
+		const promptPromise = currentSession.prompt("Trigger 502 then cancel in-flight retry continuation");
+		await retryContinuationStarted.promise;
+
+		expect(attempts).toBe(2);
+		expect(currentSession.isRetrying).toBe(true);
+
+		currentSession.abortRetry();
+		const retryEndResult = await Promise.race([
+			retryEnded.promise.then(() => "ended"),
+			Bun.sleep(500).then(() => "timeout"),
+		]);
+		expect(retryEndResult).toBe("ended");
+		expect(currentSession.isRetrying).toBe(false);
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({
+			success: false,
+			attempt: 1,
+			finalError: "Retry cancelled",
+		});
+
+		retryStream?.fail(new Error("released cancelled retry continuation"));
+		await promptPromise;
+		expect(retryEndEvents).toHaveLength(1);
+	});
+
 	it("auto-retries Cloudflare 520 gateway pages from OpenAI-compatible providers", async () => {
 		authStorage.setRuntimeApiKey("openai", "openai-test-key");
 		const model = getBundledModel("openai", "gpt-5");

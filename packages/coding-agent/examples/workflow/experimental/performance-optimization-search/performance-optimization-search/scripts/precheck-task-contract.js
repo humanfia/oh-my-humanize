@@ -45,6 +45,12 @@ if (validationPreflight.exitCode !== 0) {
 		`performance-optimization-search validation command failed preflight with exit code ${validationPreflight.exitCode}`,
 	);
 }
+const validationFailureDiagnostic = commandFailureDiagnostic(validationPreflight);
+if (validationFailureDiagnostic) {
+	throw new Error(
+		`performance-optimization-search validation command produced a fatal diagnostic despite exit code 0: ${validationFailureDiagnostic}`,
+	);
+}
 
 return {
 	summary: "validated performance optimization task contract",
@@ -64,6 +70,7 @@ return {
 					exitCode: validationPreflight.exitCode,
 					stdout: validationPreflight.stdout,
 					stderr: validationPreflight.stderr,
+					failureDiagnostic: validationFailureDiagnostic,
 				},
 			},
 		},
@@ -228,7 +235,8 @@ async function runShell(command) {
 }
 
 function commandEvidenceMarkdown(command, result) {
-	return [
+	const failureDiagnostic = commandFailureDiagnostic(result);
+	const lines = [
 		"```sh",
 		command,
 		"```",
@@ -238,7 +246,33 @@ function commandEvidenceMarkdown(command, result) {
 		"```text",
 		result.stdout || result.stderr || "(empty)",
 		"```",
-	].join("\n");
+		"",
+	];
+	if (failureDiagnostic) {
+		lines.push("### Fatal Command Diagnostic", "", failureDiagnostic, "");
+	}
+	return lines.join("\n");
+}
+
+function commandFailureDiagnostic(result) {
+	const text = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+	for (const line of text.split(/\r?\n/u)) {
+		const diagnostic = line.trim();
+		if (!diagnostic) continue;
+		if (isFatalCommandDiagnostic(diagnostic)) return diagnostic;
+	}
+	return "";
+}
+
+function isFatalCommandDiagnostic(line) {
+	return (
+		/\b(?:command not found|no such file or directory|not a directory|is not a directory|permission denied)\b/iu.test(
+			line,
+		) ||
+		/\b(?:unknown|unrecognized|invalid)\s+(?:option|flag|argument|parameter)\b/iu.test(line) ||
+		/^usage:\s+/iu.test(line) ||
+		/\b(?:traceback \(most recent call last\)|syntaxerror|modulenotfounderror|importerror)\b/u.test(line)
+	);
 }
 
 async function currentSharedGitWorktreePaths() {

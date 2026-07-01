@@ -4,6 +4,9 @@ const reproductionCommand = requiredCommand(taskText, "Reproduction Command");
 const validationCommand = requiredCommand(taskText, "Validation Command");
 const setupCommand = optionalCommand(taskText, "Setup Command");
 const variantCommand = optionalCommand(taskText, "Variant Command");
+const reproductionSignal = optionalTextField(taskText, "Reproduction Signal");
+const variantSignal = optionalTextField(taskText, "Variant Signal");
+const validationSignal = optionalTextField(taskText, "Validation Signal");
 validateShellCommand(reproductionCommand, "Reproduction Command");
 validateShellCommand(validationCommand, "Validation Command");
 if (setupCommand) validateShellCommand(setupCommand, "Setup Command");
@@ -45,6 +48,12 @@ await Bun.write(
 		variantCommand || "(not provided)",
 		"```",
 		"",
+		"## Declared Output Signals",
+		"",
+		`- Reproduction: ${reproductionSignal || "(not provided)"}`,
+		`- Variant: ${variantSignal || "(not provided)"}`,
+		`- Validation: ${validationSignal || "(not provided)"}`,
+		"",
 	].join("\n"),
 );
 
@@ -62,6 +71,9 @@ return {
 				validationCommand,
 				setupCommand,
 				variantCommand,
+				reproductionSignal,
+				variantSignal,
+				validationSignal,
 			},
 		},
 		{ op: "set", path: "/runtime", value: runtime },

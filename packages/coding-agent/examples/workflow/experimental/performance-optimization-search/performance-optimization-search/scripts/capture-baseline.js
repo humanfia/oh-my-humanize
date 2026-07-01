@@ -6,14 +6,21 @@ if (typeof command !== "string" || command.trim() === "") {
 
 const result = await runShell(command);
 const outputPath = "workflow-output/performance-baseline.md";
-await Bun.write(outputPath, evidenceMarkdown("Baseline", command, result));
-const sharedProjectFilesBeforeBranches = await changedProjectFiles();
+const failureDiagnostic = commandFailureDiagnostic(result);
+await Bun.write(outputPath, evidenceMarkdown("Baseline", command, result, failureDiagnostic));
 
 if (result.exitCode !== 0) {
 	throw new Error(
 		`baseline command failed with exit code ${result.exitCode}; evidence written to ${outputPath}; fix the task environment or command before planning optimizations`,
 	);
 }
+if (failureDiagnostic) {
+	throw new Error(
+		`baseline command produced a fatal diagnostic despite exit code 0: ${failureDiagnostic}; evidence written to ${outputPath}; fix the task command before planning optimizations`,
+	);
+}
+
+const sharedProjectFilesBeforeBranches = await changedProjectFiles();
 
 return {
 	summary: `captured performance baseline; exit=${result.exitCode}`,
@@ -25,8 +32,9 @@ return {
 			value: {
 				command,
 				exitCode: result.exitCode,
+				failureDiagnostic,
 				outputPath,
-				status: result.exitCode === 0 ? "pass" : "fail",
+				status: result.exitCode === 0 && !failureDiagnostic ? "pass" : "fail",
 			},
 		},
 		{
@@ -102,8 +110,8 @@ async function runShell(command) {
 	};
 }
 
-function evidenceMarkdown(label, command, result) {
-	return [
+function evidenceMarkdown(label, command, result, failureDiagnostic) {
+	const lines = [
 		`# Performance ${label} Evidence`,
 		"",
 		"## Command",
@@ -126,11 +134,36 @@ function evidenceMarkdown(label, command, result) {
 		result.stderr || "(empty)",
 		"```",
 		"",
-	].join("\n");
+	];
+	if (failureDiagnostic) {
+		lines.push("## Fatal Command Diagnostic", "", failureDiagnostic, "");
+	}
+	return lines.join("\n");
 }
 
 function bounded(text) {
 	const limit = 12000;
 	if (text.length <= limit) return text;
 	return `${text.slice(0, limit)}\n[truncated ${text.length - limit} bytes]`;
+}
+
+function commandFailureDiagnostic(result) {
+	const text = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+	for (const line of text.split(/\r?\n/u)) {
+		const diagnostic = line.trim();
+		if (!diagnostic) continue;
+		if (isFatalCommandDiagnostic(diagnostic)) return diagnostic;
+	}
+	return "";
+}
+
+function isFatalCommandDiagnostic(line) {
+	return (
+		/\b(?:command not found|no such file or directory|not a directory|is not a directory|permission denied)\b/iu.test(
+			line,
+		) ||
+		/\b(?:unknown|unrecognized|invalid)\s+(?:option|flag|argument|parameter)\b/iu.test(line) ||
+		/^usage:\s+/iu.test(line) ||
+		/\b(?:traceback \(most recent call last\)|syntaxerror|modulenotfounderror|importerror)\b/u.test(line)
+	);
 }

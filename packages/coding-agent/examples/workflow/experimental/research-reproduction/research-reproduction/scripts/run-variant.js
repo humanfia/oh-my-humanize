@@ -1,6 +1,8 @@
 const task = workflowContext.state?.task;
 const variantCommand = task?.variantCommand;
 const validationCommand = task?.validationCommand;
+const variantSignal = task?.variantSignal;
+const validationSignal = task?.validationSignal;
 const outputPath = "workflow-output/reproduction-variant.md";
 
 if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
@@ -10,25 +12,28 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 const variant =
 	typeof variantCommand === "string" && variantCommand.trim() !== "" ? await runShell(variantCommand) : undefined;
 const validation = await runShell(validationCommand);
-const variantExerciseSummary = variant ? analyzeExercise(variant, variantCommand) : undefined;
-const validationExerciseSummary = analyzeExercise(validation, validationCommand);
+const variantExerciseSummary = variant ? analyzeExercise(variant, variantCommand, variantSignal) : undefined;
+const validationExerciseSummary = analyzeExercise(validation, validationCommand, validationSignal);
 const variantCommandEvidence = variant
-	? commandEvidence("variant", variantCommand, variant, variantExerciseSummary)
+	? commandEvidence("variant", variantCommand, variant, variantExerciseSummary, variantSignal)
 	: null;
 const validationCommandEvidence = commandEvidence(
 	"validation",
 	validationCommand,
 	validation,
 	validationExerciseSummary,
+	validationSignal,
 );
 const evidencePath = "workflow-output/reproduction-variant.json";
 await Bun.write(outputPath, evidenceMarkdown(variantCommand, variant, validationCommand, validation));
 await writeStructuredEvidence(evidencePath, {
 	variantCommand,
+	variantSignal,
 	variant,
 	variantExerciseSummary,
 	variantCommandEvidence,
 	validationCommand,
+	validationSignal,
 	validation,
 	validationExerciseSummary,
 	validationCommandEvidence,
@@ -57,21 +62,22 @@ return {
 				variantStderrPath: variant ? evidencePath : undefined,
 				variantExerciseSummary,
 				variantCommandEvidence: variant
-					? stateCommandEvidence("variant", variantCommand, variant, variantExerciseSummary, evidencePath)
-					: null,
-				validationCommand,
+						? stateCommandEvidence("variant", variantCommand, variant, variantExerciseSummary, evidencePath, variantSignal)
+						: null,
+					validationCommand,
 				validationExitCode: validation.exitCode,
 				validationStdoutPath: evidencePath,
 				validationStderrPath: evidencePath,
 				validationExercised,
 				exerciseSummary: validationExerciseSummary,
-				validationCommandEvidence: stateCommandEvidence(
-					"validation",
-					validationCommand,
-					validation,
-					validationExerciseSummary,
-					evidencePath,
-				),
+					validationCommandEvidence: stateCommandEvidence(
+						"validation",
+						validationCommand,
+						validation,
+						validationExerciseSummary,
+						evidencePath,
+						validationSignal,
+					),
 				status: variantPass && validationPass ? "pass" : "fail",
 				outputPath,
 				evidencePath,
@@ -125,10 +131,11 @@ function appendCommand(lines, label, command, result) {
 	);
 }
 
-function commandEvidence(role, command, result, exerciseSummary) {
+function commandEvidence(role, command, result, exerciseSummary, expectedSignal) {
 	return {
 		role,
 		command,
+		expectedSignal: stringValue(expectedSignal) || undefined,
 		exitCode: result.exitCode,
 		stdout: result.stdout,
 		stderr: result.stderr,
@@ -136,10 +143,11 @@ function commandEvidence(role, command, result, exerciseSummary) {
 	};
 }
 
-function stateCommandEvidence(role, command, result, exerciseSummary, evidencePath) {
+function stateCommandEvidence(role, command, result, exerciseSummary, evidencePath, expectedSignal) {
 	return {
 		role,
 		command,
+		expectedSignal: stringValue(expectedSignal) || undefined,
 		exitCode: result.exitCode,
 		stdoutPath: evidencePath,
 		stderrPath: evidencePath,
@@ -164,12 +172,16 @@ function bounded(text) {
 function nonExercisingOutput(result) {
 	const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
 	if (hasExercisingSignal(text)) return false;
-	return !analyzeExercise(result, "").exercised;
+	return !analyzeExercise(result, "", undefined).exercised;
 }
 
-function analyzeExercise(result, command) {
-	const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.toLowerCase();
+function analyzeExercise(result, command, expectedSignal) {
+	const outputText = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+	const text = outputText.toLowerCase();
 	const positiveSignals = exerciseSignals(text);
+	if (result.exitCode === 0 && outputIncludesSignal(outputText, expectedSignal)) {
+		positiveSignals.push("declared-output-signal");
+	}
 	if (result.exitCode === 0 && assertionBackedCommand(command) && text.trim().length > 0) {
 		positiveSignals.push("assertion-backed-command");
 	}
@@ -194,6 +206,15 @@ function analyzeExercise(result, command) {
 
 function hasExercisingSignal(text) {
 	return exerciseSignals(text).length > 0;
+}
+
+function outputIncludesSignal(outputText, expectedSignal) {
+	const signal = stringValue(expectedSignal);
+	return signal !== "" && outputText.includes(signal);
+}
+
+function stringValue(value) {
+	return typeof value === "string" ? value.trim() : "";
 }
 
 function exerciseSignals(text) {
