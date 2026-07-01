@@ -29,6 +29,16 @@ interface WorkflowContext {
 			isolationViolation?: boolean;
 		};
 		selectionRepair?: {
+			status?: string;
+			selectedBranch?: string;
+			finalSelection?: boolean;
+			rollbackBeforeSelection?: string;
+			projectFilesRetained?: string[];
+			projectFilesRevertedBeforeSelection?: string[];
+			applyCheck?: {
+				status?: string;
+				exitCode?: number;
+			};
 			benchmark?: {
 				status?: string;
 				exitCode?: number;
@@ -610,6 +620,42 @@ describe("performance-optimization-search flow contract", () => {
 		});
 	});
 
+	it("finalizes after selection repair resolves a prior parallel lane isolation violation", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "tests"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "src/click/shell_completion.py"),
+			"def split_arg_string(value):\n    return [value]\n",
+		);
+		await Bun.write(path.join(cwd, "tests/test_parser.py"), "def test_parser():\n    assert True\n");
+		await runCommand(["git", "add", "src/click/shell_completion.py", "tests/test_parser.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(
+			path.join(cwd, "src/click/shell_completion.py"),
+			"def split_arg_string(value):\n    return value.split()\n",
+		);
+		await Bun.write(path.join(cwd, "tests/test_parser.py"), "def test_parser():\n    assert True\n");
+		await writePositiveAlgorithmicSelectionReports(cwd);
+
+		const result = await runScriptFile(cwd, "finalize-performance-selection.js", {
+			review: "verdict: finish",
+			task: { text: "No-Win Result: allowed" },
+			benchmark: { status: "fail", isolationViolation: true, benchmarkExitCode: 1, validationExitCode: 1 },
+			selectionRepair: resolvedIsolationSelectionRepair(),
+		});
+		const selection = result.statePatch?.find(patch => patch.path === "/selection")?.value;
+
+		expect(result.summary).toBe("finalized performance selection: positive");
+		expect(selection).toMatchObject({
+			status: "pass",
+			terminalState: "positive",
+			selectedBranches: ["algorithmic"],
+			noWinBranches: ["io"],
+		});
+	});
+
 	it("accepts a benchmark-relevant no-win branch without retained positive evidence", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
@@ -908,6 +954,49 @@ describe("performance-optimization-search flow contract", () => {
 			noWin: true,
 		});
 	});
+
+	it("archives after selection repair resolves a prior parallel lane isolation violation", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "tests"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "src/click/shell_completion.py"),
+			"def split_arg_string(value):\n    return [value]\n",
+		);
+		await Bun.write(path.join(cwd, "tests/test_parser.py"), "def test_parser():\n    assert True\n");
+		await Bun.write(path.join(cwd, "workflow-output/performance-baseline.md"), "# Baseline\n\nexit code 0\n");
+		await runCommand(["git", "add", "src/click/shell_completion.py", "tests/test_parser.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(
+			path.join(cwd, "src/click/shell_completion.py"),
+			"def split_arg_string(value):\n    return value.split()\n",
+		);
+		await Bun.write(path.join(cwd, "tests/test_parser.py"), "def test_parser():\n    assert True\n");
+		await writePositiveAlgorithmicSelectionReports(cwd);
+
+		const result = await runScriptFile(cwd, "archive-performance.js", {
+			review: "verdict: finish",
+			task: { text: "No-Win Result: allowed" },
+			benchmark: { status: "fail", isolationViolation: true, benchmarkExitCode: 1, validationExitCode: 1 },
+			selectionRepair: resolvedIsolationSelectionRepair(),
+			selection: {
+				status: "pass",
+				terminalState: "positive",
+				selectedBranches: ["algorithmic"],
+				noWinBranches: ["io"],
+			},
+		});
+		const archive = result.statePatch?.find(patch => patch.path === "/archive")?.value;
+
+		expect(result.summary).toBe("archived performance optimization evidence");
+		expect(archive).toMatchObject({
+			status: "accepted",
+			benchmark: "pass",
+			validation: "pass",
+			noWin: false,
+		});
+	});
 });
 
 async function runScriptFile(
@@ -979,6 +1068,75 @@ async function writeNoWinBranchReport(cwd: string, strategy: string, decision: s
 			"",
 		].join("\n"),
 	);
+}
+
+async function writePositiveAlgorithmicSelectionReports(cwd: string): Promise<void> {
+	await Bun.write(
+		path.join(cwd, "workflow-output/perf-algorithmic.md"),
+		[
+			"# Algorithmic branch",
+			"final-selection: yes",
+			"benchmark-relevance: yes",
+			"semantic-probe: yes",
+			"benchmark improvement: selected candidate is faster on the task-declared benchmark.",
+			"rollback evidence: git apply -R workflow-output/perf-algorithmic-candidate.diff",
+			"",
+		].join("\n"),
+	);
+	await Bun.write(
+		path.join(cwd, "workflow-output/perf-caching.md"),
+		[
+			"# Caching branch",
+			"final-selection: no",
+			"benchmark-relevance: yes",
+			"positive benchmark improvement: yes",
+			"benchmark-covered rejection: yes",
+			"rejected because the selected algorithmic candidate is faster.",
+			"rollback evidence: no caching code was applied.",
+			"",
+		].join("\n"),
+	);
+	await Bun.write(
+		path.join(cwd, "workflow-output/perf-io.md"),
+		[
+			"# IO branch",
+			"final-selection: no",
+			"no-win-result: yes",
+			"no stable positive result after IO experiments.",
+			"rollback evidence: the IO branch reverted its experiments and retained no code.",
+			"",
+		].join("\n"),
+	);
+	await Bun.write(
+		path.join(cwd, "workflow-output/performance-selection-repair.md"),
+		[
+			"# Performance Selection Repair",
+			"status: materialized",
+			"parallel lane isolation violation preserved: yes",
+			"rollback before selection: git restore removed shared project edits before candidate apply.",
+			"apply check status: pass",
+			"semantic-probe: yes",
+			"benchmark command exit code 0",
+			"validation command exit code 0",
+			"selected branch: algorithmic",
+			"review-feedback-addressed: yes",
+			"",
+		].join("\n"),
+	);
+}
+
+function resolvedIsolationSelectionRepair(): NonNullable<NonNullable<WorkflowContext["state"]>["selectionRepair"]> {
+	return {
+		status: "materialized",
+		selectedBranch: "algorithmic",
+		finalSelection: true,
+		rollbackBeforeSelection: "git restore removed shared project edits before candidate apply.",
+		projectFilesRetained: ["src/click/shell_completion.py", "tests/test_parser.py"],
+		projectFilesRevertedBeforeSelection: ["src/click/shell_completion.py", "tests/test_parser.py"],
+		applyCheck: { status: "pass", exitCode: 0 },
+		benchmark: { status: "pass", exitCode: 0 },
+		validation: { status: "pass", exitCode: 0 },
+	};
 }
 
 async function runCommand(command: string[], cwd: string): Promise<void> {

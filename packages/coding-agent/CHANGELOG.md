@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental performance-optimization-search flow blocking finalization/archive after a prior parallel lane isolation violation had been repaired, revalidated, and reviewer-approved.
 - Fixed the experimental performance-optimization-search flow treating natural-language artifact path mentions as durable artifact declarations.
 - Fixed the experimental performance-optimization-search flow treating negated candidate patch field values as retained blocked-branch candidates.
 - Fixed the experimental documentation-audit flow archiving a digest instead of the full consolidated audit artifact.

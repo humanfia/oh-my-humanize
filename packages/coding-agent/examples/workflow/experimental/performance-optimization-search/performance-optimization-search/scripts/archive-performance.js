@@ -6,7 +6,7 @@ const selectionRepair = state.selectionRepair && typeof state.selectionRepair ==
 const selectionRepairText = await readOptionalText("workflow-output/performance-selection-repair.md");
 const reviewGate = reviewFinishGate(state.review);
 
-if (benchmark.isolationViolation === true) {
+if (benchmark.isolationViolation === true && !isolationViolationResolvedBySelectionRepair(selectionRepair, selectionRepairText)) {
 	throw new Error("cannot archive performance search after a parallel lane isolation violation");
 }
 
@@ -187,6 +187,22 @@ function benchmarkCommandPassed(benchmarkValue, selectionRepairValue, repairText
 	if (repairReportBenchmark !== undefined) return repairReportBenchmark;
 	if (typeof benchmarkValue.benchmarkExitCode === "number") return benchmarkValue.benchmarkExitCode === 0;
 	return benchmarkValue.status === "pass";
+}
+
+function isolationViolationResolvedBySelectionRepair(selectionRepairValue, repairText) {
+	const repairStatus = typeof selectionRepairValue.status === "string" ? selectionRepairValue.status.toLowerCase() : "";
+	const repairBody = `${repairText}\n${JSON.stringify(selectionRepairValue)}`;
+	const hasMaterializedRepair =
+		["materialized", "pass", "passed"].includes(repairStatus) ||
+		/\bperformance selection repair\b/iu.test(repairBody);
+	const hasRollbackBeforeSelection =
+		typeof selectionRepairValue.rollbackBeforeSelection === "string" && selectionRepairValue.rollbackBeforeSelection.trim() !== "" ||
+		/\b(?:rollback before (?:selection|judging winners)|restored polluted shared|git restore)\b/iu.test(repairBody);
+	const hasCandidateApplyCheck =
+		commandPassedFromRepairEvidence(selectionRepairValue.applyCheck) === true ||
+		/\bapply[- ]?check\b.{0,160}\b(?:pass|passed|success|ok|exited?\s*:?\s*(?:code\s*)?0)\b/iu.test(repairBody) ||
+		/\bgit apply --check\b.{0,160}\b(?:exit(?:ed)?\s*:?\s*(?:code\s*)?0)\b/iu.test(repairBody);
+	return hasMaterializedRepair && hasRollbackBeforeSelection && hasCandidateApplyCheck;
 }
 
 function commandPassedFromRepairEvidence(value) {
