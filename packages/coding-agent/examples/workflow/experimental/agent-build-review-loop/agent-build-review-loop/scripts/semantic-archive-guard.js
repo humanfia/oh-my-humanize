@@ -37,6 +37,7 @@ findings.push(...(await nondurableArtifactReferenceFindings()));
 findings.push(...(await missingValidationArtifactFindings(progressText)));
 findings.push(...(await missingValidationAttemptRetentionFindings()));
 findings.push(...(await missingRollbackEvidenceFindings(changedFiles)));
+findings.push(...(await rollbackEvidenceRelevanceFindings(changedFiles)));
 
 const blockingFindings = explicitAllowance
 	? findings.filter(finding => finding.category !== "low-semantic-content")
@@ -229,7 +230,7 @@ async function missingRollbackEvidenceFindings(changedFiles) {
 	const texts = await Promise.all(files.filter(roundEvidenceFile).map(readOptionalText));
 	return changedFiles
 		.filter(file => !ignoredEvidencePath(file))
-		.filter(file => !texts.some(text => rollbackNoteForFile(file, text)))
+		.filter(file => !texts.some(text => rollbackNoteTextForFile(file, text)))
 		.map(file => ({
 			file,
 			reason: "changed file lacks concrete rollback evidence",
@@ -238,19 +239,48 @@ async function missingRollbackEvidenceFindings(changedFiles) {
 		}));
 }
 
+async function rollbackEvidenceRelevanceFindings(changedFiles) {
+	const files = await workflowOutputFiles();
+	const texts = await Promise.all(files.filter(roundEvidenceFile).map(readOptionalText));
+	const symbolsByFile = await changedSymbolsByFile(changedFiles);
+	const findings = [];
+	for (const file of changedFiles) {
+		if (ignoredEvidencePath(file)) continue;
+		const changedSymbols = symbolsByFile.get(file) ?? [];
+		if (changedSymbols.length === 0) continue;
+		const note = texts.map(text => rollbackNoteTextForFile(file, text)).find(Boolean) ?? "";
+		if (!note) continue;
+		if (fileLevelRollbackNote(file, note)) continue;
+		if (changedSymbols.some(symbol => mentionsIdentifier(note, symbol))) continue;
+		findings.push({
+			file,
+			reason: "rollback evidence does not reference changed symbols or a file-level restore",
+			policy:
+				"When a diff exposes changed function/class/module symbols, rollback evidence must either restore the whole file or name at least one changed symbol so stale nearby-function notes cannot satisfy archive.",
+			changedSymbols,
+		});
+	}
+	return findings;
+}
+
 function roundEvidenceFile(file) {
 	return /^workflow-output\/round-\d+\//u.test(file);
 }
 
 function rollbackNoteForFile(file, text) {
+	const note = rollbackNoteTextForFile(file, text);
+	if (!note) return "";
+	return `${file}: ${note}`;
+}
+
+function rollbackNoteTextForFile(file, text) {
 	const note = [
 		directRollbackNoteForFile(file, text),
 		nestedRollbackNoteForFile(file, text),
 		sectionedRollbackNoteForFile(file, text),
 		headingScopedRollbackNoteForFile(file, text),
 	].find(candidate => concreteRollbackNote(candidate));
-	if (!note) return "";
-	return `${file}: ${note}`;
+	return note || "";
 }
 
 function directRollbackNoteForFile(file, text) {
@@ -334,6 +364,62 @@ function rollbackLineValue(line) {
 function markdownHeadingLevel(line) {
 	const match = /^(\s*#{1,6})\s+\S/u.exec(line);
 	return match ? match[1].trim().length : 0;
+}
+
+async function changedSymbolsByFile(changedFiles) {
+	const entries = await Promise.all(
+		changedFiles
+			.filter(file => !ignoredEvidencePath(file))
+			.map(async file => [file, await changedSymbolsForFile(file)]),
+	);
+	return new Map(entries.filter(([, symbols]) => symbols.length > 0));
+}
+
+async function changedSymbolsForFile(file) {
+	const proc = Bun.spawn(["git", "diff", "--unified=0", "--", file], {
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+	if (exitCode !== 0 || !stdout.trim()) return [];
+	const symbols = [];
+	for (const line of stdout.split(/\r?\n/u)) {
+		symbols.push(...changedSymbolsFromDiffLine(line));
+	}
+	return uniqueSorted(symbols.filter(symbol => symbol.length >= 3));
+}
+
+function changedSymbolsFromDiffLine(line) {
+	const symbols = [];
+	const hunkContext = /^@@[^@]*@@\s*(.*)$/u.exec(line)?.[1] ?? "";
+	for (const source of [hunkContext, /^[+-]/u.test(line) ? line.slice(1) : ""]) {
+		if (!source || source.startsWith("+++") || source.startsWith("---")) continue;
+		for (const pattern of [
+			/\b(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gu,
+			/\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gu,
+			/\b(?:class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/gu,
+			/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[=:]/gu,
+		]) {
+			for (const match of source.matchAll(pattern)) {
+				if (match[1]) symbols.push(match[1]);
+			}
+		}
+	}
+	return symbols;
+}
+
+function fileLevelRollbackNote(file, note) {
+	return (
+		new RegExp(`\\bgit\\s+(?:restore|checkout)\\b[^\\n]*\\b${escapeRegExp(file)}\\b`, "iu").test(note) ||
+		/\b(?:restore|revert|remove|delete)\s+(?:the\s+)?(?:whole|entire)\s+file\b/iu.test(note) ||
+		/\b(?:restore|revert|remove|delete)\s+(?:this|that)\s+file\b/iu.test(note) ||
+		/\bfile-level\s+(?:restore|revert|rollback)\b/iu.test(note)
+	);
+}
+
+function mentionsIdentifier(text, identifier) {
+	return new RegExp(`(?:^|[^A-Za-z0-9_$])${escapeRegExp(identifier)}(?:$|[^A-Za-z0-9_$])`, "u").test(text);
 }
 
 function validationRounds(progressText) {

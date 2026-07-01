@@ -1389,6 +1389,61 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
+	it("requires rollback evidence to reference the changed symbol or file-level restore", async () => {
+		const cwd = await createTempDir();
+		await initGitRepo(cwd);
+		await fs.mkdir(path.join(cwd, "typer"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output", "round-2"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			["Validation Command:", "true", "Allowed paths: typer/rich_utils.py, workflow-output/**, progress.md."].join(
+				"\n",
+			),
+		);
+		await Bun.write(
+			path.join(cwd, "typer", "rich_utils.py"),
+			[
+				"def _get_help_text():",
+				"    return 'help'",
+				"",
+				"def _make_command_help():",
+				"    markup_mode = 'rich'",
+				"    return markup_mode",
+				"",
+			].join("\n"),
+		);
+		await git(cwd, ["add", "task.md", "typer/rich_utils.py"]);
+		await git(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(
+			path.join(cwd, "typer", "rich_utils.py"),
+			[
+				"def _get_help_text():",
+				"    return 'help'",
+				"",
+				"def _make_command_help():",
+				"    markup_mode = 'markdown'",
+				"    return markup_mode",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "round-2", "rollback-evidence.md"),
+			[
+				"## typer/rich_utils.py",
+				"",
+				"Rollback: restore `_get_help_text` and its `first_line.replace(...)` handling.",
+			].join("\n"),
+		);
+
+		const result = await runSemanticArchiveGuard(cwd);
+
+		expect(result.verdict).toBe("REPAIR");
+		const finding = result.data.findings.find(item => item.file === "typer/rich_utils.py");
+		expect(finding).toMatchObject({
+			reason: "rollback evidence does not reference changed symbols or a file-level restore",
+		});
+	});
+
 	it("ignores dependency environment directories when checking changed project scope", async () => {
 		const cwd = await createTempDir();
 		await initGitRepo(cwd);
@@ -1881,11 +1936,22 @@ async function createTempDir(): Promise<string> {
 }
 
 async function initGitRepo(cwd: string): Promise<void> {
-	const proc = Bun.spawn(["git", "init"], {
+	await git(cwd, ["init"]);
+	await git(cwd, ["config", "user.email", "omh@example.invalid"]);
+	await git(cwd, ["config", "user.name", "OMH Test"]);
+	await git(cwd, ["config", "commit.gpgsign", "false"]);
+}
+
+async function git(cwd: string, args: string[]): Promise<void> {
+	const proc = Bun.spawn(["git", ...args], {
 		cwd,
-		stdout: "ignore",
-		stderr: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
 	});
-	const exitCode = await proc.exited;
-	if (exitCode !== 0) throw new Error(`git init failed in ${cwd}`);
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${stderr.trim() || stdout.trim()}`);
 }

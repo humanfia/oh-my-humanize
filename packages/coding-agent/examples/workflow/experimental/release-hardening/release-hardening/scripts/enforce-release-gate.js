@@ -12,6 +12,7 @@ const blockers = [
 	...auditBlockers(state.changelog, "changelog"),
 	...auditBlockers(state.compatibility, "compatibility"),
 ];
+const resolvedBlockers = blockers.filter(blocker => auditResolvesBlocker(auditText, blocker));
 const unresolvedBlockers = blockers.filter(blocker => !auditResolvesBlocker(auditText, blocker));
 const failures = [];
 
@@ -42,7 +43,10 @@ const holdReasons = holdingForFreshContract
 	: [];
 const status = holdingForFreshContract ? "hold" : failures.length === 0 ? "pass" : "fail_closed";
 
-await Bun.write(outputPath, gateMarkdown({ checks, failures, blockers, unresolvedBlockers, status, holdReasons }));
+await Bun.write(
+	outputPath,
+	gateMarkdown({ checks, failures, blockers, resolvedBlockers, unresolvedBlockers, status, holdReasons }),
+);
 
 if (failures.length > 0 && !holdingForFreshContract) {
 	throw new Error(`release gate fail-closed: ${failures[0]}`);
@@ -60,6 +64,7 @@ return {
 				outcome: holdingForFreshContract ? "rejected" : "accepted",
 				outputPath,
 				blockerCount: blockers.length,
+				resolvedBlockers,
 				unresolvedBlockers,
 				holdReasons,
 				workspaceGuard,
@@ -129,13 +134,14 @@ function evidenceTokens(text) {
 	);
 }
 
-function gateMarkdown({ checks, failures, blockers, unresolvedBlockers, status, holdReasons }) {
+function gateMarkdown({ checks, failures, blockers, resolvedBlockers, unresolvedBlockers, status, holdReasons }) {
 	return [
 		"# Release Gate Evidence",
 		"",
 		`status: ${status}`,
 		`checks_status: ${String(checks.status ?? "(missing)")}`,
 		`audit_blockers: ${blockers.length}`,
+		`resolved_blockers: ${resolvedBlockers.length}`,
 		`unresolved_blockers: ${unresolvedBlockers.length}`,
 		...(holdReasons.length ? ["", "## Hold Reasons", "", ...holdReasons.map(reason => `- ${reason}`)] : []),
 		"",
@@ -152,6 +158,18 @@ function gateMarkdown({ checks, failures, blockers, unresolvedBlockers, status, 
 		...(blockers.length === 0
 			? ["- none"]
 			: blockers.map(blocker => `- ${blocker.source}: ${blocker.text}`)),
+		"",
+		"## Resolved Audit Blockers",
+		"",
+		...(resolvedBlockers.length === 0
+			? ["- none"]
+			: resolvedBlockers.map(blocker => `- ${blocker.source}: ${blocker.text}`)),
+		"",
+		"## Unresolved Audit Blockers",
+		"",
+		...(unresolvedBlockers.length === 0
+			? ["- none"]
+			: unresolvedBlockers.map(blocker => `- ${blocker.source}: ${blocker.text}`)),
 		"",
 	].join("\n");
 }

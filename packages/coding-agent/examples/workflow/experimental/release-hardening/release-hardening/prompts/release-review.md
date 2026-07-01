@@ -8,6 +8,14 @@ Read `workflow-output/release-precheck.md`, inspect the current diff, and compar
 - command evidence in `workflow-output/release-checks.md`;
 - rollback notes in `workflow-output/release-rollback.md`.
 
+First check the `Workspace Scope` section in `workflow-output/release-checks.md`
+and independently compare `git status --short` / `git diff --name-only` against
+the frozen `Allowed paths` / `Scope Fence`. Any changed project file outside
+that fence is a `continue` verdict unless the task contract is impossible and
+must be refreshed, in which case return `hold`. Never return `finish` for an
+out-of-scope root README, changelog, docs, test, or source edit just because it
+is release-facing.
+
 Do not edit `task.md` or `workflow-output/release-precheck.md`. Treat them as
 operator-owned frozen task-contract inputs for this attempt. If they appear
 wrong, drifted, or impossible to satisfy from bounded release-hardening repair,

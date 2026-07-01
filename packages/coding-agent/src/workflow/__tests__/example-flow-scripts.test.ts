@@ -4386,7 +4386,7 @@ describe("example workflow scripts", () => {
 		expect(
 			result.scheduler.activations.find(activation => activation.nodeId === "runReleaseChecks")?.output,
 		).toMatchObject({
-			summary: "ran release checks; validation=pass security=skipped",
+			summary: "ran release checks; validation=pass security=skipped scope=skipped",
 		});
 		expect(result.scheduler.state.checks).toMatchObject({
 			status: "pass",

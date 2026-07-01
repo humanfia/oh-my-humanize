@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed the experimental agent-build-review-loop flow accepting rollback evidence that names a stale nearby symbol instead of the actual changed symbol or a file-level restore.
+- Fixed the experimental release-hardening flow letting release checks ignore changed files outside the frozen task allowed-path fence before reviewer decisions, and clarified resolved versus unresolved audit blockers in release gate evidence.
+- Fixed the experimental test-generation-hardening flow omitting the reviewer decision from its final archive artifact.
 - Fixed the experimental parallel-implementation-review flow failing to reuse declared validation evidence when `task.md` writes `Validation Command` as a Markdown heading instead of a colon field.
 - Fixed post-content provider stream interruptions consuming the full generic retry budget; they now use a smaller configurable retry cap so long interrupted streams fail faster instead of repeatedly burning long requests.
 - Fixed the experimental performance-optimization-search flow rejecting a valid positive winner when a separate losing branch records no-win evidence, and failing to stop when branch reports advertise missing durable performance artifacts.

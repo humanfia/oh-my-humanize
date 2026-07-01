@@ -15,6 +15,8 @@ interface WorkflowContext {
 		};
 		task?: {
 			taskText?: string;
+			validationCommand?: string;
+			securityCommand?: string;
 		};
 		changelog?: object;
 		compatibility?: object;
@@ -33,6 +35,15 @@ interface ScriptResult {
 				blockers?: string[];
 				allowedScopes?: string[];
 			};
+			workspaceScope?: {
+				status?: string;
+				blockers?: string[];
+				allowedScopes?: string[];
+			};
+			resolvedBlockers?: Array<{
+				source?: string;
+				text?: string;
+			}>;
 		};
 	}>;
 }
@@ -49,6 +60,46 @@ afterEach(async () => {
 });
 
 describe("release-hardening flow contract", () => {
+	it("marks release checks failed when changed files escape task allowed paths", async () => {
+		const cwd = await createGitRepo();
+		const taskText = [
+			"Objective: repair release docs in docs only.",
+			"",
+			"Validation Command: true",
+			"Security Command: true",
+			"Allowed paths: docs/**, workflow-output/**, task.md, manifest-entry.json, monitor-assignment.json.",
+		].join("\n");
+		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), taskText);
+		await Bun.write(path.join(cwd, "README.md"), "Rich supports Python 3.8.\n");
+		await Bun.write(path.join(cwd, "docs", "intro.rst"), "Rich supports Python 3.8.\n");
+		await runCommand(["git", "add", "task.md", "README.md", "docs/intro.rst"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(path.join(cwd, "README.md"), "Rich supports Python 3.9.\n");
+		await Bun.write(path.join(cwd, "docs", "intro.rst"), "Rich supports Python 3.9.\n");
+
+		const result = await runScript(cwd, "run-release-checks.js", {
+			task: {
+				taskText,
+				validationCommand: "true",
+				securityCommand: "true",
+			},
+		});
+		const checks = result.statePatch?.find(patch => patch.path === "/checks")?.value;
+		const evidence = await Bun.file(path.join(cwd, "workflow-output", "release-checks.md")).text();
+
+		expect(result.summary).toBe("ran release checks; validation=pass security=pass scope=blocked");
+		expect(checks).toMatchObject({
+			status: "fail",
+			workspaceScope: {
+				status: "blocked",
+				blockers: ["README.md changed outside task allowed paths"],
+			},
+		});
+		expect(evidence).toContain("## Workspace Scope");
+		expect(evidence).toContain("README.md changed outside task allowed paths");
+	});
+
 	it("accepts scoped target diffs and workflow artifacts in the final release gate", async () => {
 		const cwd = await createGitRepo();
 		const taskText = [
@@ -76,7 +127,7 @@ describe("release-hardening flow contract", () => {
 		await Bun.write(path.join(cwd, "workflow-output/release-audit.md"), "Resolved Python support blocker.\n");
 		await Bun.write(path.join(cwd, "workflow-output/release-rollback.md"), "Revert scoped docs/tests edits.\n");
 
-		const result = await runScript(cwd, {
+		const result = await runScript(cwd, "enforce-release-gate.js", {
 			review: "finish",
 			checks: { status: "pass" },
 			task: { taskText },
@@ -96,12 +147,58 @@ describe("release-hardening flow contract", () => {
 		expect(releaseGate?.workspaceGuard?.allowedScopes).toContain("docs/source/**");
 		expect(releaseGate?.workspaceGuard?.allowedScopes).toContain("tests/test_console.py");
 	});
+
+	it("reports waived audit blockers separately from unresolved blockers", async () => {
+		const cwd = await createGitRepo();
+		const taskText = [
+			"Objective: release hardening evidence.",
+			"",
+			"Validation Command: true",
+			"Allowed paths: docs/**, workflow-output/**, task.md.",
+		].join("\n");
+		await Bun.write(path.join(cwd, "task.md"), taskText);
+		await runCommand(["git", "add", "task.md"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "release-audit.md"),
+			[
+				"# Release Audit",
+				"",
+				"## Waivers",
+				"",
+				"- Waived `README.md` stale Python support wording because the scoped task excludes root README files.",
+				"- Resolved `Text.from_ansi` compatibility risk through focused evidence in the release repair.",
+			].join("\n"),
+		);
+		await Bun.write(path.join(cwd, "workflow-output", "release-rollback.md"), "Rollback notes.\n");
+
+		const result = await runScript(cwd, "enforce-release-gate.js", {
+			review: "finish",
+			checks: { status: "pass" },
+			task: { taskText },
+			changelog: { findings: ["README.md stale Python support wording should block release until repaired"] },
+			compatibility: { risks: ["Text.from_ansi compatibility risk should hold release until checked"] },
+		});
+		const releaseGate = result.statePatch?.find(patch => patch.path === "/releaseGate")?.value;
+		const gate = await Bun.file(path.join(cwd, "workflow-output", "release-gate.md")).text();
+
+		expect(releaseGate).toMatchObject({
+			status: "pass",
+			unresolvedBlockers: [],
+			resolvedBlockers: [{ source: "changelog" }, { source: "compatibility" }],
+		});
+		expect(gate).toContain("resolved_blockers: 2");
+		expect(gate).toContain("unresolved_blockers: 0");
+		expect(gate).toContain("## Resolved Audit Blockers");
+		expect(gate).toContain("README.md stale Python support wording");
+		expect(gate).toContain("Text.from_ansi compatibility risk");
+	});
 });
 
-async function runScript(cwd: string, state: WorkflowContext["state"]): Promise<ScriptResult> {
+async function runScript(cwd: string, scriptName: string, state: WorkflowContext["state"]): Promise<ScriptResult> {
 	const scriptPath = path.resolve(
 		import.meta.dir,
-		"../../examples/workflow/experimental/release-hardening/release-hardening/scripts/enforce-release-gate.js",
+		`../../examples/workflow/experimental/release-hardening/release-hardening/scripts/${scriptName}`,
 	);
 	const script = await Bun.file(scriptPath).text();
 	const execute = new ScriptFunctionConstructor("workflowContext", script);
@@ -109,7 +206,7 @@ async function runScript(cwd: string, state: WorkflowContext["state"]): Promise<
 	try {
 		process.chdir(cwd);
 		return await execute({
-			activation: { id: "activation-enforceReleaseGate" },
+			activation: { id: `activation-${scriptName}` },
 			completedActivations: [],
 			state,
 		});

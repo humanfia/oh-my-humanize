@@ -11,9 +11,13 @@ const suiteText = await readOptionalText("workflow-output/test-suite.md");
 const repairEvidenceText = await readOptionalText("workflow-output/test-hardening-repair-evidence.md");
 const rollbackText = await readOptionalText("workflow-output/test-hardening-rollback.md");
 const sourceEditGuard = await testOnlyChangeGuard(taskText);
+const reviewerDecision = reviewerDecisionEvidence(state);
 
 if (sourceEditGuard.status !== "pass") {
 	throw new Error(`cannot archive test hardening with unauthorized source edits: ${sourceEditGuard.blockers.join(", ")}`);
+}
+if (!reviewerDecision.stateVerdict && !reviewerDecision.activationSummary) {
+	throw new Error("cannot archive test hardening without a reviewer decision");
 }
 assertSchedulerLineage(
 	["inspectCoverage", "materializeGapReport", "generateTests", "runTestSuite", "testReview"],
@@ -32,6 +36,10 @@ await Bun.write(
 		"## Suite Evidence",
 		"",
 		boundedLines(suiteText, 160),
+		"",
+		"## Reviewer Decision",
+		"",
+		reviewerDecisionMarkdown(reviewerDecision),
 		"",
 		"## Repair Evidence",
 		"",
@@ -57,6 +65,7 @@ return {
 			value: {
 				file: archivePath,
 				validation: "pass",
+				reviewerDecision,
 				sourceEditGuard,
 			},
 		},
@@ -89,6 +98,33 @@ function assertSchedulerLineage(requiredNodeIds, label) {
 	if (missing.length > 0) {
 		throw new Error(`${label} missing scheduler lineage: ${missing.join(", ")}`);
 	}
+}
+
+function reviewerDecisionEvidence(state) {
+	const reviewActivation = latestCompletedActivation("testReview");
+	return {
+		stateVerdict: typeof state.review === "string" ? state.review.trim() : "",
+		activationSummary: typeof reviewActivation?.summary === "string" ? reviewActivation.summary.trim() : "",
+		activationId: typeof reviewActivation?.id === "string" ? reviewActivation.id : "",
+	};
+}
+
+function latestCompletedActivation(nodeId) {
+	const activations = Array.isArray(workflowContext.completedActivations) ? workflowContext.completedActivations : [];
+	return activations
+		.filter(activation => activation?.nodeId === nodeId && activation?.status === "completed")
+		.at(-1);
+}
+
+function reviewerDecisionMarkdown(reviewerDecision) {
+	return [
+		`State verdict: ${reviewerDecision.stateVerdict || "(missing)"}`,
+		`Activation: ${reviewerDecision.activationId || "(unknown)"}`,
+		"",
+		"Activation summary:",
+		"",
+		reviewerDecision.activationSummary || "(missing)",
+	].join("\n");
 }
 
 async function testOnlyChangeGuard(taskText) {
