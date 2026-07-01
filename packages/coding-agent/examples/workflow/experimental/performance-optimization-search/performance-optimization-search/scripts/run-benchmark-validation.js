@@ -394,9 +394,21 @@ function branchReportHasRetainedPositiveCandidate(text) {
 	return (
 		/\bstatus\s*:\s*retained-candidate\b/iu.test(text) ||
 		/\bfinal-selection\s*:\s*yes\b/iu.test(text) ||
-		(/\bcandidate\s+patch\s*:\s*(?!no\b|none\b|not\b|\(none\))/iu.test(text) &&
+		(reportHasPositiveCandidatePatchField(text) &&
 			/\b(?:benchmark-relevance\s*:\s*yes|benchmark improvement|positive benchmark|retained candidate)\b/iu.test(text))
 	);
+}
+
+function reportHasPositiveCandidatePatchField(text) {
+	for (const line of text.split(/\r?\n/u)) {
+		const match = line.match(/^\s*candidate\s+patch(?:\s+path)?\s*:\s*(.+?)\s*$/iu);
+		if (!match) continue;
+		const value = (match[1] ?? "").trim();
+		if (!value || /^(?:no\b|none\b|not\b|\(none\))/iu.test(value)) continue;
+		if (/\b(?:not|never)\s+produced\b|\bwas\s+not\s+produced\b|\bnegative\s+no-win\b/iu.test(value)) continue;
+		return true;
+	}
+	return false;
 }
 
 function appendBranchSelectionMarker(lines, marker, value) {

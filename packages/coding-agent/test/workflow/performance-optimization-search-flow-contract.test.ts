@@ -468,6 +468,58 @@ describe("performance-optimization-search flow contract", () => {
 		expect(evidence).toContain("blocked_no_win_for_positive_optimization");
 	});
 
+	it("does not flag a blocked branch that explicitly says no candidate patch was produced", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "README.md"), "perf fixture\n");
+		await runCommand(["git", "add", "README.md"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(
+			path.join(cwd, "workflow-output/performance-hypotheses.json"),
+			JSON.stringify({
+				data: {
+					branches: [
+						{
+							name: "io",
+							status: "blocked/no-win",
+						},
+					],
+				},
+			}),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-io.md"),
+			[
+				"# IO Branch Report",
+				"",
+				"Status: blocked/no-win; no project-file edits.",
+				"Candidate patch: no candidate patch was produced at `workflow-output/perf-io-candidate.diff`.",
+				"Benchmark evidence: this branch does not retain new positive benchmark evidence.",
+				"benchmark-relevance: no. The declared benchmark has no IO mechanism to optimize.",
+				"final-selection: no",
+				"no-win-result: yes",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "run-benchmark-validation.js", {
+			task: {
+				benchmarkCommand: "python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
+				validationCommand: "python -c \"print('validation')\"",
+			},
+			runtime: { sharedProjectFilesBeforeBranches: [] },
+		});
+		const benchmark = result.statePatch?.find(patch => patch.path === "/benchmark")?.value;
+
+		expect(result.summary).toBe("benchmark=pass validation=pass");
+		expect(benchmark).toMatchObject({
+			status: "pass",
+		});
+		expect(benchmark?.branchContractViolation).toBeUndefined();
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-benchmark.md")).text();
+		expect(evidence).not.toContain("Blocked Positive Branch Violation");
+	});
+
 	it("accepts a positive retained branch when an unselected branch records no-win evidence", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
