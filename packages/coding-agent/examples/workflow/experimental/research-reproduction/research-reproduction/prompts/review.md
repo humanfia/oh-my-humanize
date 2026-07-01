@@ -21,6 +21,9 @@ Variant evidence:
 Variant command evidence:
 {{jsonStringify variantCommandEvidence}}
 
+Negative control command evidence:
+{{jsonStringify negativeControlCommandEvidence}}
+
 Validation command evidence:
 {{jsonStringify validationCommandEvidence}}
 
@@ -42,6 +45,8 @@ Accepted evidence requires:
 - the Validation Command passed;
 - `variant.validationExercised` is true;
 - any declared Setup Command and Variant Command were run or explicitly skipped;
+- any declared Negative Control Command was run, exercised, and compared as
+  standalone evidence instead of being inferred from validation output;
 - the comparison explains whether the claim reproduced, failed, or is
   inconclusive;
 - variance, environment, and rollback/cleanup notes are clear enough for a
@@ -51,9 +56,9 @@ Rejected or inconclusive terminal evidence is appropriate when the commands
 were real and exercised the claim, but reproduction or validation failed in a
 stable way and the comparison does not identify a concrete next evidence step.
 
-If either the Reproduction Command or Validation Command did not exercise the
-declared claim, return `continue`. Do not use `finish` to archive non-exercising
-command evidence.
+If the Reproduction Command, declared Negative Control Command, or Validation
+Command did not exercise the declared claim/control, return `continue`. Do not
+use `finish` to archive non-exercising command evidence.
 
 Return `continue` only when evidence is missing, the claim is ambiguous, the
 comparison overstates the result, or there is a specific new evidence step that

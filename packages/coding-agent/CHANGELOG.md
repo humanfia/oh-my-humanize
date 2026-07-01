@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental research-reproduction flow ignoring task-declared negative-control commands instead of running and reviewing them as standalone evidence.
 - Fixed experimental documentation-audit and refactor-migration-plan task contract guards accepting real consolidated selected-target and inline metadata field shapes observed during canaries.
 - Fixed the experimental performance-optimization-search flow blocking finalization/archive after a prior parallel lane isolation violation had been repaired, revalidated, and reviewer-approved.
 - Fixed the experimental performance-optimization-search flow treating natural-language artifact path mentions as durable artifact declarations.

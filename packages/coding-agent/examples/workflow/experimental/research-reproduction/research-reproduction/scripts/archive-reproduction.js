@@ -10,6 +10,9 @@ if (reproduction.exercised !== true || structuredEvidence.reproduction.exercised
 if (variant.validationExercised !== true || structuredEvidence.validation.exercised !== true) {
 	throw new Error("cannot archive research reproduction before the Validation Command exercises the declared claim");
 }
+if (hasNegativeControlCommand(variant) && structuredEvidence.negativeControl.exercised !== true) {
+	throw new Error("cannot archive research reproduction before the Negative Control Command exercises the declared control");
+}
 
 const outcome = acceptedOutcome(reproduction, variant, comparison, structuredEvidence) ? "accepted" : "rejected";
 
@@ -51,6 +54,8 @@ await Bun.write(
 		`- reproduction ok packages: ${structuredEvidence.reproduction.okPackages}`,
 		`- variant exercised: ${structuredEvidence.variant.exercised}`,
 		`- variant positive signals: ${structuredEvidence.variant.positiveSignals.join(", ") || "none"}`,
+		`- negative control exercised: ${structuredEvidence.negativeControl.exercised}`,
+		`- negative control positive signals: ${structuredEvidence.negativeControl.positiveSignals.join(", ") || "none"}`,
 		`- validation exercised: ${structuredEvidence.validation.exercised}`,
 		`- validation positive signals: ${structuredEvidence.validation.positiveSignals.join(", ") || "none"}`,
 		`- validation ok packages: ${structuredEvidence.validation.okPackages}`,
@@ -89,10 +94,12 @@ async function readStructuredEvidence(reproductionState, variantState) {
 	const variantEvidence = await readRequiredJson(variantState.evidencePath, "variant structured evidence");
 	const reproductionSummary = reproductionEvidence.exerciseSummary ?? {};
 	const variantSummary = variantEvidence.variantExerciseSummary ?? {};
+	const negativeControlSummary = variantEvidence.negativeControlExerciseSummary ?? {};
 	const validationSummary = variantEvidence.validationExerciseSummary ?? {};
 	return {
 		reproduction: normalizeExerciseSummary(reproductionSummary),
 		variant: normalizeExerciseSummary(variantSummary),
+		negativeControl: normalizeExerciseSummary(negativeControlSummary),
 		validation: normalizeExerciseSummary(validationSummary),
 	};
 }
@@ -121,6 +128,7 @@ function normalizeExerciseSummary(summary) {
 function acceptedOutcome(reproductionState, variantState, comparisonState, evidence) {
 	if (reproductionState.status !== "pass" || variantState.status !== "pass") return false;
 	if (hasVariantCommand(variantState) && evidence.variant.exercised !== true) return false;
+	if (hasNegativeControlCommand(variantState) && evidence.negativeControl.exercised !== true) return false;
 	const comparison = normalizedComparisonOutcome(comparisonState);
 	if (comparison === "rejected") return false;
 	if (comparison === "accepted") return true;
@@ -130,6 +138,10 @@ function acceptedOutcome(reproductionState, variantState, comparisonState, evide
 
 function hasVariantCommand(variantState) {
 	return typeof variantState.variantCommand === "string" && variantState.variantCommand.trim() !== "";
+}
+
+function hasNegativeControlCommand(variantState) {
+	return typeof variantState.negativeControlCommand === "string" && variantState.negativeControlCommand.trim() !== "";
 }
 
 function comparisonRejects(comparisonState) {

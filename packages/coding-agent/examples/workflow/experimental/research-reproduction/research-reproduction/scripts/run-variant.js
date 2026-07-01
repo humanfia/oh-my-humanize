@@ -1,7 +1,9 @@
 const task = workflowContext.state?.task;
 const variantCommand = task?.variantCommand;
+const negativeControlCommand = task?.negativeControlCommand;
 const validationCommand = task?.validationCommand;
 const variantSignal = task?.variantSignal;
+const negativeControlSignal = task?.negativeControlSignal;
 const validationSignal = task?.validationSignal;
 const outputPath = "workflow-output/reproduction-variant.md";
 
@@ -11,11 +13,27 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 
 const variant =
 	typeof variantCommand === "string" && variantCommand.trim() !== "" ? await runShell(variantCommand) : undefined;
+const negativeControl =
+	typeof negativeControlCommand === "string" && negativeControlCommand.trim() !== ""
+		? await runShell(negativeControlCommand)
+		: undefined;
 const validation = await runShell(validationCommand);
 const variantExerciseSummary = variant ? analyzeExercise(variant, variantCommand, variantSignal) : undefined;
+const negativeControlExerciseSummary = negativeControl
+	? analyzeExercise(negativeControl, negativeControlCommand, negativeControlSignal)
+	: undefined;
 const validationExerciseSummary = analyzeExercise(validation, validationCommand, validationSignal);
 const variantCommandEvidence = variant
 	? commandEvidence("variant", variantCommand, variant, variantExerciseSummary, variantSignal)
+	: null;
+const negativeControlCommandEvidence = negativeControl
+	? commandEvidence(
+			"negative-control",
+			negativeControlCommand,
+			negativeControl,
+			negativeControlExerciseSummary,
+			negativeControlSignal,
+		)
 	: null;
 const validationCommandEvidence = commandEvidence(
 	"validation",
@@ -25,13 +43,18 @@ const validationCommandEvidence = commandEvidence(
 	validationSignal,
 );
 const evidencePath = "workflow-output/reproduction-variant.json";
-await Bun.write(outputPath, evidenceMarkdown(variantCommand, variant, validationCommand, validation));
+await Bun.write(outputPath, evidenceMarkdown(variantCommand, variant, negativeControlCommand, negativeControl, validationCommand, validation));
 await writeStructuredEvidence(evidencePath, {
 	variantCommand,
 	variantSignal,
 	variant,
 	variantExerciseSummary,
 	variantCommandEvidence,
+	negativeControlCommand,
+	negativeControlSignal,
+	negativeControl,
+	negativeControlExerciseSummary,
+	negativeControlCommandEvidence,
 	validationCommand,
 	validationSignal,
 	validation,
@@ -40,14 +63,20 @@ await writeStructuredEvidence(evidencePath, {
 });
 
 const variantPass = variant === undefined || variant.exitCode === 0;
+const negativeControlPass =
+	negativeControl === undefined || (negativeControl.exitCode === 0 && negativeControlExerciseSummary.exercised);
 const validationExercised = validationExerciseSummary.exercised;
 const validationPass = validation.exitCode === 0 && validationExercised;
 
 return {
-	summary: `variant=${variantPass ? "pass" : "fail"} validation=${validationPass ? "pass" : "fail"}`,
+	summary: `variant=${variantPass ? "pass" : "fail"} negative-control=${
+		negativeControlPass ? "pass" : "fail"
+	} validation=${validationPass ? "pass" : "fail"}`,
 	data: {
 		variantExitCode: variant?.exitCode,
 		variantExerciseSummary,
+		negativeControlExitCode: negativeControl?.exitCode,
+		negativeControlExerciseSummary,
 		validationExitCode: validation.exitCode,
 		validationExerciseSummary,
 	},
@@ -62,23 +91,39 @@ return {
 				variantStderrPath: variant ? evidencePath : undefined,
 				variantExerciseSummary,
 				variantCommandEvidence: variant
-						? stateCommandEvidence("variant", variantCommand, variant, variantExerciseSummary, evidencePath, variantSignal)
-						: null,
-					validationCommand,
+					? stateCommandEvidence("variant", variantCommand, variant, variantExerciseSummary, evidencePath, variantSignal)
+					: null,
+				negativeControlCommand,
+				negativeControlExitCode: negativeControl?.exitCode,
+				negativeControlStdoutPath: negativeControl ? evidencePath : undefined,
+				negativeControlStderrPath: negativeControl ? evidencePath : undefined,
+				negativeControlExercised: negativeControl ? negativeControlExerciseSummary.exercised : true,
+				negativeControlExerciseSummary,
+				negativeControlCommandEvidence: negativeControl
+					? stateCommandEvidence(
+							"negative-control",
+							negativeControlCommand,
+							negativeControl,
+							negativeControlExerciseSummary,
+							evidencePath,
+							negativeControlSignal,
+						)
+					: null,
+				validationCommand,
 				validationExitCode: validation.exitCode,
 				validationStdoutPath: evidencePath,
 				validationStderrPath: evidencePath,
 				validationExercised,
 				exerciseSummary: validationExerciseSummary,
-					validationCommandEvidence: stateCommandEvidence(
-						"validation",
-						validationCommand,
-						validation,
-						validationExerciseSummary,
-						evidencePath,
-						validationSignal,
-					),
-				status: variantPass && validationPass ? "pass" : "fail",
+				validationCommandEvidence: stateCommandEvidence(
+					"validation",
+					validationCommand,
+					validation,
+					validationExerciseSummary,
+					evidencePath,
+					validationSignal,
+				),
+				status: variantPass && negativeControlPass && validationPass ? "pass" : "fail",
 				outputPath,
 				evidencePath,
 			},
@@ -96,9 +141,10 @@ async function runShell(command) {
 	return { exitCode, stdout, stderr };
 }
 
-function evidenceMarkdown(variantCommand, variant, validationCommand, validation) {
+function evidenceMarkdown(variantCommand, variant, negativeControlCommand, negativeControl, validationCommand, validation) {
 	const lines = ["# Reproduction Variant And Validation", ""];
 	appendCommand(lines, "Variant", variantCommand, variant);
+	appendCommand(lines, "Negative Control", negativeControlCommand, negativeControl);
 	appendCommand(lines, "Validation", validationCommand, validation);
 	return lines.join("\n");
 }

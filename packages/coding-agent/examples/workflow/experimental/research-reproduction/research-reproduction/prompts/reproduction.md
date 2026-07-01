@@ -21,6 +21,9 @@ Variant evidence:
 Variant command evidence:
 {{jsonStringify variantCommandEvidence}}
 
+Negative control command evidence:
+{{jsonStringify negativeControlCommandEvidence}}
+
 Validation command evidence:
 {{jsonStringify validationCommandEvidence}}
 
@@ -49,11 +52,13 @@ Tool and artifact boundary:
 - Compare results: compare command evidence against the claim, explain
   variance, and identify missing evidence from the script-node outputs only.
   Treat `variant.variantCommandEvidence` and
+  `variant.negativeControlCommandEvidence` and
   `variant.validationCommandEvidence` as separate records. The Variant Command
-  is optional experiment setup or alternate reproduction evidence; the
-  Validation Command is the required acceptance check. Never use Validation
-  stdout, stderr, pass counts, or exit code as if they were Variant Command
-  output.
+  is optional experiment setup or alternate reproduction evidence. The Negative
+  Control Command, when declared, is required control evidence. The Validation
+  Command is the required acceptance check. Never use Validation stdout,
+  stderr, pass counts, or exit code as if they were Variant Command or Negative
+  Control Command output.
 
 Do not fabricate results. The workflow scripts run the task-declared commands
 and record stdout/stderr under `workflow-output/`.

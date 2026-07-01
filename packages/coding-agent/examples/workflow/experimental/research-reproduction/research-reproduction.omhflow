@@ -23,6 +23,7 @@ stateSchema:
   version: 1
   shape:
     task: object
+    /task/negativeControlCommand: string
     runtime: object
     claim: object
     setup: object
@@ -31,6 +32,7 @@ stateSchema:
     /reproduction/exercised: boolean
     variant: object
     /variant/validationExercised: boolean
+    /variant/negativeControlExercised: boolean
     comparison: object
     review: string
     archive: object
@@ -169,6 +171,8 @@ nodes:
             state: /variant
           variantCommandEvidence:
             state: /variant/variantCommandEvidence
+          negativeControlCommandEvidence:
+            state: /variant/negativeControlCommandEvidence
           validationCommandEvidence:
             state: /variant/validationCommandEvidence
           review:
@@ -211,6 +215,8 @@ nodes:
             state: /variant
           variantCommandEvidence:
             state: /variant/variantCommandEvidence
+          negativeControlCommandEvidence:
+            state: /variant/negativeControlCommandEvidence
           validationCommandEvidence:
             state: /variant/validationCommandEvidence
           comparison:
@@ -259,10 +265,10 @@ edges:
     to: reportReview
   - from: reportReview
     to: extractClaim
-    when: outputs.reportReview.verdict == "continue" || state.reproduction.exercised != true || state.variant.validationExercised != true
+    when: outputs.reportReview.verdict == "continue" || state.reproduction.exercised != true || state.variant.validationExercised != true || (state.task.negativeControlCommand != "" && state.variant.negativeControlExercised != true)
     label: refine reproduction
   - from: reportReview
     to: archiveReproduction
-    when: outputs.reportReview.verdict != "continue" && state.reproduction.exercised == true && state.variant.validationExercised == true
+    when: outputs.reportReview.verdict != "continue" && state.reproduction.exercised == true && state.variant.validationExercised == true && (state.task.negativeControlCommand == "" || state.variant.negativeControlExercised == true)
     label: archive terminal outcome
 ```

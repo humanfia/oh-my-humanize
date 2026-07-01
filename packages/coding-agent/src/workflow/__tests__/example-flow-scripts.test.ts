@@ -340,6 +340,10 @@ describe("example workflow scripts", () => {
 				kind: "state",
 				path: "/variant/validationCommandEvidence",
 			});
+			expect(promptSource.bindings.negativeControlCommandEvidence).toEqual({
+				kind: "state",
+				path: "/variant/negativeControlCommandEvidence",
+			});
 		}
 	});
 
@@ -1512,6 +1516,51 @@ describe("example workflow scripts", () => {
 			exercised: true,
 			positiveSignals: ["negative-control-output"],
 		});
+	});
+
+	it("runs declared research reproduction negative control commands as standalone evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-research-reproduction-declared-negative-control-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "runVariant",
+			scriptFileName: "run-variant.js",
+			scriptDir: RESEARCH_REPRODUCTION_SCRIPT_DIR,
+			writes: ["/variant"],
+			initialState: {
+				task: {
+					negativeControlCommand: `python -c "print('valid token loads')"`,
+					negativeControlSignal: "valid token loads",
+					validationCommand: `python -c "print('289 passed')"`,
+				},
+			},
+		});
+
+		expect(result.scheduler.state.variant).toMatchObject({
+			status: "pass",
+			negativeControlCommand: `python -c "print('valid token loads')"`,
+			negativeControlExerciseSummary: {
+				exercised: true,
+				positiveSignals: ["declared-output-signal"],
+			},
+			negativeControlCommandEvidence: {
+				role: "negative-control",
+				expectedSignal: "valid token loads",
+				exitCode: 0,
+			},
+		});
+		const evidence = await Bun.file(`${cwd}/workflow-output/reproduction-variant.json`).json();
+		expect(evidence.negativeControlCommandEvidence).toMatchObject({
+			role: "negative-control",
+			command: `python -c "print('valid token loads')"`,
+			stdout: "valid token loads\n",
+		});
+		const markdown = await Bun.file(`${cwd}/workflow-output/reproduction-variant.md`).text();
+		expect(markdown).toContain("## Negative Control");
+		expect(markdown).toContain("valid token loads");
 	});
 
 	it("accepts markdown validation command sections in agent build review tasks", async () => {

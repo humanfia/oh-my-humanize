@@ -4,13 +4,16 @@ const reproductionCommand = requiredCommand(taskText, "Reproduction Command");
 const validationCommand = requiredCommand(taskText, "Validation Command");
 const setupCommand = optionalCommand(taskText, "Setup Command");
 const variantCommand = optionalCommand(taskText, "Variant Command");
+const negativeControlCommand = optionalCommand(taskText, "Negative Control Command");
 const reproductionSignal = optionalTextField(taskText, "Reproduction Signal");
 const variantSignal = optionalTextField(taskText, "Variant Signal");
+const negativeControlSignal = optionalTextField(taskText, "Negative Control Signal");
 const validationSignal = optionalTextField(taskText, "Validation Signal");
 validateShellCommand(reproductionCommand, "Reproduction Command");
 validateShellCommand(validationCommand, "Validation Command");
 if (setupCommand) validateShellCommand(setupCommand, "Setup Command");
 if (variantCommand) validateShellCommand(variantCommand, "Variant Command");
+if (negativeControlCommand) validateShellCommand(negativeControlCommand, "Negative Control Command");
 const runtime = runtimeFromTaskContract(taskText);
 
 await Bun.write(
@@ -48,10 +51,17 @@ await Bun.write(
 		variantCommand || "(not provided)",
 		"```",
 		"",
+		"## Negative Control Command",
+		"",
+		"```sh",
+		negativeControlCommand || "(not provided)",
+		"```",
+		"",
 		"## Declared Output Signals",
 		"",
 		`- Reproduction: ${reproductionSignal || "(not provided)"}`,
 		`- Variant: ${variantSignal || "(not provided)"}`,
+		`- Negative Control: ${negativeControlSignal || "(not provided)"}`,
 		`- Validation: ${validationSignal || "(not provided)"}`,
 		"",
 	].join("\n"),
@@ -71,8 +81,10 @@ return {
 				validationCommand,
 				setupCommand,
 				variantCommand,
+				negativeControlCommand,
 				reproductionSignal,
 				variantSignal,
+				negativeControlSignal,
 				validationSignal,
 			},
 		},
@@ -190,7 +202,7 @@ function followingSingleLineCommand(lines, startIndex, label) {
 }
 
 function isTaskSectionHeading(line) {
-	return line.startsWith("#") || /^[A-Z][A-Za-z /-]{0,80}:\s*$/u.test(line);
+	return line.startsWith("#") || /^[A-Za-z][A-Za-z0-9 /()_-]{0,80}:\s*(?:\S.*)?$/u.test(line);
 }
 
 function runtimeFromTaskContract() {
