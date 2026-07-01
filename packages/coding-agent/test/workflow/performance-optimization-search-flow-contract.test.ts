@@ -112,6 +112,25 @@ describe("performance-optimization-search flow contract", () => {
 		expect(evidence).toContain("Fatal Command Diagnostic");
 	});
 
+	it("fails closed when a baseline command only emits numeric warning text", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+
+		await expect(
+			runScriptFile(cwd, "capture-baseline.js", {
+				task: {
+					baselineCommand: "python -c \"import sys; print('DeprecationWarning: Click 9.0', file=sys.stderr)\"",
+					benchmarkCommand: "python -c \"import sys; print('DeprecationWarning: Click 9.0', file=sys.stderr)\"",
+					validationCommand: "python -c \"print('validation')\"",
+				},
+			}),
+		).rejects.toThrow(/benchmark command produced no benchmark measurement evidence/iu);
+
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-baseline.md")).text();
+		expect(evidence).toContain("benchmark command produced no benchmark measurement evidence");
+		expect(evidence).toContain("Fatal Command Diagnostic");
+	});
+
 	it("fails closed when benchmark validation exits without observable benchmark output", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
@@ -151,10 +170,33 @@ describe("performance-optimization-search flow contract", () => {
 		expect(result.summary).toBe("benchmark=fail validation=pass");
 		expect(benchmark).toMatchObject({
 			status: "fail",
-			benchmarkFailureDiagnostic: "benchmark command produced no numeric measurement",
+			benchmarkFailureDiagnostic: "benchmark command produced no benchmark measurement evidence",
 		});
 		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-benchmark.md")).text();
-		expect(evidence).toContain("benchmark command produced no numeric measurement");
+		expect(evidence).toContain("benchmark command produced no benchmark measurement evidence");
+		expect(evidence).toContain("Benchmark Fatal Command Diagnostic");
+	});
+
+	it("fails closed when benchmark validation only emits numeric warning text", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+
+		const result = await runScriptFile(cwd, "run-benchmark-validation.js", {
+			task: {
+				benchmarkCommand: "python -c \"import sys; print('DeprecationWarning: Click 9.0', file=sys.stderr)\"",
+				validationCommand: "python -c \"print('validation')\"",
+			},
+			runtime: { sharedProjectFilesBeforeBranches: [] },
+		});
+		const benchmark = result.statePatch?.find(patch => patch.path === "/benchmark")?.value;
+
+		expect(result.summary).toBe("benchmark=fail validation=pass");
+		expect(benchmark).toMatchObject({
+			status: "fail",
+			benchmarkFailureDiagnostic: "benchmark command produced no benchmark measurement evidence",
+		});
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-benchmark.md")).text();
+		expect(evidence).toContain("benchmark command produced no benchmark measurement evidence");
 		expect(evidence).toContain("Benchmark Fatal Command Diagnostic");
 	});
 

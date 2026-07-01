@@ -795,12 +795,30 @@ function benchmarkCommandFailureDiagnostic(result) {
 	if (!output) return "benchmark command produced no output";
 	const diagnostic = commandFailureDiagnostic(result);
 	if (diagnostic) return diagnostic;
-	if (!hasNumericMeasurement(output)) return "benchmark command produced no numeric measurement";
+	if (!hasBenchmarkMeasurementEvidence(output)) return "benchmark command produced no benchmark measurement evidence";
 	return "";
 }
 
-function hasNumericMeasurement(output) {
-	return /\d/u.test(output);
+function hasBenchmarkMeasurementEvidence(output) {
+	return output
+		.split(/\r?\n/u)
+		.map(line => line.trim())
+		.some(line => isBenchmarkMeasurementLine(line));
+}
+
+function isBenchmarkMeasurementLine(line) {
+	if (!/\d/u.test(line)) return false;
+	if (/\b(?:deprecationwarning|futurewarning|runtimewarning|userwarning|warning)\b/iu.test(line)) return false;
+	return (
+		/\b\d+(?:\.\d+)?\s*(?:ns|us|µs|μs|ms|s|sec|secs|second|seconds|msec|usec)\b/iu.test(line) ||
+		/\b(?:loops?|iterations?|iters?|ops|runs?|requests?|reqs?)\b.*\b\d+(?:\.\d+)?\b/iu.test(line) ||
+		/\b\d+(?:\.\d+)?\b.*\b(?:loops?|iterations?|iters?|ops|runs?|requests?|reqs?|per\s+(?:loop|iter|op|second|sec)|\/s)\b/iu.test(
+			line,
+		) ||
+		/\b(?:elapsed|duration|time|mean|median|p(?:50|90|95|99)|min|max|avg|average|best)\b.*\b\d+(?:\.\d+)?\b/iu.test(
+			line,
+		)
+	);
 }
 
 function isFatalCommandDiagnostic(line) {
