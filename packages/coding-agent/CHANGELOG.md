@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed workflow graceful stops being forwarded directly into active node runtime signals; active nodes now receive node deadlines, max-runtime, lifecycle stop-deadline aborts, and sibling fail-fast aborts while scheduler stops only stop new scheduling before checkpointing.
+- Fixed workflow read-only workspace guards treating external monitor assignment variants such as `monitor-assignment-2.json` as project mutations while preserving project file mutation checks.
 - Fixed the experimental performance-optimization-search flow accepting truncated here-document benchmark commands and empty benchmark output as valid baseline evidence.
 - Fixed workflow agent and review nodes without explicit `timeoutMs` running without a node deadline, so provider retry stalls fail closed and checkpoint instead of leaving attempts live indefinitely.
 - Fixed the experimental release-hardening final gate treating camelCase rollback/hold policy fields from audit agents as unresolved release blockers instead of advisory gate criteria.

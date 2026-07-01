@@ -183,7 +183,22 @@ function normalizeIgnoredDirtyPathPrefixes(repoRoot: string, prefixes: readonly 
 function isIgnoredWorkspacePath(value: string, ignoredDirtyPathPrefixes: readonly string[]): boolean {
 	if (ignoredDirtyPathPrefixes.length === 0) return false;
 	const normalized = toWorkspacePath(value.trim());
+	if (shouldIgnoreWorkflowMonitorAssignmentPath(normalized, ignoredDirtyPathPrefixes)) return true;
 	return ignoredDirtyPathPrefixes.some(prefix => normalized === prefix || normalized.startsWith(`${prefix}/`));
+}
+
+function shouldIgnoreWorkflowMonitorAssignmentPath(
+	normalizedPath: string,
+	ignoredDirtyPathPrefixes: readonly string[],
+): boolean {
+	if (!ignoredDirtyPathPrefixes.includes("monitor-assignment.json")) return false;
+	if (!normalizedPath.startsWith("monitor-assignment")) return false;
+	const jsonExtension = ".json";
+	if (!normalizedPath.endsWith(jsonExtension)) return false;
+	const suffix = normalizedPath.slice("monitor-assignment".length, -jsonExtension.length);
+	if (suffix.length === 0) return true;
+	if (!suffix.startsWith("-")) return false;
+	return suffix.slice(1).length > 0 && !suffix.includes("/");
 }
 
 function toWorkspacePath(value: string): string {

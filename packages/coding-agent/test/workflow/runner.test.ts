@@ -384,6 +384,73 @@ edges: []
 		}
 	});
 
+	it("allows read-only workspace nodes when upstream nodes already dirtied the workspace", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "omp-workflow-readonly-existing-dirty-"));
+		try {
+			await initializeGitWorkspace(workspace);
+			const host = createHost();
+			const definition = parseWorkflowDefinition(
+				`
+name: read-only-after-patch-demo
+version: 1
+nodes:
+  patch:
+    type: agent
+    agent: task
+    workspaceAccess: write
+    writes:
+      - /patch
+  review:
+    type: review
+    workspaceAccess: read
+    gates:
+      - finish
+    fallbackVerdict: finish
+    writes:
+      - /review
+edges:
+  - from: patch
+    to: review
+`,
+				{ sourcePath: "workflow.yml" },
+			);
+			const runtimeHost: WorkflowNodeRuntimeHost = {
+				runAgentNode: async () => {
+					await Bun.write(path.join(workspace, "src", "expected.ts"), "export const expected = true;\n");
+					return {
+						summary: "patch completed",
+						statePatch: [{ op: "set", path: "/patch", value: { changed: "src/expected.ts" } }],
+					};
+				},
+				runReviewNode: async () => ({
+					summary: "review accepted existing patch",
+					verdict: "finish",
+					statePatch: [{ op: "set", path: "/review", value: "finish" }],
+				}),
+			};
+
+			const result = await runWorkflow({
+				host,
+				definition,
+				runId: "run-read-only-after-patch",
+				startNodeId: "patch",
+				runtimeHost,
+				workspaceRoot: workspace,
+			});
+
+			expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+				["patch", "completed"],
+				["review", "completed"],
+			]);
+			expect(result.scheduler.state).toMatchObject({
+				patch: { changed: "src/expected.ts" },
+				review: "finish",
+			});
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true });
+		}
+	});
+
 	it("lets agent node outputs choose downstream paths", async () => {
 		const host = createHost();
 		const definition = parseWorkflowDefinition(agentDecisionSource, { sourcePath: "workflow.yml" });
@@ -619,7 +686,10 @@ edges:
 				calls.push("build");
 				receivedSignal = input.signal;
 				stopController.abort("workflow stop requested");
-				return { summary: "build completed" };
+				return {
+					summary: "build completed",
+					statePatch: [{ op: "set", path: "/work", value: { summary: "built" } }],
+				};
 			},
 			runReviewNode: async () => {
 				calls.push("review");
@@ -644,7 +714,9 @@ edges:
 		});
 
 		expect(calls).toEqual(["build"]);
-		expect(receivedSignal).toBe(nodeAbortController.signal);
+		expect(receivedSignal).toBeDefined();
+		expect(receivedSignal).not.toBe(stopController.signal);
+		expect(receivedSignal?.aborted).toBe(false);
 		const families = reconstructWorkflowFamilies(host.getBranch());
 		expect(families[0]?.attempts[0]?.status).toBe("stopped");
 		expect(families[0]?.checkpoints[0]?.frontierNodeIds).toEqual(["review"]);
@@ -1081,7 +1153,10 @@ edges:
 			actor: "human:sihao",
 		});
 		const runtimeHost: WorkflowNodeRuntimeHost = {
-			runAgentNode: async () => ({ summary: "build completed" }),
+			runAgentNode: async () => ({
+				summary: "build completed",
+				statePatch: [{ op: "set", path: "/work", value: { summary: "built" } }],
+			}),
 		};
 
 		await runWorkflow({

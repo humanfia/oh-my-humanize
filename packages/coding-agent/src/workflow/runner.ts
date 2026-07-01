@@ -178,12 +178,7 @@ function workflowRuntimeSignal(options: WorkflowRunnerOptions): WorkflowRuntimeS
 	const timeoutSignal = workflowRuntimeTimeoutSignal(options.maxRuntimeMs, disposers);
 	const lifecycleStop = workflowLifecycleStopSignal(options, disposers);
 	const signal = combineAbortSignals([options.signal, timeoutSignal, lifecycleStop.signal]);
-	const nodeAbortSignal = combineAbortSignals([
-		options.nodeAbortSignal,
-		options.signal,
-		timeoutSignal,
-		lifecycleStop.nodeAbortSignal,
-	]);
+	const nodeAbortSignal = combineAbortSignals([options.nodeAbortSignal, timeoutSignal, lifecycleStop.nodeAbortSignal]);
 	return {
 		signal,
 		nodeAbortSignal,
@@ -194,8 +189,8 @@ function workflowRuntimeSignal(options: WorkflowRunnerOptions): WorkflowRuntimeS
 				? undefined
 				: activation =>
 						combineAbortSignals([
+							options.nodeAbortSignal,
 							options.nodeAbortSignalForActivation?.(activation),
-							options.signal,
 							timeoutSignal,
 							lifecycleStop.nodeAbortSignal,
 						]),
@@ -602,7 +597,11 @@ function workflowNodeRuntimeSignal(
 	context: WorkflowSchedulerExecutionContext,
 	nodeDeadlineSignal: AbortSignal | undefined,
 ): AbortSignal | undefined {
-	return combineAbortSignals([context.nodeAbortSignal, nodeDeadlineSignal, context.signal]);
+	return combineAbortSignals([
+		context.nodeAbortSignal,
+		nodeDeadlineSignal,
+		workflowFailFastAbortSignal(context.signal),
+	]);
 }
 
 function workflowNodeCompletionSignal(
@@ -630,6 +629,20 @@ function combineNodeCompletionAbortSignals(nodeSignal: AbortSignal, schedulerSig
 	if (schedulerSignal.aborted) abortFromScheduler();
 	nodeSignal.addEventListener("abort", abortFromNode, { once: true });
 	schedulerSignal.addEventListener("abort", abortFromScheduler, { once: true });
+	return controller.signal;
+}
+
+function workflowFailFastAbortSignal(signal: AbortSignal | undefined): AbortSignal | undefined {
+	if (signal === undefined) return undefined;
+	const controller = new AbortController();
+	const abortFromSignal = (): void => {
+		const reason = workflowNodeAbortReason(signal);
+		if (isWorkflowFailFastAbortReason(reason) && !controller.signal.aborted) {
+			controller.abort(reason);
+		}
+	};
+	if (signal.aborted) abortFromSignal();
+	signal.addEventListener("abort", abortFromSignal, { once: true });
 	return controller.signal;
 }
 

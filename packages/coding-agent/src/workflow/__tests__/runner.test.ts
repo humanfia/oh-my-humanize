@@ -406,6 +406,7 @@ edges: []
 			const before = await captureWorkflowCheckpointWorkspace(workspace, snapshotOptions);
 
 			await Bun.write(path.join(workspace, "monitor-assignment.json"), '{"monitor":"agent-1"}\n');
+			await Bun.write(path.join(workspace, "monitor-assignment-2.json"), '{"monitor":"agent-2"}\n');
 			const after = await captureWorkflowCheckpointWorkspace(workspace, snapshotOptions);
 
 			expect(() => assertWorkflowWorkspaceSnapshotUnchanged(before, after, "readOnlyNode")).not.toThrow();
