@@ -33,15 +33,16 @@ if (unresolved) {
 	throw new Error(`draft still contains unresolved placeholder ${unresolved[0]}`);
 }
 
+const nextStep = `/humanize:gen-plan --input ${outputFile} --output <plan-path>`;
 const result = {
 	status: "written",
 	outputFile,
 	bytes: new TextEncoder().encode(draft).byteLength,
-	nextStep: `/humanize:gen-plan --input ${outputFile} --output <plan-path>`,
+	nextStep,
 };
 
 return {
-	summary: `verified generated idea draft at ${outputFile}`,
+	summary: `Idea draft saved to ${outputFile}. Next: ${nextStep}`,
 	data: result,
 	statePatch: [{ op: "set", path: "/result", value: result }],
 };

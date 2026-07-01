@@ -598,8 +598,13 @@ edges: []
 			availableModels: [openAiModel],
 			activeModel: openAiModel,
 		});
+		const completionReminder = Promise.withResolvers<string>();
 		const runtimeWithGraph = {
 			...runtime,
+			output: (text: string) => {
+				runtime.output(text);
+				if (text.includes("Workflow completed:") && text.includes("ran build")) completionReminder.resolve(text);
+			},
 			outputWorkflowGraph: (view: unknown) => {
 				graphs.push(view);
 			},
@@ -614,6 +619,9 @@ edges: []
 		expect(family?.attempts[0]?.id).toBe(`${family?.id.replace(/:family$/u, "")}:attempt-1`);
 		expect(graphs.length).toBeGreaterThan(0);
 		expect(calls).toEqual(["build"]);
+		const attemptId = family?.attempts[0]?.id;
+		if (attemptId === undefined) throw new Error("workflow attempt was not recorded");
+		expect(await completionReminder.promise).toContain(`Workflow completed: ${attemptId} - ran build`);
 	});
 
 	it("rejects workflow starts from non-artifact workflow packages", async () => {

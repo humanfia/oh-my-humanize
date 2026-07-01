@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed completed workflow attempts surfacing only `workflow completed`, so final node summaries now remind users where generated artifacts were saved.
 - Fixed the experimental performance-optimization-search flow treating a committed positive selection with a clean worktree as a no-win outcome during finalize/archive.
 - Fixed the experimental research-reproduction flow assuming comparison agent summaries automatically materialized `/comparison` before review prompts.
 - Fixed headless workflow starts returning success when scheduler-level prompt binding failures failed the run, and now persist those failures into workflow observability.

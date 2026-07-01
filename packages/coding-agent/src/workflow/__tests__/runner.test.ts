@@ -159,6 +159,44 @@ describe("runWorkflow lifecycle", () => {
 		expect(recoveredAttempt.activations.map(activation => activation.nodeId)).toEqual(["middle", "after"]);
 	});
 
+	it("records the final activation summary on completed lifecycle attempts", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = failureRecoveryDefinition();
+		const freeze = freezeForDefinition(definition);
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runScriptNode: async input => {
+				if (input.node.id === "setup") return { summary: "setup complete" };
+				if (input.node.id === "middle") return { summary: "middle complete" };
+				return {
+					summary:
+						"Idea draft saved to /tmp/idea.md. Next: /humanize:gen-plan --input /tmp/idea.md --output <plan-path>",
+				};
+			},
+		};
+
+		await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "setup",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		const family = reconstructWorkflowFamilies(host.getBranch())[0]!;
+		expect(family.attempts[0]).toMatchObject({
+			status: "completed",
+			summary:
+				"Idea draft saved to /tmp/idea.md. Next: /humanize:gen-plan --input /tmp/idea.md --output <plan-path>",
+		});
+	});
+
 	it("records the workspace snapshot when a stopped activation leaves dirty files", async () => {
 		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "omp-workflow-checkpoint-workspace-"));
 		try {

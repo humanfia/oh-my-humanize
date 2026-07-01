@@ -324,10 +324,18 @@ async function finishLifecycleAttempt(
 		await createAndRecordLifecycleCheckpoint(options, scheduler, scheduler.frontierNodeIds);
 		return;
 	}
+	const summary = workflowCompletionSummary(scheduler);
 	completeWorkflowAttempt(options.host, {
 		attemptId: lifecycle.attemptId,
-		summary: "workflow completed",
+		summary,
 	});
+}
+
+function workflowCompletionSummary(scheduler: WorkflowSchedulerResult): string {
+	const completedWithSummary = [...scheduler.activations]
+		.reverse()
+		.find(activation => activation.status === "completed" && activation.output?.summary?.trim());
+	return completedWithSummary?.output?.summary?.trim() || "workflow completed";
 }
 
 async function createAndRecordLifecycleCheckpoint(

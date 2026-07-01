@@ -313,6 +313,7 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 				failed: result.scheduler.activations.filter(activation => activation.status === "failed").length,
 				frontier: result.scheduler.frontierNodeIds,
 				maxRuntimeMs: command.flags.maxRuntimeMs ?? DEFAULT_WORKFLOW_MAX_RUNTIME_MS,
+				summary: lifecycleAttempt?.summary,
 			},
 			failedActivations:
 				failedActivations.length > 0
@@ -364,6 +365,9 @@ async function handleStart(command: WorkflowCommandArgs, runtime: WorkflowComman
 	writeLine(`Workflow run: ${runId}`);
 	writeLine(`Flow: ${flowLabel(spec)}`);
 	writeLine(`Status: ${status}`);
+	if (lifecycleAttempt?.summary && lifecycleAttempt.summary !== "workflow completed") {
+		writeLine(`Summary: ${lifecycleAttempt.summary}`);
+	}
 	writeLine(
 		`Activations: ${result.scheduler.activations.length} total, ${result.scheduler.activations.filter(activation => activation.status === "completed").length} completed, ${result.scheduler.activations.filter(activation => activation.status === "failed").length} failed`,
 	);

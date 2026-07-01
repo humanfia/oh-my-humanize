@@ -51,6 +51,7 @@ export interface WorkflowGraphAttemptView {
 	id: string;
 	status: WorkflowRunAttemptSnapshot["status"];
 	runtimeBindingId: string;
+	summary?: string;
 	checkpointId?: string;
 }
 
@@ -322,6 +323,7 @@ export function buildWorkflowGraphView(
 			status: currentAttempt.status,
 			runtimeBindingId: currentAttempt.runtimeBindingSnapshot.id,
 		};
+		if (currentAttempt.summary !== undefined) view.currentAttempt.summary = currentAttempt.summary;
 		if (currentAttempt.checkpointId !== undefined) view.currentAttempt.checkpointId = currentAttempt.checkpointId;
 	}
 	if (currentCheckpoint !== undefined) {
@@ -2235,6 +2237,13 @@ export function formatWorkflowOverviewLines(view: WorkflowGraphView): string[] {
 		const checkpoint =
 			attempt.checkpointId === undefined ? "" : ` from ${formatWorkflowShortId(attempt.checkpointId)}`;
 		lines.push(`Run: ${formatWorkflowShortId(attempt.id)} ${attempt.status}${checkpoint}`);
+		if (
+			attempt.summary !== undefined &&
+			attempt.summary.trim().length > 0 &&
+			attempt.summary !== "workflow completed"
+		) {
+			lines.push(`Summary: ${formatSingleLineWorkflowDetail(attempt.summary)}`);
+		}
 	}
 	lines.push(`Flow: ${formatWorkflowViewTopology(view)} · ${view.nodes.length} ${pluralNode(view.nodes.length)}`);
 	lines.push(`Focus: ${formatWorkflowOperatorFocus(view)}`);

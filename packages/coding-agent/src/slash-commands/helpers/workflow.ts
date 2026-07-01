@@ -168,6 +168,7 @@ interface ActiveWorkflowAttempt {
 	nodeAbortController: AbortController;
 	nodeAbortControllers: Map<string, AbortController>;
 	lifecycle: WorkflowRunnerLifecycleOptions;
+	announceCompletion: boolean;
 	finished: Promise<void>;
 }
 
@@ -486,6 +487,7 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 			nodeAbortController,
 			nodeAbortControllers,
 			lifecycle,
+			announceCompletion: runInBackground,
 			finished: runPromise.then(
 				() => undefined,
 				async error => {
@@ -1040,6 +1042,7 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 		nodeAbortController,
 		nodeAbortControllers,
 		lifecycle,
+		announceCompletion: parsed.background === true,
 		finished: runPromise.then(
 			() => undefined,
 			async error => {
@@ -1633,10 +1636,25 @@ function watchWorkflowAttemptCompletion(runtime: SlashCommandRuntime, active: Ac
 		try {
 			unregisterActiveWorkflowAttempt(runtime, active.attemptId);
 			await flushWorkflowLifecycle(runtime);
+			await outputWorkflowAttemptCompletionReminder(runtime, active);
 		} catch (error) {
 			await runtime.output(`Workflow attempt persistence failed: ${active.attemptId} - ${errorMessage(error)}`);
 		}
 	});
+}
+
+async function outputWorkflowAttemptCompletionReminder(
+	runtime: SlashCommandRuntime,
+	active: ActiveWorkflowAttempt,
+): Promise<void> {
+	if (!active.announceCompletion) return;
+	const family = reconstructWorkflowFamilies(runtime.sessionManager.getBranch()).find(
+		candidate => candidate.id === active.familyId,
+	);
+	const attempt = family?.attempts.find(candidate => candidate.id === active.attemptId);
+	const summary = attempt?.summary?.trim();
+	if (attempt?.status !== "completed" || !summary || summary === "workflow completed") return;
+	await runtime.output(`Workflow completed: ${active.attemptId} - ${summary}`);
 }
 
 function findActiveWorkflowAttempt(runtime: SlashCommandRuntime, attemptId: string): ActiveWorkflowAttempt | undefined {
