@@ -378,6 +378,41 @@ describe("performance-optimization-search flow contract", () => {
 		});
 	});
 
+	it("does not treat negated no-win artifact references as missing durable artifacts", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "README.md"), "perf fixture\n");
+		await runCommand(["git", "add", "README.md"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-caching.md"),
+			[
+				"# Caching branch",
+				"status: no-win",
+				"final-selection: no",
+				"Candidate patch path: none; no `workflow-output/perf-caching-candidate.diff` was produced.",
+				"Benchmark log: none; no workflow-output/perf-caching-benchmark.log was produced.",
+				"Validation log: none; no workflow-output/perf-caching-validation.log was produced.",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "run-benchmark-validation.js", {
+			task: {
+				benchmarkCommand: "python -c \"print('split_arg_string 30000 loops 0.123s')\"",
+				validationCommand: "python -c \"print('validation')\"",
+			},
+			runtime: { sharedProjectFilesBeforeBranches: [] },
+		});
+		const benchmark = result.statePatch?.find(patch => patch.path === "/benchmark")?.value;
+
+		expect(result.summary).toBe("benchmark=pass validation=pass");
+		expect(benchmark).toMatchObject({
+			status: "pass",
+		});
+		expect(benchmark?.evidenceViolation).toBeUndefined();
+	});
+
 	it("fails closed when a blocked hypothesis branch reports a retained positive candidate", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });

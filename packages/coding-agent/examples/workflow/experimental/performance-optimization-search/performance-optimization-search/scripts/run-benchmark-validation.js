@@ -424,11 +424,28 @@ async function missingDeclaredWorkflowArtifacts() {
 
 function declaredWorkflowArtifacts(text) {
 	const artifacts = new Set();
-	for (const match of text.matchAll(/\bworkflow-output\/perf-(?:algorithmic|caching|io|no-win)[^\s`"'<>),;]*/giu)) {
-		const artifactPath = trimPathPunctuation(match[0] ?? "");
-		if (artifactPath && !hasGlobSyntax(artifactPath)) artifacts.add(artifactPath);
+	for (const line of text.split(/\r?\n/u)) {
+		for (const match of line.matchAll(/\bworkflow-output\/perf-(?:algorithmic|caching|io|no-win)[^\s`"'<>),;]*/giu)) {
+			const artifactPath = trimPathPunctuation(match[0] ?? "");
+			if (
+				artifactPath &&
+				!hasGlobSyntax(artifactPath) &&
+				!isNegatedArtifactReference(line, artifactPath)
+			) {
+				artifacts.add(artifactPath);
+			}
+		}
 	}
 	return [...artifacts].sort();
+}
+
+function isNegatedArtifactReference(line, artifactPath) {
+	const normalizedLine = line.toLowerCase();
+	const normalizedPath = artifactPath.toLowerCase();
+	const pathStart = normalizedLine.indexOf(normalizedPath);
+	if (pathStart < 0) return false;
+	const beforePath = normalizedLine.slice(Math.max(0, pathStart - 96), pathStart);
+	return /\b(?:no|none|not|without|missing)\b[^.!?\n]*$/u.test(beforePath);
 }
 
 function trimPathPunctuation(filePath) {
