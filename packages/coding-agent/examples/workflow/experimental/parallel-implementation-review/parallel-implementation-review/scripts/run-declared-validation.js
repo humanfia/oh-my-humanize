@@ -843,7 +843,7 @@ function unquoteShellAssignmentValue(value) {
 }
 
 function validationCommandLineMatch(line) {
-	return /^(?:verify|verification command|validation command)\s*:\s*(.*)\s*$/iu.exec(normalizeTaskFieldLine(line));
+	return /^(?:verify|verification command|validation command)\s*:?\s*(.*)\s*$/iu.exec(normalizeTaskFieldLine(line));
 }
 
 function validationEnvironmentLineMatch(line) {

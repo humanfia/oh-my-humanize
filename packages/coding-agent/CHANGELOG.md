@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental parallel-implementation-review flow failing to reuse declared validation evidence when `task.md` writes `Validation Command` as a Markdown heading instead of a colon field.
 - Fixed post-content provider stream interruptions consuming the full generic retry budget; they now use a smaller configurable retry cap so long interrupted streams fail faster instead of repeatedly burning long requests.
 - Fixed the experimental performance-optimization-search flow rejecting a valid positive winner when a separate losing branch records no-win evidence, and failing to stop when branch reports advertise missing durable performance artifacts.
 - Fixed the experimental performance-optimization-search flow treating archived rejected candidate patches as retained positive branch evidence during selection guard/finalize checks.

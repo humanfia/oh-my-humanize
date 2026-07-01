@@ -143,6 +143,75 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(await fileExists(path.join(cwd, "workflow-output", "rerun-marker"))).toBe(false);
 	});
 
+	it("reuses declared validation when the task contract uses Markdown headings", async () => {
+		const cwd = await createTempDir();
+		const tupleId = "P37-T01-f9d7b08ab-canary";
+		const command = "cargo test -p grep-printer -p grep-searcher -p ripgrep";
+		await writeTupleFiles(cwd, tupleId);
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"# Objective",
+				"Reuse lane-owned declared validation evidence.",
+				"",
+				"## Validation Command",
+				"",
+				command,
+				"",
+				"## Validation Environment",
+				"",
+				"- `CARGO_TARGET_DIR=workflow-output/cargo-target`",
+			].join("\n"),
+		);
+		const stdoutArtifact = `workflow-output/test-validation-${tupleId}.stdout`;
+		const stderrArtifact = `workflow-output/test-validation-${tupleId}.stderr`;
+		const exitCodeArtifact = `workflow-output/test-validation-${tupleId}.exitcode`;
+		await Bun.write(path.join(cwd, stdoutArtifact), "ok\n");
+		await Bun.write(path.join(cwd, stderrArtifact), "");
+		await Bun.write(path.join(cwd, exitCodeArtifact), "0\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output", `tests-lane-${tupleId}.json`),
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementTests",
+					status: "completed",
+					validation: {
+						command,
+						environment: { CARGO_TARGET_DIR: "workflow-output/cargo-target" },
+						result: "pass",
+						exit_code: 0,
+						stdout_path: stdoutArtifact,
+						stderr_path: stderrArtifact,
+						exitcode_path: exitCodeArtifact,
+					},
+					artifact_hashes: {
+						[stdoutArtifact]: await sha256File(path.join(cwd, stdoutArtifact)),
+						[stderrArtifact]: await sha256File(path.join(cwd, stderrArtifact)),
+						[exitCodeArtifact]: await sha256File(path.join(cwd, exitCodeArtifact)),
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "run-declared-validation.js", {});
+
+		expect(result.verdict).toBe("PASS");
+		expect(result.data?.validation).toMatchObject({
+			command,
+			environment: { CARGO_TARGET_DIR: "workflow-output/cargo-target" },
+			result: "passed",
+			exitCode: 0,
+			stdoutArtifact,
+			stderrArtifact,
+			exitCodeArtifact,
+			reusedFromTestLane: `workflow-output/tests-lane-${tupleId}.json`,
+		});
+	});
+
 	it("reuses exact passed test-lane validation when tuple-scoped artifact hashes still match", async () => {
 		const cwd = await createTempDir();
 		await initGitRepo(cwd);
