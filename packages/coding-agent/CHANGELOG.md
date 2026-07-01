@@ -6,6 +6,7 @@
 
 - Fixed post-content provider stream interruptions consuming the full generic retry budget; they now use a smaller configurable retry cap so long interrupted streams fail faster instead of repeatedly burning long requests.
 - Fixed the experimental performance-optimization-search flow rejecting a valid positive winner when a separate losing branch records no-win evidence, and failing to stop when branch reports advertise missing durable performance artifacts.
+- Fixed the experimental performance-optimization-search flow treating archived rejected candidate patches as retained positive branch evidence during selection guard/finalize checks.
 - Fixed the experimental bug-triage-repro-fix flow accepting truncated multiline reproduction commands and archiving untracked workspace byproducts outside the task allowed-path fence.
 - Fixed workflow agent/human nodes being marked complete after declaring state writes but producing no workflow state patch, so missing model-output state now fails at the producer node instead of later consumers; the experimental test-generation-hardening flow now materializes coverage-inspection summary/data/transcript handoffs before writing `/gaps` and fails closed on unstructured handoffs instead of fabricating a ready report.
 - Fixed the experimental performance-optimization-search flow treating a committed positive selection with a clean worktree as a no-win outcome during finalize/archive.

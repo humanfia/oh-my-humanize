@@ -203,6 +203,7 @@ describe("performance-optimization-search flow contract", () => {
 				"# Performance caching Branch",
 				"final-selection: yes",
 				"benchmark-relevance: yes",
+				"semantic-probe: yes",
 				"benchmark improvement: selected candidate measured 114 usec against the 158 usec baseline.",
 				"rollback evidence: git apply -R workflow-output/perf-caching-candidate.diff",
 				"",
@@ -218,26 +219,21 @@ describe("performance-optimization-search flow contract", () => {
 				"```json",
 				JSON.stringify(
 					{
-						status: "no-win",
+						status: "no_win",
 						strategy: "io",
 						editedFiles: [],
 						retainedFiles: [],
-						candidatePatchPath: null,
+						retainedSourceChanges: [],
+						candidatePatchPath: "workflow-output/perf-io-candidate.diff",
+						candidatePatchRetained: false,
 						benchmarkRelevance: "yes",
-						finalSelection: "no",
-						noWinResult: "yes",
-						measurements: [
-							{
-								candidate: "lazy mixed-output buffer",
-								result: "200 loops, best of 3: 163 usec per loop",
-								decision: "reverted; slower than 158 usec baseline",
-							},
-							{
-								candidate: "no-input helper reorder",
-								result: "200 loops, best of 3: 158 usec per loop",
-								decision: "reverted; no improvement over 158 usec baseline",
-							},
-						],
+						finalSelection: false,
+						noWinResult: true,
+						measurements: {
+							cleanOriginalUsec: [155, 160, 156, 159],
+							cleanCandidateUsec: [160, 160, 157, 155],
+							finalRevertedUsec: 159,
+						},
 					},
 					null,
 					2,
@@ -248,7 +244,7 @@ describe("performance-optimization-search flow contract", () => {
 				"no-win-result: yes",
 				"benchmark-relevance: yes",
 				"benchmark relevance evidence: the measured I/O candidates were evaluated under the task-declared benchmark path, but none improved over the recorded 158 usec baseline.",
-				"rollback evidence: no I/O candidate patch exists, no I/O project-code changes are retained.",
+				"rollback evidence: workflow-output/perf-io-candidate.diff is archived only as rejected evidence; no I/O source changes were retained in the shared workspace.",
 				"",
 			].join("\n"),
 		);
@@ -258,7 +254,7 @@ describe("performance-optimization-search flow contract", () => {
 				"# Performance Selection Repair",
 				"",
 				"- Selected branch: caching.",
-				"- io: not applied. No candidate patch exists, both measured I/O candidates were reverted by the branch, and the report remains marked `final-selection: no` and `no-win-result: yes`.",
+				"- io: not applied. Its candidate patch is archived only as rejected evidence, both measured I/O candidates were reverted by the branch, and the report remains marked `final-selection: no` and `no-win-result: yes`.",
 				"",
 				"benchmark command exited 0",
 				"validation command exited 0",
@@ -289,6 +285,26 @@ describe("performance-optimization-search flow contract", () => {
 			noWinBranches: ["io"],
 			positiveUnselectedBranches: [],
 			benchmarkRelevanceBlockers: [],
+		});
+
+		const finalize = await runScriptFile(cwd, "finalize-performance-selection.js", {
+			review: "verdict: finish",
+			task: { text: "No-Win Result: allowed" },
+			benchmark: { status: "pass", benchmarkExitCode: 0, validationExitCode: 0 },
+			selectionRepair: {
+				benchmark: { status: "pass", exitCode: 0 },
+				validation: { status: "pass", exitCode: 0 },
+			},
+		});
+		const selection = finalize.statePatch?.find(patch => patch.path === "/selection")?.value;
+
+		expect(finalize.summary).toBe("finalized performance selection: positive");
+		expect(selection).toMatchObject({
+			status: "pass",
+			terminalState: "positive",
+			selectedBranches: ["caching"],
+			noWinBranches: ["io"],
+			positiveUnselectedBranches: [],
 		});
 	});
 

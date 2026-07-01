@@ -292,12 +292,20 @@ function structuredNoWinWithoutRetainedPositiveEvidence(state) {
 }
 
 function hasRetainedBranchArtifact(state) {
+	if (nonEmptyArray(state.retainedFiles)) return true;
+	if (nonEmptyArray(state.retainedProjectFiles)) return true;
+	if (nonEmptyArray(state.retainedCodeChanges)) return true;
+	if (nonEmptyArray(state.retainedSourceChanges)) return true;
+	const candidatePatchRetained = stringValue(state.candidatePatchRetained);
+	if (candidatePatchRetained === "yes" || candidatePatchRetained === "true") return true;
+	if (candidatePatchRetained === "no" || candidatePatchRetained === "false") return false;
 	const candidatePatchPath = state.candidatePatchPath;
 	if (typeof candidatePatchPath === "string" && candidatePatchPath.trim() !== "") return true;
-	if (Array.isArray(state.retainedFiles) && state.retainedFiles.length > 0) return true;
-	if (Array.isArray(state.retainedProjectFiles) && state.retainedProjectFiles.length > 0) return true;
-	if (Array.isArray(state.retainedCodeChanges) && state.retainedCodeChanges.length > 0) return true;
 	return false;
+}
+
+function nonEmptyArray(value) {
+	return Array.isArray(value) && value.length > 0;
 }
 
 function measurementDismissesPositiveResult(measurement) {
@@ -310,7 +318,7 @@ function measurementDismissesPositiveResult(measurement) {
 
 function stringValue(value) {
 	if (typeof value === "boolean") return value ? "yes" : "no";
-	return typeof value === "string" ? value.trim().toLowerCase() : "";
+	return typeof value === "string" ? value.trim().toLowerCase().replace(/_/gu, "-") : "";
 }
 
 function dismissesPositiveBenchmarkEvidence(line) {
