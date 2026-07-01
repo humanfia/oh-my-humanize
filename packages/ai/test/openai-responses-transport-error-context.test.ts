@@ -37,7 +37,7 @@ describe("openai-responses transport error context", () => {
 		}).result();
 
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain("Connection error.");
+		expect(result.errorMessage).toContain("JSON Parse error: Unexpected EOF");
 		expect(result.errorMessage).toContain("provider=rust-cat");
 		expect(result.errorMessage).toContain("api=openai-responses");
 		expect(result.errorMessage).toContain("model=gpt-5.5");

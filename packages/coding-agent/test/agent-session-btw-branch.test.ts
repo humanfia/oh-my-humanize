@@ -245,8 +245,9 @@ describe("AgentSession.branchFromBtw", () => {
 		activeSession.sessionManager.appendMessage({ role: "user", content: "seed", timestamp: Date.now() });
 		await activeSession.sessionManager.flush();
 		const abortController = new AbortController();
-		const execution = Promise.withResolvers<void>().promise;
-		activeSession.trackEvalExecution(execution, abortController).catch(() => undefined);
+		const execution = Promise.withResolvers<void>();
+		abortController.signal.addEventListener("abort", () => execution.reject(new Error("aborted")), { once: true });
+		activeSession.trackEvalExecution(execution.promise, abortController).catch(() => undefined);
 		expect(activeSession.isEvalRunning).toBe(true);
 
 		await expect(activeSession.branchFromBtw("question", createBtwAssistant())).rejects.toThrow(
@@ -254,6 +255,7 @@ describe("AgentSession.branchFromBtw", () => {
 		);
 
 		abortController.abort();
+		await execution.promise.catch(() => undefined);
 	});
 
 	it("refuses to branch /btw while context maintenance is running", async () => {

@@ -1516,7 +1516,39 @@ async function driveSessionToYield(
 	};
 	const awaitPromptOrYield = async <T>(promise: Promise<T>): Promise<T | undefined> => {
 		checkAbort();
-		if (monitor.yieldCalled()) return undefined;
+		let promptSettled = false;
+		const guardedPrompt = promise.then(
+			value => {
+				promptSettled = true;
+				return value;
+			},
+			error => {
+				promptSettled = true;
+				if (monitor.yieldCalled() || abortSignal.aborted) {
+					logger.debug("Subagent prompt settled after yield boundary", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return undefined;
+				}
+				throw error;
+			},
+		);
+		void guardedPrompt.catch(() => {});
+
+		const stopInFlightPromptAfterYield = async (): Promise<undefined> => {
+			// A terminal yield may be emitted synchronously just before prompt() resolves.
+			// Give that successful turn a chance to settle so completed sessions are not
+			// aborted, but stop genuinely in-flight prompts before resolving the subagent.
+			await Promise.resolve();
+			await Promise.resolve();
+			if (!promptSettled) {
+				await monitor.abortActiveSession();
+			}
+			return undefined;
+		};
+
+		if (monitor.yieldCalled()) return stopInFlightPromptAfterYield();
+
 		const { promise: abortPromise, reject } = Promise.withResolvers<never>();
 		const onAbort = () => {
 			try {
@@ -1526,18 +1558,12 @@ async function driveSessionToYield(
 			}
 		};
 		abortSignal.addEventListener("abort", onAbort, { once: true });
-		const guardedPrompt = promise.catch(error => {
-			if (monitor.yieldCalled() || abortSignal.aborted) {
-				logger.debug("Subagent prompt settled after yield boundary", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-				return undefined;
-			}
-			throw error;
-		});
-		void guardedPrompt.catch(() => {});
 		try {
-			return await Promise.race([guardedPrompt, monitor.yieldObserved().then(() => undefined), abortPromise]);
+			return await Promise.race([
+				guardedPrompt,
+				monitor.yieldObserved().then(stopInFlightPromptAfterYield),
+				abortPromise,
+			]);
 		} finally {
 			abortSignal.removeEventListener("abort", onAbort);
 		}

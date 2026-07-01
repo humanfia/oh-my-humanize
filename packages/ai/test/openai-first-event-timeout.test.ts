@@ -699,10 +699,15 @@ describe("OpenAI-family first-event timeouts", () => {
 		}).result();
 
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toBe("OpenAI responses stream closed before a terminal response event was received");
+		expect(result.errorMessage).toContain(
+			"OpenAI responses stream closed before a terminal response event was received",
+		);
 		expect(result.content as unknown[]).toEqual([
 			{ type: "text", text: "Hello", textSignature: '{"v":1,"id":"msg_incomplete"}' },
 		]);
+		expect(result.errorMessage).toContain(
+			"request-context: provider=openai api=openai-responses model=gpt-5-mini url=https://api.openai.com/v1/responses",
+		);
 	});
 
 	it("errors when Azure OpenAI responses stream closes without a terminal response event", async () => {
@@ -741,12 +746,15 @@ describe("OpenAI-family first-event timeouts", () => {
 		}).result();
 
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toBe(
+		expect(result.errorMessage).toContain(
 			"Azure OpenAI responses stream closed before a terminal response event was received",
 		);
 		expect(result.content as unknown[]).toEqual([
 			{ type: "text", text: "Hello azure", textSignature: '{"v":1,"id":"msg_incomplete_azure"}' },
 		]);
+		expect(result.errorMessage).toContain(
+			"request-context: provider=azure api=azure-openai-responses model=gpt-5-mini url=https://example.openai.azure.com/openai/v1/responses?api-version=v1",
+		);
 	});
 
 	it("handles response.incomplete as a valid terminal event (not premature closure)", async () => {
