@@ -401,6 +401,10 @@ function normalizeScope(scope) {
 }
 
 function scopeMatchesPath(scope, filePath) {
+	if (scope.endsWith("/**")) {
+		const prefix = scope.slice(0, -3);
+		return filePath === prefix || filePath.startsWith(`${prefix}/`);
+	}
 	if (scope.endsWith("/")) return filePath.startsWith(scope);
 	return filePath === scope || filePath.startsWith(`${scope}/`);
 }

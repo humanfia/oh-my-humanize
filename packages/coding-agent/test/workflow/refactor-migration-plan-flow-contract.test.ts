@@ -186,6 +186,45 @@ describe("refactor-migration-plan flow contract", () => {
 		expect(artifact).toContain("- manifest-entry.json");
 		expect(artifact).toContain("- monitor-assignment.json");
 	});
+
+	it("treats recursive glob allowed paths as review context scope fences", async () => {
+		const cwd = await createGitRepo();
+		const taskText = [
+			"Objective:",
+			"Migrate HTTPX keylog tests away from root workspace byproducts.",
+			"",
+			"Compatibility Command:",
+			"python -m py_compile tests/test_config.py",
+			"",
+			"Validation Command:",
+			"python -c \"print('ok')\"",
+			"",
+			"Allowed paths: httpx/**, tests/**, docs/**, workflow-output/**, task.md, manifest-entry.json, monitor-assignment.json.",
+			"",
+		].join("\n");
+		await fs.mkdir(path.join(cwd, "tests"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), taskText);
+		await Bun.write(path.join(cwd, "tests", "test_config.py"), "def test_keylog():\n    assert True\n");
+		await runCommand(["git", "add", "task.md", "tests/test_config.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(path.join(cwd, "tests", "test_config.py"), "def test_keylog(tmp_path):\n    assert tmp_path\n");
+
+		const result = await runScript(cwd, {
+			task: { text: taskText },
+			compatibility: {
+				behavior: "Preserve SSL keylog behavior while keeping test byproducts in tmp_path.",
+			},
+		});
+		const reviewContext = result.statePatch?.find(patch => patch.path === "/reviewContext")?.value;
+
+		expect(reviewContext?.workspace?.status).toBe("pass");
+		expect(reviewContext?.workspace?.blockers).toEqual([]);
+		expect(reviewContext?.workspace?.allowedScopes).toContain("tests/**");
+		const artifact = await Bun.file(path.join(cwd, "workflow-output", "refactor-migration-review-context.md")).text();
+		expect(artifact).toContain("- tests/**");
+		expect(artifact).toContain("-  M tests/test_config.py");
+		expect(artifact).not.toContain("tests/test_config.py changed outside task allowed paths");
+	});
 });
 
 async function runScript(cwd: string, state: WorkflowContext["state"]): Promise<ReviewContextResult> {

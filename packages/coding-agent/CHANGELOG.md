@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration-plan flow treating recursive glob scope fences such as `tests/**` as out-of-scope changes during review and archive checks.
 - Fixed the experimental release-hardening flow treating stale structured compatibility status fields as unresolved release blockers after reviewer-approved repair evidence.
 - Fixed the experimental refactor-migration-plan flow leaving validation preflight byproducts such as TLS keylog files in the project workspace before migration agents run.
 - Fixed the experimental agent-build-review-loop flow accepting rollback evidence that names a stale nearby symbol instead of the actual changed symbol or a file-level restore.
