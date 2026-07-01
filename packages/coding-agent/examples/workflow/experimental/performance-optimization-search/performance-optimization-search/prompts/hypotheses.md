@@ -14,6 +14,13 @@ compact plan for three branches: algorithmic, caching, and IO. For each branch,
 include likely files, expected metric movement, rollback risk, and conflicts
 the parallel branches must avoid.
 
+If `task.benchmarkTargetPaths` is non-empty, treat those paths as the measured
+hot path for this run. Plan branch hypotheses around those targets, or state
+that a branch is blocked/no-win because the useful implementation path is
+outside the task contract. Do not plan wrapper, shim, or import-location edits
+as positive optimization work unless the benchmark target paths also cover the
+changed implementation path.
+
 The workflow runtime branch isolation worktree is already a lane-local
 execution surface. The task contract JSON also contains `scratchRoot`; extra
 branch clones, scratch copies, benchmark fixtures, and apply-check directories

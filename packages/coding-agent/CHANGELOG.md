@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental performance-optimization-search flow starting parallel branch work when the task's benchmark target path was outside its allowed project edit scope.
 - Fixed the experimental documentation-audit flow allowing a review to finish after patching only one file from a multi-target consolidated repair plan.
 - Fixed the experimental performance-optimization-search flow accepting benchmark validation commands that exited successfully without benchmark output or measurement evidence, including warning-only numeric output.
 - Fixed workflow graceful stops being forwarded directly into active node runtime signals; active nodes now receive node deadlines, max-runtime, lifecycle stop-deadline aborts, and sibling fail-fast aborts while scheduler stops only stop new scheduling before checkpointing.

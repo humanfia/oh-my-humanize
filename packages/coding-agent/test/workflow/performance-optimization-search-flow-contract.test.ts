@@ -15,6 +15,8 @@ interface WorkflowContext {
 			benchmarkCommand?: string;
 			baselineCommand?: string;
 			validationCommand?: string;
+			allowedProjectPaths?: string[];
+			benchmarkTargetPaths?: string[];
 		};
 		runtime?: {
 			sharedProjectFilesBeforeBranches?: string[];
@@ -58,6 +60,8 @@ interface ScriptResult {
 			benchmarkRelevanceBlockers?: string[];
 			evidenceViolation?: boolean;
 			missingDeclaredArtifacts?: string[];
+			allowedProjectPaths?: string[];
+			benchmarkTargetPaths?: string[];
 		};
 	}>;
 }
@@ -74,6 +78,94 @@ afterEach(async () => {
 });
 
 describe("performance-optimization-search flow contract", () => {
+	it("fails closed when benchmark target paths are outside the allowed project paths", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"# Performance task",
+				"",
+				"Benchmark Command: python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
+				"Baseline Command: python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
+				"Validation Command: python -c \"print('validation')\"",
+				`Scratch Directory: ${path.join(cwd, "scratch")}`,
+				"Allowed paths: src/click/parser.py, tests/test_parser.py, workflow-output/**, task.md",
+				"Benchmark Target Paths: src/click/shell_completion.py",
+				"",
+			].join("\n"),
+		);
+
+		await expect(runScriptFile(cwd, "precheck-task-contract.js", {})).rejects.toThrow(
+			/benchmark target paths are outside allowed project paths.*src\/click\/shell_completion\.py/iu,
+		);
+
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-precheck.md")).text();
+		expect(evidence).toContain("## Allowed Project Paths");
+		expect(evidence).toContain("src/click/parser.py");
+		expect(evidence).toContain("## Benchmark Target Paths");
+		expect(evidence).toContain("src/click/shell_completion.py");
+		expect(evidence).toContain("Benchmark Target Path Violation");
+	});
+
+	it("materializes benchmark target paths when the allowed project paths cover them", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"# Performance task",
+				"",
+				"Benchmark Command: python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
+				"Baseline Command: python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
+				"Validation Command: python -c \"print('validation')\"",
+				`Scratch Directory: ${path.join(cwd, "scratch")}`,
+				"Allowed paths:",
+				"- src/click/shell_completion.py",
+				"- tests/test_parser.py",
+				"- workflow-output/**",
+				"- task.md",
+				"Benchmark Target Paths:",
+				"- src/click/shell_completion.py",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "precheck-task-contract.js", {});
+		const task = result.statePatch?.find(patch => patch.path === "/task")?.value;
+
+		expect(result.summary).toBe("validated performance optimization task contract");
+		expect(task).toMatchObject({
+			allowedProjectPaths: ["src/click/shell_completion.py", "tests/test_parser.py"],
+			benchmarkTargetPaths: ["src/click/shell_completion.py"],
+		});
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-precheck.md")).text();
+		expect(evidence).toContain("## Benchmark Target Paths");
+		expect(evidence).not.toContain("Benchmark Target Path Violation");
+	});
+
+	it("requires benchmark target paths when task allowed paths restrict project files", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(
+			path.join(cwd, "task.md"),
+			[
+				"# Performance task",
+				"",
+				"Benchmark Command: python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
+				"Baseline Command: python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
+				"Validation Command: python -c \"print('validation')\"",
+				`Scratch Directory: ${path.join(cwd, "scratch")}`,
+				"Allowed paths: src/click/parser.py, tests/test_parser.py, workflow-output/**, task.md",
+				"",
+			].join("\n"),
+		);
+
+		await expect(runScriptFile(cwd, "precheck-task-contract.js", {})).rejects.toThrow(
+			/must declare Benchmark Target Paths when Allowed paths restrict project files/iu,
+		);
+	});
+
 	it("fails closed when a baseline command is a truncated here document", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });

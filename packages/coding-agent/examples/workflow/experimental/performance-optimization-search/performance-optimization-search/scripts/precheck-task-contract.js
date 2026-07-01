@@ -3,6 +3,9 @@ const benchmarkCommand = requiredCommand(taskText, "Benchmark Command");
 const validationCommand = requiredCommand(taskText, "Validation Command");
 const baselineCommand = optionalCommand(taskText, "Baseline Command") || benchmarkCommand;
 const scratchRoot = requiredScratchRoot(taskText);
+const allowedProjectPaths = projectPathList(taskText, "Allowed paths");
+const benchmarkTargetPaths = projectPathList(taskText, "Benchmark Target Paths", "Benchmark Target Path");
+const benchmarkTargetViolation = benchmarkTargetPathViolation(allowedProjectPaths, benchmarkTargetPaths);
 const sharedGitWorktrees = await currentSharedGitWorktreePaths();
 const runtime = runtimeFromTaskContract(taskText);
 const commandScratchViolations = disallowedTaskCommandScratchReferences([
@@ -18,12 +21,33 @@ if (commandScratchViolations.length > 0) {
 			validationCommand,
 			baselineCommand,
 			scratchRoot,
+			allowedProjectPaths,
+			benchmarkTargetPaths,
 			sharedGitWorktrees,
 			commandScratchViolations,
+			benchmarkTargetViolation: null,
 			validationPreflight: null,
 		}),
 	);
 	throw new Error("performance-optimization-search task commands use disallowed scratch roots");
+}
+if (benchmarkTargetViolation) {
+	await Bun.write(
+		"workflow-output/performance-precheck.md",
+		precheckMarkdown({
+			benchmarkCommand,
+			validationCommand,
+			baselineCommand,
+			scratchRoot,
+			allowedProjectPaths,
+			benchmarkTargetPaths,
+			sharedGitWorktrees,
+			commandScratchViolations: [],
+			benchmarkTargetViolation,
+			validationPreflight: null,
+		}),
+	);
+	throw new Error(benchmarkTargetViolation.message);
 }
 const validationPreflight = await runShell(validationCommand);
 
@@ -34,8 +58,11 @@ await Bun.write(
 		validationCommand,
 		baselineCommand,
 		scratchRoot,
+		allowedProjectPaths,
+		benchmarkTargetPaths,
 		sharedGitWorktrees,
 		commandScratchViolations: [],
+		benchmarkTargetViolation: null,
 		validationPreflight,
 	}),
 );
@@ -65,6 +92,8 @@ return {
 				validationCommand,
 				baselineCommand,
 				scratchRoot,
+				allowedProjectPaths,
+				benchmarkTargetPaths,
 				sharedGitWorktrees,
 				validationPreflight: {
 					exitCode: validationPreflight.exitCode,
@@ -142,6 +171,129 @@ function isTaskSectionHeading(line) {
 	return line.startsWith("#") || /^[A-Z][A-Za-z /-]{0,80}:\s*$/u.test(line);
 }
 
+function projectPathList(taskContract, ...labels) {
+	const lines = taskContract.split(/\r?\n/u);
+	const values = [];
+	for (const label of labels) {
+		const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+		const pattern = new RegExp(`^\\s*${escaped}\\s*:\\s*(.*)\\s*$`, "iu");
+		for (let index = 0; index < lines.length; index += 1) {
+			const match = pattern.exec(lines[index] ?? "");
+			if (!match) continue;
+			const inline = match[1]?.trim();
+			if (inline) {
+				values.push(...pathListItems(inline));
+			} else {
+				values.push(...followingPathListItems(lines, index + 1));
+			}
+		}
+	}
+	return [...new Set(values.map(normalizeProjectPathPattern).filter(isProjectPathPattern))];
+}
+
+function followingPathListItems(lines, startIndex) {
+	const values = [];
+	for (const line of lines.slice(startIndex)) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("```")) continue;
+		if (isTaskSectionHeading(trimmed)) break;
+		values.push(...pathListItems(trimmed));
+	}
+	return values;
+}
+
+function pathListItems(text) {
+	return text
+		.split(",")
+		.map(value => value.trim())
+		.map(value => value.replace(/^[-*]\s+/u, ""))
+		.map(value => value.replace(/^\d+[.)]\s+/u, ""))
+		.filter(Boolean);
+}
+
+function normalizeProjectPathPattern(value) {
+	return value
+		.replace(/^`|`$/gu, "")
+		.replace(/[.;]\s*$/u, "")
+		.replace(/\\/gu, "/")
+		.replace(/^\.\/+/u, "")
+		.replace(/\/{2,}/gu, "/")
+		.trim();
+}
+
+function isProjectPathPattern(value) {
+	if (!value) return false;
+	if (value.startsWith("/") || value.startsWith("../") || value.includes("/../")) return false;
+	if (value === "." || value === "..") return false;
+	if (value.startsWith(".git/") || value === ".git") return false;
+	if (isWorkflowContractPath(value)) return false;
+	return true;
+}
+
+function isWorkflowContractPath(value) {
+	return (
+		value === "task.md" ||
+		value === "TASK.md" ||
+		value === "manifest-entry.json" ||
+		value === "monitor-assignment.json" ||
+		value === "monitor-assignment*.json" ||
+		value === "workflow-output" ||
+		value === "workflow-output/**" ||
+		value.startsWith("workflow-output/")
+	);
+}
+
+function benchmarkTargetPathViolation(allowedProjectPaths, benchmarkTargetPaths) {
+	if (allowedProjectPaths.length === 0) return null;
+	if (benchmarkTargetPaths.length === 0) {
+		return {
+			message:
+				"performance-optimization-search task.md must declare Benchmark Target Paths when Allowed paths restrict project files",
+			missingTargets: true,
+			uncoveredTargets: [],
+		};
+	}
+	const uncoveredTargets = benchmarkTargetPaths.filter(
+		target => !allowedProjectPaths.some(pattern => projectPathCovers(pattern, target)),
+	);
+	if (uncoveredTargets.length === 0) return null;
+	return {
+		message: `performance-optimization-search benchmark target paths are outside allowed project paths: ${uncoveredTargets.join(", ")}`,
+		missingTargets: false,
+		uncoveredTargets,
+	};
+}
+
+function projectPathCovers(pattern, target) {
+	if (pattern === target) return true;
+	if (pattern.endsWith("/**")) {
+		const prefix = pattern.slice(0, -3);
+		return target === prefix || target.startsWith(`${prefix}/`);
+	}
+	if (pattern.endsWith("/")) return target.startsWith(pattern);
+	if (!pattern.includes("*")) return false;
+	return globPatternRegExp(pattern).test(target);
+}
+
+function globPatternRegExp(pattern) {
+	let source = "^";
+	for (let index = 0; index < pattern.length; index += 1) {
+		const char = pattern[index];
+		if (char === "*") {
+			if (pattern[index + 1] === "*") {
+				source += ".*";
+				index += 1;
+			} else {
+				source += "[^/]*";
+			}
+			continue;
+		}
+		source += char.replace(/[\\^$+?.()|[\]{}]/gu, "\\$&");
+	}
+	source += "$";
+	return new RegExp(source, "u");
+}
+
 function runtimeFromTaskContract() {
 	return {
 		startedAtMs: Date.now(),
@@ -153,8 +305,11 @@ function precheckMarkdown({
 	validationCommand,
 	baselineCommand,
 	scratchRoot,
+	allowedProjectPaths,
+	benchmarkTargetPaths,
 	sharedGitWorktrees,
 	commandScratchViolations,
+	benchmarkTargetViolation,
 	validationPreflight,
 }) {
 	const sections = [
@@ -182,6 +337,14 @@ function precheckMarkdown({
 		"",
 		scratchRoot,
 		"",
+		"## Allowed Project Paths",
+		"",
+		allowedProjectPaths.length > 0 ? allowedProjectPaths.map(value => `- ${value}`).join("\n") : "- unrestricted",
+		"",
+		"## Benchmark Target Paths",
+		"",
+		benchmarkTargetPaths.length > 0 ? benchmarkTargetPaths.map(value => `- ${value}`).join("\n") : "- not declared",
+		"",
 		"## Shared Git Worktrees At Start",
 		"",
 		sharedGitWorktrees.length > 0 ? sharedGitWorktrees.map(worktree => `- ${worktree}`).join("\n") : "- none",
@@ -196,6 +359,19 @@ function precheckMarkdown({
 			"Use `/dev/null` for disposable benchmark output, or an explicit run-local scratch path under the task scratch root.",
 			"",
 			...commandScratchViolations.map(violation => `- ${violation.label}: \`${violation.reference}\``),
+			"",
+		);
+	} else if (benchmarkTargetViolation) {
+		sections.push(
+			"## Benchmark Target Path Violation",
+			"",
+			benchmarkTargetViolation.missingTargets
+				? "Task allowed paths restrict project files, so the task must declare Benchmark Target Paths for the measured hot path."
+				: "Task-declared benchmark target paths must be covered by the allowed project paths before parallel optimization begins.",
+			"",
+			...(benchmarkTargetViolation.uncoveredTargets.length > 0
+				? benchmarkTargetViolation.uncoveredTargets.map(value => `- uncovered target: ${value}`)
+				: []),
 			"",
 		);
 	} else if (validationPreflight) {

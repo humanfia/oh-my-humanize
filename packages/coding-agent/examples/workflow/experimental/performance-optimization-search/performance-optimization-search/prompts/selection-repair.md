@@ -81,6 +81,12 @@ that the reviewer can evaluate:
   `benchmark-relevance: yes` in the selected branch report, with a short
   explanation of the benchmark path. Do not retain a candidate whose positive
   measurement is outside the task benchmark;
+- when `task.benchmarkTargetPaths` is non-empty, a retained positive candidate
+  must also identify the declared benchmark target path it changed, instrumented,
+  or directly probed. Wrapper, shim, or import-location changes are not enough
+  unless the repair evidence explains how the declared target path is actually
+  exercised by the candidate. Revert and record a no-win/blocker if the only
+  promising hot path is outside the allowed project paths;
 - mark every losing, reverted, conflict-only, or unselected branch with
   `final-selection: no` and rollback evidence;
 - when a losing or unselected branch reported a positive benchmark-like result,
@@ -127,6 +133,8 @@ Before yielding, write `workflow-output/performance-selection-repair.md` with:
 - exact benchmark relevance evidence for the retained candidate, and explicit
   off-benchmark rejection evidence for any unselected branch that reported a
   positive benchmark-like result;
+- when declared, the exact benchmark target path covered by the retained
+  candidate, or the reason no retained candidate could cover it;
 - the branch report files you updated.
 
 Also ensure the relevant `workflow-output/perf-*.md` files contain the final

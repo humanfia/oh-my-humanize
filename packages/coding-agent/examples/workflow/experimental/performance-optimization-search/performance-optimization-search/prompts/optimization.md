@@ -61,6 +61,13 @@ When you create a candidate patch, preserve enough evidence for selection:
   exercises the code path or behavior changed by the candidate. Record
   `benchmark-relevance: no` when the candidate may be useful but is outside the
   task benchmark.
+- if `task.benchmarkTargetPaths` is non-empty, positive candidate work must edit,
+  instrument, or directly prove behavior for one of those target paths. Do not
+  mark wrapper, shim, or import-location changes as `benchmark-relevance: yes`
+  unless the durable branch evidence explains how the declared target path is
+  exercised by the candidate. If the real hot path is outside the allowed
+  project paths, record a blocked/no-win branch instead of optimizing the
+  wrapper.
 
 If the previous review or shared hypotheses ask for selection/rollback repair,
 do not start a fresh broad optimization attempt. Limit this branch to the
@@ -91,6 +98,8 @@ Before yielding, write `workflow-output/perf-{{strategy}}.md` with:
 - rollback instructions for this branch;
 - `benchmark-relevance: yes` or `benchmark-relevance: no`, plus one sentence
   explaining what benchmark path is or is not covered;
+- when `task.benchmarkTargetPaths` is non-empty, the target path touched or
+  explicitly probed by this branch, or why this branch is blocked/no-win;
 - when previous review feedback exists, `review-feedback-addressed: yes` with
   concrete evidence for the selected candidate, or
   `review-feedback-addressed: not-applicable` with the reason for losing/no-win

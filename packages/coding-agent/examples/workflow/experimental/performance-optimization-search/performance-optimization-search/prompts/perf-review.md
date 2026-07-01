@@ -57,6 +57,10 @@ Return `finish` only when:
   concrete explanation that the task-declared Benchmark Command covers the
   changed code path or public behavior. A positive number from an off-benchmark
   probe is not enough;
+- when `task.benchmarkTargetPaths` is non-empty, any retained positive candidate
+  identifies the declared benchmark target path it changed, instrumented, or
+  directly probed. A wrapper, shim, or import-location edit is not sufficient
+  unless the evidence shows the declared target path itself is covered;
 - any unselected branch that reported a positive benchmark-like result records
   `benchmark-relevance: no`, `off-benchmark: yes`, or equivalent explicit
   rejection evidence explaining why the result is outside the task benchmark or
