@@ -168,8 +168,7 @@ describe("runWorkflow lifecycle", () => {
 				if (input.node.id === "setup") return { summary: "setup complete" };
 				if (input.node.id === "middle") return { summary: "middle complete" };
 				return {
-					summary:
-						"Idea draft saved to /tmp/idea.md. Next: /humanize:gen-plan --input /tmp/idea.md --output <plan-path>",
+					summary: "Idea draft saved to /tmp/idea.md.",
 				};
 			},
 		};
@@ -192,8 +191,7 @@ describe("runWorkflow lifecycle", () => {
 		const family = reconstructWorkflowFamilies(host.getBranch())[0]!;
 		expect(family.attempts[0]).toMatchObject({
 			status: "completed",
-			summary:
-				"Idea draft saved to /tmp/idea.md. Next: /humanize:gen-plan --input /tmp/idea.md --output <plan-path>",
+			summary: "Idea draft saved to /tmp/idea.md.",
 		});
 	});
 

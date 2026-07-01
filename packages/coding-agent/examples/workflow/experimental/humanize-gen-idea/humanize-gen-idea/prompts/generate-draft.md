@@ -10,7 +10,7 @@ Validated input:
 
 You MUST NOT implement features, modify source code, or create commits. The only permitted project write is the final draft file at `idea.outputFile`. Do not write workflow-output artifacts.
 
-This workflow transforms a loose idea into a repo-grounded draft suitable as input to Humanize gen-plan. It applies directed-diversity exploration: pick `idea.n` orthogonal directions, launch `idea.n` read-only exploration subagents in one Task-tool call, then synthesize one primary direction plus alternatives. Every direction MUST carry objective evidence from this repo or the sentinel `exploratory, no concrete precedent`.
+This workflow transforms a loose idea into a repo-grounded draft suitable as the task contract for experimental `humanize-rlcr`: review/copy the saved draft to `task.md` or `TASK.md`, then start `/workflow start experimental::humanize-rlcr`. It applies directed-diversity exploration: pick `idea.n` orthogonal directions, launch `idea.n` read-only exploration subagents in one Task-tool call, then synthesize one primary direction plus alternatives. Every direction MUST carry objective evidence from this repo or the sentinel `exploratory, no concrete precedent`.
 
 ## Inputs
 
@@ -110,4 +110,3 @@ Write `idea.outputFile` exactly once. Then report:
 - Primary direction name.
 - Requested `idea.n` and actual surviving direction count.
 - Validation warnings, if any.
-- Next step: `/humanize:gen-plan --input <OUTPUT_FILE> --output <plan-path>`.

@@ -309,8 +309,7 @@ function completedConditionalBranchViewFixture(): WorkflowGraphView {
 			id: "attempt-1",
 			status: "completed",
 			runtimeBindingId: "binding-1",
-			summary:
-				"Idea draft saved to /tmp/idea.md. Next: /humanize:gen-plan --input /tmp/idea.md --output <plan-path>",
+			summary: "Idea draft saved to /tmp/idea.md.",
 		},
 		changes: { approved: 0, proposed: 0, rejected: 0 },
 		topology: {

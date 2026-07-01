@@ -105,12 +105,9 @@ describe("example workflow scripts", () => {
 				},
 			},
 		});
-		const nextStep = `/humanize:gen-plan --input ${outputFile} --output <plan-path>`;
 
-		expect(result.scheduler.activations[0]?.output?.summary).toBe(
-			`Idea draft saved to ${outputFile}. Next: ${nextStep}`,
-		);
-		expect(result.scheduler.state.result).toMatchObject({ outputFile, nextStep });
+		expect(result.scheduler.activations[0]?.output?.summary).toBe(`Idea draft saved to ${outputFile}.`);
+		expect(result.scheduler.state.result).toMatchObject({ outputFile });
 	});
 
 	it("keeps parallel integration evidence outside the reviewer output schema", async () => {
