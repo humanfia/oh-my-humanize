@@ -28,6 +28,8 @@ task-declared validation commands.
 Do not create temporary adapters, compatibility shims, or source churn merely to
 have something to migrate. If the dependency map and compatibility strategy show
 that no caller can be safely migrated yet, report that as a blocked migration
-with the exact missing precondition instead of making a padding edit. A
-successful migration step must leave a non-whitespace project diff that a
-reviewer can connect to the task objective.
+with the exact missing precondition instead of making a padding edit. When the
+task explicitly allows no-code/no-change outcomes, a clean no-change migration
+is acceptable only if it records a concrete no-change rationale and evidence;
+otherwise a successful migration step must leave a non-whitespace project diff
+that a reviewer can connect to the task objective.

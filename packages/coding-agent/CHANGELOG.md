@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental refactor-migration-plan flow looping on accepted no-change migration evidence when a task explicitly allows no-code/no-change outcomes.
 - Fixed session-exit diagnostics falsely reporting already completed workflow/subagent tool calls as pending when shutdown happens after the session branch moved.
 - Fixed background workflow lifecycle and run state disappearing from `/workflow` status, graph, and completion handling after the conversational session branch moves while nodes are still running.
 - Fixed the experimental research-reproduction flow ignoring task-declared negative-control commands instead of running and reviewing them as standalone evidence.

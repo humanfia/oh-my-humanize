@@ -57,12 +57,21 @@ compatibility boundary, return `continue` unless the final evidence covers it
 directly. A passing validation command is necessary but not sufficient when the
 compatibility design names an untested observable behavior.
 
-Return `finish` only when the migration preserves behavior, validation is real
-and passing, cleanup is justified or explicitly deferred, rollback notes are
-clear, and the final project diff contains material non-whitespace migration
-work tied to the task objective. A temporary adapter that is immediately removed
-or a final whitespace-only diff is a rejected migration, not a successful
-finish.
+Return `finish` when the migration preserves behavior, validation is real and
+passing, cleanup is justified or explicitly deferred, rollback notes are clear
+for material changes, and either:
+
+- the final project diff contains material non-whitespace migration work tied to
+  the task objective; or
+- the task explicitly allows no-code/no-change outcomes and the migration,
+  compatibility strategy, cleanup evidence, or review context gives a concrete
+  no-change rationale explaining why no safe caller migration exists.
+
+A temporary adapter that is immediately removed or a final whitespace-only diff
+is a rejected migration, not a successful finish. Do not reject a task-authorized
+no-change outcome merely because the diff is empty. If you return `continue`
+after a high-quality no-change rationale, name the specific compatibility seam,
+caller, test, or evidence defect that makes more work actionable.
 
 Return `continue` when compatibility risk, caller coverage, validation,
 cleanup, rollback evidence, or material migration evidence is incomplete. If no

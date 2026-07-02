@@ -18,6 +18,7 @@ interface WorkflowContext {
 		migration?: object;
 		cleanup?: object;
 		validation?: object;
+		review?: object;
 	};
 }
 
@@ -224,6 +225,71 @@ describe("refactor-migration-plan flow contract", () => {
 		expect(artifact).toContain("- tests/**");
 		expect(artifact).toContain("-  M tests/test_config.py");
 		expect(artifact).not.toContain("tests/test_config.py changed outside task allowed paths");
+	});
+
+	it("archives explicit no-change migrations when the task allows them and evidence is clean", async () => {
+		const cwd = await createGitRepo();
+		const taskText = [
+			"Objective:",
+			"Inspect a routing/http migration seam and archive no-change evidence if no safe migration exists.",
+			"",
+			"Validation Command:",
+			"python -c \"print('validation ok')\"",
+			"",
+			"No-Code/No-Change Allowed:",
+			"Yes, if the migration plan concludes no safe change is warranted and reviewer accepts the concrete rationale.",
+			"",
+		].join("\n");
+		await Bun.write(path.join(cwd, "task.md"), taskText);
+		await Bun.write(path.join(cwd, "src.py"), "def make_response(value):\n    return value\n");
+		await runCommand(["git", "add", "task.md", "src.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "refactor-migration-validation.md"),
+			["# Validation", "", "Exit code: 0", "validation ok"].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "compatibility-design.md"),
+			[
+				"# Compatibility Design",
+				"",
+				"No-change rationale: existing lazy parser shims already preserve the public routing/http boundary.",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", "refactor-migration-cleanup.md"),
+			[
+				"# Cleanup",
+				"",
+				"No-change evidence: workspace stayed clean and no cleanup-only compatibility shim was introduced.",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "archive-migration.js", {
+			task: { text: taskText },
+			validation: {
+				status: "pass",
+			},
+			migration: {
+				status: "blocked-no-change",
+				noChangeRationale: "No safe caller migration exists without inventing padding edits.",
+			},
+			review: {
+				verdict: "finish",
+				summary: "Accepted the no-change migration evidence because no concrete seam required edits.",
+			},
+		});
+		const archive = result.statePatch?.find(patch => patch.path === "/archive")?.value;
+
+		expect(archive).toMatchObject({
+			status: "accepted-no-change",
+			validation: "pass",
+		});
+		const artifact = await Bun.file(path.join(cwd, "workflow-output", "refactor-migration-archive.md")).text();
+		expect(artifact).toContain("Outcome: accepted-no-change");
+		expect(artifact).toContain("No-change rationale");
+		expect(artifact).toContain("No safe caller migration exists");
+		expect(artifact).not.toContain("Outcome: rejected");
 	});
 });
 

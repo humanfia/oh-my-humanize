@@ -12,11 +12,16 @@ const rollbackEvidenceEntries = await rollbackEvidenceSources();
 const rollbackText = rollbackEvidenceText(rollbackEvidenceEntries);
 const materialProjectDiff = await projectMaterialDiff();
 const workspaceGuard = await workspaceCleanlinessGuard(taskText);
-const outcome = materialProjectDiff.status === "empty" ? "rejected" : "accepted";
+const noChangeEvidenceEntries = await noChangeEvidenceSources();
+const acceptsNoChange =
+	materialProjectDiff.status === "empty" && taskAllowsNoChange(taskText) && noChangeEvidenceEntries.length > 0;
+const outcome = materialProjectDiff.status === "empty" ? (acceptsNoChange ? "accepted-no-change" : "rejected") : "accepted";
 const rollbackEvidenceFiles = rollbackEvidenceEntries
 	.filter(entry => entry.kind === "file")
 	.map(entry => entry.source);
 const rollbackEvidenceSourceLabels = rollbackEvidenceEntries.map(entry => entry.source);
+const noChangeEvidenceFiles = noChangeEvidenceEntries.filter(entry => entry.kind === "file").map(entry => entry.source);
+const noChangeEvidenceSourceLabels = noChangeEvidenceEntries.map(entry => entry.source);
 
 if (workspaceGuard.blockers.length > 0) {
 	throw new Error(`cannot archive refactor migration with workspace scope blockers: ${workspaceGuard.blockers.join(", ")}`);
@@ -53,6 +58,12 @@ await Bun.write(
 		"",
 		rollbackText.trim() ? boundedLines(rollbackText, 120) : "No rollback notes were present.",
 		"",
+		"## No-Change Evidence",
+		"",
+		noChangeEvidenceEntries.length > 0
+			? noChangeEvidenceMarkdown(noChangeEvidenceEntries)
+			: "No explicit no-change evidence was present.",
+		"",
 	].join("\n"),
 );
 
@@ -70,6 +81,8 @@ return {
 				workspaceGuard,
 				rollbackEvidenceFiles,
 				rollbackEvidenceSources: rollbackEvidenceSourceLabels,
+				noChangeEvidenceFiles,
+				noChangeEvidenceSources: noChangeEvidenceSourceLabels,
 			},
 		},
 	],
@@ -91,21 +104,17 @@ function rollbackEvidenceText(entries) {
 	return sections.join("\n\n");
 }
 
+function noChangeEvidenceMarkdown(entries) {
+	const sections = [];
+	for (const entry of entries) {
+		sections.push(["### ", entry.source, "\n\n", boundedLines(entry.text, 80)].join(""));
+	}
+	return sections.join("\n\n");
+}
+
 async function rollbackEvidenceSources() {
 	const entries = [];
-	const paths = [
-		"workflow-output/refactor-migration-rollback.md",
-		"workflow-output/refactor-migration-implementation.md",
-		"workflow-output/compatibility-design.md",
-		"workflow-output/compatibility-design.json",
-		"workflow-output/caller-migration.md",
-		"workflow-output/migrateCallers.json",
-		"workflow-output/migration-caller-step.json",
-		"workflow-output/cleanup-dead-path.md",
-		"workflow-output/cleanup-dead-path.json",
-		"workflow-output/cleanupDeadPath.json",
-		"workflow-output/refactor-migration-cleanup.md",
-	];
+	const paths = evidenceFilePaths();
 	for (const filePath of paths) {
 		const text = await readOptionalText(filePath);
 		if (!hasRollbackEvidence(text)) continue;
@@ -122,6 +131,43 @@ async function rollbackEvidenceSources() {
 		entries.push(entry);
 	}
 	return dedupeEvidenceEntries(entries);
+}
+
+async function noChangeEvidenceSources() {
+	const entries = [];
+	const paths = evidenceFilePaths();
+	for (const filePath of paths) {
+		const text = await readOptionalText(filePath);
+		if (!hasNoChangeEvidence(text)) continue;
+		entries.push({ kind: "file", source: filePath, text });
+	}
+	for (const filePath of await runtimeArtifactEvidencePaths()) {
+		if (paths.includes(filePath)) continue;
+		const text = await readOptionalText(filePath);
+		if (!hasNoChangeEvidence(text)) continue;
+		entries.push({ kind: "file", source: filePath, text });
+	}
+	for (const entry of stateNoChangeEvidenceSources()) {
+		if (!hasNoChangeEvidence(entry.text)) continue;
+		entries.push(entry);
+	}
+	return dedupeEvidenceEntries(entries);
+}
+
+function evidenceFilePaths() {
+	return [
+		"workflow-output/refactor-migration-rollback.md",
+		"workflow-output/refactor-migration-implementation.md",
+		"workflow-output/compatibility-design.md",
+		"workflow-output/compatibility-design.json",
+		"workflow-output/caller-migration.md",
+		"workflow-output/migrateCallers.json",
+		"workflow-output/migration-caller-step.json",
+		"workflow-output/cleanup-dead-path.md",
+		"workflow-output/cleanup-dead-path.json",
+		"workflow-output/cleanupDeadPath.json",
+		"workflow-output/refactor-migration-cleanup.md",
+	];
 }
 
 async function runtimeArtifactEvidencePaths() {
@@ -143,6 +189,10 @@ function stateRollbackEvidenceSources() {
 		sources.push({ kind: "state", source: `state:/${key}`, text });
 	}
 	return sources;
+}
+
+function stateNoChangeEvidenceSources() {
+	return stateRollbackEvidenceSources();
 }
 
 function evidenceTextFromStateValue(value) {
@@ -234,6 +284,46 @@ function followingRollbackSectionText(lines, startIndex) {
 		section.push(line);
 	}
 	return section;
+}
+
+function taskAllowsNoChange(text) {
+	const normalized = text.replace(/\s+/gu, " ").toLowerCase();
+	if (/\bno[- ]code\s*\/\s*no[- ]change\s+allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(normalized)) {
+		return true;
+	}
+	if (/\bno[- ]change\s+allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(normalized)) return true;
+	if (/\bno[- ]code\s+allowed\s*:\s*(?:yes|true|allowed)\b/iu.test(normalized)) return true;
+	return false;
+}
+
+function hasNoChangeEvidence(text) {
+	const parsed = parseJsonEvidence(text);
+	if (parsed !== undefined) return structuredStrings(parsed).some(hasNoChangeEvidenceText);
+	return hasNoChangeEvidenceText(text);
+}
+
+function structuredStrings(value) {
+	if (typeof value === "string") return [value];
+	if (Array.isArray(value)) return value.flatMap(item => structuredStrings(item));
+	if (value === null || typeof value !== "object") return [];
+	const strings = [];
+	for (const [key, child] of Object.entries(value)) {
+		strings.push(key);
+		strings.push(...structuredStrings(child));
+	}
+	return strings;
+}
+
+function hasNoChangeEvidenceText(text) {
+	const normalized = text.replace(/\s+/gu, " ").toLowerCase();
+	return (
+		/\bno[- ]change\b/iu.test(normalized) ||
+		/\bno[- ]code\b/iu.test(normalized) ||
+		/\bno\s+safe\s+(?:caller\s+)?migration\b/iu.test(normalized) ||
+		/\bno\s+project\s+files?\s+(?:remain\s+)?changed\b/iu.test(normalized) ||
+		/\bworkspace\s+(?:stayed|remained)\s+clean\b/iu.test(normalized) ||
+		/\bno\s+cleanup[- ]only\b/iu.test(normalized)
+	);
 }
 
 async function projectMaterialDiff() {
