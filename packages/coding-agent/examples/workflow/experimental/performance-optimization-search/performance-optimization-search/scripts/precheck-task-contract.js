@@ -9,6 +9,9 @@ const benchmarkSourceRoots = benchmarkSourceRootsFromTask(taskText, benchmarkTar
 const benchmarkTargetViolation = benchmarkTargetPathViolation(allowedProjectPaths, benchmarkTargetPaths);
 const sharedGitWorktrees = await currentSharedGitWorktreePaths();
 const runtime = runtimeFromTaskContract(taskText);
+let baselinePreflight = null;
+let benchmarkPreflight = null;
+let validationPreflight = null;
 const commandScratchViolations = disallowedTaskCommandScratchReferences([
 	{ label: "Benchmark Command", command: benchmarkCommand },
 	{ label: "Validation Command", command: validationCommand },
@@ -28,6 +31,8 @@ if (commandScratchViolations.length > 0) {
 			sharedGitWorktrees,
 			commandScratchViolations,
 			benchmarkTargetViolation: null,
+			baselinePreflight,
+			benchmarkPreflight,
 			validationPreflight: null,
 		}),
 	);
@@ -47,12 +52,16 @@ if (benchmarkTargetViolation) {
 			sharedGitWorktrees,
 			commandScratchViolations: [],
 			benchmarkTargetViolation,
+			baselinePreflight,
+			benchmarkPreflight,
 			validationPreflight: null,
 		}),
 	);
 	throw new Error(benchmarkTargetViolation.message);
 }
-const validationPreflight = await runShell(validationCommand, benchmarkSourceRoots);
+baselinePreflight = await runShell(baselineCommand, benchmarkSourceRoots);
+benchmarkPreflight = benchmarkCommand === baselineCommand ? baselinePreflight : await runShell(benchmarkCommand, benchmarkSourceRoots);
+validationPreflight = await runShell(validationCommand, benchmarkSourceRoots);
 
 await Bun.write(
 	"workflow-output/performance-precheck.md",
@@ -67,10 +76,34 @@ await Bun.write(
 		sharedGitWorktrees,
 		commandScratchViolations: [],
 		benchmarkTargetViolation: null,
+		baselinePreflight,
+		benchmarkPreflight,
 		validationPreflight,
 	}),
 );
 
+if (baselinePreflight.exitCode !== 0) {
+	throw new Error(
+		`performance-optimization-search baseline command failed preflight with exit code ${baselinePreflight.exitCode}`,
+	);
+}
+const baselineFailureDiagnostic = commandFailureDiagnostic(baselinePreflight);
+if (baselineFailureDiagnostic) {
+	throw new Error(
+		`performance-optimization-search baseline command produced a fatal diagnostic despite exit code 0: ${baselineFailureDiagnostic}`,
+	);
+}
+if (benchmarkPreflight.exitCode !== 0) {
+	throw new Error(
+		`performance-optimization-search benchmark command failed preflight with exit code ${benchmarkPreflight.exitCode}`,
+	);
+}
+const benchmarkFailureDiagnostic = commandFailureDiagnostic(benchmarkPreflight);
+if (benchmarkFailureDiagnostic) {
+	throw new Error(
+		`performance-optimization-search benchmark command produced a fatal diagnostic despite exit code 0: ${benchmarkFailureDiagnostic}`,
+	);
+}
 if (validationPreflight.exitCode !== 0) {
 	throw new Error(
 		`performance-optimization-search validation command failed preflight with exit code ${validationPreflight.exitCode}`,
@@ -105,6 +138,18 @@ return {
 					stdout: validationPreflight.stdout,
 					stderr: validationPreflight.stderr,
 					failureDiagnostic: validationFailureDiagnostic,
+				},
+				baselinePreflight: {
+					exitCode: baselinePreflight.exitCode,
+					stdout: baselinePreflight.stdout,
+					stderr: baselinePreflight.stderr,
+					failureDiagnostic: baselineFailureDiagnostic,
+				},
+				benchmarkPreflight: {
+					exitCode: benchmarkPreflight.exitCode,
+					stdout: benchmarkPreflight.stdout,
+					stderr: benchmarkPreflight.stderr,
+					failureDiagnostic: benchmarkFailureDiagnostic,
 				},
 			},
 		},
@@ -327,6 +372,8 @@ function precheckMarkdown({
 	sharedGitWorktrees,
 	commandScratchViolations,
 	benchmarkTargetViolation,
+	baselinePreflight,
+	benchmarkPreflight,
 	validationPreflight,
 }) {
 	const sections = [
@@ -395,8 +442,16 @@ function precheckMarkdown({
 				: []),
 			"",
 		);
-	} else if (validationPreflight) {
-		sections.push("## Validation Preflight", "", commandEvidenceMarkdown(validationCommand, validationPreflight), "");
+	} else {
+		if (baselinePreflight) {
+			sections.push("## Baseline Preflight", "", commandEvidenceMarkdown(baselineCommand, baselinePreflight), "");
+		}
+		if (benchmarkPreflight) {
+			sections.push("## Benchmark Preflight", "", commandEvidenceMarkdown(benchmarkCommand, benchmarkPreflight), "");
+		}
+		if (validationPreflight) {
+			sections.push("## Validation Preflight", "", commandEvidenceMarkdown(validationCommand, validationPreflight), "");
+		}
 	}
 
 	return sections.join("\n");
@@ -429,7 +484,7 @@ async function runShell(command, sourceRoots = []) {
 		new Response(proc.stderr).text(),
 		proc.exited,
 	]);
-	return { stdout, stderr, exitCode };
+	return { stdout: bounded(stdout), stderr: bounded(stderr), exitCode };
 }
 
 function sourceRootEnv(sourceRoots) {
@@ -486,8 +541,14 @@ function isFatalCommandDiagnostic(line) {
 		/\b(?:unknown|unrecognized|invalid)\s+(?:option|flag|argument|parameter)\b/iu.test(line) ||
 		/^usage:\s+/iu.test(line) ||
 		/\bhere-document\b/iu.test(line) ||
-		/\b(?:traceback \(most recent call last\)|syntaxerror|modulenotfounderror|importerror)\b/u.test(line)
+		/\b(?:traceback \(most recent call last\)|syntaxerror|modulenotfounderror|importerror)\b/iu.test(line)
 	);
+}
+
+function bounded(text) {
+	const limit = 12000;
+	if (text.length <= limit) return text;
+	return `${text.slice(0, limit)}\n[truncated ${text.length - limit} bytes]`;
 }
 
 async function currentSharedGitWorktreePaths() {

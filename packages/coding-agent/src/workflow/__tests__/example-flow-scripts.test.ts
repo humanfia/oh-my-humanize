@@ -5795,6 +5795,61 @@ describe("example workflow scripts", () => {
 		}
 	});
 
+	it("fails performance optimization precheck before fanout when benchmark commands cannot run", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-benchmark-precheck-fail-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const previousRunTmp = process.env.OMH_RUN_TMP;
+		process.env.OMH_RUN_TMP = `${cwd}/run-tmp`;
+
+		try {
+			await Bun.write(`${cwd}/src.txt`, "baseline\n");
+			await Bun.write(
+				`${cwd}/task.md`,
+				[
+					"Benchmark Command:",
+					"python -c 'print('",
+					"",
+					"Validation Command:",
+					"echo validation",
+					"",
+					"Baseline Command:",
+					"python -c 'print('",
+				].join("\n"),
+			);
+			await runGit(cwd, ["init"]);
+			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+			await runGit(cwd, ["config", "user.name", "OMH Test"]);
+			await runGit(cwd, ["add", "src.txt", "task.md"]);
+			await runGit(cwd, ["commit", "-m", "baseline"]);
+
+			const result = await runExampleScript({
+				cwd,
+				previousCwd,
+				nodeId: "precheckTaskContract",
+				scriptFileName: "precheck-task-contract.js",
+				scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+				writes: ["/task", "/runtime", "/review"],
+			});
+
+			expect(
+				result.scheduler.activations.find(activation => activation.nodeId === "precheckTaskContract")?.status,
+			).toBe("failed");
+			expect(result.scheduler.state.task).toBeUndefined();
+			const evidence = await Bun.file(`${cwd}/workflow-output/performance-precheck.md`).text();
+			expect(evidence).toContain("## Baseline Preflight");
+			expect(evidence).toContain("## Benchmark Preflight");
+			expect(evidence).toContain("Exit code: 1");
+			expect(evidence).toContain("SyntaxError");
+		} finally {
+			if (previousRunTmp === undefined) {
+				delete process.env.OMH_RUN_TMP;
+			} else {
+				process.env.OMH_RUN_TMP = previousRunTmp;
+			}
+		}
+	});
+
 	it("routes performance optimization through selection repair before reviewer loops", async () => {
 		const flow = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/performance-optimization-search/performance-optimization-search.omhflow`,
