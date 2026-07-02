@@ -30,6 +30,9 @@ interface WorkflowObservabilityActivation {
 	verdict?: string;
 	error?: string;
 	retries?: WorkflowActivationRetryHistoryEntry[];
+	activity?: string;
+	retryState?: WorkflowObservabilityRetryState;
+	retryFailure?: WorkflowObservabilityRetryFailure;
 }
 
 interface WorkflowObservabilityLifecycleEvent {
@@ -42,6 +45,24 @@ interface WorkflowObservabilityLifecycleEvent {
 	frontierNodeIds: string[];
 	workspaceStatus?: string;
 	summary: string;
+}
+
+export interface WorkflowActivationProgressObservabilityUpdate {
+	retryState?: WorkflowObservabilityRetryState;
+	retryFailure?: WorkflowObservabilityRetryFailure;
+	activity?: string;
+}
+
+export interface WorkflowObservabilityRetryState {
+	attempt: number;
+	maxAttempts: number;
+	delayMs: number;
+	errorMessage: string;
+}
+
+export interface WorkflowObservabilityRetryFailure {
+	attempt: number;
+	errorMessage: string;
 }
 
 export interface RecordWorkflowCheckpointObservabilityOptions {
@@ -81,6 +102,17 @@ export async function recordWorkflowActivationStartedObservability(
 	activationId: string,
 ): Promise<void> {
 	await record(workflowObservabilityStartedActivation(node, activationId));
+}
+
+export async function recordWorkflowActivationProgressObservability(
+	record: WorkflowObservabilityRecorder,
+	node: WorkflowNode,
+	activationId: string,
+	progress: WorkflowActivationProgressObservabilityUpdate,
+): Promise<void> {
+	const event = workflowObservabilityProgressActivation(node, activationId, progress);
+	if (event === undefined) return;
+	await record(event);
 }
 
 export async function recordWorkflowActivationFailureObservability(
@@ -168,6 +200,42 @@ function workflowObservabilityStartedActivation(
 		summary: `workflow node "${node.id}" running`,
 		artifacts: [],
 	};
+}
+
+function workflowObservabilityProgressActivation(
+	node: WorkflowNode,
+	activationId: string,
+	progress: WorkflowActivationProgressObservabilityUpdate,
+): WorkflowObservabilityActivation | undefined {
+	const summary = workflowObservabilityProgressSummary(progress);
+	if (summary === undefined) return undefined;
+	const event: WorkflowObservabilityActivation = {
+		ts: new Date().toISOString(),
+		activationId,
+		nodeId: node.id,
+		type: node.type,
+		status: "running",
+		summary,
+		artifacts: [],
+	};
+	const activity = progress.activity?.trim();
+	if (activity !== undefined && activity.length > 0) event.activity = activity;
+	if (progress.retryState !== undefined) event.retryState = { ...progress.retryState };
+	if (progress.retryFailure !== undefined) event.retryFailure = { ...progress.retryFailure };
+	return event;
+}
+
+function workflowObservabilityProgressSummary(
+	progress: WorkflowActivationProgressObservabilityUpdate,
+): string | undefined {
+	if (progress.retryState !== undefined) {
+		return `retrying transient provider failure ${progress.retryState.attempt}/${progress.retryState.maxAttempts}: ${progress.retryState.errorMessage}`;
+	}
+	if (progress.retryFailure !== undefined) {
+		return `workflow retry attempt ${progress.retryFailure.attempt} failed: ${progress.retryFailure.errorMessage}`;
+	}
+	const activity = progress.activity?.trim();
+	return activity === undefined || activity.length === 0 ? undefined : activity;
 }
 
 function workflowObservabilityFailedActivation(

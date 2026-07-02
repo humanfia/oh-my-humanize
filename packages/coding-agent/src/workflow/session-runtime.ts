@@ -16,6 +16,7 @@ import {
 	createWorkflowObservabilityRecorder,
 	recordWorkflowActivationFailureObservability,
 	recordWorkflowActivationObservability,
+	recordWorkflowActivationProgressObservability,
 	recordWorkflowActivationStartedObservability,
 	type WorkflowObservabilityRecorder,
 } from "./observability";
@@ -207,6 +208,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			if (input.signal !== undefined) {
 				request.signal = input.signal;
 			}
+			request.onProgress = workflowActivationProgressRecorder(recordObservability, input.node, input.activation.id);
 			try {
 				await recordWorkflowActivationStart(recordObservability, input.node, input.activation.id);
 				const output = await runAgentNodeWithOutputContractRetry(options, request);
@@ -302,6 +304,11 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				if (input.signal !== undefined) {
 					request.signal = input.signal;
 				}
+				request.onProgress = workflowActivationProgressRecorder(
+					recordObservability,
+					input.node,
+					input.activation.id,
+				);
 				await recordWorkflowActivationStart(recordObservability, input.node, input.activation.id);
 				const result = await runAgentTaskWithTransientRetry(options, request, workflowReviewTaskReasonIsRetryable);
 				const output = reviewOutputFromTaskResult(input.node.id, result, input.gates, input.fallbackVerdict);
@@ -337,6 +344,29 @@ async function recordWorkflowActivationFailure(
 		await recordWorkflowActivationFailureObservability(record, node, activationId, error);
 	} catch {
 		// Failure observability must never mask the workflow node's original error.
+	}
+}
+
+function workflowActivationProgressRecorder(
+	record: WorkflowObservabilityRecorder,
+	node: WorkflowNode,
+	activationId: string,
+): (progress: WorkflowAgentTaskProgressUpdate) => void {
+	return progress => {
+		void recordWorkflowActivationProgress(record, node, activationId, progress);
+	};
+}
+
+async function recordWorkflowActivationProgress(
+	record: WorkflowObservabilityRecorder,
+	node: WorkflowNode,
+	activationId: string,
+	progress: WorkflowAgentTaskProgressUpdate,
+): Promise<void> {
+	try {
+		await recordWorkflowActivationProgressObservability(record, node, activationId, progress);
+	} catch {
+		// Progress observability must never affect workflow node execution.
 	}
 }
 
@@ -475,6 +505,15 @@ async function runAgentTaskWithTransientRetry(
 			retryDisposition,
 		);
 		retryHistory.push(retryEntry);
+		request.onProgress?.({
+			retryState: {
+				attempt: retryEntry.attempt,
+				maxAttempts: retryEntry.maxAttempts,
+				delayMs: retryEntry.delayMs,
+				errorMessage: retryEntry.reason,
+			},
+			activity: `retrying workflow node "${request.nodeId}" after transient provider failure`,
+		});
 		await sleepBeforeWorkflowAgentTaskRetry(options, request.signal, retryEntry.delayMs);
 	}
 	if (lastTransientResult !== undefined) return attachWorkflowAgentTaskRetryHistory(lastTransientResult, retryHistory);

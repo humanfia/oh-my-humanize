@@ -850,6 +850,45 @@ edges: []
 		expect(completedProgress).toContain("Completed activations: 1");
 	});
 
+	it("updates running workflow observability with agent progress", async () => {
+		using tempDir = TempDir.createSync("@omh-workflow-live-progress-observability-");
+		const cwd = tempDir.path();
+		const releaseAgent = Promise.withResolvers<void>();
+		const progressReported = Promise.withResolvers<void>();
+		const host = createSessionWorkflowRuntimeHost({
+			cwd,
+			runAgentTask: async request => {
+				request.onProgress?.({ activity: "Reading regression evidence" });
+				progressReported.resolve();
+				await releaseAgent.promise;
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "agent completed after reporting progress" }),
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "inspectEvidence", type: "agent", prompt: "Inspect evidence." };
+		const running = host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+		await progressReported.promise;
+
+		try {
+			const progress = await readWorkflowProgressContaining(cwd, "Reading regression evidence");
+			expect(progress).toContain("Running activations: 1");
+			expect(progress).toContain("inspectEvidence");
+			expect(progress).toContain("Reading regression evidence");
+		} finally {
+			releaseAgent.resolve();
+		}
+		await running;
+	});
+
 	it("writes a project-local workflow observability index for completed agent nodes", async () => {
 		using tempDir = TempDir.createSync("@omh-workflow-observability-");
 		const cwd = tempDir.path();
@@ -1073,6 +1112,57 @@ edges: []
 			],
 		});
 		expect(await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text()).toContain("recovered retries=1");
+	});
+
+	it("surfaces scheduled transient retries while workflow nodes are still running", async () => {
+		using tempDir = TempDir.createSync("@omh-workflow-live-retry-observability-");
+		const cwd = tempDir.path();
+		let calls = 0;
+		const retryDelayStarted = Promise.withResolvers<void>();
+		const releaseRetryDelay = Promise.withResolvers<void>();
+		const host = createSessionWorkflowRuntimeHost({
+			cwd,
+			agentTaskRetryPolicy: { maxAttempts: 2, baseDelayMs: 60_000, maxDelayMs: 60_000, jitterRatio: 0 },
+			retryDelay: async () => {
+				retryDelayStarted.resolve();
+				await releaseRetryDelay.promise;
+			},
+			runAgentTask: async () => {
+				calls += 1;
+				if (calls === 1) {
+					return {
+						exitCode: 1,
+						output: "",
+						error: "503 Service Unavailable from upstream provider",
+					};
+				}
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "agent recovered after visible retry" }),
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "repair", type: "agent", prompt: "Repair the issue." };
+		const running = host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "builder",
+			prompt: node.prompt,
+		});
+		await retryDelayStarted.promise;
+
+		try {
+			const progress = await readWorkflowProgressContaining(cwd, "retrying transient provider failure 1/2");
+			expect(progress).toContain("Running activations: 1");
+			expect(progress).toContain("repair");
+			expect(progress).toContain("retrying transient provider failure 1/2");
+			expect(progress).toContain("503 Service Unavailable from upstream provider");
+		} finally {
+			releaseRetryDelay.resolve();
+		}
+		await running;
 	});
 
 	it("keeps workflow progress tables compact while preserving full observability summaries", async () => {
@@ -2321,6 +2411,20 @@ function workflowActivation(nodeId: string) {
 		status: "running" as const,
 		parentActivationIds: [],
 	};
+}
+
+async function readWorkflowProgressContaining(cwd: string, expected: string): Promise<string> {
+	let lastProgress = "";
+	for (let attempt = 0; attempt < 20; attempt += 1) {
+		try {
+			lastProgress = await Bun.file(`${cwd}/workflow-output/omh-runtime/progress.md`).text();
+			if (lastProgress.includes(expected)) return lastProgress;
+		} catch (error) {
+			if (!isEnoent(error)) throw error;
+		}
+		await Bun.sleep(10);
+	}
+	return lastProgress;
 }
 
 async function runRetryReview(reviewOutput: string) {
