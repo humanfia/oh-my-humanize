@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed workflow agent/review nodes staying live after ordinary task progress stops without provider retry state; workflow retries now abort stale post-activity attempts and re-enter the existing retry path.
 - Fixed workflow agent nodes failing the whole activation when a terminal yield has malformed workflow output shape; OMH now gives the same node one explicit output-contract correction attempt.
 - Fixed workflow agent/review nodes staying live after provider retry progress stalls; workflow retries now abort stale retry attempts and re-enter the existing transient retry path.
 - Fixed the experimental bug-triage-repro-fix flow routing explicit no-source/no-bug invocation evidence to patching when the task contract permits a no-code resolution.

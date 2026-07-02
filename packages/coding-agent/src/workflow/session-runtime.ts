@@ -48,6 +48,7 @@ export interface WorkflowAgentTaskRetryPolicy {
 	maxDelayMs?: number;
 	jitterRatio?: number;
 	retryStallTimeoutMs?: number;
+	progressStallTimeoutMs?: number;
 }
 
 export type WorkflowRetryDelayRunner = (delayMs: number, signal: AbortSignal | undefined) => Promise<void>;
@@ -424,6 +425,7 @@ interface NormalizedWorkflowAgentTaskRetryPolicy {
 	maxDelayMs: number;
 	jitterRatio: number;
 	retryStallTimeoutMs: number;
+	progressStallTimeoutMs: number;
 }
 
 const DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY: NormalizedWorkflowAgentTaskRetryPolicy = {
@@ -432,6 +434,7 @@ const DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY: NormalizedWorkflowAgentTaskRetry
 	maxDelayMs: 300_000,
 	jitterRatio: 0.25,
 	retryStallTimeoutMs: 600_000,
+	progressStallTimeoutMs: 600_000,
 };
 
 async function runAgentTaskWithTransientRetry(
@@ -493,19 +496,27 @@ async function runWorkflowAgentTaskAttempt(
 	if (options.runAgentTask === undefined) {
 		throw new WorkflowNodeRuntimeError(`workflow agent node "${request.nodeId}" requires a subagent runtime adapter`);
 	}
-	if (policy.retryStallTimeoutMs <= 0) return options.runAgentTask(request);
+	if (policy.retryStallTimeoutMs <= 0 && policy.progressStallTimeoutMs <= 0) return options.runAgentTask(request);
 
 	const watchdog = new AbortController();
 	const signal = combineWorkflowAbortSignals([request.signal, watchdog.signal]);
 	let sawProviderRetry = false;
 	let retryStallTimer: NodeJS.Timeout | undefined;
 	let retryStallReason: string | undefined;
+	let progressStallTimer: NodeJS.Timeout | undefined;
+	let progressStallReason: string | undefined;
 	const clearRetryStallTimer = (): void => {
 		if (retryStallTimer === undefined) return;
 		clearTimeout(retryStallTimer);
 		retryStallTimer = undefined;
 	};
+	const clearProgressStallTimer = (): void => {
+		if (progressStallTimer === undefined) return;
+		clearTimeout(progressStallTimer);
+		progressStallTimer = undefined;
+	};
 	const armRetryStallTimer = (progress: WorkflowAgentTaskProgressUpdate): void => {
+		if (policy.retryStallTimeoutMs <= 0) return;
 		clearRetryStallTimer();
 		const activity = progress.activity?.trim();
 		retryStallTimer = setTimeout(() => {
@@ -513,12 +524,25 @@ async function runWorkflowAgentTaskAttempt(
 			if (!watchdog.signal.aborted) watchdog.abort(retryStallReason);
 		}, policy.retryStallTimeoutMs);
 	};
+	const armProgressStallTimer = (progress: WorkflowAgentTaskProgressUpdate): void => {
+		if (policy.progressStallTimeoutMs <= 0 || !workflowAgentTaskProgressHasActivity(progress)) return;
+		clearProgressStallTimer();
+		const activity = progress.activity?.trim();
+		progressStallTimer = setTimeout(() => {
+			progressStallReason = workflowTaskProgressStallReason(request, policy.progressStallTimeoutMs, activity);
+			if (!watchdog.signal.aborted) watchdog.abort(progressStallReason);
+		}, policy.progressStallTimeoutMs);
+	};
 	const onProgress = (progress: WorkflowAgentTaskProgressUpdate): void => {
 		request.onProgress?.(progress);
 		if (workflowAgentTaskProgressHasRetry(progress)) {
 			sawProviderRetry = true;
 		}
-		if (sawProviderRetry) armRetryStallTimer(progress);
+		if (sawProviderRetry) {
+			armRetryStallTimer(progress);
+		} else {
+			armProgressStallTimer(progress);
+		}
 	};
 	try {
 		return await options.runAgentTask({ ...request, signal, onProgress });
@@ -530,14 +554,35 @@ async function runWorkflowAgentTaskAttempt(
 				error: retryStallReason,
 			};
 		}
+		if (progressStallReason !== undefined) {
+			return {
+				exitCode: 1,
+				output: "",
+				error: progressStallReason,
+			};
+		}
 		throw error;
 	} finally {
 		clearRetryStallTimer();
+		clearProgressStallTimer();
 	}
 }
 
 function workflowAgentTaskProgressHasRetry(progress: WorkflowAgentTaskProgressUpdate): boolean {
 	return progress.retryState !== undefined || progress.retryFailure !== undefined;
+}
+
+function workflowAgentTaskProgressHasActivity(progress: WorkflowAgentTaskProgressUpdate): boolean {
+	return progress.activity !== undefined && progress.activity.trim().length > 0;
+}
+
+function workflowTaskProgressStallReason(
+	request: WorkflowAgentTaskRequest,
+	timeoutMs: number,
+	activity: string | undefined,
+): string {
+	const activityDetail = activity === undefined ? "" : `; last activity: ${activity}`;
+	return `workflow task progress stalled for node "${request.nodeId}" after ${timeoutMs}ms without new activity${activityDetail}`;
 }
 
 function workflowProviderRetryStallReason(
@@ -603,12 +648,17 @@ function normalizeWorkflowAgentTaskRetryPolicy(
 		policy?.retryStallTimeoutMs,
 		DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY.retryStallTimeoutMs,
 	);
+	const progressStallTimeoutMs = normalizeNonNegativeInteger(
+		policy?.progressStallTimeoutMs,
+		DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY.progressStallTimeoutMs,
+	);
 	return {
 		maxAttempts,
 		baseDelayMs,
 		maxDelayMs: Math.max(baseDelayMs, maxDelayMs),
 		jitterRatio,
 		retryStallTimeoutMs,
+		progressStallTimeoutMs,
 	};
 }
 
@@ -636,13 +686,17 @@ function workflowAgentTaskRetryDispositionForReason(
 	policy: NormalizedWorkflowAgentTaskRetryPolicy,
 ): WorkflowAgentTaskRetryDisposition {
 	return {
-		retryable: workflowAgentTaskReasonIsTransient(reason),
+		retryable: workflowAgentTaskReasonIsTransient(reason) || workflowAgentTaskReasonIsProgressStall(reason),
 		maxAttempts: policy.maxAttempts,
 	};
 }
 
 function workflowAgentTaskReasonIsTransient(reason: string): boolean {
 	return WORKFLOW_AGENT_TRANSIENT_PROVIDER_ERROR_PATTERN.test(reason);
+}
+
+function workflowAgentTaskReasonIsProgressStall(reason: string): boolean {
+	return /\bworkflow task progress stalled\b/iu.test(reason);
 }
 
 function workflowReviewTaskReasonIsRetryable(

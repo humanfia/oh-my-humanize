@@ -1262,6 +1262,58 @@ edges: []
 		expect(output.retryHistory?.[0]?.reason).toContain("workflow provider retry stalled");
 	});
 
+	it("retries workflow review nodes when task progress stalls after activity", async () => {
+		let calls = 0;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: {
+				maxAttempts: 2,
+				baseDelayMs: 0,
+				maxDelayMs: 0,
+				progressStallTimeoutMs: 1,
+			},
+			retryDelay: async () => {},
+			runAgentTask: async request => {
+				calls += 1;
+				if (calls === 1) {
+					request.onProgress?.({ activity: "Reading focused test artifact" });
+					const abortSignal = Promise.withResolvers<never>();
+					request.signal?.addEventListener(
+						"abort",
+						() => abortSignal.reject(new Error("child observed progress-stall abort")),
+						{ once: true },
+					);
+					await abortSignal.promise;
+				}
+				return {
+					exitCode: 0,
+					output: "finish\nRecovered after progress-stall restart.",
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "fixReview",
+			type: "review",
+			prompt: "Review the no-code evidence.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(calls).toBe(2);
+		expect(output.verdict).toBe("finish");
+		expect(output.retryHistory).toHaveLength(1);
+		expect(output.retryHistory?.[0]?.reason).toContain("workflow task progress stalled");
+	});
+
 	it("retries review schema violations before accepting a valid review", async () => {
 		let calls = 0;
 		const host = createSessionWorkflowRuntimeHost({
