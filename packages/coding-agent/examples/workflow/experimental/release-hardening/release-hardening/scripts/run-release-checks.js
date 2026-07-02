@@ -6,9 +6,9 @@ if (typeof validationCommand !== "string" || validationCommand.trim() === "") {
 }
 await assertTaskContractUnchanged(task);
 
-const validation = await runShell(validationCommand, "release-validation");
+const validation = await runShell(validationCommand, "release-validation", task.taskText);
 const hasSecurityCommand = typeof securityCommand === "string" && securityCommand.trim() !== "";
-const security = hasSecurityCommand ? await runShell(securityCommand, "release-security") : undefined;
+const security = hasSecurityCommand ? await runShell(securityCommand, "release-security", task.taskText) : undefined;
 const workspaceScope = await workspaceScopeGuard(task.taskText);
 const outputPath = "workflow-output/release-checks.md";
 await Bun.write(outputPath, evidenceMarkdown(validationCommand, validation, securityCommand, security, workspaceScope));
@@ -30,10 +30,12 @@ return {
 				validationExitCode: validation.exitCode,
 				validationStdoutPath: validation.stdoutPath,
 				validationStderrPath: validation.stderrPath,
+				validationGeneratedArtifacts: validation.generatedArtifacts,
 				securityCommand,
 				securityExitCode: security?.exitCode,
 				securityStdoutPath: security?.stdoutPath,
 				securityStderrPath: security?.stderrPath,
+				securityGeneratedArtifacts: security?.generatedArtifacts,
 				securityStatus,
 				workspaceScope,
 				status: validationPass && securityPass && scopePass ? "pass" : "fail",
@@ -43,9 +45,11 @@ return {
 	],
 };
 
-async function runShell(command, artifactPrefix) {
+async function runShell(command, artifactPrefix, taskText) {
+	const statusBefore = await gitStatus();
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: process.cwd(),
+		env: releaseCheckEnvironment(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -54,6 +58,7 @@ async function runShell(command, artifactPrefix) {
 		new Response(proc.stderr).text(),
 		proc.exited,
 	]);
+	const generatedArtifacts = await cleanGeneratedUntrackedArtifacts(statusBefore, taskText);
 	const stdoutPath = `workflow-output/${artifactPrefix}-stdout.txt`;
 	const stderrPath = `workflow-output/${artifactPrefix}-stderr.txt`;
 	await Bun.write(stdoutPath, stdout);
@@ -64,7 +69,47 @@ async function runShell(command, artifactPrefix) {
 		stderr: bounded(stderr),
 		stdoutPath,
 		stderrPath,
+		generatedArtifacts,
 	};
+}
+
+function releaseCheckEnvironment() {
+	const env = { ...process.env };
+	delete env.SSLKEYLOGFILE;
+	return env;
+}
+
+async function cleanGeneratedUntrackedArtifacts(statusBefore, taskText) {
+	if (statusBefore.unavailable) return [];
+	const beforeUntracked = new Set(untrackedPaths(statusBefore.entries));
+	const allowedScopes = allowedPathsFromTask(taskText);
+	if (allowedScopes.length === 0) return [];
+	const statusAfter = await gitStatus();
+	if (statusAfter.unavailable) return [];
+	const generated = untrackedPaths(statusAfter.entries).filter(
+		filePath =>
+			!beforeUntracked.has(filePath) &&
+			!ignoredStatusPath(filePath) &&
+			allowedScopes.every(scope => !scopeMatchesPath(scope, filePath)),
+	);
+	const cleaned = [];
+	for (const filePath of generated) {
+		try {
+			await Bun.file(filePath).delete();
+			cleaned.push({ path: filePath, status: "removed" });
+		} catch (error) {
+			cleaned.push({ path: filePath, status: "cleanup_failed", reason: errorMessage(error) });
+		}
+	}
+	return cleaned;
+}
+
+function untrackedPaths(entries) {
+	return entries.filter(entry => entry.status === "??").map(entry => entry.path);
+}
+
+function errorMessage(error) {
+	return error instanceof Error ? error.message : String(error);
 }
 
 async function assertTaskContractUnchanged(task) {
@@ -122,6 +167,17 @@ function appendCommandEvidence(lines, label, command, result) {
 		"```",
 		"",
 	);
+	appendGeneratedArtifactEvidence(lines, label, result.generatedArtifacts);
+}
+
+function appendGeneratedArtifactEvidence(lines, label, generatedArtifacts) {
+	if (!generatedArtifacts || generatedArtifacts.length === 0) return;
+	lines.push(`## ${label}-Generated Artifacts`, "");
+	for (const artifact of generatedArtifacts) {
+		const suffix = artifact.reason ? ` (${artifact.reason})` : "";
+		lines.push(`- ${artifact.path}: ${artifact.status}${suffix}`);
+	}
+	lines.push("");
 }
 
 function bounded(text) {
