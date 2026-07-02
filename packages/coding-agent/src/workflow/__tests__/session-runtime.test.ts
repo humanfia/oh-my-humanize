@@ -1145,6 +1145,66 @@ edges: []
 		expect(output.verdict).toBe("COMPLETE");
 	});
 
+	it("retries workflow review nodes when a provider retry stalls without progress", async () => {
+		let calls = 0;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: {
+				maxAttempts: 2,
+				baseDelayMs: 0,
+				maxDelayMs: 0,
+				retryStallTimeoutMs: 1,
+			},
+			retryDelay: async () => {},
+			runAgentTask: async request => {
+				calls += 1;
+				if (calls === 1) {
+					request.onProgress?.({
+						retryState: {
+							attempt: 1,
+							maxAttempts: 2,
+							delayMs: 0,
+							errorMessage: "internal_server_error: stream ID 1; INTERNAL_ERROR",
+						},
+						activity: "Checking project metadata",
+					});
+					const abortSignal = Promise.withResolvers<never>();
+					request.signal?.addEventListener(
+						"abort",
+						() => abortSignal.reject(new Error("child observed retry-stall abort")),
+						{ once: true },
+					);
+					await abortSignal.promise;
+				}
+				return {
+					exitCode: 0,
+					output: "finish\nRecovered after retry-stall restart.",
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "planCompliance",
+			type: "review",
+			prompt: "Return finish when the plan is compliant.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+
+		expect(calls).toBe(2);
+		expect(output.verdict).toBe("finish");
+		expect(output.retryHistory).toHaveLength(1);
+		expect(output.retryHistory?.[0]?.reason).toContain("workflow provider retry stalled");
+	});
+
 	it("retries review schema violations before accepting a valid review", async () => {
 		let calls = 0;
 		const host = createSessionWorkflowRuntimeHost({

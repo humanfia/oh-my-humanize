@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed workflow agent/review nodes staying live after provider retry progress stalls; workflow retries now abort stale retry attempts and re-enter the existing transient retry path.
+- Fixed the experimental bug-triage-repro-fix flow routing explicit no-source/no-bug invocation evidence to patching when the task contract permits a no-code resolution.
 - Fixed the experimental documentation-audit flow accepting no-patch consolidation after parallel audit lanes reported actionable documentation repair signals.
 - Fixed the experimental performance-optimization-search flow rejecting benchmark commands that report a bare numeric timing measurement.
 - Fixed the experimental refactor-migration-plan flow looping on accepted no-change migration evidence when a task explicitly allows no-code/no-change outcomes.

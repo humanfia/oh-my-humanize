@@ -1,6 +1,10 @@
-import { type TaskParams, TaskTool } from "../task";
+import { type AgentProgress, type TaskParams, TaskTool, type TaskToolDetails } from "../task";
 import type { ToolSession } from "../tools";
-import type { WorkflowAgentTaskResult, WorkflowAgentTaskRunner } from "./session-runtime";
+import type {
+	WorkflowAgentTaskProgressUpdate,
+	WorkflowAgentTaskResult,
+	WorkflowAgentTaskRunner,
+} from "./session-runtime";
 
 const WORKFLOW_TASK_RETRY_BASE_DELAY_MS = 30_000;
 const WORKFLOW_TASK_RETRY_MAX_DELAY_MS = 300_000;
@@ -30,7 +34,11 @@ export function createTaskToolAgentRunner(toolSession: ToolSession): WorkflowAge
 		if (request.apply !== undefined) params.apply = request.apply;
 		if (request.merge !== undefined) params.merge = request.merge;
 		if (request.capture !== undefined) params.capture = request.capture;
-		const result = await taskTool.execute(`workflow-${request.activationId}`, params, request.signal);
+		const result = await taskTool.execute(`workflow-${request.activationId}`, params, request.signal, update => {
+			for (const progress of workflowTaskProgressUpdates(update.details)) {
+				request.onProgress?.(progress);
+			}
+		});
 		const taskResult = result.details?.results[0];
 		const output = textContent(result.content);
 		if (!taskResult) {
@@ -104,4 +112,31 @@ function textContent(content: Array<{ type: string; text?: string }>): string {
 		.map(item => item.text)
 		.join("\n")
 		.trim();
+}
+
+function workflowTaskProgressUpdates(details: TaskToolDetails | undefined): WorkflowAgentTaskProgressUpdate[] {
+	const progressItems = details?.progress;
+	if (!Array.isArray(progressItems)) return [];
+	return progressItems.map(workflowTaskProgressUpdateFromAgentProgress);
+}
+
+function workflowTaskProgressUpdateFromAgentProgress(progress: AgentProgress): WorkflowAgentTaskProgressUpdate {
+	const update: WorkflowAgentTaskProgressUpdate = {};
+	if (progress.retryState !== undefined) {
+		update.retryState = {
+			attempt: progress.retryState.attempt,
+			maxAttempts: progress.retryState.maxAttempts,
+			delayMs: progress.retryState.delayMs,
+			errorMessage: progress.retryState.errorMessage,
+		};
+	}
+	if (progress.retryFailure !== undefined) {
+		update.retryFailure = {
+			attempt: progress.retryFailure.attempt,
+			errorMessage: progress.retryFailure.errorMessage,
+		};
+	}
+	const activity = progress.lastIntent ?? progress.currentTool ?? progress.recentOutput[0];
+	if (activity !== undefined && activity.trim().length > 0) update.activity = activity.trim();
+	return update;
 }

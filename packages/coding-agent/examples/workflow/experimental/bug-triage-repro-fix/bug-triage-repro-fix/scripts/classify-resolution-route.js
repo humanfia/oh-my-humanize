@@ -123,15 +123,17 @@ function allowsNoCodeResolution(value) {
 }
 
 function hasNoCodeCauseResolution(value) {
-	return (
-		typeof value.resolution === "string" &&
-		/^no[-\s]?code$/iu.test(value.resolution.trim())
-	);
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	if (typeof value.resolution === "string" && /^no[-_\s]?code$/iu.test(value.resolution.trim())) return true;
+	for (const key of ["classification", "route", "routeRecommendation", "route_recommendation", "status", "verdict"]) {
+		const field = value[key];
+		if (typeof field === "string" && hasNoCodeCauseSignal(field)) return true;
+	}
+	return false;
 }
 
 function hasPatchableCauseEvidence(value) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-	if (hasNoCodeCauseResolution(value)) return false;
 	if (hasPatchableClassification(value)) return true;
 	for (const boundary of patchableBoundaryCandidates(value)) {
 		if (boundary && typeof boundary === "object" && !Array.isArray(boundary)) {
@@ -153,6 +155,20 @@ function hasPatchableCauseEvidence(value) {
 		}
 	}
 	return false;
+}
+
+function hasNoCodeCauseSignal(value) {
+	const normalized = value.toLowerCase().replace(/[-_\s]+/gu, " ");
+	return (
+		/\bno code\b/u.test(normalized) ||
+		/\bno bug\b/u.test(normalized) ||
+		/\bno source defect\b/u.test(normalized) ||
+		/\bno source change\b/u.test(normalized) ||
+		/\binvalid (?:reproduction|harness)\b/u.test(normalized) ||
+		/\bharness issue\b/u.test(normalized) ||
+		/\binvocation error\b/u.test(normalized) ||
+		/\breproduction invocation error\b/u.test(normalized)
+	);
 }
 
 function hasPatchableClassification(value) {

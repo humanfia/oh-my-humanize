@@ -42,6 +42,7 @@ export interface WorkflowAgentTaskRetryPolicy {
 	baseDelayMs?: number;
 	maxDelayMs?: number;
 	jitterRatio?: number;
+	retryStallTimeoutMs?: number;
 }
 
 export type WorkflowRetryDelayRunner = (delayMs: number, signal: AbortSignal | undefined) => Promise<void>;
@@ -59,7 +60,26 @@ export interface WorkflowAgentTaskRequest {
 	merge?: boolean;
 	capture?: WorkflowAgentTaskPatchCapture;
 	signal?: AbortSignal;
+	onProgress?: (progress: WorkflowAgentTaskProgressUpdate) => void;
 	task: WorkflowAgentTaskItem;
+}
+
+export interface WorkflowAgentTaskProgressUpdate {
+	retryState?: WorkflowAgentTaskRetryState;
+	retryFailure?: WorkflowAgentTaskRetryFailure;
+	activity?: string;
+}
+
+export interface WorkflowAgentTaskRetryState {
+	attempt: number;
+	maxAttempts: number;
+	delayMs: number;
+	errorMessage: string;
+}
+
+export interface WorkflowAgentTaskRetryFailure {
+	attempt: number;
+	errorMessage: string;
 }
 
 export interface WorkflowAgentTaskPatchCapture {
@@ -360,6 +380,7 @@ interface NormalizedWorkflowAgentTaskRetryPolicy {
 	baseDelayMs: number;
 	maxDelayMs: number;
 	jitterRatio: number;
+	retryStallTimeoutMs: number;
 }
 
 const DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY: NormalizedWorkflowAgentTaskRetryPolicy = {
@@ -367,6 +388,7 @@ const DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY: NormalizedWorkflowAgentTaskRetry
 	baseDelayMs: 30_000,
 	maxDelayMs: 300_000,
 	jitterRatio: 0.25,
+	retryStallTimeoutMs: 600_000,
 };
 
 async function runAgentTaskWithTransientRetry(
@@ -385,7 +407,7 @@ async function runAgentTaskWithTransientRetry(
 		let transientReason: string;
 		let retryDisposition: WorkflowAgentTaskRetryDisposition;
 		try {
-			const result = await options.runAgentTask(request);
+			const result = await runWorkflowAgentTaskAttempt(options, request, policy);
 			transientReason = workflowAgentTaskFailureReason(result);
 			retryDisposition = retryDispositionForReason(transientReason, policy);
 			if (result.exitCode === 0 || !retryDisposition.retryable) {
@@ -418,6 +440,82 @@ async function runAgentTaskWithTransientRetry(
 		},
 		retryHistory,
 	);
+}
+
+async function runWorkflowAgentTaskAttempt(
+	options: WorkflowSessionRuntimeOptions,
+	request: WorkflowAgentTaskRequest,
+	policy: NormalizedWorkflowAgentTaskRetryPolicy,
+): Promise<WorkflowAgentTaskResult> {
+	if (options.runAgentTask === undefined) {
+		throw new WorkflowNodeRuntimeError(`workflow agent node "${request.nodeId}" requires a subagent runtime adapter`);
+	}
+	if (policy.retryStallTimeoutMs <= 0) return options.runAgentTask(request);
+
+	const watchdog = new AbortController();
+	const signal = combineWorkflowAbortSignals([request.signal, watchdog.signal]);
+	let sawProviderRetry = false;
+	let retryStallTimer: NodeJS.Timeout | undefined;
+	let retryStallReason: string | undefined;
+	const clearRetryStallTimer = (): void => {
+		if (retryStallTimer === undefined) return;
+		clearTimeout(retryStallTimer);
+		retryStallTimer = undefined;
+	};
+	const armRetryStallTimer = (progress: WorkflowAgentTaskProgressUpdate): void => {
+		clearRetryStallTimer();
+		const activity = progress.activity?.trim();
+		retryStallTimer = setTimeout(() => {
+			retryStallReason = workflowProviderRetryStallReason(request, progress, policy.retryStallTimeoutMs, activity);
+			if (!watchdog.signal.aborted) watchdog.abort(retryStallReason);
+		}, policy.retryStallTimeoutMs);
+	};
+	const onProgress = (progress: WorkflowAgentTaskProgressUpdate): void => {
+		request.onProgress?.(progress);
+		if (workflowAgentTaskProgressHasRetry(progress)) {
+			sawProviderRetry = true;
+		}
+		if (sawProviderRetry) armRetryStallTimer(progress);
+	};
+	try {
+		return await options.runAgentTask({ ...request, signal, onProgress });
+	} catch (error) {
+		if (retryStallReason !== undefined) {
+			return {
+				exitCode: 1,
+				output: "",
+				error: retryStallReason,
+			};
+		}
+		throw error;
+	} finally {
+		clearRetryStallTimer();
+	}
+}
+
+function workflowAgentTaskProgressHasRetry(progress: WorkflowAgentTaskProgressUpdate): boolean {
+	return progress.retryState !== undefined || progress.retryFailure !== undefined;
+}
+
+function workflowProviderRetryStallReason(
+	request: WorkflowAgentTaskRequest,
+	progress: WorkflowAgentTaskProgressUpdate,
+	timeoutMs: number,
+	activity: string | undefined,
+): string {
+	const retryDetail = workflowProviderRetryStallDetail(progress);
+	const activityDetail = activity === undefined ? "" : `; last activity: ${activity}`;
+	return `workflow provider retry stalled for node "${request.nodeId}" after ${timeoutMs}ms${retryDetail}${activityDetail}`;
+}
+
+function workflowProviderRetryStallDetail(progress: WorkflowAgentTaskProgressUpdate): string {
+	if (progress.retryFailure !== undefined) {
+		return ` after failed retry attempt ${progress.retryFailure.attempt}: ${progress.retryFailure.errorMessage}`;
+	}
+	if (progress.retryState !== undefined) {
+		return ` after retry attempt ${progress.retryState.attempt}/${progress.retryState.maxAttempts}: ${progress.retryState.errorMessage}`;
+	}
+	return "";
 }
 
 interface WorkflowAgentTaskRetryDisposition {
@@ -458,11 +556,16 @@ function normalizeWorkflowAgentTaskRetryPolicy(
 		policy?.jitterRatio,
 		DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY.jitterRatio,
 	);
+	const retryStallTimeoutMs = normalizeNonNegativeInteger(
+		policy?.retryStallTimeoutMs,
+		DEFAULT_WORKFLOW_AGENT_TASK_RETRY_POLICY.retryStallTimeoutMs,
+	);
 	return {
 		maxAttempts,
 		baseDelayMs,
 		maxDelayMs: Math.max(baseDelayMs, maxDelayMs),
 		jitterRatio,
+		retryStallTimeoutMs,
 	};
 }
 
@@ -598,6 +701,21 @@ async function sleepWorkflowRetryDelay(delayMs: number, signal: AbortSignal | un
 		signal.removeEventListener("abort", onAbort);
 		throwIfWorkflowSignalAborted(signal);
 	}
+}
+
+function combineWorkflowAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+	const activeSignals = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (activeSignals.length === 0) return undefined;
+	if (activeSignals.length === 1) return activeSignals[0];
+	const controller = new AbortController();
+	const abortFrom = (signal: AbortSignal): void => {
+		if (!controller.signal.aborted) controller.abort(signal.reason);
+	};
+	for (const signal of activeSignals) {
+		if (signal.aborted) abortFrom(signal);
+		signal.addEventListener("abort", () => abortFrom(signal), { once: true });
+	}
+	return controller.signal;
 }
 
 function throwIfWorkflowSignalAborted(signal: AbortSignal | undefined): void {

@@ -492,6 +492,64 @@ describe("example workflow scripts", () => {
 		expect(rollback).toContain("isolateCause");
 	});
 
+	it("routes bug triage no-source invocation evidence away from patching", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-no-source-invocation-route-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Investigate whether the reported helper behavior is a source defect or an invalid shell reproduction.",
+			"",
+			"No-Code Resolution: allowed",
+			"",
+			"Reproduction Command:",
+			`python -c "assert parse_options_header('attachment; filename="semi;colon.txt"')"`,
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_http.py -q",
+		].join("\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "classifyResolutionRoute",
+			scriptFileName: "classify-resolution-route.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/resolution", "/patch"],
+			initialState: {
+				task: {
+					taskText,
+					reproductionCommand: `python -c "assert parse_options_header('attachment; filename="semi;colon.txt"')"`,
+					validationCommand: "python -m pytest tests/test_http.py -q",
+				},
+				repro: {
+					exitCode: 127,
+					outputPath: "workflow-output/reproduction.md",
+				},
+				cause: {
+					classification: "no_source_defect_likely_reproduction_invocation_error",
+					rootCause: "The frozen shell command failed before exercising the reported behavior.",
+					narrowest_fix_boundary: "No project source or test change; repair only the reproduction invocation.",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.resolution).toMatchObject({
+			route: "no-code",
+			allowedNoCodeResolution: true,
+			reproductionExitCode: 127,
+			noCodeCauseResolution: true,
+			patchableCauseEvidence: false,
+		});
+		expect(result.scheduler.state.patch).toMatchObject({
+			mode: "no-code",
+			changedFiles: [],
+		});
+		const reconciliation = await Bun.file(`${cwd}/workflow-output/no-bug-root-cause.md`).text();
+		expect(reconciliation).toContain("no_source_defect_likely_reproduction_invocation_error");
+		expect(reconciliation).toContain("reproduction invocation");
+	});
+
 	it("binds research reproduction validation evidence as standalone prompt context", async () => {
 		const artifact = await loadWorkflowArtifact(
 			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,
