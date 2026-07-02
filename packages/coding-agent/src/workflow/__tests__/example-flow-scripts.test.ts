@@ -377,6 +377,65 @@ describe("example workflow scripts", () => {
 		expect(result.scheduler.state.patch).toBeUndefined();
 	});
 
+	it("routes bug triage routeRecommendation patch_path evidence to patching", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-route-recommendation-patch-path-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Investigate completion side effects where a focused probe found callback execution.",
+			"",
+			"No-Code/No-Change Allowed: Yes",
+			"",
+			"Reproduction Command:",
+			"python -m pytest tests/test_completion.py -q",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_completion.py tests/test_help.py -q",
+		].join("\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "classifyResolutionRoute",
+			scriptFileName: "classify-resolution-route.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/resolution", "/patch"],
+			initialState: {
+				task: {
+					taskText,
+					reproductionCommand: "python -m pytest tests/test_completion.py -q",
+					validationCommand: "python -m pytest tests/test_completion.py tests/test_help.py -q",
+				},
+				repro: {
+					exitCode: 0,
+					outputPath: "workflow-output/reproduction.md",
+				},
+				cause: {
+					routeRecommendation: "patch_path",
+					narrowestFixBoundary: {
+						primaryBoundary: "Change completion context construction so it does not execute callable defaults.",
+						preferredPatchShape:
+							"Keep the fix inside parameter processing or behind a completion-specific context flag.",
+						regressionTestBoundary: "Add a focused completion side-effect regression test.",
+					},
+					reproductionEvidence: {
+						focusedProbeObserved:
+							"Bash completion returned candidates and recorded default_called plus callback_called.",
+					},
+				},
+			},
+		});
+
+		expect(result.scheduler.state.resolution).toMatchObject({
+			route: "patch",
+			allowedNoCodeResolution: true,
+			reproductionExitCode: 0,
+			patchableCauseEvidence: true,
+		});
+		expect(result.scheduler.state.patch).toBeUndefined();
+	});
+
 	it("routes explicit bug triage no-code cause evidence away from patching", async () => {
 		using tempDir = TempDir.createSync("@omh-bug-triage-no-code-cause-route-");
 		const cwd = tempDir.path();
@@ -8279,6 +8338,101 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("accounts lower-timing losing performance branches in selection evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-lower-timing-losing-rejection-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance covered losing timing evidence",
+			"",
+			"Benchmark Command:",
+			"python -m timeit -s 'from src.urls import append' 'append()'",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_urls.py -q",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/urls.py`, "def append():\n    return 'x'\n");
+		await Bun.write(`${cwd}/tests/test_urls.py`, "def test_append():\n    assert True\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/urls.py", "tests/test_urls.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/urls.py`, "def append():\n    return 'xx'\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			[
+				"# IO",
+				"",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: URL encoding probes passed",
+				"rollback evidence: rejected branches were reverted before retaining this candidate",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching",
+				"",
+				"final-selection: no",
+				"retained-candidate: yes",
+				"benchmark-relevance: yes",
+				"Candidate benchmark result: exit code 0, stdout `0.8507930510095321`, stderr empty.",
+				"Measured movement versus baseline: candidate timing is lower by about 8.7% for this observed run.",
+				"Validation result: exit code 0, `133 passed`.",
+				"rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			["# Algorithmic", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"- Benchmark status: pass.",
+				"- Validation status: pass.",
+				"## Losing branch rejection evidence",
+				"",
+				"- caching: final-selection: no. benchmark-covered rejection: yes. Its positive result was covered by the task benchmark, but its recorded `0.8507930510095321` is slower than the selected shared rerun `0.7157111600390635`.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "guardSelectionRepair",
+			scriptFileName: "guard-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionGuard"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+			},
+		});
+
+		expect(result.scheduler.state.selectionGuard).toMatchObject({
+			status: "pass",
+			positiveUnselectedBranches: ["caching"],
+			benchmarkCoveredRejectedBranches: ["caching"],
+		});
+	});
+
 	it("accepts sectioned performance repair rejection evidence after materialization", async () => {
 		using tempDir = TempDir.createSync("@omh-performance-sectioned-repair-guard-");
 		const cwd = tempDir.path();
@@ -8901,6 +9055,104 @@ describe("example workflow scripts", () => {
 			terminalState: "positive",
 			selectedBranches: ["caching"],
 			benchmarkCoveredRejectedBranches: ["algorithmic"],
+		});
+	});
+
+	it("finalizes lower-timing losing performance branches in selection evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-finalize-lower-timing-losing-rejection-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"# Performance covered losing finalizer timing evidence",
+			"",
+			"Benchmark Command:",
+			"python -m timeit -s 'from src.urls import append' 'append()'",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_urls.py -q",
+		].join("\n");
+
+		await Bun.write(`${cwd}/src/urls.py`, "def append():\n    return 'x'\n");
+		await Bun.write(`${cwd}/tests/test_urls.py`, "def test_append():\n    assert True\n");
+		await Bun.write(`${cwd}/task.md`, taskText);
+		await runGit(cwd, ["init"]);
+		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
+		await runGit(cwd, ["config", "user.name", "OMH Test"]);
+		await runGit(cwd, ["add", "src/urls.py", "tests/test_urls.py", "task.md"]);
+		await runGit(cwd, ["commit", "-m", "baseline"]);
+		await Bun.write(`${cwd}/src/urls.py`, "def append():\n    return 'xx'\n");
+		await Bun.write(
+			`${cwd}/workflow-output/perf-io.md`,
+			[
+				"# IO",
+				"",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"semantic-probe: yes",
+				"semantic probe evidence: URL encoding probes passed",
+				"rollback evidence: rejected branches were reverted before retaining this candidate",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-caching.md`,
+			[
+				"# Caching",
+				"",
+				"final-selection: no",
+				"retained-candidate: yes",
+				"benchmark-relevance: yes",
+				"Candidate benchmark result: exit code 0, stdout `0.8507930510095321`, stderr empty.",
+				"Measured movement versus baseline: candidate timing is lower by about 8.7% for this observed run.",
+				"Validation result: exit code 0, `133 passed`.",
+				"rollback evidence: no retained changes",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/perf-algorithmic.md`,
+			["# Algorithmic", "", "final-selection: no", "rollback evidence: no retained changes"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"- Benchmark status: pass.",
+				"- Validation status: pass.",
+				"## Losing branch rejection evidence",
+				"",
+				"- caching: final-selection: no. benchmark-covered rejection: yes. Its positive result was covered by the task benchmark, but its recorded `0.8507930510095321` is slower than the selected shared rerun `0.7157111600390635`.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "finalizePerformanceSelection",
+			scriptFileName: "finalize-performance-selection.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selection"],
+			initialState: {
+				task: {
+					text: taskText,
+				},
+				benchmark: {
+					benchmarkExitCode: 0,
+					validationExitCode: 0,
+					status: "pass",
+				},
+				selectionRepair: {
+					status: "terminal positive selection repair complete",
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.selection).toMatchObject({
+			status: "pass",
+			terminalState: "positive",
+			selectedBranches: ["io"],
+			positiveUnselectedBranches: ["caching"],
+			benchmarkCoveredRejectedBranches: ["caching"],
 		});
 	});
 

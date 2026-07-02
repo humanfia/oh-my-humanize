@@ -138,8 +138,14 @@ function hasPatchableCauseEvidence(value) {
 			return (
 				hasMeaningfulField(boundary.target) ||
 				hasMeaningfulField(boundary.production) ||
+				hasMeaningfulField(boundary.primaryBoundary) ||
+				hasMeaningfulField(boundary.primary_boundary) ||
+				hasMeaningfulField(boundary.preferredPatchShape) ||
+				hasMeaningfulField(boundary.preferred_patch_shape) ||
 				hasMeaningfulField(boundary.likely_change_surface) ||
 				hasMeaningfulField(boundary.likelyChangeSurface) ||
+				hasMeaningfulField(boundary.regressionTestBoundary) ||
+				hasMeaningfulField(boundary.regression_test_boundary) ||
 				hasMeaningfulField(boundary.test_boundary) ||
 				hasMeaningfulField(boundary.testBoundary) ||
 				hasMeaningfulField(boundary.tests)
@@ -150,9 +156,12 @@ function hasPatchableCauseEvidence(value) {
 }
 
 function hasPatchableClassification(value) {
-	for (const key of ["classification", "route", "status", "verdict"]) {
+	for (const key of ["classification", "route", "routeRecommendation", "route_recommendation", "status", "verdict"]) {
 		const field = value[key];
-		if (typeof field === "string" && /\b(?:patchable|patch_required|repair_needed|needs_patch)\b/iu.test(field)) {
+		if (
+			typeof field === "string" &&
+			/\b(?:patchable|patch[_\s-]?path|patch[_\s-]?required|repair[_\s-]?needed|needs[_\s-]?patch)\b/iu.test(field)
+		) {
 			return true;
 		}
 	}

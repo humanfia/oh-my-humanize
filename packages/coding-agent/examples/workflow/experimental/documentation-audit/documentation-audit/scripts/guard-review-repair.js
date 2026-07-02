@@ -141,6 +141,8 @@ function selectedAuditProjectTargets(value) {
 		value.selected_smallest_coherent_repair,
 		value.selectedRepair,
 		value.selected_repair,
+		...arrayField(value, "selectedRepairTargets"),
+		...arrayField(value, "selected_repair_targets"),
 	];
 	const targets = [
 		...pathArrayField(value, "changedFileTargets"),
@@ -155,6 +157,12 @@ function selectedAuditProjectTargets(value) {
 		]),
 	];
 	return uniqueProjectPaths(targets.map(normalizeProjectPath).filter(isProjectChangedFile));
+}
+
+function arrayField(value, key) {
+	if (!value || typeof value !== "object") return [];
+	const field = value[key];
+	return Array.isArray(field) ? field : [];
 }
 
 function actionableFindingsFromDigest(value) {

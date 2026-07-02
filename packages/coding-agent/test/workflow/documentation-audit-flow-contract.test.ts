@@ -52,6 +52,10 @@ interface WorkflowContext {
 			selectedRepairPlan?: {
 				changedFileTargets?: string[];
 			};
+			selectedRepairTargets?: Array<{
+				id?: string;
+				changedFileTargets?: string[];
+			}>;
 			selectedSmallestCoherentRepair?: {
 				changedFileTargets?: string[];
 			};
@@ -245,6 +249,51 @@ describe("documentation-audit flow contract", () => {
 		});
 		const guard = await Bun.file(path.join(cwd, "workflow-output/documentation-review-repair.md")).text();
 		expect(guard).toContain("- docs/security.md");
+		expect(guard).not.toContain("did not declare selected project targets");
+	});
+
+	it("accepts docs patches that cover selectedRepairTargets entries", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "docs/en/docs/tutorial/security"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "fastapi/security"), { recursive: true });
+		await Bun.write(path.join(cwd, "docs/en/docs/tutorial/security/index.md"), "old tutorial\n");
+		await Bun.write(path.join(cwd, "fastapi/security/api_key.py"), "old docstrings\n");
+		await runCommand(["git", "add", "docs/en/docs/tutorial/security/index.md", "fastapi/security/api_key.py"], cwd);
+		await runCommand(["git", "commit", "-m", "baseline"], cwd);
+		await Bun.write(path.join(cwd, "docs/en/docs/tutorial/security/index.md"), "new tutorial\n");
+		await Bun.write(path.join(cwd, "fastapi/security/api_key.py"), "new docstrings\n");
+
+		const result = await runScriptFile(cwd, "guard-review-repair.js", {
+			audit: {
+				selectedRepairTargets: [
+					{
+						id: "api-key-reference",
+						changedFileTargets: ["fastapi/security/api_key.py"],
+					},
+					{
+						id: "security-tutorial-bridge",
+						changedFileTargets: ["docs/en/docs/tutorial/security/index.md"],
+					},
+				],
+			},
+			patch: {
+				changed_files: ["fastapi/security/api_key.py", "docs/en/docs/tutorial/security/index.md"],
+				rollback_notes: ["Restore API key docstrings and tutorial bridge."],
+				resolved_review_feedback: [],
+			},
+			review: "No previous documentation review yet.",
+		});
+		const reviewRepair = result.statePatch?.find(patch => patch.path === "/reviewRepair")?.value;
+
+		expect(result.summary).toBe("no prior continue review feedback requires repair evidence");
+		expect(reviewRepair).toMatchObject({
+			status: "pass",
+			selectedAuditTargetsCovered: true,
+			selectedAuditTargets: ["docs/en/docs/tutorial/security/index.md", "fastapi/security/api_key.py"],
+		});
+		const guard = await Bun.file(path.join(cwd, "workflow-output/documentation-review-repair.md")).text();
+		expect(guard).toContain("- docs/en/docs/tutorial/security/index.md");
+		expect(guard).toContain("- fastapi/security/api_key.py");
 		expect(guard).not.toContain("did not declare selected project targets");
 	});
 

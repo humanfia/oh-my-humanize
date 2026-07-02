@@ -282,6 +282,10 @@ function hasPositiveBenchmarkEvidence(text) {
 		.filter((line) => !dismissesPositiveBenchmarkEvidence(line))
 		.join("\n");
 	return (
+		/\bbenchmark[- ]covered\s+rejection\s*:\s*(?:yes|true)\b/iu.test(evidenceText) ||
+		/\bpositive\s+result\s+was\s+covered\s+by\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b/iu.test(
+			evidenceText,
+		) ||
 		/\bpositive[^\S\r\n]+benchmark\b/iu.test(evidenceText) ||
 		/\bbenchmark[^\S\r\n]+(?:improvement|speedup|win)\b/iu.test(evidenceText) ||
 		/\b(?:improved|faster|speedup|reduced|lower)\b.{0,100}\bbenchmark\b/iu.test(evidenceText) ||
