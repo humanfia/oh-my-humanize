@@ -3,6 +3,7 @@ import { isBuiltin } from "node:module";
 import * as path from "node:path";
 import * as url from "node:url";
 import { isCompiledBinary, stripWindowsExtendedLengthPathPrefix } from "@oh-my-pi/pi-utils";
+import { registerPluginCacheInvalidator } from "../../discovery/helpers";
 import { BUNDLED_PI_REGISTRY_KEYS } from "./legacy-pi-bundled-keys";
 
 const IS_COMPILED_BINARY = isCompiledBinary();
@@ -202,6 +203,22 @@ const SOURCE_MODULE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", 
 const SUPPORTED_PACKAGE_IMPORT_CONDITIONS = new Set(["bun", "node", "import", "default"]);
 const packageRootCache = new Map<string, string | null>();
 const packageImportsCache = new Map<string, Record<string, unknown> | null>();
+const nodePackageRootCache = new Map<string, Promise<string | null>>();
+const packageManifestCache = new Map<string, Promise<Record<string, unknown> | null>>();
+const bareDependencyResolutionCache = new Map<string, Promise<string | null>>();
+const realpathCache = new Map<string, Promise<string>>();
+
+function clearLegacyPiResolutionCaches(): void {
+	resolvedSpecifierFallbacks.clear();
+	packageRootCache.clear();
+	packageImportsCache.clear();
+	nodePackageRootCache.clear();
+	packageManifestCache.clear();
+	bareDependencyResolutionCache.clear();
+	realpathCache.clear();
+}
+
+registerPluginCacheInvalidator(clearLegacyPiResolutionCaches);
 const PACKAGE_IMPORT_EXCLUDED = Symbol("packageImportExcluded");
 
 // Extensions that imported TypeBox directly used to resolve against a real
@@ -730,6 +747,16 @@ function splitBarePackageSpecifier(specifier: string): BarePackageSpecifier | nu
 }
 
 async function findNodePackageRoot(packageName: string, importerPath: string): Promise<string | null> {
+	const cacheKey = `${packageName}\0${path.resolve(path.dirname(importerPath))}`;
+	const cached = nodePackageRootCache.get(cacheKey);
+	if (cached) return cached;
+
+	const promise = findNodePackageRootUncached(packageName, importerPath);
+	nodePackageRootCache.set(cacheKey, promise);
+	return promise;
+}
+
+async function findNodePackageRootUncached(packageName: string, importerPath: string): Promise<string | null> {
 	let dir = path.dirname(importerPath);
 	while (true) {
 		const candidate = path.join(dir, "node_modules", packageName);
@@ -745,6 +772,15 @@ async function findNodePackageRoot(packageName: string, importerPath: string): P
 }
 
 async function readPackageManifest(packageRoot: string): Promise<Record<string, unknown> | null> {
+	const cached = packageManifestCache.get(packageRoot);
+	if (cached) return cached;
+
+	const promise = readPackageManifestUncached(packageRoot);
+	packageManifestCache.set(packageRoot, promise);
+	return promise;
+}
+
+async function readPackageManifestUncached(packageRoot: string): Promise<Record<string, unknown> | null> {
 	try {
 		const manifest = await Bun.file(path.join(packageRoot, "package.json")).json();
 		return isRecord(manifest) ? manifest : null;
@@ -841,6 +877,17 @@ async function resolveExtensionBareDependency(specifier: string, importerPath: s
 	if (!isBareExtensionDependencySpecifier(specifier)) {
 		return null;
 	}
+
+	const cacheKey = `${specifier}\0${path.resolve(path.dirname(importerPath))}`;
+	const cached = bareDependencyResolutionCache.get(cacheKey);
+	if (cached) return cached;
+
+	const promise = resolveExtensionBareDependencyUncached(specifier, importerPath);
+	bareDependencyResolutionCache.set(cacheKey, promise);
+	return promise;
+}
+
+async function resolveExtensionBareDependencyUncached(specifier: string, importerPath: string): Promise<string | null> {
 	try {
 		const resolved = Bun.resolveSync(specifier, path.dirname(importerPath));
 		if (resolved && resolved !== specifier && !resolved.startsWith("node:") && !resolved.startsWith("bun:")) {
@@ -892,6 +939,15 @@ const hookedExtensionEntries = new Set<string>();
 
 /** Resolve symlinks in a path, falling back to the input if realpath fails. */
 async function realpathOrSelf(p: string): Promise<string> {
+	const cached = realpathCache.get(p);
+	if (cached) return cached;
+
+	const promise = realpathOrSelfUncached(p);
+	realpathCache.set(p, promise);
+	return promise;
+}
+
+async function realpathOrSelfUncached(p: string): Promise<string> {
 	try {
 		return await fs.promises.realpath(p);
 	} catch {
@@ -907,8 +963,8 @@ async function realpathOrSelf(p: string): Promise<string> {
  * wherever it physically lives (a `../src` sibling, a symlinked sub-tree, …).
  * This mirrors the module set the old temp-dir mirror tracked, minus the copy.
  */
-async function collectExtensionModules(entryRealPath: string): Promise<Set<string>> {
-	const modules = new Set<string>();
+async function collectExtensionModules(entryRealPath: string): Promise<Map<string, string>> {
+	const modules = new Map<string, string>();
 	const queue = [entryRealPath];
 	while (queue.length > 0) {
 		const file = queue.pop();
@@ -921,7 +977,7 @@ async function collectExtensionModules(entryRealPath: string): Promise<Set<strin
 		} catch {
 			continue;
 		}
-		modules.add(file);
+		modules.set(file, source);
 		const dir = path.dirname(file);
 		for (const match of source.matchAll(EXTENSION_GRAPH_SPECIFIER_REGEX)) {
 			const specifier = match[1];
@@ -949,25 +1005,38 @@ async function collectExtensionModules(entryRealPath: string): Promise<Set<strin
  * so the filter is an exact-path alternation of the graph's realpaths — it
  * never matches the host, other extensions, `node_modules` deps, or unrelated
  * project source.
+ *
+ * Returns the collected path→source map on first install so the caller can
+ * drop entries the initial import never consumed; `undefined` when the hook
+ * was already installed.
  */
-async function ensureExtensionGraphHook(entryRealPath: string): Promise<void> {
+async function ensureExtensionGraphHook(entryRealPath: string): Promise<Map<string, string> | undefined> {
 	if (hookedExtensionEntries.has(entryRealPath)) {
-		return;
+		return undefined;
 	}
 	hookedExtensionEntries.add(entryRealPath);
 
 	const modules = await collectExtensionModules(entryRealPath);
-	const alternation = [...modules].map(escapeRegExp).join("|");
+	const alternation = [...modules.keys()].map(escapeRegExp).join("|");
 	const filter = new RegExp(`^(?:${alternation})$`);
 	Bun.plugin({
 		name: `omp:legacy-pi-ext:${Bun.hash(entryRealPath).toString(36)}`,
 		setup(build) {
 			build.onLoad({ filter, namespace: "file" }, async args => {
-				const raw = await Bun.file(args.path).text();
+				const cached = modules.get(args.path);
+				let raw: string;
+				if (cached !== undefined) {
+					// consume-once: preserves ?mtime edit-pickup for the re-imported entry
+					modules.delete(args.path);
+					raw = cached;
+				} else {
+					raw = await Bun.file(args.path).text();
+				}
 				return { contents: await rewriteLegacyExtensionSource(raw, args.path), loader: getLoader(args.path) };
 			});
 		},
 	});
+	return modules;
 }
 
 /**
@@ -986,9 +1055,16 @@ export async function loadLegacyPiModule(resolvedPath: string): Promise<unknown>
 	// `bun link`/pnpm installs) so the rewrite filter matches the path Bun
 	// actually hands the hook.
 	const entryRealPath = await realpathOrSelf(path.resolve(resolvedPath));
-	await ensureExtensionGraphHook(entryRealPath);
-	// `?mtime` busts Bun's module cache so repeat loads pick up edited source.
-	return import(`${toImportSpecifier(entryRealPath)}?mtime=${Date.now()}`);
+	const pendingSources = await ensureExtensionGraphHook(entryRealPath);
+	try {
+		// `?mtime` busts Bun's module cache so repeat loads pick up edited source.
+		return await import(`${toImportSpecifier(entryRealPath)}?mtime=${Date.now()}`);
+	} finally {
+		// Drop whatever the initial import didn't consume: graph modules only
+		// reached by lazy dynamic imports must be read from disk at their actual
+		// import time, not served from this load-time snapshot.
+		pendingSources?.clear();
+	}
 }
 
 function getLoader(path: string): "js" | "jsx" | "ts" | "tsx" {
@@ -1061,5 +1137,5 @@ export function installLegacyPiSpecifierShim(): void {
 
 /** Test seam: clears the memoized canonical specifier resolutions. */
 export function __resetLegacyPiResolutionCache(): void {
-	resolvedSpecifierFallbacks.clear();
+	clearLegacyPiResolutionCaches();
 }

@@ -6,6 +6,10 @@
 
 - Added terminal tool results so final-result tools can end an agent loop cleanly
   without synthesizing an aborted assistant message.
+### Changed
+
+- Support dynamic model resolution to enable seamless mid-run model switching
+
 ## [16.3.0] - 2026-07-02
 
 ### Added
