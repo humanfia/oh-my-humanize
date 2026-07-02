@@ -2,6 +2,9 @@ import { extractRetryHint, prompt as promptTemplate } from "@oh-my-pi/pi-utils";
 import workflowAgentNodeOutputContractPrompt from "../prompts/system/workflow-agent-node-output-contract.md" with {
 	type: "text",
 };
+import workflowAgentNodeOutputRetryPrompt from "../prompts/system/workflow-agent-node-output-retry.md" with {
+	type: "text",
+};
 import workflowReviewNodeAdapterPrompt from "../prompts/system/workflow-review-node-adapter.md" with { type: "text" };
 import { workflowAgentTaskIdForNode } from "./agent-task-id";
 import type { WorkflowNode, WorkflowScriptLanguage } from "./definition";
@@ -21,10 +24,12 @@ import {
 	validateWorkflowActivationOutput,
 	type WorkflowActivationOutput,
 	type WorkflowActivationRetryHistoryEntry,
+	WorkflowStateError,
 } from "./state";
 
 const WORKFLOW_SUMMARY_TRUNCATION_SUFFIX =
 	"\n\n[workflow summary truncated; full output is stored outside inline workflow state.]";
+const WORKFLOW_AGENT_OUTPUT_CONTRACT_MAX_ATTEMPTS = 2;
 
 export interface WorkflowSessionRuntimeOptions {
 	cwd: string;
@@ -203,8 +208,7 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 			}
 			try {
 				await recordWorkflowActivationStart(recordObservability, input.node, input.activation.id);
-				const result = await runAgentTaskWithTransientRetry(options, request);
-				const output = activationOutputFromTaskResult(input.node.id, result);
+				const output = await runAgentNodeWithOutputContractRetry(options, request);
 				await recordWorkflowActivationObservability(recordObservability, input.node, input.activation.id, output);
 				return output;
 			} catch (error) {
@@ -373,6 +377,45 @@ function applyWorkflowNodeIsolation(
 	if (isolation.apply !== undefined) request.apply = isolation.apply;
 	if (isolation.merge !== undefined) request.merge = isolation.merge;
 	if (isolation.capture !== undefined) request.capture = isolation.capture;
+}
+
+async function runAgentNodeWithOutputContractRetry(
+	options: WorkflowSessionRuntimeOptions,
+	request: WorkflowAgentTaskRequest,
+): Promise<WorkflowActivationOutput> {
+	let nextRequest = request;
+	for (let attempt = 1; attempt <= WORKFLOW_AGENT_OUTPUT_CONTRACT_MAX_ATTEMPTS; attempt += 1) {
+		const result = await runAgentTaskWithTransientRetry(options, nextRequest);
+		try {
+			return activationOutputFromTaskResult(nextRequest.nodeId, result);
+		} catch (error) {
+			if (!workflowAgentOutputContractFailureIsRetryable(error)) throw error;
+			if (attempt >= WORKFLOW_AGENT_OUTPUT_CONTRACT_MAX_ATTEMPTS) throw error;
+			nextRequest = workflowAgentOutputContractRetryRequest(request, error);
+		}
+	}
+	throw new WorkflowNodeRuntimeError(`workflow agent node "${request.nodeId}" exhausted output contract retries`);
+}
+
+function workflowAgentOutputContractFailureIsRetryable(error: unknown): boolean {
+	if (workflowErrorWasAborted(error)) return false;
+	return error instanceof WorkflowStateError;
+}
+
+function workflowAgentOutputContractRetryRequest(
+	request: WorkflowAgentTaskRequest,
+	error: unknown,
+): WorkflowAgentTaskRequest {
+	return {
+		...request,
+		task: {
+			...request.task,
+			assignment: promptTemplate.render(workflowAgentNodeOutputRetryPrompt, {
+				assignment: request.task.assignment,
+				validationError: formatWorkflowErrorReason(error),
+			}),
+		},
+	};
 }
 
 interface NormalizedWorkflowAgentTaskRetryPolicy {

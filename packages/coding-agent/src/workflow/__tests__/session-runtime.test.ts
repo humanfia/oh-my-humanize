@@ -484,6 +484,63 @@ edges: []
 		});
 	});
 
+	it("retries agent node output when yielded workflow activation output is malformed", async () => {
+		const assignments: string[] = [];
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			runAgentTask: async request => {
+				assignments.push(request.task.assignment);
+				if (assignments.length === 1) {
+					return {
+						exitCode: 0,
+						output: "",
+						data: {
+							summary: "classified no-code bug evidence",
+							statePatch: [
+								{ op: "set", path: "/bug", value: { status: "no_project_source_defect" } },
+								"type",
+								"result",
+							],
+						},
+						agentId: "workflow-classifyBug-activation-1",
+					};
+				}
+				return {
+					exitCode: 0,
+					output: "",
+					data: {
+						summary: "classified no-code bug evidence",
+						statePatch: [{ op: "set", path: "/bug", value: { status: "no_project_source_defect" } }],
+					},
+					agentId: "workflow-classifyBug-activation-2",
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = {
+			id: "classifyBug",
+			type: "agent",
+			agent: "task",
+			prompt: "Classify the bug.",
+			writes: ["/bug"],
+		};
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "task",
+			prompt: node.prompt,
+		});
+
+		expect(assignments).toHaveLength(2);
+		expect(assignments[1]).toContain("workflow activation output statePatch.1 must be an object");
+		expect(output).toMatchObject({
+			summary: "classified no-code bug evidence",
+			statePatch: [{ op: "set", path: "/bug", value: { status: "no_project_source_defect" } }],
+			data: { agentId: "workflow-classifyBug-activation-2" },
+		});
+	});
+
 	it("retries transient provider failures for agent nodes before completing", async () => {
 		const calls: string[] = [];
 		const host = createSessionWorkflowRuntimeHost({
