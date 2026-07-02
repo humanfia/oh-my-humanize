@@ -780,6 +780,12 @@ function materializedArtifactAliases(artifact) {
 			lane === "implementCore" ? "core-lane" : lane === "implementTests" ? "tests-lane" : "docs-lane";
 		aliases.push(`workflow-output/${canonicalPrefix}-${suffix}`);
 	}
+	const laneMarkdownMatch = /^workflow-output\/(core-lane|tests?-lane|docs?-lane)-(.+)\.(?:md|txt)$/u.exec(artifact);
+	if (laneMarkdownMatch) {
+		const canonicalPrefix = laneMarkdownMatch[1];
+		const suffix = laneMarkdownMatch[2];
+		aliases.push(`workflow-output/${canonicalPrefix}-${suffix}.json`);
+	}
 	const evidenceMatch = /^workflow-output\/(core|tests?|docs?)-evidence-(.+)\.(?:md|txt|json)$/u.exec(artifact);
 	if (evidenceMatch) {
 		const lane = evidenceMatch[1];
@@ -868,23 +874,61 @@ async function mechanicalSurfaceInventoryArtifactsFromEvidence(files) {
 }
 
 async function validationAttemptLogFindingsFromEvidence(files) {
-	const findings = [];
+	const groups = new Map();
 	for (const file of files) {
 		const text = await readText(file);
 		const data = file.endsWith(".json") ? await readJson(file) : null;
-		const rerun = validationRerunSignal(text, data);
-		const attempts = expectedValidationAttempts(text, data, rerun);
+		const tupleId = tupleIdFromEvidence(file, data);
+		const group = groups.get(tupleId) ?? { tupleId, files: [], texts: [], dataItems: [] };
+		group.files.push(file);
+		group.texts.push(text);
+		if (data) group.dataItems.push(data);
+		groups.set(tupleId, group);
+	}
+	const findings = [];
+	for (const group of groups.values()) {
+		const text = group.texts.join("\n");
+		const dataReruns = group.dataItems.map(data => validationRerunSignal("", data));
+		const rerun = validationRerunSignal(text, null) || dataReruns.some(Boolean);
+		const attempts = expectedValidationAttemptsForLane(text, group.dataItems, rerun);
 		if (!rerun && attempts.length <= 1) continue;
 		const refs = validationAttemptRefs(text);
-		const missing = missingValidationAttemptLogs(attempts, refs, tupleIdFromEvidence(file, data));
+		const missing = missingValidationAttemptLogs(attempts, refs, group.tupleId);
 		if (missing.length === 0) continue;
 		findings.push({
-			file,
+			file: primaryTestLaneArtifact(group.files),
 			reason: "validation rerun evidence is missing immutable attempt stdout/stderr/exitcode logs",
 			missing_files: missing,
 		});
 	}
 	return findings.sort((left, right) => left.file.localeCompare(right.file, "en"));
+}
+
+function expectedValidationAttemptsForLane(text, dataItems, rerun) {
+	const attempts = new Set();
+	for (const data of dataItems) {
+		for (const attempt of expectedValidationAttempts("", data, validationRerunSignal("", data))) {
+			attempts.add(attempt);
+		}
+	}
+	if (attempts.size === 0) {
+		for (const attempt of expectedValidationAttempts(text, null, rerun)) {
+			attempts.add(attempt);
+		}
+	}
+	const maxAttempt = Math.max(0, ...attempts);
+	if (maxAttempt > 1) return Array.from({ length: maxAttempt }, (_value, index) => index + 1);
+	if (rerun) return [1, 2];
+	return maxAttempt === 1 ? [1] : [];
+}
+
+function primaryTestLaneArtifact(files) {
+	return (
+		files.find(file => /(^|\/)tests?-lane[^/]*\.json$/iu.test(file)) ??
+		files.find(file => /(^|\/)tests?-lane[^/]*\.md$/iu.test(file)) ??
+		files[0] ??
+		"workflow-output/tests-lane.json"
+	);
 }
 
 function validationRerunSignal(text, data) {

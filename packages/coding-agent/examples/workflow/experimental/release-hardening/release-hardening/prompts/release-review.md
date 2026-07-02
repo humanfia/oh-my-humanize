@@ -11,10 +11,12 @@ Read `workflow-output/release-precheck.md`, inspect the current diff, and compar
 First check the `Workspace Scope` section in `workflow-output/release-checks.md`
 and independently compare `git status --short` / `git diff --name-only` against
 the frozen `Allowed paths` / `Scope Fence`. Any changed project file outside
-that fence is a `continue` verdict unless the task contract is impossible and
-must be refreshed, in which case return `hold`. Never return `finish` for an
-out-of-scope root README, changelog, docs, test, or source edit just because it
-is release-facing.
+that fence is a `continue` verdict only while a bounded in-scope repair can
+still remove the cause or materialize missing release evidence. If a prior
+repair already recorded that the remaining blocker requires operator cleanup,
+fresh-contract authorization, or another edit outside the frozen fence, return
+`hold`. Never return `finish` for an out-of-scope root README, changelog, docs,
+test, or source edit just because it is release-facing.
 
 Do not edit `task.md` or `workflow-output/release-precheck.md`. Treat them as
 operator-owned frozen task-contract inputs for this attempt. If they appear
@@ -33,7 +35,10 @@ Return `continue` when any of these are true:
 Return `hold` when the frozen task contract itself needs operator refresh, for
 example a declared security/compatibility selector is absent, obsolete,
 environment-bound, or impossible to make pass without changing the frozen task
-inputs. `hold` is a terminal rejected outcome for this attempt, not a repair
+inputs. Also return `hold` when `workflow-output/release-audit.md`,
+`workflow-output/release-rollback.md`, or the latest repair state says the only
+honest remaining action is operator/out-of-band cleanup or a fresh task
+contract. `hold` is a terminal rejected outcome for this attempt, not a repair
 request.
 
 Return `finish` only when release readiness is coherent, frozen-task-scoped,

@@ -73,6 +73,10 @@ interface ScriptResult {
 			missing_rollback_files?: string[];
 			stale_validation_hash_artifacts?: string[];
 			expected_referenced_artifacts?: string[];
+			materialized_alias_artifacts?: Array<{
+				artifact: string;
+				canonical: string;
+			}>;
 			missing_referenced_artifacts?: string[];
 		};
 	};
@@ -1503,7 +1507,7 @@ describe("parallel-implementation-review flow contract", () => {
 			state: {
 				planHandoff: [
 					"Expected lane artifact:",
-					"workflow-output/core-lane-P06-T06-test.md",
+					"workflow-output/domain-investigation-P06-T06-test.md",
 					"The actual core lane must materialize the exact path above.",
 				].join("\n"),
 			},
@@ -1511,10 +1515,10 @@ describe("parallel-implementation-review flow contract", () => {
 
 		expect(result.verdict).toBe("REPAIR");
 		expect(result.data?.checked_inputs?.expected_referenced_artifacts).toContain(
-			"workflow-output/core-lane-P06-T06-test.md",
+			"workflow-output/domain-investigation-P06-T06-test.md",
 		);
 		expect(result.data?.checked_inputs?.missing_referenced_artifacts).toEqual([
-			"workflow-output/core-lane-P06-T06-test.md",
+			"workflow-output/domain-investigation-P06-T06-test.md",
 		]);
 	});
 
@@ -1858,6 +1862,99 @@ describe("parallel-implementation-review flow contract", () => {
 
 		expect(result.verdict).toBe("READY");
 		expect(result.data?.checked_inputs?.validation_attempt_log_findings).toEqual([]);
+	});
+
+	it("treats validation attempt logs as a tests lane aggregate contract", async () => {
+		const cwd = await createTempDir();
+		const tupleId = "P06-T06-test";
+		await writeReadyEvidence(cwd, tupleId);
+		const attemptFiles = [
+			`workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+			`workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+			`workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+			`workflow-output/validation-attempt-2-stdout-${tupleId}.txt`,
+			`workflow-output/validation-attempt-2-stderr-${tupleId}.txt`,
+			`workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`,
+		];
+		for (const file of attemptFiles) {
+			await Bun.write(path.join(cwd, file), file.includes("exitcode") ? "0\n" : `${file}\n`);
+		}
+		await Bun.write(
+			path.join(cwd, "workflow-output", `tests-lane-${tupleId}.md`),
+			[
+				"# Tests Lane Evidence",
+				"",
+				"Attempt 1 failed, then Attempt 2 passed. See the machine-readable lane artifact for exact attempt logs.",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output", `tests-lane-${tupleId}.json`),
+			`${JSON.stringify(
+				{
+					tuple_id: tupleId,
+					producer_node: "implementTests",
+					status: "completed",
+					validation_attempts: [
+						{
+							attempt: 1,
+							result: "failed",
+							stdout_path: `workflow-output/validation-attempt-1-stdout-${tupleId}.txt`,
+							stderr_path: `workflow-output/validation-attempt-1-stderr-${tupleId}.txt`,
+							exitcode_path: `workflow-output/validation-attempt-1-exitcode-${tupleId}.txt`,
+						},
+						{
+							attempt: 2,
+							result: "pass",
+							stdout_path: `workflow-output/validation-attempt-2-stdout-${tupleId}.txt`,
+							stderr_path: `workflow-output/validation-attempt-2-stderr-${tupleId}.txt`,
+							exitcode_path: `workflow-output/validation-attempt-2-exitcode-${tupleId}.txt`,
+						},
+					],
+					validation: {
+						command: "true",
+						environment: {},
+						result: "pass",
+						exit_code: 0,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.validation_attempt_log_findings).toEqual([]);
+	});
+
+	it("materializes canonical lane json aliases for planned lane markdown references", async () => {
+		const cwd = await createTempDir();
+		const tupleId = "P06-T06-test";
+		await writeReadyEvidence(cwd, tupleId);
+		await Bun.write(path.join(cwd, "workflow-output", `tests-lane-${tupleId}.md`), "Tests lane summary.\n");
+		await Bun.write(path.join(cwd, "workflow-output", `docs-lane-${tupleId}.md`), "Docs lane summary.\n");
+
+		const result = await runScript(cwd, "evidence-contract-guard.js", {
+			state: {
+				planHandoff: [
+					`Plan references workflow-output/core-lane-${tupleId}.md before the core lane chooses a durable format.`,
+					`Plan references workflow-output/tests-lane-${tupleId}.md.`,
+					`Plan references workflow-output/docs-lane-${tupleId}.md.`,
+				].join("\n"),
+			},
+		});
+
+		expect(result.verdict).toBe("READY");
+		expect(result.data?.checked_inputs?.missing_referenced_artifacts).toEqual([]);
+		expect(result.data?.checked_inputs?.materialized_alias_artifacts).toContainEqual({
+			artifact: `workflow-output/core-lane-${tupleId}.md`,
+			canonical: `workflow-output/core-lane-${tupleId}.json`,
+		});
+		expect(await Bun.file(path.join(cwd, "workflow-output", `core-lane-${tupleId}.md`)).text()).toContain(
+			`Canonical artifact: workflow-output/core-lane-${tupleId}.json`,
+		);
 	});
 
 	it("does not treat focused test retries as declared validation reruns", async () => {
