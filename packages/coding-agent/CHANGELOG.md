@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental bug-triage-repro-fix flow no-code archive gate recognizing focused local-source assertion checks as positive validation evidence.
 - Fixed the experimental bug-triage-repro-fix flow routing structured no-code `recommendedOutcome` cause handoffs into patching.
 - Fixed the experimental bug-triage-repro-fix flow no-code archive gate recognizing task-declared regression command failures that are reconciled by argv-safe local-source validation evidence.
 - Fixed the experimental bug-triage-repro-fix flow blocking reviewer-approved no-code archives when raw task validation failed but was reconciled by local-source validation evidence.

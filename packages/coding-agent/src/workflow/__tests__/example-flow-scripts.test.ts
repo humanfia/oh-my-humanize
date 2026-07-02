@@ -5828,6 +5828,82 @@ describe("example workflow scripts", () => {
 		expect(archive).toContain("semantic validation exited 0");
 	});
 
+	it("allows no-code bug triage archives when focused local-source assertions pass", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-focused-local-source-assertions-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await initializeCleanGitRepo(cwd);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Investigate whether a quoted semicolon report is a source defect.",
+				"",
+				"No-Code Resolution: allowed",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction.md`, "Exit code: 127\nSyntaxError: unterminated string\n");
+		await Bun.write(
+			`${cwd}/workflow-output/regression.md`,
+			["# Regression Evidence", "", "## Exit Code", "", "1", "", "from_header AttributeError failures"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/bugfix-rollback.md`,
+			[
+				"No project source, test, documentation, dependency, or task files were changed.",
+				"",
+				"The broad validation transcript exits 1 on unrelated missing APIs.",
+				"A focused shell-safe local-source check imported Werkzeug from src/werkzeug/__init__.py and exercised the declared canaries successfully.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/no-bug-root-cause.md`,
+			[
+				"# No-Code Root-Cause Analysis",
+				"",
+				"## Cause Reconciliation",
+				"",
+				"The isolateCause handoff identified the suspected subsystem as the reproduction command invocation and shell quoting layer, not project source behavior.",
+				"The broad task-declared validation in workflow-output/regression.md exits 1 on unrelated missing APIs.",
+				"A focused local-source check imported this checkout's source tree and passed all four declared assertions.",
+				"Observed results show duplicate headers, typed MultiDict filtering, quoted option parsing, and filename normalization all behaved as expected.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveBugfix",
+			scriptFileName: "archive-bugfix.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				task: {
+					taskText: "No-Code Resolution: allowed",
+				},
+				cause: {
+					narrowestFixBoundary: {
+						recommendedOutcome: "No-code route. Do not patch project source or tests.",
+					},
+				},
+				regression: {
+					status: "fail",
+					exitCode: 1,
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			validation: "no-code-evidence",
+			projectChangedFiles: [],
+		});
+		const archive = await Bun.file(`${cwd}/workflow-output/bugfix-archive.md`).text();
+		expect(archive).toContain("focused local-source check");
+		expect(archive).toContain("passed all four declared assertions");
+	});
+
 	it("keeps bug triage no-code prompts tied to cause reconciliation", async () => {
 		const patchPrompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/prompts/patch-fix.md`,

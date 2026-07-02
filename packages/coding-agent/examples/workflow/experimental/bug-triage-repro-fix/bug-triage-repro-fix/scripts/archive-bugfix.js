@@ -238,7 +238,7 @@ function hasReconciledRawValidationFailure(noBugRootCauseText, rollbackText, reg
 		return false;
 	}
 	if (!/\b(PYTHONPATH=src|local[- ]source|this checkout|checked[- ]out source)\b/iu.test(evidence)) return false;
-	return /\b(\d+\s+passed|passed\s+\d+|validation\s+(?:passes|passed|exited\s+0)|exited\s+0|exit\s+code\s*[:=]?\s*0)\b/iu.test(evidence);
+	return /\b(\d+\s+passed|passed\s+\d+|passed\s+all|assertions?\s+passed|exercised\b[^.\n]{0,160}\bsuccessfully|validation\s+(?:passes|passed|exited\s+0)|exited\s+0|exit\s+code\s*[:=]?\s*0)\b/iu.test(evidence);
 }
 
 function causeProposesFix(value) {
