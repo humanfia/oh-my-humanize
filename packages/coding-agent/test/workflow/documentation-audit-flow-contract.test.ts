@@ -38,7 +38,14 @@ interface WorkflowContext {
 			rollback_notes?: string[];
 			resolved_review_feedback?: string[];
 		};
+		auditDigest?: Record<string, unknown>;
 		audit?: {
+			status?: string;
+			smallestCoherentRepair?: {
+				decision?: string;
+				changedFileTargets?: string[];
+				patchRequired?: boolean;
+			};
 			selectedRepair?: {
 				changedFileTargets?: string[];
 			};
@@ -71,6 +78,52 @@ afterEach(async () => {
 });
 
 describe("documentation-audit flow contract", () => {
+	it("fails closed when consolidation ignores actionable lane findings", async () => {
+		const cwd = await createGitRepo();
+
+		await expect(
+			runScriptFile(cwd, "guard-review-repair.js", {
+				auditDigest: {
+					apiDocsAudit: {
+						source: "apiDocsAudit",
+						excerpt: JSON.stringify({
+							status: "actionable_missing_contract",
+							finding: "dependency security overrides need a public docs contract",
+						}),
+					},
+					tutorialAudit: {
+						source: "tutorialAudit",
+						excerpt: JSON.stringify({
+							verdict: "docs_gap_patch_recommended",
+							targets: ["docs/en/docs/advanced/testing-dependencies.md"],
+						}),
+					},
+					examplesAudit: {
+						source: "examplesAudit",
+						excerpt: JSON.stringify({
+							repair_needed: true,
+							targets: ["docs_src/dependency_overrides/tutorial001.py"],
+						}),
+					},
+				},
+				audit: {
+					status: "complete_no_patch_recommended",
+					smallestCoherentRepair: {
+						decision: "no_code_no_change",
+						changedFileTargets: [],
+						patchRequired: false,
+					},
+				},
+				patch: {
+					changed_files: [],
+					rollback_notes: [],
+					resolved_review_feedback: [],
+				},
+				review: "No previous documentation review yet.",
+			}),
+		).rejects.toThrow(/consolidated documentation audit selected no-patch despite actionable lane findings/iu);
+	});
+
 	it("fails closed when selectedRepair targets are not covered by the docs patch", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });

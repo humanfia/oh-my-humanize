@@ -6,8 +6,19 @@ const priorFeedback = priorReviewFeedback(review);
 const resolvedReviewFeedback = resolvedReviewFeedbackFromPatch(patch);
 const patchProjectFiles = patchChangedFiles(patch).filter(isProjectChangedFile);
 const selectedAuditTargets = selectedAuditProjectTargets(audit);
+const actionableLaneFindings = actionableFindingsFromDigest(state.auditDigest);
 const missingSelectedAuditTargets = missingProjectChangedFiles(selectedAuditTargets, patchProjectFiles);
 const missingPatchFiles = missingProjectChangedFiles(await projectChangedFilesFromStatus(), patchProjectFiles);
+
+if (actionableLaneFindings.length > 0 && auditSelectsNoPatch(audit)) {
+	throw new Error(
+		[
+			"consolidated documentation audit selected no-patch despite actionable lane findings",
+			`findings: ${actionableLaneFindings.slice(0, 6).join("; ")}`,
+			"consolidation must either select changed-file targets, mark the item blocked, or carry it into reviewer feedback",
+		].join("; "),
+	);
+}
 
 if (patchStatus(patch) === "blocked") {
 	throw new Error("documentation patch reported blocked before validation; reviewer must continue or operator must change task/flow");
@@ -142,6 +153,71 @@ function selectedAuditProjectTargets(value) {
 		]),
 	];
 	return uniqueProjectPaths(targets.map(normalizeProjectPath).filter(isProjectChangedFile));
+}
+
+function actionableFindingsFromDigest(value) {
+	if (!value || typeof value !== "object") return [];
+	const findings = [];
+	for (const [sectionName, section] of Object.entries(value)) {
+		if (sectionName === "inventory") continue;
+		const text = digestSectionText(section);
+		if (!text) continue;
+		for (const signal of actionableSignals(text)) {
+			findings.push(`${sectionName}: ${signal}`);
+		}
+	}
+	return uniqueStrings(findings);
+}
+
+function digestSectionText(value) {
+	if (value === undefined || value === null) return "";
+	if (typeof value === "string") return value;
+	if (typeof value !== "object") return String(value);
+	return [value.excerpt, value.summary, value.status, value.verdict, value.finding, stableEvidenceString(value)]
+		.filter(item => typeof item === "string" && item.trim())
+		.join("\n");
+}
+
+function stableEvidenceString(value) {
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return "";
+	}
+}
+
+function actionableSignals(text) {
+	const normalized = text.toLowerCase();
+	const signals = [];
+	if (/\bactionable_missing_contract\b/u.test(normalized)) signals.push("actionable_missing_contract");
+	if (/\bdocs_gap_patch_recommended\b/u.test(normalized)) signals.push("docs_gap_patch_recommended");
+	if (/\bpatch[_\s-]?recommended\b/u.test(normalized)) signals.push("patch_recommended");
+	if (/\brepair[_\s-]?needed\b[^a-z0-9]{0,12}(?:true|yes)\b/u.test(normalized)) signals.push("repair_needed");
+	if (/\bpatch[_\s-]?required\b[^a-z0-9]{0,12}(?:true|yes)\b/u.test(normalized)) signals.push("patch_required");
+	return uniqueStrings(signals);
+}
+
+function auditSelectsNoPatch(value) {
+	const text = stableEvidenceString(value).toLowerCase();
+	if (!text) return false;
+	const explicitNoPatch =
+		/\bcomplete[_\s-]?no[_\s-]?patch[_\s-]?recommended\b/u.test(text) ||
+		/\baccept[_\s-]?no[_\s-]?patch\b/u.test(text) ||
+		/\bno[_\s-]?code[_\s-]?no[_\s-]?change\b/u.test(text) ||
+		/\bno[_\s-]?patch\b/u.test(text);
+	const noTargets = selectedAuditProjectTargets(value).length === 0;
+	const patchRejected =
+		/"patchrequired"\s*:\s*false/u.test(normalizedJsonKeyText(text)) ||
+		/"patch_required"\s*:\s*false/u.test(text);
+	return explicitNoPatch || (noTargets && patchRejected);
+}
+
+function normalizedJsonKeyText(text) {
+	return text.replaceAll(/"([a-z0-9_]+)"\s*:/gu, (_match, key) => `"${key.replaceAll("_", "")}":`);
+}
+
+function uniqueStrings(values) {
+	return [...new Set(values.filter(Boolean))];
 }
 
 function pathArrayField(value, key) {
