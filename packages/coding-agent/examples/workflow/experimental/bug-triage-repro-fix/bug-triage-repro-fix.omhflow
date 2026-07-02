@@ -259,11 +259,11 @@ edges:
     to: fixReview
   - from: fixReview
     to: noCodeEvidenceRepair
-    when: outputs.fixReview.verdict == "continue" && state.patch.mode == "no-code"
+    when: outputs.fixReview.verdict == "continue" && state.resolution.route == "no-code"
     label: repair no-code evidence
   - from: fixReview
     to: patchFix
-    when: outputs.fixReview.verdict == "continue" && state.patch.mode != "no-code"
+    when: outputs.fixReview.verdict == "continue" && state.resolution.route != "no-code"
     label: review requests another fix
   - from: fixReview
     to: archiveBugfix

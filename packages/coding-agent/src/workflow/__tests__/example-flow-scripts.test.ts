@@ -153,9 +153,9 @@ describe("example workflow scripts", () => {
 				)
 				.map(edge => edge.to);
 
-		expect(targetsFor({ patch: { mode: "no-code" } }, "continue")).toEqual(["noCodeEvidenceRepair"]);
-		expect(targetsFor({ patch: { mode: "patch" } }, "continue")).toEqual(["patchFix"]);
-		expect(targetsFor({ patch: { mode: "no-code" } }, "finish")).toEqual(["archiveBugfix"]);
+		expect(targetsFor({ resolution: { route: "no-code" }, patch: {} }, "continue")).toEqual(["noCodeEvidenceRepair"]);
+		expect(targetsFor({ resolution: { route: "patch" }, patch: {} }, "continue")).toEqual(["patchFix"]);
+		expect(targetsFor({ resolution: { route: "no-code" }, patch: {} }, "finish")).toEqual(["archiveBugfix"]);
 
 		const repairTargets = artifact.definition.edges
 			.filter(edge => edge.from === "noCodeEvidenceRepair")

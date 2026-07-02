@@ -14,7 +14,11 @@ Return `continue` when any of these are true:
 
 - reproduction evidence is missing or irrelevant;
 - the fix does not address the root cause;
-- regression validation failed or is not task-declared;
+- regression validation failed or is not task-declared, unless this is an
+  explicitly allowed no-code route where the raw regression failure is
+  reconciled as an invocation, environment, or harness artifact and
+  checkout-bound semantic validation is recorded in the no-code evidence or
+  rollback artifacts;
 - rollback notes are missing;
 - the change introduces unrelated behavior or broad refactors;
 - a no-code investigation claims success without `No-Code Resolution: allowed`
@@ -32,8 +36,9 @@ evidence passes, rollback notes exist, and the result is reviewable.
 
 If the frozen task contract explicitly contains `No-Code Resolution: allowed`,
 also return `finish` for a confirmed no-bug result when reproduction and
-regression evidence both exercise the declared behavior, semantic no-bug
-evidence is recorded in `workflow-output/no-bug-root-cause.md` or
+regression evidence are either passing or explicitly reconciled as raw
+invocation/environment evidence, checkout-bound semantic no-bug evidence is
+recorded in `workflow-output/no-bug-root-cause.md` or
 `workflow-output/bugfix-rollback.md`, the current diff has no project changes,
 any defect-like cause evidence is explicitly reconciled in
 `workflow-output/no-bug-root-cause.md`, and
@@ -44,6 +49,9 @@ When the no-code route has insufficient semantic evidence but no source patch
 is justified, return `continue` with a handoff for no-code evidence repair. Do
 not request a product-code patch unless a focused failing reproduction or
 unreconciled defect evidence requires one.
+If the raw regression artifact itself must remain unchanged, ask the repairer
+to add the missing checkout-bound semantic evidence to the no-code evidence or
+rollback artifacts rather than to rewrite raw command evidence.
 
 Output contract:
 

@@ -12,6 +12,11 @@ Repair contract:
 - Do not edit project source, tests, docs, dependency files, or `task.md`.
 - Do not modify raw command evidence files such as
   `workflow-output/reproduction.md` or `workflow-output/regression.md`.
+  If the review asks for checkout-bound validation to be recorded in raw
+  regression evidence, preserve the raw file and record the semantic validation
+  in `workflow-output/no-bug-root-cause.md` and
+  `workflow-output/bugfix-rollback.md` instead, explicitly explaining why the
+  raw evidence remains immutable.
 - Inspect `workflow-output/bug-triage-precheck.md`,
   `workflow-output/reproduction.md`, `workflow-output/no-bug-root-cause.md`
   when present, `workflow-output/regression.md`, the latest review handoff, and
