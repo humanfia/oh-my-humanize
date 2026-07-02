@@ -18,7 +18,7 @@ const rawPlanForDisk = truncateUtf8Bytes(rawPlanText, RAW_PLAN_MAX_BYTES);
 
 await Bun.write(rawArtifact, `${rawPlanForDisk}\n`);
 
-const compactPlan = planWithCanonicalTupleId(compactValue(rawPlan, 0), tupleId);
+const compactPlan = sanitizePlanHandoff(planWithCanonicalTupleId(compactValue(rawPlan, 0), tupleId));
 const handoff = {
 	status: "compact_plan_handoff",
 	producer_node: "materializePlanHandoff",
@@ -105,6 +105,37 @@ function planWithCanonicalTupleId(plan, canonicalTupleId) {
 		tuple_id: canonicalTupleId,
 		tuple: canonicalTupleId,
 	};
+}
+
+function sanitizePlanHandoff(value) {
+	if (typeof value === "string") return removeNoncanonicalLaneArchiveReferences(value).trim();
+	if (Array.isArray(value)) return value.map(sanitizePlanHandoff).filter(item => !emptySanitizedValue(item));
+	if (!value || typeof value !== "object") return value;
+	const sanitized = {};
+	for (const [key, child] of Object.entries(value)) {
+		const sanitizedChild = sanitizePlanHandoff(child);
+		if (emptySanitizedValue(sanitizedChild)) continue;
+		sanitized[key] = sanitizedChild;
+	}
+	return sanitized;
+}
+
+function removeNoncanonicalLaneArchiveReferences(text) {
+	return text
+		.replace(/\bworkflow-output\/lane-archive-([A-Za-z0-9_-]+)-[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+){1,8}\.(?:json|md|txt)\b/gu, (match, lane) =>
+			canonicalPlanLaneArchive(lane) ? match : "",
+		)
+		.replace(/\s+,/gu, ",")
+		.replace(/,\s*,/gu, ",")
+		.replace(/\s{2,}/gu, " ");
+}
+
+function canonicalPlanLaneArchive(lane) {
+	return /^(?:implementCore|implementTests|implementDocs|core|test|tests|docs)$/u.test(String(lane));
+}
+
+function emptySanitizedValue(value) {
+	return value === "" || (Array.isArray(value) && value.length === 0);
 }
 
 function compactArray(values, depth) {

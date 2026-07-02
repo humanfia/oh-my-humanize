@@ -61,6 +61,10 @@ interface WorkflowContext {
 			};
 		};
 		review?: string;
+		inventory?: unknown;
+		apiDocsAudit?: unknown;
+		tutorialAudit?: unknown;
+		examplesAudit?: unknown;
 	};
 }
 
@@ -85,6 +89,45 @@ afterEach(async () => {
 });
 
 describe("documentation-audit flow contract", () => {
+	it("preserves actionable finding ids and targets when compacting long audit fan-in", async () => {
+		const cwd = await createTempDir();
+		const result = await runScriptFile(cwd, "compact-audit-findings.js", {
+			inventory: {},
+			apiDocsAudit: {
+				aaaPadding: "x".repeat(5000),
+				mmmFindings: [
+					{
+						id: "api-key-default-error-behavior-understated",
+						status: "actionable_missing_contract",
+						changedFileTargets: ["docs/en/docs/reference/security/index.md"],
+						finding: "API key default error behavior is source/test-backed but understated in reference docs.",
+					},
+				],
+				zzzPadding: "y".repeat(5000),
+			},
+			tutorialAudit: {},
+			examplesAudit: {},
+		});
+		const auditDigest = result.statePatch?.find(patch => patch.path === "/auditDigest")?.value;
+
+		expect(result.summary).toBe("compacted documentation audit fan-in for bounded consolidation");
+		expect(auditDigest).toMatchObject({
+			apiDocsAudit: {
+				truncated: true,
+				signals: [
+					{
+						id: "api-key-default-error-behavior-understated",
+						status: "actionable_missing_contract",
+						targets: ["docs/en/docs/reference/security/index.md"],
+					},
+				],
+			},
+		});
+		expect(String((auditDigest?.apiDocsAudit as { excerpt?: unknown } | undefined)?.excerpt ?? "")).not.toContain(
+			"api-key-default-error-behavior-understated",
+		);
+	});
+
 	it("fails closed when consolidation ignores actionable lane findings", async () => {
 		const cwd = await createGitRepo();
 

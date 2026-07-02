@@ -110,6 +110,8 @@ describe("parallel-implementation-review flow contract", () => {
 				"implementation lane owns source; test lane owns regression; docs lane owns evidence.",
 				"Stop Conditions:",
 				"Stop on unresolved setup blockers.",
+				"Run Id:",
+				"P06-T06-test",
 			].join("\n"),
 		);
 
@@ -851,7 +853,7 @@ describe("parallel-implementation-review flow contract", () => {
 		const result = await runScript(cwd, "run-declared-validation.js", {});
 
 		expect(result.verdict).toBe("PASS");
-		expect(result.summary).toContain("reused exact passed test-lane evidence");
+		expect(result.summary).toContain("reused exact passed lane evidence");
 		expect(result.data?.validation).toMatchObject({
 			command: "./workflow-output/run-k8s-deep-validation.sh",
 			environment: {
@@ -1210,7 +1212,7 @@ describe("parallel-implementation-review flow contract", () => {
 		const result = await runScript(cwd, "run-declared-validation.js", {});
 
 		expect(result.verdict).toBe("FAIL");
-		expect(result.summary).toContain("reused exact failed test-lane evidence");
+		expect(result.summary).toContain("reused exact failed lane evidence");
 		expect(result.data?.validation).toMatchObject({
 			result: "failed",
 			exitCode: 1,
@@ -1334,7 +1336,7 @@ describe("parallel-implementation-review flow contract", () => {
 		const result = await runScript(cwd, "run-declared-validation.js", {});
 
 		expect(result.verdict).toBe("PASS");
-		expect(result.summary).toContain("reused exact passed test-lane evidence");
+		expect(result.summary).toContain("reused exact passed lane evidence");
 		expect(result.data?.validation).toMatchObject({
 			command,
 			result: "passed",
@@ -2243,6 +2245,51 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(await fileExists(path.join(cwd, "workflow-output", "scope-plan-handoff-P06-T06-test.json"))).toBe(true);
 	});
 
+	it("keeps noncanonical semantic lane archive references out of compact plan handoff", async () => {
+		const cwd = await createTempDir();
+		await writeTupleFiles(cwd, "P06-T06-test");
+		const result = await runScript(cwd, "materialize-plan-handoff.js", {
+			state: {
+				plan: {
+					lanes: [
+						{
+							id: "config-precedence",
+							artifact: "workflow-output/lane-archive-config-P06-T06-test.md",
+						},
+						{
+							id: "ignore-glob",
+							artifact: "workflow-output/lane-archive-ignore-P06-T06-test.md",
+						},
+						{
+							id: "searcher-output",
+							artifact: "workflow-output/lane-archive-searcher-P06-T06-test.md",
+						},
+					],
+					artifactsToProduceLater: [
+						"workflow-output/lane-archive-config-P06-T06-test.md",
+						"workflow-output/lane-archive-ignore-P06-T06-test.md",
+						"workflow-output/lane-archive-searcher-P06-T06-test.md",
+						"workflow-output/core-lane-P06-T06-test.json",
+						"workflow-output/tests-lane-P06-T06-test.json",
+						"workflow-output/docs-lane-P06-T06-test.json",
+					],
+				},
+			},
+		});
+		const handoff = result.statePatch?.find(patch => patch.path === "/planHandoff")?.value;
+		const rawPlan = await Bun.file(path.join(cwd, "workflow-output", "scope-plan-raw-P06-T06-test.json")).text();
+
+		expect(typeof handoff).toBe("string");
+		expect(handoff as string).not.toContain("lane-archive-config-P06-T06-test");
+		expect(handoff as string).not.toContain("lane-archive-ignore-P06-T06-test");
+		expect(handoff as string).not.toContain("lane-archive-searcher-P06-T06-test");
+		expect(handoff as string).toContain("core-lane-P06-T06-test.json");
+		expect(handoff as string).toContain("tests-lane-P06-T06-test.json");
+		expect(handoff as string).toContain("docs-lane-P06-T06-test.json");
+		expect(rawPlan).toContain("lane-archive-config-P06-T06-test");
+		expect(result.summary).toContain("compact scope handoff materialized");
+	});
+
 	it("routes fan-out and review prompts through compact plan handoff text", async () => {
 		const workflow = await Bun.file(
 			path.join(
@@ -2761,8 +2808,7 @@ describe("parallel-implementation-review flow contract", () => {
 
 	it("allows integration review when no lane reports a hard stop", async () => {
 		const cwd = await createTempDir();
-		await writeTupleFiles(cwd, "P06-T06-test");
-		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await writeReadyEvidence(cwd, "P06-T06-test");
 
 		const result = await runScript(cwd, "lane-hard-stop-guard.js", {});
 
@@ -2942,8 +2988,7 @@ describe("parallel-implementation-review flow contract", () => {
 
 	it("ignores a lane hard stop only when a superseding evidence artifact exists", async () => {
 		const cwd = await createTempDir();
-		await writeTupleFiles(cwd, "P06-T06-test");
-		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await writeReadyEvidence(cwd, "P06-T06-test");
 		await Bun.write(path.join(cwd, "workflow-output", "core-lane-P06-T06-test-resolution.json"), "{}\n");
 		await Bun.write(
 			path.join(cwd, "workflow-output", "lane-hard-stop-P06-T06-test.json"),
@@ -2973,8 +3018,7 @@ describe("parallel-implementation-review flow contract", () => {
 
 	it("ignores lane-local validation hard stops that do not claim workflow terminal scope", async () => {
 		const cwd = await createTempDir();
-		await writeTupleFiles(cwd, "P06-T06-test");
-		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await writeReadyEvidence(cwd, "P06-T06-test");
 		await Bun.write(
 			path.join(cwd, "workflow-output", "lane-hard-stop-P06-T06-test.json"),
 			`${JSON.stringify({
