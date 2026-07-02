@@ -1376,6 +1376,65 @@ edges: []
 		expect(outcome.output.retryHistory?.[0]?.reason).toContain("workflow task progress stalled");
 	});
 
+	it("retries workflow review nodes when a task stalls before progress is reported", async () => {
+		let calls = 0;
+		const stalledAttempt = Promise.withResolvers<WorkflowAgentTaskResult>();
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: {
+				maxAttempts: 2,
+				baseDelayMs: 0,
+				maxDelayMs: 0,
+				progressStallTimeoutMs: 1,
+			},
+			retryDelay: async () => {},
+			runAgentTask: async () => {
+				calls += 1;
+				if (calls === 1) return await stalledAttempt.promise;
+				return {
+					exitCode: 0,
+					output: "finish\nRecovered after initial silence.",
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "fixReview",
+			type: "review",
+			prompt: "Review the no-code evidence.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		const run = host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+		const outcome = await Promise.race([
+			run.then(
+				output => ({ kind: "output" as const, output }),
+				error => ({ kind: "error" as const, error }),
+			),
+			Bun.sleep(100).then(() => ({ kind: "timeout" as const })),
+		]);
+		if (outcome.kind === "timeout") {
+			stalledAttempt.resolve({ exitCode: 1, output: "", error: "late silent attempt cleanup" });
+		}
+
+		expect(outcome.kind).toBe("output");
+		if (outcome.kind === "error") throw outcome.error;
+		if (outcome.kind !== "output") return;
+		stalledAttempt.resolve({ exitCode: 1, output: "", error: "late silent attempt cleanup" });
+		expect(calls).toBe(2);
+		expect(outcome.output.verdict).toBe("finish");
+		expect(outcome.output.retryHistory).toHaveLength(1);
+		expect(outcome.output.retryHistory?.[0]?.reason).toContain("workflow task progress stalled");
+		expect(outcome.output.retryHistory?.[0]?.reason).toContain("task started");
+	});
+
 	it("retries review schema violations before accepting a valid review", async () => {
 		let calls = 0;
 		const host = createSessionWorkflowRuntimeHost({

@@ -535,7 +535,11 @@ async function runWorkflowAgentTaskAttempt(
 	const armProgressStallTimer = (progress: WorkflowAgentTaskProgressUpdate): void => {
 		if (policy.progressStallTimeoutMs <= 0 || !workflowAgentTaskProgressHasActivity(progress)) return;
 		clearProgressStallTimer();
-		const activity = progress.activity?.trim();
+		armProgressStallTimerForActivity(progress.activity?.trim());
+	};
+	const armProgressStallTimerForActivity = (activity: string | undefined): void => {
+		if (policy.progressStallTimeoutMs <= 0) return;
+		clearProgressStallTimer();
 		progressStallTimer = setTimeout(() => {
 			progressStallReason = workflowTaskProgressStallReason(request, policy.progressStallTimeoutMs, activity);
 			abortWorkflowTaskForStall(progressStallReason);
@@ -553,6 +557,7 @@ async function runWorkflowAgentTaskAttempt(
 		}
 	};
 	try {
+		armProgressStallTimerForActivity("task started");
 		return await Promise.race([options.runAgentTask({ ...request, signal, onProgress }), stalledAttempt.promise]);
 	} catch (error) {
 		if (retryStallReason !== undefined) {
