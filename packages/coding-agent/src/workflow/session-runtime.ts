@@ -505,6 +505,14 @@ async function runWorkflowAgentTaskAttempt(
 	let retryStallReason: string | undefined;
 	let progressStallTimer: NodeJS.Timeout | undefined;
 	let progressStallReason: string | undefined;
+	const stalledAttempt = Promise.withResolvers<WorkflowAgentTaskResult>();
+	let stalledAttemptSettled = false;
+	const abortWorkflowTaskForStall = (reason: string): void => {
+		if (stalledAttemptSettled) return;
+		stalledAttemptSettled = true;
+		if (!watchdog.signal.aborted) watchdog.abort(reason);
+		stalledAttempt.resolve(workflowAgentTaskStallResult(reason));
+	};
 	const clearRetryStallTimer = (): void => {
 		if (retryStallTimer === undefined) return;
 		clearTimeout(retryStallTimer);
@@ -521,7 +529,7 @@ async function runWorkflowAgentTaskAttempt(
 		const activity = progress.activity?.trim();
 		retryStallTimer = setTimeout(() => {
 			retryStallReason = workflowProviderRetryStallReason(request, progress, policy.retryStallTimeoutMs, activity);
-			if (!watchdog.signal.aborted) watchdog.abort(retryStallReason);
+			abortWorkflowTaskForStall(retryStallReason);
 		}, policy.retryStallTimeoutMs);
 	};
 	const armProgressStallTimer = (progress: WorkflowAgentTaskProgressUpdate): void => {
@@ -530,7 +538,7 @@ async function runWorkflowAgentTaskAttempt(
 		const activity = progress.activity?.trim();
 		progressStallTimer = setTimeout(() => {
 			progressStallReason = workflowTaskProgressStallReason(request, policy.progressStallTimeoutMs, activity);
-			if (!watchdog.signal.aborted) watchdog.abort(progressStallReason);
+			abortWorkflowTaskForStall(progressStallReason);
 		}, policy.progressStallTimeoutMs);
 	};
 	const onProgress = (progress: WorkflowAgentTaskProgressUpdate): void => {
@@ -545,7 +553,7 @@ async function runWorkflowAgentTaskAttempt(
 		}
 	};
 	try {
-		return await options.runAgentTask({ ...request, signal, onProgress });
+		return await Promise.race([options.runAgentTask({ ...request, signal, onProgress }), stalledAttempt.promise]);
 	} catch (error) {
 		if (retryStallReason !== undefined) {
 			return {
@@ -566,6 +574,14 @@ async function runWorkflowAgentTaskAttempt(
 		clearRetryStallTimer();
 		clearProgressStallTimer();
 	}
+}
+
+function workflowAgentTaskStallResult(reason: string): WorkflowAgentTaskResult {
+	return {
+		exitCode: 1,
+		output: "",
+		error: reason,
+	};
 }
 
 function workflowAgentTaskProgressHasRetry(progress: WorkflowAgentTaskProgressUpdate): boolean {

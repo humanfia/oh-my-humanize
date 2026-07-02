@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed stalled workflow agent/review task attempts blocking their own watchdog recovery when the child task ignores abort signals; watchdog expiry now returns a retryable stall result to the parent workflow runtime.
 - Fixed workflow agent/review nodes staying live after ordinary task progress stops without provider retry state; workflow retries now abort stale post-activity attempts and re-enter the existing retry path.
 - Fixed workflow agent nodes failing the whole activation when a terminal yield has malformed workflow output shape; OMH now gives the same node one explicit output-contract correction attempt.
 - Fixed workflow agent/review nodes staying live after provider retry progress stalls; workflow retries now abort stale retry attempts and re-enter the existing transient retry path.

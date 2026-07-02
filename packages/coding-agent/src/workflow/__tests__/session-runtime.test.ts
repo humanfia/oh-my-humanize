@@ -11,6 +11,7 @@ import { runWorkflow } from "../runner";
 import {
 	createSessionWorkflowRuntimeHost,
 	type WorkflowAgentTaskRequest,
+	type WorkflowAgentTaskResult,
 	type WorkflowHumanInputRequest,
 	type WorkflowScriptEvalRequest,
 	type WorkflowShellScriptRequest,
@@ -1312,6 +1313,67 @@ edges: []
 		expect(output.verdict).toBe("finish");
 		expect(output.retryHistory).toHaveLength(1);
 		expect(output.retryHistory?.[0]?.reason).toContain("workflow task progress stalled");
+	});
+
+	it("retries workflow review nodes when a stalled task ignores the abort signal", async () => {
+		let calls = 0;
+		const stalledAttempt = Promise.withResolvers<WorkflowAgentTaskResult>();
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: {
+				maxAttempts: 2,
+				baseDelayMs: 0,
+				maxDelayMs: 0,
+				progressStallTimeoutMs: 1,
+			},
+			retryDelay: async () => {},
+			runAgentTask: async request => {
+				calls += 1;
+				if (calls === 1) {
+					request.onProgress?.({ activity: "Checking full diff" });
+					return await stalledAttempt.promise;
+				}
+				return {
+					exitCode: 0,
+					output: "finish\nRecovered after forcing a stalled task retry.",
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "fixReview",
+			type: "review",
+			prompt: "Review the no-code evidence.",
+			gates: ["continue", "finish"],
+			fallbackVerdict: "continue",
+		};
+		const run = host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+			fallbackVerdict: node.fallbackVerdict,
+		});
+		const outcome = await Promise.race([
+			run.then(
+				output => ({ kind: "output" as const, output }),
+				error => ({ kind: "error" as const, error }),
+			),
+			Bun.sleep(100).then(() => ({ kind: "timeout" as const })),
+		]);
+		if (outcome.kind === "timeout") {
+			stalledAttempt.resolve({ exitCode: 1, output: "", error: "late stalled attempt cleanup" });
+		}
+
+		expect(outcome.kind).toBe("output");
+		if (outcome.kind === "error") throw outcome.error;
+		if (outcome.kind !== "output") return;
+		stalledAttempt.resolve({ exitCode: 1, output: "", error: "late stalled attempt cleanup" });
+		expect(calls).toBe(2);
+		expect(outcome.output.verdict).toBe("finish");
+		expect(outcome.output.retryHistory).toHaveLength(1);
+		expect(outcome.output.retryHistory?.[0]?.reason).toContain("workflow task progress stalled");
 	});
 
 	it("retries review schema violations before accepting a valid review", async () => {
