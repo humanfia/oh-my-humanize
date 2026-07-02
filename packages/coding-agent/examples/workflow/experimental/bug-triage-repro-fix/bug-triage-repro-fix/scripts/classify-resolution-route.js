@@ -197,6 +197,8 @@ function noCodeBoundaryEvidenceCandidates(value) {
 		value.no_patch_needed_because,
 		value.noSourceDefectBecause,
 		value.no_source_defect_because,
+		value.recommendedOutcome,
+		value.recommended_outcome,
 		value.recommendedBuilderAction,
 		value.recommended_builder_action,
 		value.noPatchRationale,

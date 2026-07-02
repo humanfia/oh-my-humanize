@@ -556,6 +556,74 @@ describe("example workflow scripts", () => {
 		expect(reconciliation).toContain("frozen shell command failed");
 	});
 
+	it("routes bug triage recommended no-code outcomes away from patching", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-recommended-no-code-route-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Recanary a no-source shell invocation report.",
+			"",
+			"No-Code Resolution: allowed",
+			"",
+			"Reproduction Command:",
+			`python -c "assert parse_options_header('attachment; filename="semi;colon.txt"')"`,
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_datastructures.py tests/test_http.py tests/test_utils.py -q",
+		].join("\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "classifyResolutionRoute",
+			scriptFileName: "classify-resolution-route.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/resolution", "/patch"],
+			initialState: {
+				task: {
+					taskText,
+					reproductionCommand: `python -c "assert parse_options_header('attachment; filename="semi;colon.txt"')"`,
+					validationCommand:
+						"python -m pytest tests/test_datastructures.py tests/test_http.py tests/test_utils.py -q",
+				},
+				repro: {
+					exitCode: 127,
+					outputPath: "workflow-output/reproduction.md",
+				},
+				cause: {
+					suspectedSubsystem:
+						"Reproduction command construction / shell invocation context; no project source defect indicated.",
+					whyEvidencePointsThere: [
+						"The frozen reproduction exits 127 before exercising project behavior.",
+						"A safely quoted argv run with PYTHONPATH=src executes all four assertions successfully.",
+					],
+					narrowestFixBoundary: {
+						recommendedOutcome: "No-code route. Do not patch project source or tests for this frozen report.",
+						minimumChangeIfOperatorNeedsExecutableRepro:
+							"Fix only the command invocation: pass the Python code as an argv element.",
+						doNotChange: ["HTTP option quoted-semicolon parsing"],
+					},
+				},
+			},
+		});
+
+		expect(result.scheduler.state.resolution).toMatchObject({
+			route: "no-code",
+			allowedNoCodeResolution: true,
+			reproductionExitCode: 127,
+			noCodeCauseResolution: true,
+			patchableCauseEvidence: false,
+		});
+		expect(result.scheduler.state.patch).toMatchObject({
+			mode: "no-code",
+			changedFiles: [],
+		});
+		const reconciliation = await Bun.file(`${cwd}/workflow-output/no-bug-root-cause.md`).text();
+		expect(reconciliation).toContain("No-code route");
+		expect(reconciliation).toContain("no project source defect indicated");
+	});
+
 	it("binds research reproduction validation evidence as standalone prompt context", async () => {
 		const artifact = await loadWorkflowArtifact(
 			`${import.meta.dir}/../../../examples/workflow/experimental/research-reproduction/research-reproduction.omhflow`,
