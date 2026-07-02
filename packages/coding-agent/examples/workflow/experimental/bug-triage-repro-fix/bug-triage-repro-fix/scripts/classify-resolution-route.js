@@ -132,11 +132,44 @@ function hasNoCodeCauseResolution(value) {
 function hasPatchableCauseEvidence(value) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	if (hasNoCodeCauseResolution(value)) return false;
-	const boundary = value.narrowest_fix_boundary;
-	if (boundary && typeof boundary === "object" && !Array.isArray(boundary)) {
-		return hasMeaningfulField(boundary.target) || hasMeaningfulField(boundary.likely_change_surface) || hasMeaningfulField(boundary.test_boundary);
+	if (hasPatchableClassification(value)) return true;
+	for (const boundary of patchableBoundaryCandidates(value)) {
+		if (boundary && typeof boundary === "object" && !Array.isArray(boundary)) {
+			return (
+				hasMeaningfulField(boundary.target) ||
+				hasMeaningfulField(boundary.production) ||
+				hasMeaningfulField(boundary.likely_change_surface) ||
+				hasMeaningfulField(boundary.likelyChangeSurface) ||
+				hasMeaningfulField(boundary.test_boundary) ||
+				hasMeaningfulField(boundary.testBoundary) ||
+				hasMeaningfulField(boundary.tests)
+			);
+		}
 	}
 	return false;
+}
+
+function hasPatchableClassification(value) {
+	for (const key of ["classification", "route", "status", "verdict"]) {
+		const field = value[key];
+		if (typeof field === "string" && /\b(?:patchable|patch_required|repair_needed|needs_patch)\b/iu.test(field)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function patchableBoundaryCandidates(value) {
+	return [
+		value.narrowest_fix_boundary,
+		value.narrowestFixBoundary,
+		value.fix_boundary,
+		value.fixBoundary,
+		value.recommended_fix,
+		value.recommendedFix,
+		value.patch_plan,
+		value.patchPlan,
+	];
 }
 
 function hasMeaningfulField(value) {

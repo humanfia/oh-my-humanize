@@ -320,6 +320,63 @@ describe("example workflow scripts", () => {
 		expect(result.scheduler.state.patch).toBeUndefined();
 	});
 
+	it("routes camelCase bug triage patchable cause evidence to patching", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-camel-patchable-cause-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Investigate a completion side-effect report with a broad green reproduction suite.",
+			"",
+			"No-Code/No-Change Allowed: Yes",
+			"",
+			"Reproduction Command:",
+			"python -m pytest tests/test_completion.py -q",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_completion.py tests/test_help.py -q",
+		].join("\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "classifyResolutionRoute",
+			scriptFileName: "classify-resolution-route.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/resolution", "/patch"],
+			initialState: {
+				task: {
+					taskText,
+					reproductionCommand: "python -m pytest tests/test_completion.py -q",
+					validationCommand: "python -m pytest tests/test_completion.py tests/test_help.py -q",
+				},
+				repro: {
+					exitCode: 0,
+					outputPath: "workflow-output/reproduction.md",
+				},
+				cause: {
+					classification: "patchable_defect",
+					narrowestFixBoundary: {
+						production:
+							"Change resilient completion parsing so callable defaults and callbacks are not executed.",
+						tests: "Add a focused completion side-effect regression test.",
+					},
+					whyEvidencePointsHere: [
+						"Focused probes showed completion returns candidates while invoking callable defaults and callbacks.",
+					],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.resolution).toMatchObject({
+			route: "patch",
+			allowedNoCodeResolution: true,
+			reproductionExitCode: 0,
+			patchableCauseEvidence: true,
+		});
+		expect(result.scheduler.state.patch).toBeUndefined();
+	});
+
 	it("routes explicit bug triage no-code cause evidence away from patching", async () => {
 		using tempDir = TempDir.createSync("@omh-bug-triage-no-code-cause-route-");
 		const cwd = tempDir.path();

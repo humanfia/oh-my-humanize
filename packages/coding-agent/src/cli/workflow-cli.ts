@@ -767,12 +767,13 @@ async function runHeadlessAgentTaskProcess(
 	});
 	const sessionFile = await latestHeadlessAgentSessionFile(sessionDir);
 	const output = await headlessAgentTaskOutput(stdout, sessionFile);
+	const error = await headlessAgentTaskFailureError(stderr, exitCode, sessionFile);
 	await Bun.write(outputPath, output.fileContent);
 	return {
 		exitCode,
 		output: output.value,
 		...(stderr.trim() ? { stderr: stderr.trim() } : {}),
-		...(exitCode === 0 ? {} : { error: stderr.trim() || `exit code ${exitCode}` }),
+		...(error !== undefined ? { error } : {}),
 		agentId,
 		outputPath,
 		...(sessionFile !== undefined ? { sessionFile } : {}),
@@ -881,6 +882,64 @@ async function headlessAgentSuccessfulYieldOutput(sessionFile: string | undefine
 		if (candidate !== undefined) latestYieldOutput = candidate;
 	}
 	return latestYieldOutput;
+}
+
+async function headlessAgentTaskFailureError(
+	stderr: string,
+	exitCode: number,
+	sessionFile: string | undefined,
+): Promise<string | undefined> {
+	if (exitCode === 0) return undefined;
+	const stderrText = stderr.trim();
+	const sessionReason = await headlessAgentTerminalFailureReason(sessionFile);
+	if (stderrText && sessionReason) return `${stderrText}\n${sessionReason}`;
+	return stderrText || sessionReason || `exit code ${exitCode}`;
+}
+
+async function headlessAgentTerminalFailureReason(sessionFile: string | undefined): Promise<string | undefined> {
+	if (sessionFile === undefined) return undefined;
+	let text: string;
+	try {
+		text = await Bun.file(sessionFile).text();
+	} catch (error) {
+		if (isEnoent(error)) return undefined;
+		throw error;
+	}
+	let latestFailure: string | undefined;
+	for (const line of text.split(/\r?\n/)) {
+		const failure = terminalAssistantFailureReasonFromSessionLine(line);
+		if (failure !== undefined) latestFailure = failure;
+	}
+	return latestFailure;
+}
+
+function terminalAssistantFailureReasonFromSessionLine(line: string): string | undefined {
+	const trimmed = line.trim();
+	if (trimmed.length === 0) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(trimmed);
+	} catch {
+		return undefined;
+	}
+	const entry = workflowCliRecord(parsed);
+	if (entry?.type !== "message") return undefined;
+	const message = workflowCliRecord(entry.message);
+	if (message?.role !== "assistant") return undefined;
+	const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
+	if (stopReason !== "aborted" && stopReason !== "error") return undefined;
+	const parts = [`assistant stopReason=${stopReason}`];
+	if (typeof message.errorMessage === "string" && message.errorMessage.trim()) {
+		parts.push(message.errorMessage.trim());
+	}
+	const stopDetails = workflowCliRecord(message.stopDetails);
+	if (typeof stopDetails?.type === "string" && stopDetails.type.trim()) {
+		parts.push(`stopDetails.type=${stopDetails.type.trim()}`);
+	}
+	if (typeof stopDetails?.explanation === "string" && stopDetails.explanation.trim()) {
+		parts.push(`stopDetails.explanation=${stopDetails.explanation.trim()}`);
+	}
+	return parts.join("; ");
 }
 
 function successfulYieldOutputFromSessionLine(line: string): string | undefined {

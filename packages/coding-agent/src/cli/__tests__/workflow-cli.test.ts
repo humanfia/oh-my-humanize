@@ -565,6 +565,57 @@ describe("workflow CLI", () => {
 		);
 	});
 
+	it("surfaces retryable headless workflow assistant stop details in failed task errors", async () => {
+		using tempDir = TempDir.createSync("@omh-workflow-cli-agent-stop-details-");
+		const root = tempDir.path();
+		const artifactsDir = path.join(root, "agent-artifacts");
+
+		const result = await runHeadlessAgentTask(
+			root,
+			{
+				activationId: "activation-1",
+				nodeId: "review",
+				agent: "reviewer",
+				task: {
+					id: "review",
+					description: "review",
+					role: "reviewer",
+					assignment: "review workflow evidence",
+				},
+			},
+			{
+				artifactsDir,
+				runProcess: async args => {
+					const sessionDirFlag = args.indexOf("--session-dir");
+					const sessionDir = args[sessionDirFlag + 1];
+					if (sessionDir === undefined) throw new Error("expected workflow subagent session dir");
+					const entry = {
+						type: "message",
+						message: {
+							role: "assistant",
+							stopReason: "aborted",
+							errorMessage: "Request was aborted",
+							stopDetails: {
+								type: "stream_interrupted_after_content",
+								explanation: "Request was aborted",
+							},
+						},
+					};
+					await Bun.write(path.join(sessionDir, "session.jsonl"), `${JSON.stringify(entry)}\n`);
+					return {
+						exitCode: 1,
+						stdout: "",
+						stderr: "",
+					};
+				},
+			},
+		);
+
+		expect(result.exitCode).toBe(1);
+		expect(result.error).toContain("stream_interrupted_after_content");
+		expect(result.error).toContain("Request was aborted");
+	});
+
 	it("uses a successful yield transcript result when headless agent stdout is empty", async () => {
 		using tempDir = TempDir.createSync("@omp-workflow-cli-agent-yield-artifact-");
 		const root = tempDir.path();
