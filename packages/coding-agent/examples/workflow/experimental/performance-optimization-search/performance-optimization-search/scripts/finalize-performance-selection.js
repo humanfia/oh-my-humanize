@@ -369,13 +369,20 @@ function isolationViolationResolvedBySelectionRepair(selectionRepairValue, repai
 		["materialized", "pass", "passed"].includes(repairStatus) ||
 		/\bperformance selection repair\b/iu.test(repairBody);
 	const hasRollbackBeforeSelection =
+		selectionRepairValue.cleanedBeforeSelection === true ||
+		nonEmptyArray(selectionRepairValue.revertedProjectFiles) ||
+		nonEmptyArray(selectionRepairValue.projectFilesRevertedBeforeSelection) ||
 		typeof selectionRepairValue.rollbackBeforeSelection === "string" && selectionRepairValue.rollbackBeforeSelection.trim() !== "" ||
-		/\b(?:rollback before (?:selection|judging winners)|restored polluted shared|git restore)\b/iu.test(repairBody);
+		/\b(?:rollback before (?:selection|judging winners)|restored polluted shared|git restore|revert(?:ed|ing)? leaked shared[- ]workspace|cleanedBeforeSelection\s*:\s*true|revertedProjectFiles\s*:)\b/iu.test(repairBody);
 	const hasCandidateApplyCheck =
 		commandPassedFromRepairEvidence(selectionRepairValue.applyCheck) === true ||
 		/\bapply[- ]?check\b.{0,160}\b(?:pass|passed|success|ok|exited?\s*:?\s*(?:code\s*)?0)\b/iu.test(repairBody) ||
 		/\bgit apply --check\b.{0,160}\b(?:exit(?:ed)?\s*:?\s*(?:code\s*)?0)\b/iu.test(repairBody);
 	return hasMaterializedRepair && hasRollbackBeforeSelection && hasCandidateApplyCheck;
+}
+
+function nonEmptyArray(value) {
+	return Array.isArray(value) && value.length > 0;
 }
 
 function benchmarkCommandPassed(benchmarkValue, selectionRepairValue, repairText) {

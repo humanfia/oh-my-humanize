@@ -32,8 +32,15 @@ interface WorkflowContext {
 			status?: string;
 			selectedBranch?: string;
 			finalSelection?: boolean;
+			initialSharedWorkspaceClean?: boolean;
+			initialIsolationViolation?: {
+				projectChangedFiles?: string[];
+				evidence?: string;
+			};
+			cleanedBeforeSelection?: boolean;
 			rollbackBeforeSelection?: string;
 			projectFilesRetained?: string[];
+			revertedProjectFiles?: string[];
 			projectFilesRevertedBeforeSelection?: string[];
 			applyCheck?: {
 				status?: string;
@@ -1131,7 +1138,9 @@ async function writePositiveAlgorithmicSelectionReports(cwd: string): Promise<vo
 			"# Performance Selection Repair",
 			"status: materialized",
 			"parallel lane isolation violation preserved: yes",
-			"rollback before selection: git restore removed shared project edits before candidate apply.",
+			"Repaired performance selection by reverting leaked shared-workspace project edits before candidate apply.",
+			"cleanedBeforeSelection: true",
+			"revertedProjectFiles: src/click/shell_completion.py, tests/test_parser.py",
 			"apply check status: pass",
 			"semantic-probe: yes",
 			"benchmark command exit code 0",
@@ -1148,9 +1157,14 @@ function resolvedIsolationSelectionRepair(): NonNullable<NonNullable<WorkflowCon
 		status: "materialized",
 		selectedBranch: "algorithmic",
 		finalSelection: true,
-		rollbackBeforeSelection: "git restore removed shared project edits before candidate apply.",
+		initialSharedWorkspaceClean: false,
+		initialIsolationViolation: {
+			projectChangedFiles: ["src/click/shell_completion.py"],
+			evidence: "Initial git status reported a leaked shared-workspace project edit.",
+		},
+		cleanedBeforeSelection: true,
+		revertedProjectFiles: ["src/click/shell_completion.py"],
 		projectFilesRetained: ["src/click/shell_completion.py", "tests/test_parser.py"],
-		projectFilesRevertedBeforeSelection: ["src/click/shell_completion.py", "tests/test_parser.py"],
 		applyCheck: { status: "pass", exitCode: 0 },
 		benchmark: { status: "pass", exitCode: 0 },
 		validation: { status: "pass", exitCode: 0 },
