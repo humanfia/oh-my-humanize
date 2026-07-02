@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed the experimental bug-triage-repro-fix flow no-code archive gate recognizing task-declared regression command failures that are reconciled by argv-safe local-source validation evidence.
 - Fixed the experimental bug-triage-repro-fix flow blocking reviewer-approved no-code archives when raw task validation failed but was reconciled by local-source validation evidence.
 - Fixed workflow agent/review task attempts running indefinitely when no progress event reaches the workflow runtime; each attempt now starts with a base stall deadline that later activity can refresh.
 - Fixed stalled workflow agent/review task attempts blocking their own watchdog recovery when the child task ignores abort signals; watchdog expiry now returns a retryable stall result to the parent workflow runtime.

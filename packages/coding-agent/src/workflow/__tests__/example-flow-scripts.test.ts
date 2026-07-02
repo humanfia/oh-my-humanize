@@ -5676,6 +5676,90 @@ describe("example workflow scripts", () => {
 		expect(archive).toContain("267 passed");
 	});
 
+	it("allows no-code bug triage archives when task-declared regression failure is reconciled by argv-safe local-source evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-reconciled-regression-command-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await initializeCleanGitRepo(cwd);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Investigate whether a quoted command failure indicates a source defect.",
+				"",
+				"No-Code Resolution: allowed",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction.md`, "Exit code: 127\nSyntaxError: unterminated string\n");
+		await Bun.write(
+			`${cwd}/workflow-output/regression.md`,
+			[
+				"# Regression Evidence",
+				"",
+				"## Exit Code",
+				"",
+				"1",
+				"",
+				"AttributeError: type object 'Range' has no attribute 'from_header'",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/bugfix-rollback.md`,
+			[
+				"No project files were changed, and no rollback patch exists.",
+				"",
+				"A bounded semantic check was exercised with PYTHONPATH=src and an argv-safe Python snippet.",
+				"It exited 0, imported this checkout's src package, and validated all four frozen behaviors.",
+				"The task-declared regression command starts pytest but fails in unrelated from_header cases.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/no-bug-root-cause.md`,
+			[
+				"# No-Code Root-Cause Analysis",
+				"",
+				"## Cause Reconciliation",
+				"",
+				"The isolateCause handoff is reconciled with the frozen task contract.",
+				"The task-declared command fails before the workload reaches project code.",
+				"The original raw evidence conflated shell invocation failure with source behavior.",
+				"The task-declared regression command did start pytest, but its failures are unrelated from_header cases.",
+				"With PYTHONPATH=src and an argv-safe snippet, semantic validation exited 0 against this checkout.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveBugfix",
+			scriptFileName: "archive-bugfix.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				task: {
+					taskText: "No-Code Resolution: allowed",
+				},
+				cause: {
+					narrowest_fix_boundary: ["Patch only if argv-safe local-source reproduction fails."],
+				},
+				regression: {
+					status: "fail",
+					exitCode: 1,
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			validation: "no-code-evidence",
+			projectChangedFiles: [],
+		});
+		const archive = await Bun.file(`${cwd}/workflow-output/bugfix-archive.md`).text();
+		expect(archive).toContain("task-declared regression command");
+		expect(archive).toContain("semantic validation exited 0");
+	});
+
 	it("keeps bug triage no-code prompts tied to cause reconciliation", async () => {
 		const patchPrompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/prompts/patch-fix.md`,

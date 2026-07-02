@@ -233,12 +233,12 @@ function bugTriageArchiveValidationStatus({ noCodeArchive, regression, noBugRoot
 
 function hasReconciledRawValidationFailure(noBugRootCauseText, rollbackText, regressionText) {
 	const evidence = `${noBugRootCauseText}\n${rollbackText}`;
-	if (!/\b(raw|task-declared|declared)\s+validation\b/iu.test(evidence)) return false;
-	if (!/\b(fail|failed|failure|non[- ]?zero|exit\s+code\s*[:=]?\s*[1-9]\d*)\b/iu.test(`${evidence}\n${regressionText}`)) {
+	if (!/\b(raw|task-declared|declared)\s+(?:validation|regression|check|command)\b/iu.test(evidence)) return false;
+	if (!/\b(fail(?:ed|ure|ures|s)?|non[- ]?zero|exit\s+code\s*[:=]?\s*[1-9]\d*)\b/iu.test(`${evidence}\n${regressionText}`)) {
 		return false;
 	}
 	if (!/\b(PYTHONPATH=src|local[- ]source|this checkout|checked[- ]out source)\b/iu.test(evidence)) return false;
-	return /\b(\d+\s+passed|passed\s+\d+|validation\s+(?:passes|passed)|exit\s+code\s*[:=]?\s*0)\b/iu.test(evidence);
+	return /\b(\d+\s+passed|passed\s+\d+|validation\s+(?:passes|passed|exited\s+0)|exited\s+0|exit\s+code\s*[:=]?\s*0)\b/iu.test(evidence);
 }
 
 function causeProposesFix(value) {
