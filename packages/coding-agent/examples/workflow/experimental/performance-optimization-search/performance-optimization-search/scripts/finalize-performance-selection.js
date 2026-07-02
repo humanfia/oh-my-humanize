@@ -183,7 +183,34 @@ function reportEvidenceText(report, repairText) {
 		.split(/\r?\n/u)
 		.filter((line) => namePattern.test(line) || line.includes(report.file))
 		.join("\n");
-	return `${report.text}\n${repairLines}`;
+	const repairSection = branchRepairSection(repairText, report.name);
+	return `${report.text}\n${repairLines}\n${repairSection}`;
+}
+
+function branchRepairSection(text, branchName) {
+	const lines = text.split(/\r?\n/u);
+	const branchHeaderPattern = new RegExp(String.raw`^-\s+.*\b${escapeRegExp(branchName)}\b`, "iu");
+	const otherBranchHeaderPattern = new RegExp(
+		String.raw`^-\s+.*\b(?:${["algorithmic", "caching", "io", "no-win"].filter((name) => name !== branchName).map(escapeRegExp).join("|")})\b`,
+		"iu",
+	);
+	const section = [];
+	let collecting = false;
+	for (const line of lines) {
+		if (branchHeaderPattern.test(line)) {
+			collecting = true;
+			section.push(line);
+			continue;
+		}
+		if (!collecting) continue;
+		if (/^##\s+/u.test(line) || otherBranchHeaderPattern.test(line)) break;
+		if (line.trim() === "" || /^\s{2,}-\s+/u.test(line) || !/^\s*-\s+\S/u.test(line)) {
+			section.push(line);
+			continue;
+		}
+		break;
+	}
+	return section.join("\n");
 }
 
 function benchmarkRelevanceConfirmed(text) {
@@ -206,14 +233,17 @@ function benchmarkRelevanceRejected(text) {
 
 function benchmarkCoveredLosingRejected(text) {
 	if (!benchmarkRelevanceConfirmed(text)) return false;
-	if (
-		/\b(?:weaker|slower|worse|noisier|regressed|regression|less\s+stable)\b/iu.test(text) ||
-		/\b(?:not|no\s+longer)\s+(?:the\s+)?(?:best|selected|retained)\b/iu.test(text) ||
-		/\brejected\s+(?:because|after|as)\b/iu.test(text)
-	) {
-		return true;
-	}
 	return (
+		/\bbenchmark[- ]covered\s+rejection\s*:\s*(?:yes|true)\b/iu.test(text) ||
+		/\bcovered\s+by\s+(?:the\s+)?(?:task[- ]declared\s+)?benchmark\b.{0,240}\b(?:weaker|noisier|regress(?:ed|ion)|slower|less\s+stable)\b/ius.test(
+			text,
+		) ||
+		/\b(?:positive\s+benchmark|benchmark[- ]covered|covered\s+the\s+task\s+benchmark)\b.{0,240}\b(?:weaker|noisier|regress(?:ed|ion)|slower|less\s+stable)\b/ius.test(
+			text,
+		) ||
+		/\b(?:weaker|noisier|regress(?:ed|ion)|slower|less\s+stable)\b.{0,240}\b(?:selected|winner|winning|chosen|retained)\b/ius.test(
+			text,
+		) ||
 		/\b(?:selected|retained)\s+candidate\b.{0,160}\b(?:better|faster|more\s+stable|lower|wins?)\b/iu.test(
 			text,
 		) ||

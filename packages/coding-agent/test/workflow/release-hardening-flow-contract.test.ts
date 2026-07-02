@@ -100,6 +100,48 @@ describe("release-hardening flow contract", () => {
 		expect(evidence).toContain("README.md changed outside task allowed paths");
 	});
 
+	it("does not treat scope fence prose as allowed release paths", async () => {
+		const cwd = await createGitRepo();
+		const taskText = [
+			"Objective: harden release checks.",
+			"",
+			"Validation Command: true",
+			"Security Command: true",
+			"Scope Fence: Allowed paths are src/flask/**, tests/test_config.py, workflow-output/**. Out of scope: broad API changes, unrelated routing behavior, generated files.",
+		].join("\n");
+		await fs.mkdir(path.join(cwd, "src/flask"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "tests"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "broad API changes"), { recursive: true });
+		await Bun.write(path.join(cwd, "task.md"), taskText);
+		await Bun.write(path.join(cwd, "src/flask/config.py"), "CONFIG = True\n");
+		await Bun.write(path.join(cwd, "tests/test_config.py"), "def test_config():\n    assert True\n");
+		await runCommand(["git", "add", "task.md", "src/flask/config.py", "tests/test_config.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(path.join(cwd, "broad API changes/notes.txt"), "not an allowed path\n");
+
+		const result = await runScript(cwd, "run-release-checks.js", {
+			task: {
+				taskText,
+				validationCommand: "true",
+				securityCommand: "true",
+			},
+		});
+		const checks = result.statePatch?.find(patch => patch.path === "/checks")?.value;
+		const allowedScopes = checks?.workspaceScope?.allowedScopes ?? [];
+
+		expect(result.summary).toBe("ran release checks; validation=pass security=pass scope=blocked");
+		expect(allowedScopes).toContain("src/flask/**");
+		expect(allowedScopes).toContain("tests/test_config.py");
+		expect(allowedScopes).not.toContain("broad API changes");
+		expect(allowedScopes).not.toContain("unrelated routing behavior");
+		expect(allowedScopes).not.toContain("generated files");
+		expect(checks).toMatchObject({
+			workspaceScope: {
+				blockers: ["broad API changes/notes.txt changed outside task allowed paths"],
+			},
+		});
+	});
+
 	it("accepts scoped target diffs and workflow artifacts in the final release gate", async () => {
 		const cwd = await createGitRepo();
 		const taskText = [

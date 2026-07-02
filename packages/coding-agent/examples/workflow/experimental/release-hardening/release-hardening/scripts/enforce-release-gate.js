@@ -305,7 +305,7 @@ function allowedPathsFromTask(taskText) {
 		}
 		scopes.push(...scopeListFromText(scopeText.join(" ")));
 	}
-	return uniqueStrings(scopes.map(normalizeScope).filter(Boolean));
+	return uniqueStrings(scopes);
 }
 
 function shouldReadScopeContinuation(previousLine, nextLine, scopeText) {
@@ -326,10 +326,16 @@ function isTaskSectionHeading(line) {
 }
 
 function scopeListFromText(text) {
-	return text
+	return allowedScopeText(text)
 		.split(/[,;]/u)
-		.map(scope => scope.trim())
-		.filter(Boolean);
+		.map(normalizeScope)
+		.filter(isPathScope);
+}
+
+function allowedScopeText(text) {
+	const match = /\b(?:out of scope|out-of-scope|not allowed|do not edit|do not modify)\b/iu.exec(text);
+	if (!match) return text;
+	return text.slice(0, match.index);
 }
 
 function normalizeScope(scope) {
@@ -343,6 +349,12 @@ function normalizeScope(scope) {
 		.replace(/[.。]$/u, "")
 		.trim()
 		.replace(/^\.\//u, "");
+}
+
+function isPathScope(scope) {
+	if (!scope) return false;
+	if (/\s/u.test(scope)) return false;
+	return /[*./\\]/u.test(scope) || /^[A-Za-z0-9_-]+$/u.test(scope);
 }
 
 function scopeMatchesPath(scope, filePath) {

@@ -645,6 +645,89 @@ describe("performance-optimization-search flow contract", () => {
 		});
 	});
 
+	it("finalizes benchmark-covered rejected branches from selection repair sections", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "httpx"), { recursive: true });
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "httpx/_urls.py"), "def normalize():\n    return 'old'\n");
+		await runCommand(["git", "add", "httpx/_urls.py"], cwd);
+		await runCommand(["git", "commit", "-m", "init"], cwd);
+		await Bun.write(path.join(cwd, "httpx/_urls.py"), "def normalize():\n    return 'faster'\n");
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-algorithmic.md"),
+			[
+				"# Algorithmic branch",
+				"final-selection: yes",
+				"benchmark-relevance: yes",
+				"benchmark improvement: selected candidate is faster on the task-declared benchmark.",
+				"semantic-probe: yes",
+				"rollback evidence: git apply -R workflow-output/perf-algorithmic-candidate.diff",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-caching.md"),
+			[
+				"# Caching branch",
+				"final-selection: no",
+				"positive benchmark improvement: header parsing improved under the task benchmark.",
+				"rollback evidence: no caching code was retained.",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/perf-io.md"),
+			[
+				"# IO branch",
+				"final-selection: no",
+				"positive benchmark improvement: URL allocation metric moved lower under the task benchmark.",
+				"rollback evidence: no IO code was retained.",
+				"",
+			].join("\n"),
+		);
+		await Bun.write(
+			path.join(cwd, "workflow-output/performance-selection-repair.md"),
+			[
+				"# Performance Selection Repair",
+				"",
+				"semantic-probe: yes",
+				"benchmark command exit code 0",
+				"validation command exit code 0",
+				"selected branch: algorithmic",
+				"",
+				"- caching branch:",
+				"  - benchmark-relevance: yes",
+				"  - benchmark-covered rejection: yes",
+				"  - rejected because the selected algorithmic branch has a stronger benchmark win and avoids query regression.",
+				"- io branch:",
+				"  - benchmark-relevance: yes",
+				"  - benchmark-covered rejection: yes",
+				"  - rejected because the selected algorithmic branch has a larger benchmark improvement and more stable semantic probe.",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runScriptFile(cwd, "finalize-performance-selection.js", {
+			review: "verdict: finish",
+			task: { text: "No-Win Result: allowed" },
+			benchmark: { status: "pass", benchmarkExitCode: 0, validationExitCode: 0 },
+			selectionRepair: {
+				benchmark: { status: "pass", exitCode: 0 },
+				validation: { status: "pass", exitCode: 0 },
+			},
+		});
+		const selection = result.statePatch?.find(patch => patch.path === "/selection")?.value;
+
+		expect(result.summary).toBe("finalized performance selection: positive");
+		expect(selection).toMatchObject({
+			status: "pass",
+			terminalState: "positive",
+			selectedBranches: ["algorithmic"],
+			positiveUnselectedBranches: ["caching", "io"],
+			benchmarkCoveredRejectedBranches: ["caching", "io"],
+		});
+	});
+
 	it("finalizes after selection repair resolves a prior parallel lane isolation violation", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "src/click"), { recursive: true });
