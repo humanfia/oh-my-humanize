@@ -167,6 +167,69 @@ describe("session exit diagnostics", () => {
 		).toBe(false);
 	});
 
+	it("does not report completed tool calls as pending when shutdown happens on a sibling branch", async () => {
+		tempDir = TempDir.createSync("@pi-session-exit-branch-");
+		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage);
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected built-in anthropic model to exist");
+		const sessionManager = SessionManager.inMemory(tempDir.path());
+		const agent = new Agent({
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			convertToLlm,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+		});
+
+		const assistantId = sessionManager.appendMessage(pendingAssistant);
+		sessionManager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, {
+			toolCallId: "toolu_repro",
+			toolName: "bash",
+			args: { command: "bun run check:ts" },
+			startedAt: new Date().toISOString(),
+		} satisfies ToolExecutionStartData);
+		sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "toolu_repro",
+			toolName: "bash",
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		sessionManager.branch(assistantId);
+		sessionManager.appendMessage({ role: "user", content: "Continue on a sibling branch.", timestamp: Date.now() });
+
+		expect(collectPendingToolCalls(sessionManager.getEntries())).toEqual([]);
+		expect(collectPendingToolCalls(sessionManager.getBranch())).toMatchObject([
+			{
+				toolCallId: "toolu_repro",
+				toolName: "bash",
+			},
+		]);
+
+		await session.dispose();
+		session = undefined;
+		const exitEntry = sessionManager
+			.getEntries()
+			.find(entry => entry.type === "custom" && entry.customType === SESSION_EXIT_CUSTOM_TYPE);
+		if (exitEntry?.type !== "custom") throw new Error("Expected session exit marker");
+		expect(exitEntry.data).toMatchObject({
+			reason: "dispose",
+			kind: "normal",
+		});
+		expect(exitEntry.data).not.toHaveProperty("pendingToolCalls");
+	});
+
 	it("treats assistant tool calls as pending even when stopReason is not toolUse", () => {
 		const sessionManager = SessionManager.inMemory();
 		sessionManager.appendMessage({ ...pendingAssistant, stopReason: "stop" });
