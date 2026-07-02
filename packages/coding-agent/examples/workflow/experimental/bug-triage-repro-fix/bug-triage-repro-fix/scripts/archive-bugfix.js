@@ -214,7 +214,10 @@ function isTaskSectionHeading(line) {
 
 function allowsNoCodeResolution(task) {
 	const taskText = typeof task.taskText === "string" ? task.taskText : typeof task.text === "string" ? task.text : "";
-	return /\bNo-Code Resolution\s*:\s*allowed\b/iu.test(taskText);
+	return [
+		/\bNo-Code Resolution\s*:\s*allowed\b/iu,
+		/\bNo-Code(?:\s*\/\s*No-Change)?\s+Allowed\s*:\s*(?:yes|true|allowed)\b/iu,
+	].some(pattern => pattern.test(taskText));
 }
 
 function causeProposesFix(value) {

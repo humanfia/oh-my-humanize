@@ -253,9 +253,7 @@ describe("example workflow scripts", () => {
 					exitCode: 0,
 					outputPath: "workflow-output/reproduction.md",
 				},
-				cause: {
-					narrowest_fix_boundary: "router edge handling",
-				},
+				cause: {},
 			},
 		});
 
@@ -263,6 +261,62 @@ describe("example workflow scripts", () => {
 			result.scheduler.activations.find(activation => activation.nodeId === "classifyResolutionRoute")?.status,
 		).toBe("failed");
 		expect(result.scheduler.state.resolution).toBeUndefined();
+		expect(result.scheduler.state.patch).toBeUndefined();
+	});
+
+	it("routes bug triage patchable cause evidence to patching even when declared reproduction passes", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-patchable-cause-with-passing-repro-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		const taskText = [
+			"Objective:",
+			"Investigate a broad completion report where the declared suite may not contain the focused probe.",
+			"",
+			"No-Code/No-Change Allowed: Yes",
+			"",
+			"Reproduction Command:",
+			"python -m pytest tests/test_completion.py -q",
+			"",
+			"Validation Command:",
+			"python -m pytest tests/test_completion.py tests/test_help.py -q",
+		].join("\n");
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "classifyResolutionRoute",
+			scriptFileName: "classify-resolution-route.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/resolution", "/patch"],
+			initialState: {
+				task: {
+					taskText,
+					reproductionCommand: "python -m pytest tests/test_completion.py -q",
+					validationCommand: "python -m pytest tests/test_completion.py tests/test_help.py -q",
+				},
+				repro: {
+					exitCode: 0,
+					outputPath: "workflow-output/reproduction.md",
+				},
+				cause: {
+					narrowest_fix_boundary: {
+						target: "Prevent completion context resolution from evaluating unrelated callable defaults.",
+						likely_change_surface: ["typer/_click/core.py::Parameter.consume_value"],
+						test_boundary: ["Add a completion side-effect regression test."],
+					},
+					why_evidence_points_there: [
+						"Focused probes showed shell completion calls unrelated defaults and callbacks.",
+					],
+				},
+			},
+		});
+
+		expect(result.scheduler.state.resolution).toMatchObject({
+			route: "patch",
+			allowedNoCodeResolution: true,
+			reproductionExitCode: 0,
+			patchableCauseEvidence: true,
+		});
 		expect(result.scheduler.state.patch).toBeUndefined();
 	});
 

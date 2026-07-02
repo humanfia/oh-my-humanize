@@ -6,13 +6,14 @@ const cause = state.cause && typeof state.cause === "object" ? state.cause : {};
 const reproductionExitCode = typeof repro.exitCode === "number" ? repro.exitCode : null;
 const allowedNoCodeResolution = allowsNoCodeResolution(task);
 const noCodeCauseResolution = hasNoCodeCauseResolution(cause);
+const patchableCauseEvidence = hasPatchableCauseEvidence(cause);
 const reproductionPassed = reproductionExitCode === 0;
-if (reproductionPassed && !allowedNoCodeResolution && !noCodeCauseResolution) {
+if (reproductionPassed && !patchableCauseEvidence && !allowedNoCodeResolution && !noCodeCauseResolution) {
 	throw new Error(
-		"bug triage reproduction exited successfully but the task contract does not permit no-code resolution; provide a failing reproduction command or declare `No-Code Resolution: allowed`",
+		"bug triage reproduction exited successfully without patchable cause evidence and the task contract does not permit no-code resolution; provide a failing reproduction command, record concrete patchable cause evidence, or declare `No-Code Resolution: allowed` / `No-Code/No-Change Allowed: Yes`",
 	);
 }
-const route = allowedNoCodeResolution && (reproductionPassed || noCodeCauseResolution) ? "no-code" : "patch";
+const route = allowedNoCodeResolution && !patchableCauseEvidence && (reproductionPassed || noCodeCauseResolution) ? "no-code" : "patch";
 const noCodeBasis = reproductionPassed
 	? "the task-declared reproduction command exited successfully"
 	: "isolateCause explicitly recorded no-code resolution evidence";
@@ -21,10 +22,13 @@ const resolution = {
 	allowedNoCodeResolution,
 	reproductionExitCode,
 	noCodeCauseResolution,
+	patchableCauseEvidence,
 	reason:
 		route === "no-code"
 			? `task contract permits no-code resolution and ${noCodeBasis}`
-			: "task-declared reproduction still requires a code or test patch path",
+			: patchableCauseEvidence
+				? "isolateCause recorded concrete patchable cause evidence, so route to a code or test patch path"
+				: "task-declared reproduction still requires a code or test patch path",
 };
 
 if (route !== "no-code") {
@@ -112,7 +116,10 @@ return {
 
 function allowsNoCodeResolution(value) {
 	const taskText = typeof value.taskText === "string" ? value.taskText : typeof value.text === "string" ? value.text : "";
-	return /\bNo-Code Resolution\s*:\s*allowed\b/iu.test(taskText);
+	return [
+		/\bNo-Code Resolution\s*:\s*allowed\b/iu,
+		/\bNo-Code(?:\s*\/\s*No-Change)?\s+Allowed\s*:\s*(?:yes|true|allowed)\b/iu,
+	].some(pattern => pattern.test(taskText));
 }
 
 function hasNoCodeCauseResolution(value) {
@@ -120,6 +127,22 @@ function hasNoCodeCauseResolution(value) {
 		typeof value.resolution === "string" &&
 		/^no[-\s]?code$/iu.test(value.resolution.trim())
 	);
+}
+
+function hasPatchableCauseEvidence(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	if (hasNoCodeCauseResolution(value)) return false;
+	const boundary = value.narrowest_fix_boundary;
+	if (boundary && typeof boundary === "object" && !Array.isArray(boundary)) {
+		return hasMeaningfulField(boundary.target) || hasMeaningfulField(boundary.likely_change_surface) || hasMeaningfulField(boundary.test_boundary);
+	}
+	return false;
+}
+
+function hasMeaningfulField(value) {
+	if (typeof value === "string") return value.trim().length > 0;
+	if (Array.isArray(value)) return value.some(hasMeaningfulField);
+	return false;
 }
 
 function evidenceText(value) {
