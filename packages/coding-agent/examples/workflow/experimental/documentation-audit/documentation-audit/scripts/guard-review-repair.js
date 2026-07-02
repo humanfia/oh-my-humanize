@@ -39,7 +39,7 @@ if (missingSelectedAuditTargets.length > 0) {
 		[
 			"documentation patch did not cover selected audit targets",
 			`missing targets: ${missingSelectedAuditTargets.join(", ")}`,
-			"patch changed_files must cover selected project targets from /audit.selectedSmallestCoherentRepair.changedFileTargets or return blocked",
+			"patch changed_files must cover selected project targets from /audit.selectedRepairPlan.changedFileTargets, /audit.selectedSmallestCoherentRepair.changedFileTargets, or return blocked",
 		].join("; "),
 	);
 }
@@ -135,6 +135,8 @@ function patchChangedFiles(value) {
 
 function selectedAuditProjectTargets(value) {
 	const repairCandidates = [
+		value.selectedRepairPlan,
+		value.selected_repair_plan,
 		value.selectedSmallestCoherentRepair,
 		value.selected_smallest_coherent_repair,
 		value.selectedRepair,

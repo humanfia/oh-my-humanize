@@ -49,6 +49,9 @@ interface WorkflowContext {
 			selectedRepair?: {
 				changedFileTargets?: string[];
 			};
+			selectedRepairPlan?: {
+				changedFileTargets?: string[];
+			};
 			selectedSmallestCoherentRepair?: {
 				changedFileTargets?: string[];
 			};
@@ -207,6 +210,42 @@ describe("documentation-audit flow contract", () => {
 			selectedAuditTargetsCovered: true,
 			selectedAuditTargets: ["docs/a.md", "docs/b.md"],
 		});
+	});
+
+	it("accepts docs patches that cover selectedRepairPlan targets", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "docs"), { recursive: true });
+		await Bun.write(path.join(cwd, "docs/security.md"), "old security\n");
+		await Bun.write(path.join(cwd, "src/security.py"), "old source\n");
+		await runCommand(["git", "add", "docs/security.md", "src/security.py"], cwd);
+		await runCommand(["git", "commit", "-m", "baseline"], cwd);
+		await Bun.write(path.join(cwd, "docs/security.md"), "new security\n");
+		await Bun.write(path.join(cwd, "src/security.py"), "new source\n");
+
+		const result = await runScriptFile(cwd, "guard-review-repair.js", {
+			audit: {
+				selectedRepairPlan: {
+					changedFileTargets: ["docs/security.md", "src/security.py"],
+				},
+			},
+			patch: {
+				changed_files: ["docs/security.md", "src/security.py"],
+				rollback_notes: ["Restore docs/security.md and src/security.py."],
+				resolved_review_feedback: [],
+			},
+			review: "No previous documentation review yet.",
+		});
+		const reviewRepair = result.statePatch?.find(patch => patch.path === "/reviewRepair")?.value;
+
+		expect(result.summary).toBe("no prior continue review feedback requires repair evidence");
+		expect(reviewRepair).toMatchObject({
+			status: "pass",
+			selectedAuditTargetsCovered: true,
+			selectedAuditTargets: ["docs/security.md", "src/security.py"],
+		});
+		const guard = await Bun.file(path.join(cwd, "workflow-output/documentation-review-repair.md")).text();
+		expect(guard).toContain("- docs/security.md");
+		expect(guard).not.toContain("did not declare selected project targets");
 	});
 
 	it("archives accepted docs repairs when task validation has the same startable baseline failure", async () => {

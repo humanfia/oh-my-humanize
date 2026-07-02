@@ -40,8 +40,8 @@ Patch self-containment rule:
 Return `continue` when the documentation change is missing, stale, too broad,
 not validated, or fails to address the highest-impact audited gap.
 
-When the audit declares selected project targets under `selectedRepair`,
-`selectedSmallestCoherentRepair`, or top-level `changedFileTargets`, require
+When the audit declares selected project targets under `selectedRepairPlan`,
+`selectedRepair`, `selectedSmallestCoherentRepair`, or top-level `changedFileTargets`, require
 `/patch.changed_files` and the actual workspace diff to cover those targets
 unless `/patch.status` is `blocked` with a concrete blocker. Passing validation
 alone is not enough when selected stale documentation remains.

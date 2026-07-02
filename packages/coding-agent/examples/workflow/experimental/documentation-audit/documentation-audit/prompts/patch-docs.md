@@ -26,7 +26,7 @@ task-declared validation command. Write rollback notes if the change is not
 obvious from the diff.
 
 If the consolidated audit declares selected changed-file targets under
-`selectedRepair`, `selectedSmallestCoherentRepair`, or top-level
+`selectedRepairPlan`, `selectedRepair`, `selectedSmallestCoherentRepair`, or top-level
 `changedFileTargets`, cover every selected project target in `changed_files`
 during this patch pass, or return `"status": "blocked"` with the concrete
 blocker. Do not silently patch only the first selected finding when the audit
