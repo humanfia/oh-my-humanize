@@ -162,6 +162,8 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 			return { ...block };
 		case "redactedThinking":
 			return { ...block };
+		case "fallback":
+			return { ...block, from: { ...block.from }, to: { ...block.to } };
 		case "toolCall":
 			return { ...block, arguments: structuredCloneJSON(block.arguments) };
 	}
@@ -1791,7 +1793,6 @@ async function executeToolCalls(
 	const {
 		hasSteeringMessages,
 		hasIrcInterrupts,
-		getSteeringMessages,
 		interruptMode = "immediate",
 		getToolContext,
 		transformToolCallArguments,
@@ -1849,25 +1850,25 @@ async function executeToolCalls(
 		if (!shouldInterruptImmediately || signal?.aborted) {
 			return;
 		}
-		// Prefer non-consuming peeks so queues still own their messages until
-		// the injection boundary. Fall back to consuming steering only for older
-		// integrations that never supplied a peek.
+		// Mid-batch steering detection must be non-consuming. If a direct
+		// integration only provides getSteeringMessages(), the queue drains at the
+		// injection boundary below; polling it here would strand or drop messages.
 		let steeringQueued = false;
 		if (hasSteeringMessages) {
 			steeringQueued = await hasSteeringMessages();
-		} else if (getSteeringMessages) {
-			const msgs = await getSteeringMessages();
-			steeringQueued = (msgs?.length ?? 0) > 0;
 		}
 		if (steeringQueued) {
 			// User steering upgrades an in-flight IRC interrupt: it aborts the
 			// shared signal so foreground tools stop as they do for a user Esc.
+			// Idempotent — a second steer poll after the abort is a no-op.
 			if (!steeringAbortController.signal.aborted) {
 				interruptState.triggered = true;
 				steeringAbortController.abort();
 			}
 			return;
 		}
+		// IRC only fires once: a peer interrupt already recorded on interruptState
+		// must not re-abort, and (unlike steering above) never re-consume a queue.
 		if (interruptState.triggered) return;
 		if (hasIrcInterrupts && (await hasIrcInterrupts())) {
 			// Peer IRC only aborts interruptible waits: a foreground bash / write
@@ -2203,13 +2204,13 @@ async function executeToolCalls(
 
 	// While an interruptible tool is in flight (e.g. a `job`/`irc` wait
 	// blocking on external work), queued steering or interrupting IRC would
-	// otherwise wait out the tool's own window. Poll the non-consuming queues
+	// otherwise wait out the tool's own window. Poll only non-consuming queues
 	// and abort the shared tool signal so the boundary dequeue below injects
 	// the message promptly. Gated on immediate-interrupt mode + an
 	// interruptible tool; checkSteering is idempotent (no-op once triggered).
 	const watchSteeringWhileRunning =
 		shouldInterruptImmediately &&
-		(hasSteeringMessages !== undefined || getSteeringMessages !== undefined || hasIrcInterrupts !== undefined) &&
+		(hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined) &&
 		records.some(r => r.tool?.interruptible === true);
 	const steeringWatchTimer = watchSteeringWhileRunning
 		? setInterval(() => void checkSteering(), STEERING_INTERRUPT_POLL_MS)

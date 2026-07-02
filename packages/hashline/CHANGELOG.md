@@ -2,10 +2,17 @@
 
 ## [Unreleased]
 
+## [16.3.0] - 2026-07-02
+
+### Changed
+
+- Significantly improved performance on large files by optimizing stale-anchor remap validation.
+
 ### Fixed
 
-- Fixed an issue where snapshot tag collisions could cause line-anchored edits to be incorrectly applied to unrelated content.
+- Fixed an issue where snapshot tag collisions could cause line-anchored edits to be incorrectly applied to unrelated content, improving recovery and edit-preview safety.
 - Fixed tracking of edit anchors when earlier in-session insertions or deletions shift unchanged target lines.
+- Fixed hashline edit guidance and parsing errors for Markdown list rows.
 
 ## [16.2.8] - 2026-06-30
 

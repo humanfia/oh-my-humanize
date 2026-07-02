@@ -2,10 +2,14 @@
 
 ## [Unreleased]
 
+## [16.3.0] - 2026-07-02
+
 ### Fixed
 
-- Fixed an issue in the mobile collaboration web UI where 'ask' questions were displayed without response controls.
-- Fixed the agent transcript drawer hot-retrying forever when the host reports a terminal transcript error (such as an oversized row); the error now stops polling and is shown below any rows already loaded.
+- Fixed missing response controls for "ask" questions in the mobile collaboration web UI.
+- Fixed an issue where re-sending an editor "ask" request would clear a guest's in-progress draft response.
+- Fixed infinite retry loops in the agent transcript drawer by ensuring terminal errors are displayed and polling stops.
+- Fixed a delay in displaying pre-welcome connection errors (such as protocol version rejections), allowing the session to terminate immediately with the host's error reason.
 
 ## [16.2.0] - 2026-06-27
 
@@ -78,16 +82,6 @@
 - Fixed mobile layout issues where the entire chat flow would overflow horizontally and text was rendered too large on iOS Safari (by setting `text-size-adjust: 100%`)
 - Made transcript rows stack vertically on small screens to optimize reading space, and prevented grid track expansion
 - Hid non-essential metadata (such as the model name, thinking level, and working directory path) and context gauge tracks on mobile headers to prevent overflow
-- Fixed mobile layout issues where the entire chat flow would overflow horizontally and text was rendered too large on iOS Safari (by setting `text-size-adjust: 100%`)
-- Made transcript rows stack vertically on small screens to optimize reading space, and prevented grid track expansion
-- Hid non-essential metadata (such as the model name, thinking level, and working directory path) and context gauge tracks on mobile headers to prevent overflow
-- Wrapped composer button labels to display icon-only on mobile devices for a more compact and readable layout
-- Made the connect screen, ended session card, and notification toasts fully responsive for smaller device viewports
-- Fixed mobile layout issues where the entire chat flow would overflow horizontally and text was rendered too large on iOS Safari (by setting `text-size-adjust: 100%`)
-- Made transcript rows stack vertically on small screens to optimize reading space, and prevented grid track expansion
-- Hid non-essential metadata (such as the model name, thinking level, and working directory path) and context gauge tracks on mobile headers to prevent overflow
-- Wrapped composer button labels to display icon-only on mobile devices for a more compact and readable layout
-- Made the connect screen, ended session card, and notification toasts fully responsive for smaller device viewports
 
 ## [15.13.1] - 2026-06-15
 
@@ -101,7 +95,17 @@
 
 ### Fixed
 
+- Fixed mobile layout issues where the entire chat flow would overflow horizontally and text was rendered too large on iOS Safari (by setting `text-size-adjust: 100%`)
 - Pinned the app shell grid to a single `minmax(0, 1fr)` column so a long session title can no longer set a min-content floor that pushes the header, transcript, and composer wider than narrow or in-app mobile viewports; the title now ellipsizes instead of clipping every row's right edge
+- Made transcript rows stack vertically on small screens to optimize reading space, and prevented grid track expansion
+- Hid non-essential metadata (such as the model name, thinking level, and working directory path) and context gauge tracks on mobile headers to prevent overflow
+- Wrapped composer button labels to display icon-only on mobile devices for a more compact and readable layout
+- Made the connect screen, ended session card, and notification toasts fully responsive for smaller device viewports
+- Fixed mobile layout issues where the entire chat flow would overflow horizontally and text was rendered too large on iOS Safari (by setting `text-size-adjust: 100%`)
+- Made transcript rows stack vertically on small screens to optimize reading space, and prevented grid track expansion
+- Hid non-essential metadata (such as the model name, thinking level, and working directory path) and context gauge tracks on mobile headers to prevent overflow
+- Wrapped composer button labels to display icon-only on mobile devices for a more compact and readable layout
+- Made the connect screen, ended session card, and notification toasts fully responsive for smaller device viewports
 
 ## [15.12.4] - 2026-06-13
 

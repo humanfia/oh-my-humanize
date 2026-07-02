@@ -265,6 +265,92 @@ describe("Anthropic prior-turn thinking preservation (#2257, #2265)", () => {
 		expect(priorBlocks.find(b => b.type === "redacted_thinking")).toBeUndefined();
 	});
 
+	it("demotes invalid official Anthropic prior signatures to Fable markdown prose after a model switch", () => {
+		// official Anthropic → official Fable, with the signed turn no longer
+		// latest. The source signature is bound to the issuing Anthropic model,
+		// so replaying it after the switch must not emit native thinking or
+		// Anthropic/Kimi-style thinking tags that Fable treats as visible text.
+		const target = makeAnthropicModel({
+			provider: "anthropic",
+			id: "claude-fable-5",
+			name: "Claude Fable 5",
+			baseUrl: "https://api.anthropic.com",
+		});
+		const reasoning = "Need to preserve the plan while switching models.";
+		const messages: Message[] = [
+			makeUser("Read the project notes"),
+			makeAssistant(
+				[
+					{ type: "thinking", thinking: reasoning, thinkingSignature: "sig_sonnet" },
+					{ type: "toolCall", id: "toolu_prior", name: "read", arguments: { path: "NOTES.md" } },
+				],
+				{ provider: "anthropic", model: "claude-sonnet-4-6" },
+			),
+			toolResult("toolu_prior", "notes body"),
+			makeAssistant([{ type: "text", text: "I found the relevant notes." }], {
+				provider: "anthropic",
+				model: "claude-fable-5",
+				stopReason: "stop",
+			}),
+			makeUser("Continue from those notes."),
+		];
+
+		const params = convertAnthropicMessages(messages, target, false);
+		const assistants = params.filter(p => p.role === "assistant");
+		expect(assistants).toHaveLength(2);
+		const priorBlocks = assistants[0].content as WireBlock[];
+		const text = priorBlocks.find(b => b.type === "text") as WireTextBlock | undefined;
+		expect(text?.text).toBe(renderDemotedThinking("claude-fable-5", reasoning));
+		expect(text?.text).toBe(`_Hmm. ${reasoning}_\n`);
+		expect(text?.text).not.toContain("<thinking>");
+		expect(text?.text).not.toContain("</thinking>");
+		expect(text?.text).not.toContain("<think>");
+		expect(text?.text).not.toContain("</think>");
+		expect(priorBlocks.find(b => b.type === "thinking")).toBeUndefined();
+	});
+
+	it("does not demote same-model official Anthropic unsigned thinking to text", () => {
+		// Same-model Anthropic replay is not a dialect transition. If a committed
+		// tool-use turn lacks a usable thinking signature, the native thinking block
+		// is unreplayable, but serializing it as target-dialect text would
+		// incorrectly apply the cross-model fallback intended for real transitions.
+		for (const modelCase of [
+			{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+			{ id: "claude-fable-5", name: "Claude Fable 5" },
+		]) {
+			const target = makeAnthropicModel({
+				provider: "anthropic",
+				id: modelCase.id,
+				name: modelCase.name,
+				baseUrl: "https://api.anthropic.com",
+			});
+			const reasoning = `Need to inspect the layout before editing with ${modelCase.id}.`;
+			const toolCallId = `toolu_${modelCase.id.replaceAll("-", "_")}`;
+			const messages: Message[] = [
+				makeUser("Fix the layout"),
+				makeAssistant(
+					[
+						{ type: "thinking", thinking: reasoning, thinkingSignature: "" },
+						{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: "src/view.ts" } },
+					],
+					{ provider: "anthropic", model: modelCase.id },
+				),
+				toolResult(toolCallId, "view body"),
+				makeUser("Continue."),
+			];
+
+			const params = convertAnthropicMessages(messages, target, false);
+			const assistant = params.find(p => p.role === "assistant");
+			if (!assistant) throw new Error("expected assistant wire message");
+			const blocks = assistant.content as WireBlock[];
+			const textBlocks = blocks.filter((b): b is WireTextBlock => b.type === "text");
+			expect(textBlocks).toHaveLength(0);
+			expect(blocks.find(b => b.type === "thinking")).toBeUndefined();
+			const toolUse = blocks.find(b => b.type === "tool_use") as WireToolUseBlock | undefined;
+			expect(toolUse?.id).toBe(toolCallId);
+		}
+	});
+
 	it("strips official Anthropic source signatures on cross-model replay to a 3p target", () => {
 		// official Anthropic → 3p. Anthropic's signature is bound to the
 		// issuing model+session, so the 3p target cannot reverify or

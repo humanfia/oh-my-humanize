@@ -61,7 +61,6 @@ const MAX_STRING_SEQ_BYTES = 16 * 1024 * 1024;
 // Matched only when the trailing byte is a valid terminator, so the regex
 // runs at most once per resolved report — never inside the growth loop.
 const SGR_MOUSE_COMPLETE = /^<\d+;\d+;\d+[Mm]$/;
-const DIGITS_ONLY = /^\d+$/;
 
 /**
  * Resolve the exclusive-end index of the escape sequence starting at `pos`
@@ -95,15 +94,16 @@ function resolveEscapeEnd(buffer: string, pos: number, length: number, resumeSea
 				// Old-style X10 mouse: ESC [ M + 3 arbitrary bytes.
 				if (buffer.charCodeAt(pos + 2) === 0x4d /* M */) {
 					if (pos + 6 <= length) return pos + 6;
-					return length - pos >= MAX_CSI_BYTES ? -2 : -1;
+					// Fewer than 6 bytes buffered is always under MAX_CSI_BYTES,
+					// so this is a plain "wait for more", never a cap flush.
+					return -1;
 				}
 				const capEnd = Math.min(length, pos + MAX_CSI_BYTES);
 				const isSgrMouse = buffer.charCodeAt(pos + 2) === 0x3c /* < */;
-				// Resume from where the last call gave up. `-1` preserves the
-				// safety window used by OSC/DCS/APC; CSI has no multi-byte
-				// terminator, but keeping the same rule avoids a fencepost gap.
-				let i = Math.max(pos + 2, resumeSearchFrom - 1);
-				if (i < pos + 2) i = pos + 2;
+				// No resume hint for CSI: `extractCompleteSequences` records
+				// hints only for OSC/DCS/APC. A partial CSI rescans from its
+				// head, bounded by the tight MAX_CSI_BYTES cap.
+				let i = pos + 2;
 				while (i < capEnd) {
 					const code = buffer.charCodeAt(i);
 					if (code >= 0x40 && code <= 0x7e) {
@@ -117,8 +117,6 @@ function resolveEscapeEnd(buffer: string, pos: number, length: number, resumeSea
 							}
 							const payload = buffer.slice(pos + 2, i + 1);
 							if (SGR_MOUSE_COMPLETE.test(payload)) return i + 1;
-							const parts = payload.slice(1, -1).split(";");
-							if (parts.length === 3 && parts.every(p => DIGITS_ONLY.test(p))) return i + 1;
 							// Malformed body ending in M/m — keep scanning for a
 							// real terminator. Bounded by capEnd.
 							i++;
@@ -132,25 +130,43 @@ function resolveEscapeEnd(buffer: string, pos: number, length: number, resumeSea
 			}
 		case 0x5d /* ] */:
 			{
-				// OSC: ESC ] ... BEL or ST (ESC \).
+				// OSC: ESC ] ... BEL or ST (ESC \). Scan is bounded to
+				// [searchFrom, scanLimit): `String#indexOf` has no end bound, so
+				// an unterminated payload delivered as one huge chunk would
+				// otherwise be scanned to the end of the buffer — past the cap
+				// this function exists to enforce. `resumeSearchFrom - 1` keeps
+				// the one-byte overlap so an `ESC \` split across chunks is
+				// still found (the prior call's trailing ESC is re-inspected).
 				const searchFrom = Math.max(pos + 2, resumeSearchFrom - 1);
 				const scanLimit = Math.min(length, pos + MAX_STRING_SEQ_BYTES);
-				const belIndex = buffer.indexOf("\x07", searchFrom);
-				const stIndex = buffer.indexOf("\x1b\\", searchFrom);
-				let end = -1;
-				if (belIndex !== -1 && belIndex + 1 <= scanLimit) end = belIndex + 1;
-				if (stIndex !== -1 && stIndex + 2 <= scanLimit && (end === -1 || stIndex + 2 < end)) end = stIndex + 2;
-				if (end !== -1) return end;
+				for (let i = searchFrom; i < scanLimit; i++) {
+					const code = buffer.charCodeAt(i);
+					if (code === 0x07 /* BEL */) return i + 1;
+					if (code === 0x1b /* ESC */) {
+						// `ESC \` (ST) must end within the cap; a lone trailing
+						// ESC at the buffer edge stays incomplete and is
+						// re-examined next call via the resume overlap.
+						if (i + 1 < scanLimit && buffer.charCodeAt(i + 1) === 0x5c /* \ */) return i + 2;
+					}
+				}
 				return length - pos >= MAX_STRING_SEQ_BYTES ? -2 : -1;
 			}
 		case 0x50 /* P */:
 		case 0x5f /* _ */:
 			{
-				// DCS / APC: ESC P/_ ... ST (ESC \).
+				// DCS / APC: ESC P/_ ... ST (ESC \). Same bounded scan and
+				// split-ST overlap as the OSC branch, minus BEL.
 				const searchFrom = Math.max(pos + 2, resumeSearchFrom - 1);
 				const scanLimit = Math.min(length, pos + MAX_STRING_SEQ_BYTES);
-				const stIndex = buffer.indexOf("\x1b\\", searchFrom);
-				if (stIndex !== -1 && stIndex + 2 <= scanLimit) return stIndex + 2;
+				for (let i = searchFrom; i < scanLimit; i++) {
+					if (
+						buffer.charCodeAt(i) === 0x1b /* ESC */ &&
+						i + 1 < scanLimit &&
+						buffer.charCodeAt(i + 1) === 0x5c /* \ */
+					) {
+						return i + 2;
+					}
+				}
 				return length - pos >= MAX_STRING_SEQ_BYTES ? -2 : -1;
 			}
 		case 0x4f /* O */:

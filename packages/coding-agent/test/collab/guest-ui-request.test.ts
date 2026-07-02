@@ -14,118 +14,25 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { generateRoomKey, importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabGuestLink } from "@oh-my-pi/pi-coding-agent/collab/guest";
+import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import {
 	COLLAB_PROTO,
+	type CollabFrame,
 	type CollabSessionState,
 	formatCollabLink,
-	rewriteEnvelopePeer,
-	unpackEnvelope,
+	parseCollabLink,
 } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
 import type {
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
-// ── In-memory transport (same contract as the other collab tests) ──────────
-
-let activeRelay: InMemoryRelay | null = null;
-const RealWebSocket = globalThis.WebSocket;
-
-class FakeWebSocket {
-	static readonly CONNECTING = 0;
-	static readonly OPEN = 1;
-	static readonly CLOSING = 2;
-	static readonly CLOSED = 3;
-
-	binaryType = "arraybuffer";
-	readyState: number = FakeWebSocket.CONNECTING;
-	readonly role: "host" | "guest";
-	peerId = 0;
-	onopen: (() => void) | null = null;
-	onmessage: ((event: { data: unknown }) => void) | null = null;
-	onerror: (() => void) | null = null;
-	onclose: ((event: { code: number; reason: string }) => void) | null = null;
-	readonly #relay: InMemoryRelay;
-
-	constructor(url: string) {
-		const relay = activeRelay;
-		if (!relay) throw new Error("FakeWebSocket: no active in-memory relay");
-		this.#relay = relay;
-		this.role = new URL(url).searchParams.get("role") === "host" ? "host" : "guest";
-		queueMicrotask(() => {
-			if (this.readyState !== FakeWebSocket.CONNECTING) return;
-			this.readyState = FakeWebSocket.OPEN;
-			relay.connect(this);
-			this.onopen?.();
-		});
-	}
-
-	send(data: Uint8Array): void {
-		if (this.readyState !== FakeWebSocket.OPEN) return;
-		const bytes = new Uint8Array(data);
-		queueMicrotask(() => this.#relay.forward(this, bytes));
-	}
-
-	close(_code?: number): void {
-		if (this.readyState === FakeWebSocket.CLOSED) return;
-		this.readyState = FakeWebSocket.CLOSED;
-		this.#relay.disconnect(this);
-		queueMicrotask(() => this.onclose?.({ code: 1000, reason: "closed" }));
-	}
-
-	deliver(bytes: Uint8Array): void {
-		if (this.readyState !== FakeWebSocket.OPEN) return;
-		const copy = new Uint8Array(bytes);
-		queueMicrotask(() => this.onmessage?.({ data: copy.buffer }));
-	}
-
-	deliverControl(json: string): void {
-		if (this.readyState !== FakeWebSocket.OPEN) return;
-		queueMicrotask(() => this.onmessage?.({ data: json }));
-	}
-}
-
-class InMemoryRelay {
-	#host: FakeWebSocket | null = null;
-	readonly #guests = new Map<number, FakeWebSocket>();
-	#nextPeerId = 1;
-
-	connect(ws: FakeWebSocket): void {
-		if (ws.role === "host") {
-			this.#host = ws;
-			return;
-		}
-		ws.peerId = this.#nextPeerId++;
-		this.#guests.set(ws.peerId, ws);
-		this.#host?.deliverControl(JSON.stringify({ t: "peer-joined", peer: ws.peerId }));
-	}
-
-	forward(from: FakeWebSocket, bytes: Uint8Array): void {
-		if (from.role === "host") {
-			const envelope = unpackEnvelope(bytes);
-			if (!envelope) return;
-			if (envelope.peerId === 0) {
-				for (const guest of this.#guests.values()) guest.deliver(bytes);
-			} else {
-				this.#guests.get(envelope.peerId)?.deliver(bytes);
-			}
-			return;
-		}
-		rewriteEnvelopePeer(bytes, from.peerId);
-		this.#host?.deliver(bytes);
-	}
-
-	disconnect(ws: FakeWebSocket): void {
-		if (ws.role === "host") {
-			if (this.#host === ws) this.#host = null;
-			return;
-		}
-		this.#guests.delete(ws.peerId);
-		this.#host?.deliverControl(JSON.stringify({ t: "peer-left", peer: ws.peerId }));
-	}
-}
+// In-memory transport: shared FakeWebSocket + InMemoryRelay harness (see
+// ./helpers/in-memory-relay), same contract as the other collab tests.
 
 // ── Guest harness ───────────────────────────────────────────────────────────
 
@@ -370,8 +277,7 @@ const harnessCleanups: (() => Promise<void>)[] = [];
 let writeSpy: { mockRestore(): void } | null = null;
 
 beforeEach(() => {
-	activeRelay = new InMemoryRelay();
-	globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+	installInMemoryRelay();
 	writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
 });
 
@@ -379,8 +285,7 @@ afterEach(async () => {
 	for (const cleanup of harnessCleanups.splice(0).reverse()) await cleanup();
 	writeSpy?.mockRestore();
 	writeSpy = null;
-	globalThis.WebSocket = RealWebSocket;
-	activeRelay = null;
+	uninstallInMemoryRelay();
 });
 
 async function openHarness(opts?: { readOnly?: boolean }): Promise<GuestUiHarness> {
@@ -521,5 +426,290 @@ describe("collab TUI guest ui-request handling (#4049)", () => {
 		await h.barrier(); // frames apply in order: the ui-request has fully applied
 		expect(h.dialogLog).toHaveLength(0);
 		expect(h.uiResponses).toEqual([]);
+	});
+});
+
+// ── Proto handshake (#4049: ui-request frames require COLLAB_PROTO >= 3) ───
+//
+// The ui-request/ui-response grammar shipped without a proto bump, so v2
+// guests joined fine and silently dropped host asks. These tests pin the
+// enforcement: a real CollabHost must reject stale-proto hellos with an
+// observable error frame (never a welcome), current-proto guests must still
+// complete a full ui-request round trip, and a rejected CollabGuestLink
+// join must fail fast with the host's reason instead of hanging until the
+// welcome timeout.
+
+/** Minimal InteractiveModeContext double: only the members CollabHost touches. */
+function makeHostContext(): InteractiveModeContext {
+	return {
+		settings: { get: () => "" },
+		sessionManager: {
+			getSessionId: () => "sess-proto",
+			getCwd: () => "/tmp",
+			snapshotForReplication: () => ({
+				header: { type: "session", id: "sess-proto", timestamp: new Date().toISOString(), cwd: "/tmp" },
+				entries: [],
+			}),
+			onEntryAppended: undefined,
+		},
+		session: {
+			isStreaming: false,
+			queuedMessageCount: 0,
+			sessionName: "proto test",
+			model: undefined,
+			thinkingLevel: undefined,
+			subscribe: () => () => {},
+			emitNotice: () => {},
+			promptCustomMessage: () => Promise.resolve(),
+			abort: () => Promise.resolve(),
+		},
+		eventBus: undefined,
+		statusLine: {
+			setCollabStatus: () => {},
+			invalidate: () => {},
+			getCachedContextBreakdown: () => ({ usedTokens: 0, contextWindow: 0 }),
+		},
+		ui: { requestRender: () => {} },
+		showStatus: () => {},
+		collabHost: undefined,
+	} as unknown as InteractiveModeContext;
+}
+
+/** Raw wire-speaking guest with a configurable hello proto. */
+async function joinRawGuest(
+	link: string,
+	proto: number,
+): Promise<{ socket: CollabSocket; nextFrame(): Promise<CollabFrame> }> {
+	const parsed = parseCollabLink(link);
+	if ("error" in parsed) throw new Error(parsed.error);
+	const writeToken = parsed.writeToken ? Buffer.from(parsed.writeToken).toString("base64url") : undefined;
+	const key = await importRoomKey(parsed.key);
+	const socket = new CollabSocket({ wsUrl: parsed.wsUrl, role: "guest", key });
+	const queue: CollabFrame[] = [];
+	const waiters: ((frame: CollabFrame) => void)[] = [];
+	// Directed welcome/error/ui frames only: the host's debounced broadcasts
+	// (state/agents/entry/event/bus) and the snapshot-chunk train interleave
+	// nondeterministically with the frames these tests assert on.
+	const filtered: Record<string, true> = {
+		state: true,
+		agents: true,
+		entry: true,
+		event: true,
+		bus: true,
+		"snapshot-chunk": true,
+	};
+	socket.onFrame = frame => {
+		if (filtered[frame.t]) return;
+		const waiter = waiters.shift();
+		if (waiter) waiter(frame);
+		else queue.push(frame);
+	};
+	socket.onOpen = () => socket.send({ t: "hello", proto, name: `guest-v${proto}`, writeToken });
+	socket.connect();
+	const nextFrame = (): Promise<CollabFrame> => {
+		const queued = queue.shift();
+		if (queued) return Promise.resolve(queued);
+		const { promise, resolve } = Promise.withResolvers<CollabFrame>();
+		waiters.push(resolve);
+		return promise;
+	};
+	return { socket, nextFrame };
+}
+
+describe("collab proto handshake (#4049)", () => {
+	it("host rejects a stale-proto hello with a protocol-mismatch error and never welcomes or admits the guest", async () => {
+		const host = new CollabHost(makeHostContext());
+		await host.start("ws://localhost:8787");
+		const guest = await joinRawGuest(host.link, COLLAB_PROTO - 1);
+		try {
+			const reply = await guest.nextFrame();
+			if (reply.t !== "error") throw new Error(`expected error, got ${reply.t}`);
+			expect(reply.message).toContain("protocol mismatch");
+			expect(reply.message).toContain(`host speaks v${COLLAB_PROTO}`);
+			expect(reply.message).toContain(`guest sent v${COLLAB_PROTO - 1}`);
+			// The rejected guest was never admitted: no participant entry, and a
+			// host ask finds no writable peer to route to.
+			expect(host.participants.filter(p => p.role !== "host")).toEqual([]);
+			expect(host.requestGuestUi({ kind: "select", title: "anyone?", options: ["Yes"] })).toBeNull();
+		} finally {
+			guest.socket.close();
+			await host.stop("test done");
+		}
+	});
+
+	it("welcomes a current-proto guest at v3 and round-trips a ui-request", async () => {
+		const host = new CollabHost(makeHostContext());
+		await host.start("ws://localhost:8787");
+		const guest = await joinRawGuest(host.link, COLLAB_PROTO);
+		try {
+			const welcome = await guest.nextFrame();
+			if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+			expect(welcome.proto).toBe(COLLAB_PROTO);
+			expect(welcome.proto).toBe(3);
+
+			const pending = host.requestGuestUi({ kind: "select", title: "Continue?", options: ["Yes"] });
+			if (!pending) throw new Error("expected writable guest UI request");
+			const request = await guest.nextFrame();
+			if (request.t !== "ui-request") throw new Error(`expected ui-request, got ${request.t}`);
+			guest.socket.send({ t: "ui-response", reqId: request.request.reqId, value: "Yes" });
+			expect(await pending).toEqual({ kind: "answered", value: "Yes" });
+		} finally {
+			guest.socket.close();
+			await host.stop("test done");
+		}
+	});
+
+	it("CollabGuestLink.join fails fast with the host's rejection message instead of hanging for the welcome", async () => {
+		// Scripted host that rejects every hello the way CollabHost does for a
+		// proto mismatch. The real guest must surface that message from join().
+		const roomId = "proto-reject-room";
+		const roomKey = generateRoomKey();
+		const cryptoKey = await importRoomKey(roomKey);
+		const link = formatCollabLink("ws://localhost:8788", roomId, roomKey);
+		const hostSocket = new CollabSocket({ wsUrl: `ws://localhost:8788/r/${roomId}`, role: "host", key: cryptoKey });
+		const hostOpen = Promise.withResolvers<void>();
+		hostSocket.onOpen = () => hostOpen.resolve();
+		hostSocket.onFrame = frame => {
+			if (frame.t === "hello") {
+				hostSocket.send({
+					t: "error",
+					message: `protocol mismatch: host speaks v${COLLAB_PROTO + 1}, guest sent v${frame.proto}`,
+				});
+			}
+		};
+		hostSocket.connect();
+		await hostOpen.promise;
+
+		const ctx = {
+			settings: { get: () => "" },
+			sessionManager: { getSessionFile: () => null },
+		} as unknown as InteractiveModeContext;
+		const guest = new CollabGuestLink(ctx);
+		try {
+			await expect(guest.join(link)).rejects.toThrow(/protocol mismatch/);
+		} finally {
+			hostSocket.close();
+		}
+	});
+});
+
+// ── Host dialog vs collab teardown (#4049 follow-up) ────────────────────────
+//
+// `ExtensionUiController.#raceCollabDialog` mirrors a hook dialog to writable
+// guests and races the two surfaces. Teardown (/collab stop, non-reconnectable
+// relay drop) settles every pending guest ask as `unavailable`; that is NOT a
+// guest answer, so the local dialog the host user may be typing in must keep
+// running and win with its eventual value. Only a genuine guest settlement —
+// answer or explicit cancel (`answered` with undefined) — dismisses it.
+
+/** One local hook-dialog presentation captured from the stub controller. */
+interface LocalDialogStub {
+	title: string;
+	signal: AbortSignal | undefined;
+	/** Simulate the host user submitting (string) or cancelling (undefined). */
+	settle(value: string | undefined): void;
+}
+
+/**
+ * ExtensionUiController with the TUI dialog seam stubbed out: presentations
+ * are recorded instead of mounted, and abort mirrors `#presentDialog`
+ * (settles the dialog with undefined).
+ */
+class StubDialogController extends ExtensionUiController {
+	readonly localDialogs: LocalDialogStub[] = [];
+
+	override showHookSelector(
+		title: string,
+		_options: ExtensionUISelectItem[],
+		dialogOptions?: InteractiveSelectorDialogOptions,
+	): Promise<string | undefined> {
+		const { promise, resolve } = Promise.withResolvers<string | undefined>();
+		let settled = false;
+		const settle = (value: string | undefined): void => {
+			if (settled) return;
+			settled = true;
+			resolve(value);
+		};
+		dialogOptions?.signal?.addEventListener("abort", () => settle(undefined), { once: true });
+		this.localDialogs.push({ title, signal: dialogOptions?.signal, settle });
+		return promise;
+	}
+}
+
+describe("collab host dialog vs teardown (#4049 follow-up)", () => {
+	async function openRace(): Promise<{
+		host: CollabHost;
+		controller: StubDialogController;
+		guest: { socket: CollabSocket; nextFrame(): Promise<CollabFrame> };
+		result: Promise<string | undefined>;
+		dialog: LocalDialogStub;
+		requestFrame: CollabFrame & { t: "ui-request" };
+		cleanup(): Promise<void>;
+	}> {
+		const ctx = makeHostContext();
+		const host = new CollabHost(ctx);
+		await host.start("ws://localhost:8787");
+		ctx.collabHost = host;
+		const controller = new StubDialogController(ctx);
+		const guest = await joinRawGuest(host.link, COLLAB_PROTO);
+		const welcome = await guest.nextFrame();
+		if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+
+		const result = controller.showCollabAwareSelector("Deploy?", ["Yes", "No"]);
+		const requestFrame = await guest.nextFrame();
+		if (requestFrame.t !== "ui-request") throw new Error(`expected ui-request, got ${requestFrame.t}`);
+		const dialog = controller.localDialogs[0];
+		if (!dialog) throw new Error("expected the local dialog to be presented alongside the guest ask");
+		return {
+			host,
+			controller,
+			guest,
+			result,
+			dialog,
+			requestFrame,
+			cleanup: async () => {
+				guest.socket.close();
+				await host.stop("test done");
+			},
+		};
+	}
+
+	it("keeps the local dialog running through collab teardown and returns its eventual answer", async () => {
+		const race = await openRace();
+		try {
+			await race.host.stop("host stopped collab");
+			// Deterministic bug discriminator, no clock: buggy code treated
+			// teardown's settlement as a remote win — the race resolved
+			// undefined before the local dialog could answer. Fixed code keeps
+			// the local dialog live, so `result` stays pending until it
+			// settles and wins with its value.
+			race.dialog.settle("stay-local");
+			expect(await race.result).toBe("stay-local");
+			expect(race.dialog.signal?.aborted).toBe(false);
+		} finally {
+			await race.cleanup();
+		}
+	});
+
+	it("dismisses the local dialog and returns undefined on a genuine guest cancel", async () => {
+		const race = await openRace();
+		try {
+			race.guest.socket.send({ t: "ui-response", reqId: race.requestFrame.request.reqId, value: undefined });
+			expect(await race.result).toBeUndefined();
+			expect(race.dialog.signal?.aborted).toBe(true);
+		} finally {
+			await race.cleanup();
+		}
+	});
+
+	it("dismisses the local dialog and returns the guest's value when the guest answers first", async () => {
+		const race = await openRace();
+		try {
+			race.guest.socket.send({ t: "ui-response", reqId: race.requestFrame.request.reqId, value: "No" });
+			expect(await race.result).toBe("No");
+			expect(race.dialog.signal?.aborted).toBe(true);
+		} finally {
+			await race.cleanup();
+		}
 	});
 });

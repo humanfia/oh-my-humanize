@@ -349,8 +349,10 @@ const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * one hooked row per running agent in the same `Id: description` shape the
+ * one tree row per running agent in the same `Id: description` shape the
  * inline task rows use (muted task preview when no description was given).
+ * Layout mirrors the Todos HUD exactly: unindented header, then
+ * `renderTreeList` rows (dim connectors) shifted right by one space.
  * Only detached background spawns are listed: a sync task call blocks the
  * parent turn and its inline tool block already renders progress live, and
  * eval `agent()` spawns are rendered by their own eval cell tree.
@@ -362,29 +364,32 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 	);
 	if (running.length === 0) return [];
 
-	const indent = "  ";
-	const hook = theme.tree.hook;
 	const dot = theme.styledSymbol("status.done", "accent");
-	const lines = ["", indent + theme.bold(theme.fg("accent", "Subagents"))];
-	running.forEach((session, index) => {
-		const prefix = `${indent}${index === 0 ? hook : " "} `;
-		const displayId = formatTaskId(session.id);
-		let line = `${prefix}${dot} ${theme.fg("accent", theme.bold(displayId))}`;
-		const description = session.description?.trim() || session.progress?.description?.trim();
-		if (description) {
-			const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(prefix) - visibleWidth(displayId) - 6);
-			line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(replaceTabs(description), budget))}`;
-		} else {
-			// No spawn description: fall back to a muted task preview, same as
-			// the inline task rows when a row has no label.
-			const taskPreview = session.progress?.task?.trim();
-			if (taskPreview) {
-				line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), TRUNCATE_LENGTHS.SHORT))}`;
-			}
-		}
-		lines.push(line);
-	});
-	return lines;
+	const rows = renderTreeList(
+		{
+			items: running,
+			expanded: true,
+			renderItem: session => {
+				const displayId = formatTaskId(session.id);
+				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
+				const description = session.description?.trim() || session.progress?.description?.trim();
+				if (description) {
+					const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(displayId) - 10);
+					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(replaceTabs(description), budget))}`;
+				} else {
+					// No spawn description: fall back to a muted task preview, same as
+					// the inline task rows when a row has no label.
+					const taskPreview = session.progress?.task?.trim();
+					if (taskPreview) {
+						line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), TRUNCATE_LENGTHS.SHORT))}`;
+					}
+				}
+				return line;
+			},
+		},
+		theme,
+	);
+	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
 }
 
 export class InteractiveMode implements InteractiveModeContext {
@@ -815,9 +820,15 @@ export class InteractiveMode implements InteractiveModeContext {
 			getDraftText: () => this.editor.getText(),
 			beginDispose: () => this.session.beginDispose(),
 			saveDraft: text => this.sessionManager.saveDraft(text),
-			disposeSession: () => this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS }),
+			disposeSession: reason =>
+				this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason }),
 		});
-		this.#cleanupUnsubscribe = postmortem.register("session-teardown", () => this.#signalTeardown!());
+		// Forward the postmortem reason (SIGTERM/SIGHUP/uncaughtException/…) so the
+		// persisted `session_exit` diagnostic carries the real trigger. Postmortem
+		// runs callbacks in REVERSE registration order — this callback (registered
+		// after the AgentSession constructor's `agent-session:<id>` recorder) runs
+		// FIRST and its dispose() would otherwise persist the generic "dispose".
+		this.#cleanupUnsubscribe = postmortem.register("session-teardown", reason => this.#signalTeardown!(reason));
 
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
@@ -2685,7 +2696,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		// plan-approved prompt is the source of the reference injection.
 		this.session.markPlanReferenceSent();
 		const planModePrompt = prompt.render(planModeApprovedPrompt, {
-			planContent,
 			planFilePath: options.planFilePath,
 			contextPreserved: options.preserveContext === true,
 		});
@@ -3159,10 +3169,13 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (choice === "Approve and execute" || choice === "Approve and compact context" || choice === keepContextLabel) {
 			try {
-				// Prefer in-overlay edits (already in memory) over a disk re-read; the
-				// `onPlanEdited` write is fire-and-forget, so reading the file here could
-				// race ahead of it.
+				// Prefer in-overlay edits (already in memory) over a disk re-read. The
+				// overlay mirrors edits as they happen, and approval awaits one final
+				// write so the durable plan file and synthetic prompt carry the same text.
 				const latestPlanContent = editedContent ?? (await this.#readPlanFile(planFilePath));
+				if (editedContent !== undefined) {
+					await Bun.write(this.#resolvePlanFilePath(planFilePath), editedContent);
+				}
 				if (!latestPlanContent) {
 					this.showError(`Plan file not found at ${planFilePath}`);
 					return;

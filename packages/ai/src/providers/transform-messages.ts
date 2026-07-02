@@ -431,6 +431,16 @@ export function transformMessages<TApi extends Api>(
 						if (!sanitized.thinkingSignature && (!sanitized.thinking || sanitized.thinking.trim() === "")) {
 							return [];
 						}
+						// Same-model Anthropic replay to a signature-enforcing endpoint
+						// cannot natively replay thinking blocks whose source explicitly
+						// recorded an empty signature, but this is not a dialect
+						// transition. Do not demote that sentinel into the target model's
+						// textual thinking dialect; keep demotion for signatures stripped
+						// by the untrustworthy-turn recovery above and for literal thinking
+						// envelopes that never carried a signature field.
+						if (isSameModel && isOfficialAnthropicTarget && sanitized.thinkingSignature?.trim() === "") {
+							return [];
+						}
 						return sanitized;
 					}
 					// Cross-API target: same-model replay keeps signatures untouched
@@ -478,6 +488,22 @@ export function transformMessages<TApi extends Api>(
 						return [];
 					}
 					if (isSameModel) return block;
+					return [];
+				}
+
+				if (block.type === "fallback") {
+					// Server-side-fallback boundary marker (Anthropic beta
+					// `server-side-fallback-2026-06-01`). Only the official
+					// Anthropic endpoint accepts this block on replay: every
+					// other target either rejects unknown content blocks with a
+					// 400 (anthropic-compatible endpoints like Umans/Z.AI/MiniMax,
+					// and older omp gateways whose schema pre-dates this feature)
+					// or throws in its converter (Bedrock). Even the official
+					// replay path only accepts the block when the current request
+					// itself opts into the beta — but we don't know that here, so
+					// keep it and let `convertAnthropicMessages` re-check the
+					// per-request opt-in before serializing.
+					if (isAnthropicTarget && model.compat.officialEndpoint) return block;
 					return [];
 				}
 

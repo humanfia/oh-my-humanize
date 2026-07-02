@@ -7,6 +7,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import {
 	createLspWritethrough,
 	type FileDiagnosticsResult,
+	flushLspWritethroughBatch,
 	type WritethroughCallback,
 	type WritethroughDeferredHandle,
 	writethroughNoop,
@@ -129,6 +130,8 @@ async function executeApplyPatchPerFile(
 		run: (batchRequest: LspBatchRequest | undefined) => Promise<AgentToolResult<EditToolDetails>>;
 	}[],
 	outerBatchRequest: LspBatchRequest | undefined,
+	cwd: string,
+	signal: AbortSignal | undefined,
 	onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 ): Promise<AgentToolResult<EditToolDetails, TInput>> {
 	if (fileEntries.length === 1) {
@@ -138,17 +141,17 @@ async function executeApplyPatchPerFile(
 
 	const perFileResults: EditToolPerFileResult[] = [];
 	const contentTexts: string[] = [];
-	let errorCount = 0;
+	let hasError = false;
 
 	for (let i = 0; i < fileEntries.length; i++) {
 		const { path, run } = fileEntries[i];
 		const isLast = i === fileEntries.length - 1;
-		// Multi-file apply_patch stops after the first failed entry. Flush each
-		// successful file when the outer call asked for a final flush so an
-		// intervening failure cannot leave already-written files sitting in an
-		// unfinalized LSP write batch.
+		// Per-file writes join the outer LSP write batch; only the last entry
+		// flushes it, so cross-file writes coalesce into a single
+		// format+diagnostics pass. The failure path below flushes explicitly
+		// when the loop stops early.
 		const batchRequest: LspBatchRequest | undefined = outerBatchRequest
-			? { id: outerBatchRequest.id, flush: outerBatchRequest.flush }
+			? { id: outerBatchRequest.id, flush: isLast && outerBatchRequest.flush }
 			: undefined;
 
 		try {
@@ -174,7 +177,7 @@ async function executeApplyPatchPerFile(
 			const displayErrorText = err instanceof HashlineMismatchError ? err.displayMessage : undefined;
 			perFileResults.push({ path, diff: "", isError: true, errorText, displayErrorText });
 			contentTexts.push(`Error editing ${path}: ${errorText}`);
-			errorCount++;
+			hasError = true;
 			// Later entries were authored assuming this file's post-state; a
 			// partial cascade after failure typically compounds damage. Stop
 			// here, report applied vs. skipped, and let the caller re-issue
@@ -195,6 +198,13 @@ async function executeApplyPatchPerFile(
 				contentTexts.push(
 					`Files NOT applied: ${skippedPaths}; re-read the affected files and re-issue only the failed and unapplied files.`,
 				);
+			}
+			// Stopping early skips the last-entry flush above; finalize the
+			// already-written files so an intervening failure cannot leave them
+			// sitting in an unfinalized LSP write batch (mirrors the delete-path
+			// flush in executePatchSingle).
+			if (outerBatchRequest?.flush) {
+				await flushLspWritethroughBatch(outerBatchRequest.id, cwd, signal);
 			}
 			break;
 		}
@@ -228,7 +238,7 @@ async function executeApplyPatchPerFile(
 		// Any per-file failure marks the aggregate result as an error so the
 		// agent loop and renderer take the error branch instead of treating
 		// a mixed partial application as a successful edit.
-		...(errorCount > 0 ? { isError: true } : {}),
+		...(hasError ? { isError: true } : {}),
 	};
 }
 
@@ -236,7 +246,9 @@ async function executeSinglePathEntries(
 	path: string,
 	runs: ((batchRequest: LspBatchRequest | undefined) => Promise<AgentToolResult<EditToolDetails>>)[],
 	outerBatchRequest: LspBatchRequest | undefined,
-	onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
+	onUpdate: ((partialResult: AgentToolResult<EditToolDetails, TInput>) => void) | undefined,
+	cwd: string,
+	signal: AbortSignal | undefined,
 ): Promise<AgentToolResult<EditToolDetails, TInput>> {
 	if (runs.length === 1) {
 		return runs[0](outerBatchRequest);
@@ -245,7 +257,7 @@ async function executeSinglePathEntries(
 	const contentTexts: string[] = [];
 	const diffTexts: string[] = [];
 	let firstChangedLine: number | undefined;
-	let errorCount = 0;
+	let hasError = false;
 	let metadataPath: string | undefined;
 	let hasFirstOldText = false;
 	let firstOldText: string | undefined;
@@ -296,10 +308,13 @@ async function executeSinglePathEntries(
 						`; re-read the file and re-issue only the failed and unapplied entries.`,
 				);
 			}
-			errorCount++;
+			hasError = true;
 			// Stop at the first failure: later entries were authored against
 			// line numbers/content that assumed this entry succeeded, and
 			// applying them after a failure compounds the damage.
+			if (outerBatchRequest?.flush) {
+				await flushLspWritethroughBatch(outerBatchRequest.id, cwd, signal);
+			}
 			break;
 		}
 
@@ -310,7 +325,7 @@ async function executeSinglePathEntries(
 					diff: diffTexts.join("\n"),
 					firstChangedLine,
 				},
-				...(errorCount > 0 ? { isError: true } : {}),
+				...(hasError ? { isError: true } : {}),
 			});
 		}
 	}
@@ -332,7 +347,7 @@ async function executeSinglePathEntries(
 		// renderer takes the error branch instead of falling through to the
 		// streaming-edit preview (which displays the *proposed* diff and looks
 		// indistinguishable from success).
-		...(errorCount > 0 ? { isError: true } : {}),
+		...(hasError ? { isError: true } : {}),
 	};
 }
 
@@ -530,11 +545,14 @@ export class EditTool implements AgentTool<TInput> {
 								batchRequest: br,
 								allowFuzzy: tool.#allowFuzzy,
 								fuzzyThreshold: tool.#fuzzyThreshold,
+								// The JSON grammar has no `*** Update File`; its `op: "create"`
+								// doubles as the documented full-file overwrite (patch.md <avoid>).
+								allowCreateOverwrite: true,
 								writethrough: tool.#writethrough,
 								beginDeferredDiagnosticsForPath: p => tool.#beginDeferredDiagnosticsForPath(p),
 							}),
 					);
-					return executeSinglePathEntries(path, runs, batchRequest, onUpdate);
+					return executeSinglePathEntries(path, runs, batchRequest, onUpdate, tool.session.cwd, signal);
 				},
 			},
 			apply_patch: {
@@ -574,7 +592,7 @@ export class EditTool implements AgentTool<TInput> {
 								}),
 						};
 					});
-					return executeApplyPatchPerFile(perFile, batchRequest, onUpdate);
+					return executeApplyPatchPerFile(perFile, batchRequest, tool.session.cwd, signal, onUpdate);
 				},
 			},
 			hashline: {
@@ -623,7 +641,7 @@ export class EditTool implements AgentTool<TInput> {
 								beginDeferredDiagnosticsForPath: p => tool.#beginDeferredDiagnosticsForPath(p),
 							}),
 					);
-					return executeSinglePathEntries(path, runs, batchRequest, onUpdate);
+					return executeSinglePathEntries(path, runs, batchRequest, onUpdate, tool.session.cwd, signal);
 				},
 			},
 		}[this.mode];

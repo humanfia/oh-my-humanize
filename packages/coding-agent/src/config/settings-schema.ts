@@ -1406,6 +1406,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"providers.anthropic.serverSideFallback": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Anthropic Server-Side Fallback (Fable 5)",
+			description:
+				"When a Claude Fable 5 / Mythos 5 request is blocked by Anthropic's safety classifier, retry it on Claude Opus 4.8 server-side (Anthropic `server-side-fallback-2026-06-01` beta). Opt-in — leaving this off preserves the pre-fallback behavior for every request.",
+		},
+	},
+
 	// ────────────────────────────────────────────────────────────────────────
 	// Interaction
 	// ────────────────────────────────────────────────────────────────────────
@@ -4151,13 +4163,25 @@ export const SETTINGS_SCHEMA = {
 			group: "Subagents",
 			label: "Soft Subagent Request Budget",
 			description:
-				"Soft per-subagent request budget (assistant requests per run). Crossing it injects one steering notice asking the subagent to wrap up; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled explore/sonic agents use a lower built-in budget.",
+				"Soft per-subagent request budget (assistant requests per run). Crossing it can inject a steering notice when task.softRequestBudgetNotice is enabled; at 1.5x the budget the run is aborted gracefully, salvaging partial output. 0 disables the guard. Bundled explore/sonic agents use a lower built-in budget.",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "40", label: "40 requests" },
 				{ value: "90", label: "90 requests", description: "Default" },
 				{ value: "150", label: "150 requests" },
 			],
+		},
+	},
+
+	"task.softRequestBudgetNotice": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Soft Request Budget Notice",
+			description:
+				"Inject one steering notice when a subagent crosses its soft request budget. Off by default; enabling it asks the child to wrap up before the 1.5x graceful abort guard.",
 		},
 	},
 

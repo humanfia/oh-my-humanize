@@ -136,6 +136,7 @@ import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
+	concreteThinkingLevel,
 	parseConfiguredThinkingLevel,
 	parseThinkingLevel,
 	resolveProvisionalAutoLevel,
@@ -1359,7 +1360,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Concrete level the agent/session start with. With `auto` this is the
 	// provisional level shown until the first per-turn classification resolves;
 	// `auto` itself stays a session-only concept handled by AgentSession.
-	let effectiveThinkingLevel: ThinkingLevel | undefined = thinkingLevel === AUTO_THINKING ? undefined : thinkingLevel;
+	let effectiveThinkingLevel: ThinkingLevel | undefined = concreteThinkingLevel(thinkingLevel);
 	if (model) {
 		const resolvedModel = model;
 		effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
@@ -1596,6 +1597,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			activateDiscoveredTools: toolNames => session.activateDiscoveredTools(toolNames),
 			getCheckpointState: () => session.getCheckpointState(),
 			setCheckpointState: state => session.setCheckpointState(state ?? undefined),
+			getLastCompletedRewind: () => session.getLastCompletedRewind(),
 			getToolChoiceQueue: () => session.toolChoiceQueue,
 			buildToolChoice: name => {
 				const m = session.model;
@@ -1960,7 +1962,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					// `thinking.defaultLevel` must not become sticky.
 					thinkingLevel = pickInitialThinkingLevel(restoredModel);
 					autoThinking = thinkingLevel === AUTO_THINKING;
-					effectiveThinkingLevel = thinkingLevel === AUTO_THINKING ? undefined : thinkingLevel;
+					effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
 					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
 						autoThinking
 							? resolveProvisionalAutoLevel(restoredModel)
@@ -2016,7 +2018,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					// so the role's explicit selector (e.g. `:max`) now applies.
 					thinkingLevel = pickInitialThinkingLevel(resolvedDefaultModel);
 					autoThinking = thinkingLevel === AUTO_THINKING;
-					effectiveThinkingLevel = thinkingLevel === AUTO_THINKING ? undefined : thinkingLevel;
+					effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
 					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
 						autoThinking
 							? resolveProvisionalAutoLevel(resolvedDefaultModel)

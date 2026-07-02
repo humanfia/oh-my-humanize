@@ -1,6 +1,6 @@
 import { type } from "arktype";
 import type { ModelSpec } from "../types";
-import { toPositiveNumber } from "../utils";
+import { discoveryFetch, toPositiveNumber } from "../utils";
 import {
 	ANTIGRAVITY_VARIANT_COLLAPSE_TABLE,
 	collapseEffortVariants,
@@ -161,7 +161,7 @@ export interface FetchAntigravityDiscoveryModelsOptions {
 export async function fetchAntigravityDiscoveryModels(
 	options: FetchAntigravityDiscoveryModelsOptions,
 ): Promise<ModelSpec<"google-gemini-cli">[] | null> {
-	const fetcher = options.fetcher ?? fetch;
+	const fetcher = discoveryFetch(options.fetcher);
 	const endpoints = options.endpoint
 		? [trimTrailingSlashes(options.endpoint)]
 		: DEFAULT_ANTIGRAVITY_DISCOVERY_ENDPOINTS.map(trimTrailingSlashes);

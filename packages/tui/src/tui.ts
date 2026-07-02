@@ -2836,6 +2836,7 @@ export class TUI extends Container {
 			}
 			window = this.#prepareLinesArray(window, width);
 		}
+		const cursorTrackingLineCount = hasVisibleOverlay ? Math.max(frame.length, windowTop + height) : frame.length;
 
 		const intent: RenderIntent = fullPaint
 			? { kind: "fullPaint", clearScrollback: replaceRequested || geometryRebuild ? !isMultiplexerSession() : false }
@@ -2866,6 +2867,7 @@ export class TUI extends Container {
 				clearScrollback: intent.clearScrollback,
 				chunkTo,
 				windowTop,
+				cursorTrackingLineCount,
 			});
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
 			this.#updateCommittedAuditRows(
@@ -2891,6 +2893,8 @@ export class TUI extends Container {
 			prevWindowTop,
 			prevHardwareCursorRow,
 			forceWindowRewrite: this.#forceViewportRepaintOnNextRender || (geometryChanged && resizeRepaintsInPlace()),
+			repaintVirtualScrollInPlace: hasVisibleOverlay,
+			cursorTrackingLineCount,
 		});
 		for (let i = this.#committedPrefix.length; i < chunkTo; i++) {
 			this.#committedPrefix.push(rawFrame[i] ?? "");
@@ -3272,26 +3276,48 @@ export class TUI extends Container {
 		cursorPos: { row: number; col: number } | null,
 		purgeSequence: string,
 		imageTransmitBuffer: string,
-		options: { clearScrollback: boolean; chunkTo: number; windowTop: number },
+		options: {
+			clearScrollback: boolean;
+			chunkTo: number;
+			windowTop: number;
+			cursorTrackingLineCount: number;
+		},
 	): void {
 		this.#fullRedrawCount += 1;
-		const { chunkTo, windowTop } = options;
-		const paintFrame = new Array<string>(chunkTo + height);
-		for (let i = 0; i < chunkTo; i++) paintFrame[i] = frame[i] ?? "";
-		for (let screenRow = 0; screenRow < height; screenRow++) {
-			paintFrame[chunkTo + screenRow] = window[screenRow] ?? "";
-		}
-		let untruncatedPaintCursorPos: { row: number; col: number } | null = null;
+		const { chunkTo, windowTop, cursorTrackingLineCount } = options;
+		// Map the frame-space cursor into paint space: committed-prefix rows
+		// keep their index, visible-window rows land after the prefix, and a
+		// cursor in neither region (hidden behind the overlay gap) hides.
+		let paintCursorPos: { row: number; col: number } | null = null;
 		if (cursorPos !== null) {
 			if (cursorPos.row < chunkTo) {
-				untruncatedPaintCursorPos = cursorPos;
+				paintCursorPos = cursorPos;
 			} else if (cursorPos.row >= windowTop && cursorPos.row < windowTop + height) {
-				untruncatedPaintCursorPos = { row: chunkTo + cursorPos.row - windowTop, col: cursorPos.col };
+				paintCursorPos = { row: chunkTo + cursorPos.row - windowTop, col: cursorPos.col };
 			}
 		}
-		const paint = this.#truncateLargeConptyFrame(paintFrame, width, height, untruncatedPaintCursorPos);
-		const paintLines = paint.lines;
-		const paintCursorPos = paint.cursorPos;
+		// ConPTY hosts bound the replay: merge prefix + window into one array
+		// so #truncateLargeConptyFrame can measure the payload and retain only
+		// the tail. Gated on the host check — everywhere else the merge would
+		// copy a pointer per committed row (a 50k-row session = 50k-entry
+		// array per resize step / theme change / session replace) just to be
+		// returned unchanged. `paintLines` stays null unless truncation
+		// actually rewrote the replay.
+		let paintLines: string[] | null = null;
+		let paintLineCount = chunkTo + height;
+		if (isConPTYHosted()) {
+			const merged = new Array<string>(chunkTo + height);
+			for (let i = 0; i < chunkTo; i++) merged[i] = frame[i] ?? "";
+			for (let screenRow = 0; screenRow < height; screenRow++) {
+				merged[chunkTo + screenRow] = window[screenRow] ?? "";
+			}
+			const paint = this.#truncateLargeConptyFrame(merged, width, height, paintCursorPos);
+			if (paint.lines !== merged) {
+				paintLines = paint.lines;
+				paintLineCount = paint.lines.length;
+				paintCursorPos = paint.cursorPos;
+			}
+		}
 		let buffer = this.#paintBeginSequence + this.#leaveResizeAltSequence() + purgeSequence;
 		if (options.clearScrollback) {
 			buffer += "\x1b[2J\x1b[H\x1b[3J";
@@ -3308,21 +3334,41 @@ export class TUI extends Container {
 		// DECCARA fills optimize only the rows that stay visible; history-bound
 		// rows are written as full styled strings (their background must
 		// survive in scrollback, which DECCARA cannot reach).
-		const visibleStart = Math.max(0, paintLines.length - height);
+		const visibleStart = Math.max(0, paintLineCount - height);
 		let fillSequence = "";
 		let visibleTexts: string[] | null = null;
-		if (this.#deccaraFillsEnabled() && visibleStart < paintLines.length) {
-			const visible = new Array<string>(paintLines.length - visibleStart);
-			for (let k = 0; k < visible.length; k++) visible[k] = paintLines[visibleStart + k] ?? "";
+		if (this.#deccaraFillsEnabled() && visibleStart < paintLineCount) {
+			// Untruncated, the visible slice is exactly the caller's window
+			// (visibleStart === chunkTo) — reuse it rather than copying;
+			// planDeccaraFills fills its own `texts` and never mutates input.
+			let visible = window;
+			if (paintLines !== null) {
+				visible = new Array<string>(paintLineCount - visibleStart);
+				for (let k = 0; k < visible.length; k++) visible[k] = paintLines[visibleStart + k] ?? "";
+			}
 			const plan = planDeccaraFills(visible, width);
 			visibleTexts = plan.texts;
 			fillSequence = plan.sequence;
 		}
-		for (let i = 0; i < paintLines.length; i++) {
-			if (i > 0) buffer += "\r\n";
-			buffer += this.#terminalLine(
-				visibleTexts && i >= visibleStart ? visibleTexts[i - visibleStart] : (paintLines[i] ?? ""),
-			);
+		if (paintLines === null) {
+			// Common path: emit straight from the source arrays (the
+			// pre-merge two-loop form); byte-identical to replaying the
+			// merged array.
+			for (let i = 0; i < chunkTo; i++) {
+				if (i > 0) buffer += "\r\n";
+				buffer += this.#terminalLine(frame[i] ?? "");
+			}
+			for (let screenRow = 0; screenRow < height; screenRow++) {
+				if (chunkTo + screenRow > 0) buffer += "\r\n";
+				buffer += this.#terminalLine(visibleTexts ? (visibleTexts[screenRow] ?? "") : (window[screenRow] ?? ""));
+			}
+		} else {
+			for (let i = 0; i < paintLines.length; i++) {
+				if (i > 0) buffer += "\r\n";
+				buffer += this.#terminalLine(
+					visibleTexts && i >= visibleStart ? visibleTexts[i - visibleStart] : (paintLines[i] ?? ""),
+				);
+			}
 		}
 		buffer += fillSequence;
 		// Park the hardware cursor at real content bottom, not the padded
@@ -3332,13 +3378,15 @@ export class TUI extends Container {
 		const parkUp = height - contentRows;
 		if (parkUp > 0) buffer += `\x1b[${parkUp}A`;
 		const contentBottomRow = windowTop + contentRows - 1;
-		const paintContentBottomRow = Math.max(0, paintLines.length - 1 - parkUp);
-		const cursorControl = this.#cursorControlSequence(paintCursorPos, paintLines.length, paintContentBottomRow);
+		const paintContentBottomRow = Math.max(0, paintLineCount - 1 - parkUp);
+		const cursorControl = this.#cursorControlSequence(paintCursorPos, paintLineCount, paintContentBottomRow);
 		buffer += cursorControl.seq;
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
 
-		const committedCursorState = paintCursorPos ? this.#targetHardwareCursorState(cursorPos, frame.length) : null;
+		const committedCursorState = paintCursorPos
+			? this.#targetHardwareCursorState(cursorPos, cursorTrackingLineCount)
+			: null;
 		const committedCursor = committedCursorState
 			? {
 					toRow: committedCursorState.row,
@@ -3607,9 +3655,19 @@ export class TUI extends Container {
 			prevWindowTop: number;
 			prevHardwareCursorRow: number;
 			forceWindowRewrite: boolean;
+			repaintVirtualScrollInPlace: boolean;
+			cursorTrackingLineCount: number;
 		},
 	): void {
-		const { chunkTo, windowTop, prevWindowTop, prevHardwareCursorRow, forceWindowRewrite } = options;
+		const {
+			chunkTo,
+			windowTop,
+			prevWindowTop,
+			prevHardwareCursorRow,
+			forceWindowRewrite,
+			repaintVirtualScrollInPlace,
+			cursorTrackingLineCount,
+		} = options;
 		const chunkFrom = this.#committedRows;
 		const chunkLength = chunkTo - chunkFrom;
 		const scroll = windowTop - prevWindowTop;
@@ -3660,7 +3718,7 @@ export class TUI extends Container {
 					}
 					cursorFromRow = windowTop + lastChanged;
 				}
-				const cursorControl = this.#cursorControlSequence(cursorPos, frame.length, cursorFromRow);
+				const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, cursorFromRow);
 				buffer += cursorControl.seq;
 				buffer += this.#paintEndSequence;
 				this.terminal.write(buffer);
@@ -3671,12 +3729,17 @@ export class TUI extends Container {
 			}
 		}
 
-		// In-window diff: nothing scrolls, nothing commits.
-		if (chunkLength === 0 && scroll === 0) {
-			if (forceWindowRewrite) this.#fullRedrawCount += 1;
-			let firstChanged = forceWindowRewrite ? 0 : -1;
-			let lastChanged = forceWindowRewrite ? height - 1 : -1;
-			if (!forceWindowRewrite) {
+		// In-window diff: nothing commits. While an overlay is visible, repaint
+		// the full viewport in place from a top-clamped cursor origin. Overlay
+		// cursor-only frames can leave the tracked row behind the physical cursor;
+		// a relative partial rewrite from that stale origin can CRLF on the bottom
+		// row and scroll native history without appending to the commit tape.
+		const overlayInPlaceRewrite = repaintVirtualScrollInPlace;
+		if (chunkLength === 0 && (scroll === 0 || overlayInPlaceRewrite)) {
+			if (forceWindowRewrite || overlayInPlaceRewrite) this.#fullRedrawCount += 1;
+			let firstChanged = forceWindowRewrite || overlayInPlaceRewrite ? 0 : -1;
+			let lastChanged = forceWindowRewrite || overlayInPlaceRewrite ? height - 1 : -1;
+			if (!forceWindowRewrite && !overlayInPlaceRewrite) {
 				const comparable = previousWindow.length === height;
 				for (let r = 0; r < height; r++) {
 					if (comparable && (window[r] ?? "") === (previousWindow[r] ?? "")) continue;
@@ -3686,15 +3749,22 @@ export class TUI extends Container {
 			}
 			if (firstChanged === -1) {
 				if (purgeSequence.length > 0) this.terminal.write(purgeSequence);
-				this.#writeCursorPosition(cursorPos, frame.length);
+				this.#writeCursorPosition(cursorPos, cursorTrackingLineCount);
 				this.#previousWidth = width;
 				this.#previousHeight = height;
 				return;
 			}
 			let buffer = this.#paintBeginSequence + purgeSequence;
-			const rowDelta = firstChanged - currentScreenRow;
-			if (rowDelta > 0) buffer += `\x1b[${rowDelta}B`;
-			else if (rowDelta < 0) buffer += `\x1b[${-rowDelta}A`;
+			if (overlayInPlaceRewrite) {
+				// The cursor tracker can be stale after overlay-only frames. A large
+				// CUU clamps at the viewport top without using absolute cursor home,
+				// so the following full-window rewrite cannot overflow the bottom.
+				if (height > 1) buffer += `\x1b[${height - 1}A`;
+			} else {
+				const rowDelta = firstChanged - currentScreenRow;
+				if (rowDelta > 0) buffer += `\x1b[${rowDelta}B`;
+				else if (rowDelta < 0) buffer += `\x1b[${-rowDelta}A`;
+			}
 			buffer += "\r";
 			// DECCARA-optimize the contiguous rewritten range (visible rows
 			// only; rectangles are absolute screen rows).
@@ -3720,10 +3790,11 @@ export class TUI extends Container {
 				buffer += `\x1b[${lastChanged - contentBottomScreenRow}A`;
 				cursorFromRow = contentBottomRow;
 			}
-			const cursorControl = this.#cursorControlSequence(cursorPos, frame.length, cursorFromRow);
+			const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, cursorFromRow);
 			buffer += cursorControl.seq;
 			buffer += this.#paintEndSequence;
 			this.terminal.write(buffer);
+			this.#windowTopRow = windowTop;
 			this.#commit(frame, window, width, height, cursorControl);
 			return;
 		}
@@ -3749,7 +3820,7 @@ export class TUI extends Container {
 		}
 		const parkUp = height - 1 - (contentBottomRow - windowTop);
 		if (parkUp > 0) buffer += `\x1b[${parkUp}A`;
-		const cursorControl = this.#cursorControlSequence(cursorPos, frame.length, contentBottomRow);
+		const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, contentBottomRow);
 		buffer += cursorControl.seq;
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);

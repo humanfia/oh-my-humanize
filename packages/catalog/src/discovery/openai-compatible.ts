@@ -1,5 +1,6 @@
 import { type } from "arktype";
 import type { Api, FetchImpl, ModelSpec, Provider } from "../types";
+import { discoveryFetch } from "../utils";
 
 const MODELS_PATH = "/models";
 
@@ -137,7 +138,7 @@ export async function fetchOpenAICompatibleModels<TApi extends Api>(
 		requestHeaders.Authorization = `Bearer ${options.apiKey}`;
 	}
 
-	const fetchImpl = options.fetch ?? globalThis.fetch;
+	const fetchImpl = discoveryFetch(options.fetch);
 	const fetchPayload = async (signal?: AbortSignal): Promise<unknown | null> => {
 		let response: Response;
 		try {

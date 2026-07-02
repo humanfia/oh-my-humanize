@@ -1,5 +1,8 @@
 import type { Effort } from "./effort";
 
+// Re-exported from @oh-my-pi/pi-utils so the whole workspace shares one
+// `fetch`-compatible signature (tls-fetch's wrappers produce/accept it).
+export type { FetchImpl } from "@oh-my-pi/pi-utils";
 export type { KnownProvider } from "./provider-models/descriptors";
 
 export type KnownApi =
@@ -89,15 +92,6 @@ export type Provider = string;
 /** Token budgets for each thinking level (token-based providers only) */
 export type ThinkingBudgets = { [key in Effort]?: number };
 
-/**
- * `fetch`-compatible function. Accepts any callable matching the standard
- * fetch signature; `preconnect` is optional because non-Bun runtimes (browsers,
- * test mocks) won't expose it.
- */
-export type FetchImpl = ((input: string | URL | Request, init?: RequestInit) => Promise<Response>) & {
-	preconnect?: typeof globalThis.fetch.preconnect;
-};
-
 export interface Usage {
 	/** Non-cached input tokens (matches the bucket the provider bills as new input). */
 	input: number;
@@ -153,8 +147,7 @@ export type OpenAIReasoningDisableMode =
 	| "openrouter-enabled-false"
 	| "zai-thinking-disabled"
 	| "qwen-enable-thinking-false"
-	| "qwen-template-false"
-	| "juice-zero-developer-message";
+	| "qwen-template-false";
 
 export type OpenAIStreamMarkupHealingPattern = "kimi" | "dsml" | "thinking";
 
@@ -338,7 +331,7 @@ export interface OpenAICompat {
 	 * https://community.openai.com/t/need-reasoning-false-option-for-gpt-5/1351588/7).
 	 * The prompt must not look like an execution or tool budget. Default: auto-detected (GPT-5-family model names).
 	 */
-	requiresJuiceZeroHack?: boolean;
+	requiresReasoningSuppressionPrompt?: boolean;
 	/** Whether streamed reasoning deltas for the same field may repeat the full cumulative text snapshot. Default: false. */
 	reasoningDeltasMayBeCumulative?: boolean;
 	/** Strip leaked DeepSeek chat-template special tokens from visible content deltas. Default: auto-detected. */
@@ -564,7 +557,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "thinkingKeep"
 			| "strictResponsesPairing"
 			| "supportsImageDetailOriginal"
-			| "requiresJuiceZeroHack"
+			| "requiresReasoningSuppressionPrompt"
 			| "enableGeminiThinkingLoopGuard"
 			| "whenThinking"
 		>
@@ -588,7 +581,7 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	supportsLongPromptCacheRetention: boolean;
 	strictResponsesPairing: boolean;
 	supportsImageDetailOriginal: boolean;
-	requiresJuiceZeroHack: boolean;
+	requiresReasoningSuppressionPrompt: boolean;
 	supportsObfuscationOptOut: boolean;
 	streamIdleTimeoutMs?: number;
 }
