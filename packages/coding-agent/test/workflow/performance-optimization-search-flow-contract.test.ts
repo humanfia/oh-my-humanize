@@ -261,6 +261,24 @@ describe("performance-optimization-search flow contract", () => {
 		expect(evidence).toContain("Fatal Command Diagnostic");
 	});
 
+	it("accepts a bare numeric baseline benchmark measurement", async () => {
+		const cwd = await createGitRepo();
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+
+		const result = await runScriptFile(cwd, "capture-baseline.js", {
+			task: {
+				baselineCommand: "python -c \"print('0.9657025549677201')\"",
+				benchmarkCommand: "python -c \"print('0.9657025549677201')\"",
+				validationCommand: "python -c \"print('validation')\"",
+			},
+		});
+
+		expect(result.summary).toBe("captured performance baseline; exit=0");
+		const evidence = await Bun.file(path.join(cwd, "workflow-output/performance-baseline.md")).text();
+		expect(evidence).toContain("0.9657025549677201");
+		expect(evidence).not.toContain("Fatal Command Diagnostic");
+	});
+
 	it("fails closed when a baseline command only emits numeric warning text", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });

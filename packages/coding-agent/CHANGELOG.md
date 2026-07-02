@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed the experimental documentation-audit flow accepting no-patch consolidation after parallel audit lanes reported actionable documentation repair signals.
+- Fixed the experimental performance-optimization-search flow rejecting benchmark commands that report a bare numeric timing measurement.
 - Fixed the experimental refactor-migration-plan flow looping on accepted no-change migration evidence when a task explicitly allows no-code/no-change outcomes.
 - Fixed session-exit diagnostics falsely reporting already completed workflow/subagent tool calls as pending when shutdown happens after the session branch moved.
 - Fixed background workflow lifecycle and run state disappearing from `/workflow` status, graph, and completion handling after the conversational session branch moves while nodes are still running.

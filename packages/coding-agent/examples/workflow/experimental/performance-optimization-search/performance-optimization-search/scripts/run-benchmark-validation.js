@@ -985,6 +985,7 @@ function isBenchmarkMeasurementLine(line) {
 	if (!/\d/u.test(line)) return false;
 	if (/\b(?:deprecationwarning|futurewarning|runtimewarning|userwarning|warning)\b/iu.test(line)) return false;
 	return (
+		/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/iu.test(line) ||
 		/\b\d+(?:\.\d+)?\s*(?:ns|us|µs|μs|ms|s|sec|secs|second|seconds|msec|usec)\b/iu.test(line) ||
 		/\b(?:loops?|iterations?|iters?|ops|runs?|requests?|reqs?)\b.*\b\d+(?:\.\d+)?\b/iu.test(line) ||
 		/\b\d+(?:\.\d+)?\b.*\b(?:loops?|iterations?|iters?|ops|runs?|requests?|reqs?|per\s+(?:loop|iter|op|second|sec)|\/s)\b/iu.test(
