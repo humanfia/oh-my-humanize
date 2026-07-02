@@ -3,10 +3,6 @@ const task = state.task && typeof state.task === "object" ? state.task : {};
 const cause = state.cause && typeof state.cause === "object" ? state.cause : {};
 const regression = state.regression && typeof state.regression === "object" ? state.regression : {};
 
-if (regression.status !== "pass") {
-	throw new Error("cannot archive bug triage flow before task-declared validation passes");
-}
-
 const changedFiles = await gitDiffHeadChangedFiles();
 const workspaceChangedFiles = await gitStatusChangedFiles();
 const allowedScopes = allowedPathsFromTask(typeof task.taskText === "string" ? task.taskText : typeof task.text === "string" ? task.text : "");
@@ -21,26 +17,34 @@ if (outsideAllowedChangedFiles.length > 0) {
 }
 const projectChangedFiles = changedFiles.filter((file) => !file.startsWith("workflow-output/") && file !== "task.md");
 const noCodeArchive = projectChangedFiles.length === 0;
-if (noCodeArchive) {
-	if (!allowsNoCodeResolution(task)) {
-		throw new Error(
-			"cannot archive bug triage flow without project changes; add `No-Code Resolution: allowed` to task.md only for evidence-only investigations",
-		);
-	}
-	const noBugRootCauseText = await readOptionalText("workflow-output/no-bug-root-cause.md");
-	if (causeProposesFix(cause) && !hasCauseReconciliation(noBugRootCauseText)) {
-		throw new Error(
-			"cannot archive no-code bug triage while cause evidence proposes a defect or fix boundary without an explicit `Cause Reconciliation` section in workflow-output/no-bug-root-cause.md",
-		);
-	}
-}
-
 const archivePath = "workflow-output/bugfix-archive.md";
 const taskText = await readOptionalText("task.md");
 const rollbackText = await readOptionalText("workflow-output/bugfix-rollback.md");
 const reproductionText = await readOptionalText("workflow-output/reproduction.md");
 const regressionText = await readOptionalText("workflow-output/regression.md");
 const noBugRootCauseText = await readOptionalText("workflow-output/no-bug-root-cause.md");
+const validationStatus = bugTriageArchiveValidationStatus({
+	noCodeArchive,
+	regression,
+	noBugRootCauseText,
+	rollbackText,
+	regressionText,
+});
+if (validationStatus === undefined) {
+	throw new Error("cannot archive bug triage flow before task-declared validation passes");
+}
+if (noCodeArchive) {
+	if (!allowsNoCodeResolution(task)) {
+		throw new Error(
+			"cannot archive bug triage flow without project changes; add `No-Code Resolution: allowed` to task.md only for evidence-only investigations",
+		);
+	}
+	if (causeProposesFix(cause) && !hasCauseReconciliation(noBugRootCauseText)) {
+		throw new Error(
+			"cannot archive no-code bug triage while cause evidence proposes a defect or fix boundary without an explicit `Cause Reconciliation` section in workflow-output/no-bug-root-cause.md",
+		);
+	}
+}
 
 await Bun.write(
 	archivePath,
@@ -81,7 +85,7 @@ return {
 			path: "/archive",
 			value: {
 				file: archivePath,
-				validation: "pass",
+				validation: validationStatus,
 				projectChangedFiles,
 			},
 		},
@@ -218,6 +222,23 @@ function allowsNoCodeResolution(task) {
 		/\bNo-Code Resolution\s*:\s*allowed\b/iu,
 		/\bNo-Code(?:\s*\/\s*No-Change)?\s+Allowed\s*:\s*(?:yes|true|allowed)\b/iu,
 	].some(pattern => pattern.test(taskText));
+}
+
+function bugTriageArchiveValidationStatus({ noCodeArchive, regression, noBugRootCauseText, rollbackText, regressionText }) {
+	if (regression.status === "pass") return "pass";
+	if (!noCodeArchive) return undefined;
+	if (!hasReconciledRawValidationFailure(noBugRootCauseText, rollbackText, regressionText)) return undefined;
+	return "no-code-evidence";
+}
+
+function hasReconciledRawValidationFailure(noBugRootCauseText, rollbackText, regressionText) {
+	const evidence = `${noBugRootCauseText}\n${rollbackText}`;
+	if (!/\b(raw|task-declared|declared)\s+validation\b/iu.test(evidence)) return false;
+	if (!/\b(fail|failed|failure|non[- ]?zero|exit\s+code\s*[:=]?\s*[1-9]\d*)\b/iu.test(`${evidence}\n${regressionText}`)) {
+		return false;
+	}
+	if (!/\b(PYTHONPATH=src|local[- ]source|this checkout|checked[- ]out source)\b/iu.test(evidence)) return false;
+	return /\b(\d+\s+passed|passed\s+\d+|validation\s+(?:passes|passed)|exit\s+code\s*[:=]?\s*0)\b/iu.test(evidence);
 }
 
 function causeProposesFix(value) {

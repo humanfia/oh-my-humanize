@@ -5601,6 +5601,81 @@ describe("example workflow scripts", () => {
 		});
 	});
 
+	it("allows no-code bug triage archives when raw validation failure is reconciled by local-source evidence", async () => {
+		using tempDir = TempDir.createSync("@omh-bug-triage-reconciled-raw-validation-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+
+		await initializeCleanGitRepo(cwd);
+		await Bun.write(
+			`${cwd}/task.md`,
+			[
+				"Objective:",
+				"Investigate whether a malformed command indicates a source defect.",
+				"",
+				"No-Code Resolution: allowed",
+			].join("\n"),
+		);
+		await Bun.write(`${cwd}/workflow-output/reproduction.md`, "Exit code: 127\nSyntaxError: unterminated string\n");
+		await Bun.write(
+			`${cwd}/workflow-output/regression.md`,
+			["# Regression Evidence", "", "## Exit Code", "", "1", "", "AttributeError from installed package"].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/bugfix-rollback.md`,
+			[
+				"No project files were changed, so no rollback patch is needed.",
+				"",
+				"Local-source validation: PYTHONPATH=src python -m pytest tests/test_datastructures.py tests/test_http.py tests/test_utils.py -q",
+				"Result: 267 passed.",
+				"Raw validation failed because Python imported an installed site-packages checkout instead of this checkout.",
+			].join("\n"),
+		);
+		await Bun.write(
+			`${cwd}/workflow-output/no-bug-root-cause.md`,
+			[
+				"# No-Bug Root Cause",
+				"",
+				"## Cause Reconciliation",
+				"",
+				"The isolateCause handoff is reconciled and refuted as a project source defect.",
+				"The literal reproduction fails before exercising project behavior because shell quoting breaks the command.",
+				"The raw task-declared validation failure is also reconciled: it imported an installed site-packages package.",
+				"With PYTHONPATH=src, the same task-scoped validation passes: 267 passed.",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "archiveBugfix",
+			scriptFileName: "archive-bugfix.js",
+			scriptDir: BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR,
+			writes: ["/archive"],
+			initialState: {
+				task: {
+					taskText: "No-Code Resolution: allowed",
+				},
+				cause: {
+					narrowest_fix_boundary: ["Patch the project only if a corrected local-source reproduction fails."],
+				},
+				regression: {
+					status: "fail",
+					exitCode: 1,
+				},
+				review: "finish",
+			},
+		});
+
+		expect(result.scheduler.state.archive).toMatchObject({
+			validation: "no-code-evidence",
+			projectChangedFiles: [],
+		});
+		const archive = await Bun.file(`${cwd}/workflow-output/bugfix-archive.md`).text();
+		expect(archive).toContain("Raw validation failed because");
+		expect(archive).toContain("267 passed");
+	});
+
 	it("keeps bug triage no-code prompts tied to cause reconciliation", async () => {
 		const patchPrompt = await Bun.file(
 			`${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/prompts/patch-fix.md`,
