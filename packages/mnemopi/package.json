@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-mnemopi",
-  "version": "16.3.0",
+  "version": "16.3.1",
   "description": "Local SQLite memory engine for OMH agents",
   "homepage": "https://omh.sh",
   "author": "Can Boluk",

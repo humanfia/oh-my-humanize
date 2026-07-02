@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/swarm-extension",
-  "version": "16.3.0",
+  "version": "16.3.1",
   "description": "Swarm orchestration extension for OMH",
   "homepage": "https://omh.sh",
   "author": "Derek Rynd",

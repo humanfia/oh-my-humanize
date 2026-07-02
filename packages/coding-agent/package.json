@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-coding-agent",
-  "version": "16.3.0",
+  "version": "16.3.1",
   "description": "Oh My Humanize coding-agent CLI with workflow orchestration, tools, and session management",
   "homepage": "https://omh.sh",
   "author": "Can Boluk",
