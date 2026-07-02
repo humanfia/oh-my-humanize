@@ -45,6 +45,12 @@ final/latest run. Look for
 test-lane evidence. Canonical latest aliases are not enough and must not
 overwrite prior failed stdout, stderr, or exit-code evidence.
 
+Do not rerun the declared final validation command in this reviewer node. The
+following `runDeclaredValidation` workflow program node owns final validation
+reuse and materialization. If validation evidence is stale, missing, or
+insufficient, record that as a blocker for workflow-owned validation instead of
+creating reviewer-local logs, harness artifacts, or `artifact://...` references.
+
 Summarize changed files, verification evidence, unresolved risks, lane/workspace
 conflicts, and the highest-priority follow-up for the final strong reviewer.
 This node records integration evidence in its review output; it does not decide

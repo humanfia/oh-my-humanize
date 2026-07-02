@@ -7,6 +7,7 @@ const changedFiles = await changedProjectFiles();
 const diffStat = await gitOutput(["git", "diff", "--stat"]);
 const laneArtifacts = await laneEvidenceArtifacts(tupleId);
 const validationArtifacts = await validationEvidenceArtifacts(tupleId);
+const transientArtifactBlockers = integrationActivation ? transientArtifactBlockersFor(integrationActivation.output) : [];
 const artifactPath = `workflow-output/integration-review-materialized${tupleId ? `-${tupleId}` : ""}.json`;
 const handoffArtifact = `workflow-output/review-handoff${tupleId ? `-${tupleId}` : ""}.json`;
 const payload = {
@@ -28,6 +29,7 @@ const payload = {
 	diff_stat: diffStat,
 	lane_artifacts: laneArtifacts,
 	validation_artifacts: validationArtifacts,
+	transient_artifact_blockers: transientArtifactBlockers,
 	checked_at_ms: Date.now(),
 };
 const reviewHandoff = boundedReviewHandoff({
@@ -39,6 +41,7 @@ const reviewHandoff = boundedReviewHandoff({
 	diffStat,
 	laneArtifacts,
 	validationArtifacts,
+	transientArtifactBlockers,
 });
 
 await Bun.write(artifactPath, `${JSON.stringify(payload, null, 2)}\n`);
@@ -65,6 +68,7 @@ const resultData = {
 	diff_stat: truncateText(diffStat, 1600),
 	lane_artifacts: boundedArray(laneArtifacts, 40),
 	validation_artifacts: boundedArray(validationArtifacts, 40),
+	transient_artifact_blockers: boundedArray(transientArtifactBlockers, 20),
 };
 
 return {
@@ -154,8 +158,26 @@ function boundedReviewHandoff(input) {
 		diff_stat: truncateText(input.diffStat, 1600),
 		lane_artifacts: boundedArray(input.laneArtifacts, 50),
 		validation_artifacts: boundedArray(input.validationArtifacts, 50),
+		transient_artifact_blockers: boundedArray(input.transientArtifactBlockers, 20),
 	};
 	return truncateUtf8Bytes(safeJsonStringify(handoff), MAX_REVIEW_HANDOFF_BYTES);
+}
+
+function transientArtifactBlockersFor(output) {
+	const refs = extractTransientArtifactRefs(output);
+	return refs.map(
+		ref =>
+			`${ref} is a transient runtime artifact URI; persist reviewer-visible stdout, stderr, exit code, or notes under workflow-output before using it as promotion evidence`,
+	);
+}
+
+function extractTransientArtifactRefs(value) {
+	const text = safeJsonStringify(value);
+	const refs = new Set();
+	for (const match of text.matchAll(/\bartifact:\/\/[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+/gu)) {
+		refs.add(match[0].replace(/[),.;:]+$/u, ""));
+	}
+	return Array.from(refs).sort((left, right) => left.localeCompare(right, "en"));
 }
 
 function activationHandoff(nodeId) {

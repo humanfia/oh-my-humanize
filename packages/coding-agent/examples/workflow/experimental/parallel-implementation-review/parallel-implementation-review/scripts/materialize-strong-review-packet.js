@@ -31,6 +31,7 @@ const resultData = {
 	budget_bytes: MAX_STRONG_REVIEW_PACKET_BYTES,
 	evidence_contract_verdict: stringField(evidenceContract, "verdict") || stringField(evidenceContract, "status"),
 	review_handoff_artifacts: extractArtifactRefs(reviewHandoff).slice(0, 20),
+	non_durable_review_handoff_artifacts: extractNonDurableArtifactRefs(reviewHandoff).slice(0, 20),
 	checked_at_ms: Date.now(),
 };
 
@@ -95,6 +96,7 @@ function boundedStrongReviewPacket(input) {
 	const reviewRefs = extractArtifactRefs(input.reviewHandoff);
 	const planRefs = extractArtifactRefs(input.planHandoff);
 	const evidenceRefs = extractArtifactRefs(input.evidenceContractText);
+	const nonDurableReviewRefs = extractNonDurableArtifactRefs(input.reviewHandoff);
 	const lines = [
 		"# Strong review packet",
 		"",
@@ -113,6 +115,9 @@ function boundedStrongReviewPacket(input) {
 		...artifactSection("review handoff", reviewRefs),
 		...artifactSection("evidence contract", evidenceRefs),
 		`- strong review packet: ${input.artifact}`,
+		"",
+		"Non-durable artifact-like references:",
+		...artifactSection("review handoff ignored", nonDurableReviewRefs),
 		"",
 		"Changed project files:",
 		...boundedList(changedFiles, 40, "changed files omitted"),
@@ -168,9 +173,24 @@ function boundedList(values, limit, omittedLabel) {
 function extractArtifactRefs(text) {
 	const refs = new Set();
 	for (const match of stringifyForPacket(text).matchAll(/workflow-output\/[A-Za-z0-9._/@=:+,-]+/gu)) {
-		refs.add(match[0].replace(/[),.;:]+$/u, ""));
+		const ref = match[0].replace(/[),.;:]+$/u, "");
+		if (isNonDurableArtifactLikeRef(ref)) continue;
+		refs.add(ref);
 	}
 	return Array.from(refs).sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function extractNonDurableArtifactRefs(text) {
+	const refs = new Set();
+	for (const match of stringifyForPacket(text).matchAll(/workflow-output\/[A-Za-z0-9._/@=:+,-]+/gu)) {
+		const ref = match[0].replace(/[),.;:]+$/u, "");
+		if (isNonDurableArtifactLikeRef(ref)) refs.add(ref);
+	}
+	return Array.from(refs).sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function isNonDurableArtifactLikeRef(ref) {
+	return /(?:^|\/)lane-archive-(?:config|ignore|searcher)-/u.test(ref);
 }
 
 function recordValue(value) {

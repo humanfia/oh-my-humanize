@@ -22,6 +22,9 @@ interface ScriptResult {
 		validation_environment?: Record<string, string>;
 		review_handoff_artifact?: string;
 		review_handoff_bytes?: number;
+		review_handoff_artifacts?: string[];
+		non_durable_review_handoff_artifacts?: string[];
+		transient_artifact_blockers?: string[];
 		changed_files?: string[];
 		preexisting_final_artifacts?: Array<{
 			original: string;
@@ -2040,6 +2043,45 @@ describe("parallel-implementation-review flow contract", () => {
 		expect(() => validateWorkflowActivationOutput(result)).not.toThrow();
 	});
 
+	it("flags transient reviewer artifact URIs instead of treating them as durable validation evidence", async () => {
+		const cwd = await createTempDir();
+		await writeTupleFiles(cwd, "P06-T06-test");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		await Bun.write(path.join(cwd, "workflow-output", "core-lane-P06-T06-test.json"), "{}\n");
+		await Bun.write(path.join(cwd, "workflow-output", "tests-lane-P06-T06-test.json"), "{}\n");
+		await Bun.write(path.join(cwd, "workflow-output", "docs-lane-P06-T06-test.json"), "{}\n");
+
+		const result = await runScript(cwd, "materialize-integration-review.js", {
+			completedActivations: [
+				{
+					id: "activation-integration",
+					nodeId: "integrationReview",
+					graphRevisionId: "graph",
+					status: "completed",
+					parentActivationIds: [],
+					output: {
+						summary: "I reran validation and only have stdout in artifact://24.",
+						artifacts: ["artifact://24"],
+					},
+				},
+			],
+		});
+		const handoff = result.statePatch?.find(patch => patch.path === "/reviewHandoff")?.value;
+		const materialized = await Bun.file(
+			path.join(cwd, "workflow-output", "integration-review-materialized-P06-T06-test.json"),
+		).json();
+
+		expect(result.verdict).toBe("materialized");
+		expect(result.data?.transient_artifact_blockers).toEqual([
+			expect.stringContaining("artifact://24 is a transient runtime artifact URI"),
+		]);
+		expect(typeof handoff).toBe("string");
+		expect(handoff as string).toContain("transient_artifact_blockers");
+		expect(materialized).toMatchObject({
+			transient_artifact_blockers: [expect.stringContaining("artifact://24 is a transient runtime artifact URI")],
+		});
+	});
+
 	it("materializes a bounded review handoff before strong review consumes lane evidence", async () => {
 		const cwd = await createTempDir();
 		await writeTupleFiles(cwd, "P06-T06-test");
@@ -2167,6 +2209,58 @@ describe("parallel-implementation-review flow contract", () => {
 			packet_bytes: expect.any(Number),
 		});
 		expect(() => validateWorkflowActivationOutput(result)).not.toThrow();
+	});
+
+	it("does not list forbidden semantic lane archive names as durable strong-review artifacts", async () => {
+		const cwd = await createTempDir();
+		await writeTupleFiles(cwd, "P06-T06-test");
+		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
+		const reviewHandoff = [
+			"Forbidden artifact names observed in reviewer prose:",
+			"workflow-output/lane-archive-config-P06-T06-test.md",
+			"workflow-output/lane-archive-ignore-P06-T06-test.md",
+			"Durable canonical evidence:",
+			"workflow-output/core-lane-P06-T06-test.json",
+			"workflow-output/tests-lane-P06-T06-test.json",
+			"workflow-output/docs-lane-P06-T06-test.json",
+		].join("\n");
+
+		const result = await runScript(cwd, "materialize-strong-review-packet.js", {
+			state: {
+				planHandoff: "workflow-output/scope-plan-handoff-P06-T06-test.json",
+				taskContract: "Validation Command:\ntrue\n",
+				reviewHandoff,
+				evidenceContract: {
+					verdict: "READY",
+					reasons: [],
+					checked_inputs: {
+						lane_artifacts: [
+							"workflow-output/core-lane-P06-T06-test.json",
+							"workflow-output/tests-lane-P06-T06-test.json",
+							"workflow-output/docs-lane-P06-T06-test.json",
+						],
+					},
+				},
+			},
+		});
+		const packet = result.statePatch?.find(patch => patch.path === "/strongReviewPacket")?.value;
+		if (typeof packet !== "string") throw new Error("expected strong-review packet string");
+		const durableStart = packet.indexOf("Durable artifact references:");
+		const nonDurableStart = packet.indexOf("Non-durable artifact-like references:");
+		const durableSection = packet.slice(durableStart, nonDurableStart);
+
+		expect(durableStart).toBeGreaterThanOrEqual(0);
+		expect(nonDurableStart).toBeGreaterThan(durableStart);
+		expect(durableSection).toContain("workflow-output/core-lane-P06-T06-test.json");
+		expect(durableSection).not.toContain("lane-archive-config-P06-T06-test");
+		expect(durableSection).not.toContain("lane-archive-ignore-P06-T06-test");
+		expect(packet).toContain("Non-durable artifact-like references:");
+		expect(packet).toContain("workflow-output/lane-archive-config-P06-T06-test.md");
+		expect(result.data?.review_handoff_artifacts).toContain("workflow-output/core-lane-P06-T06-test.json");
+		expect(result.data?.non_durable_review_handoff_artifacts).toEqual([
+			"workflow-output/lane-archive-config-P06-T06-test.md",
+			"workflow-output/lane-archive-ignore-P06-T06-test.md",
+		]);
 	});
 
 	it("accepts materialized integration review evidence for the evidence contract", async () => {
