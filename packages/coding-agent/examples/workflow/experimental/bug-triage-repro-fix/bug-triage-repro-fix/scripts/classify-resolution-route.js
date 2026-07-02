@@ -129,6 +129,9 @@ function hasNoCodeCauseResolution(value) {
 		const field = value[key];
 		if (typeof field === "string" && hasNoCodeCauseSignal(field)) return true;
 	}
+	for (const candidate of noCodeCauseEvidenceCandidates(value)) {
+		if (typeof candidate === "string" && hasNoCodeCauseSignal(candidate)) return true;
+	}
 	return false;
 }
 
@@ -162,13 +165,43 @@ function hasNoCodeCauseSignal(value) {
 	return (
 		/\bno code\b/u.test(normalized) ||
 		/\bno bug\b/u.test(normalized) ||
+		/\bno project source defect\b/u.test(normalized) ||
 		/\bno source defect\b/u.test(normalized) ||
 		/\bno source change\b/u.test(normalized) ||
+		/\bno patch needed\b/u.test(normalized) ||
+		/\bno patch\b/u.test(normalized) ||
 		/\binvalid (?:reproduction|harness)\b/u.test(normalized) ||
 		/\bharness issue\b/u.test(normalized) ||
 		/\binvocation error\b/u.test(normalized) ||
 		/\breproduction invocation error\b/u.test(normalized)
 	);
+}
+
+function noCodeCauseEvidenceCandidates(value) {
+	const boundaryCandidates = patchableBoundaryCandidates(value);
+	return [
+		value.noPatchNeededBecause,
+		value.no_patch_needed_because,
+		value.noSourceDefectBecause,
+		value.no_source_defect_because,
+		value.smallestLikelyRootCause,
+		value.smallest_likely_root_cause,
+		...boundaryCandidates.flatMap(noCodeBoundaryEvidenceCandidates),
+	];
+}
+
+function noCodeBoundaryEvidenceCandidates(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+	return [
+		value.noPatchNeededBecause,
+		value.no_patch_needed_because,
+		value.noSourceDefectBecause,
+		value.no_source_defect_because,
+		value.recommendedBuilderAction,
+		value.recommended_builder_action,
+		value.noPatchRationale,
+		value.no_patch_rationale,
+	];
 }
 
 function hasPatchableClassification(value) {

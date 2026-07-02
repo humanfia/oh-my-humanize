@@ -527,9 +527,15 @@ describe("example workflow scripts", () => {
 					outputPath: "workflow-output/reproduction.md",
 				},
 				cause: {
-					classification: "no_source_defect_likely_reproduction_invocation_error",
-					rootCause: "The frozen shell command failed before exercising the reported behavior.",
-					narrowest_fix_boundary: "No project source or test change; repair only the reproduction invocation.",
+					classification: "no_project_source_defect_indicated",
+					smallestLikelyRootCause: "The frozen shell command failed before exercising the reported behavior.",
+					narrowestFixBoundary: {
+						recommendedBuilderAction:
+							"Use the no-code route for project source. Preserve the frozen precheck as operator-owned evidence.",
+						filesToAvoidChanging: ["src/werkzeug/http.py", "tests/test_http.py"],
+						noPatchNeededBecause:
+							"The public API behavior required by the frozen canary is already present and covered by direct execution plus focused tests.",
+					},
 				},
 			},
 		});
@@ -546,8 +552,8 @@ describe("example workflow scripts", () => {
 			changedFiles: [],
 		});
 		const reconciliation = await Bun.file(`${cwd}/workflow-output/no-bug-root-cause.md`).text();
-		expect(reconciliation).toContain("no_source_defect_likely_reproduction_invocation_error");
-		expect(reconciliation).toContain("reproduction invocation");
+		expect(reconciliation).toContain("no_project_source_defect_indicated");
+		expect(reconciliation).toContain("frozen shell command failed");
 	});
 
 	it("binds research reproduction validation evidence as standalone prompt context", async () => {
