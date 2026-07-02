@@ -1203,6 +1203,45 @@ edges: []
 		expect(output.verdict).toBe("COMPLETE");
 	});
 
+	it("retries provider connection failures for review nodes", async () => {
+		let calls = 0;
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0 },
+			runAgentTask: async () => {
+				calls += 1;
+				if (calls === 1) {
+					return {
+						exitCode: 1,
+						output: "",
+						error: "Unable to connect. Is the computer able to access the url?",
+					};
+				}
+				return {
+					exitCode: 0,
+					output: "finish\nRecovered after connection retry.",
+				};
+			},
+		});
+		if (host.runReviewNode === undefined) throw new Error("review runtime missing");
+
+		const node: WorkflowNode = {
+			id: "review",
+			type: "review",
+			prompt: "Review the thing.",
+			gates: ["continue", "finish"],
+		};
+		const output = await host.runReviewNode({
+			node,
+			activation: workflowActivation(node.id),
+			prompt: node.prompt,
+			gates: node.gates,
+		});
+
+		expect(calls).toBe(2);
+		expect(output.verdict).toBe("finish");
+	});
+
 	it("retries workflow review nodes when a provider retry stalls without progress", async () => {
 		let calls = 0;
 		const host = createSessionWorkflowRuntimeHost({
