@@ -5916,6 +5916,57 @@ describe("example workflow scripts", () => {
 		expect(JSON.stringify(result.scheduler.state.selectionRepair)).toContain("# Performance Selection Repair");
 	});
 
+	it("materializes inferred performance no-win branches from repair sections", async () => {
+		using tempDir = TempDir.createSync("@omh-performance-selection-repair-inferred-no-win-");
+		const cwd = tempDir.path();
+		const previousCwd = process.cwd();
+		await Bun.write(
+			`${cwd}/workflow-output/performance-selection-repair.md`,
+			[
+				"# Performance Selection Repair",
+				"",
+				"## Current status",
+				"",
+				"- Benchmark status: pass, exit code 0.",
+				"- Validation status: pass, exit code 0.",
+				"",
+				"## Selection decision",
+				"",
+				"Selected branch: algorithmic.",
+				"",
+				"## Unselected branch rejection evidence",
+				"",
+				"IO branch:",
+				"- final-selection: no",
+				"- no-win-result: yes",
+				"- benchmark-relevance: yes",
+				"- reason: the covered candidate benchmark was slower than baseline.",
+				"",
+				"Caching branch:",
+				"- final-selection: no",
+				"- benchmark-covered rejection: yes",
+			].join("\n"),
+		);
+
+		const result = await runExampleScript({
+			cwd,
+			previousCwd,
+			nodeId: "materializeSelectionRepair",
+			scriptFileName: "materialize-selection-repair.js",
+			scriptDir: PERFORMANCE_OPTIMIZATION_SCRIPT_DIR,
+			writes: ["/selectionRepair"],
+		});
+
+		expect(result.scheduler.state.selectionRepair).toMatchObject({
+			status: "materialized",
+			selectedBranch: "algorithmic",
+			noWinBranch: "io",
+			noWinBranches: ["io"],
+		});
+		const materialized = await Bun.file(`${cwd}/workflow-output/performance-selection-repair.json`).json();
+		expect(materialized.noWinBranches).toEqual(["io"]);
+	});
+
 	it("materializes refactor dependency maps before compatibility design", async () => {
 		using tempDir = TempDir.createSync("@omh-refactor-dependency-map-materialized-");
 		const cwd = tempDir.path();

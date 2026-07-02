@@ -12,7 +12,8 @@ const selectionRepair = {
 	benchmark: commandEvidence(text, "benchmark"),
 	validation: commandEvidence(text, "validation"),
 	selectedBranch: selectionValue(text, ["Selected branch", "Selected positive optimization branch"]),
-	noWinBranch: selectionValue(text, "No-win branch"),
+	noWinBranch: noWinBranchValue(text),
+	noWinBranches: noWinBranches(text),
 };
 
 await Bun.write("workflow-output/performance-selection-repair.json", `${JSON.stringify(selectionRepair, null, 2)}\n`);
@@ -103,6 +104,56 @@ function selectionValue(report, labels) {
 		if (match) return stripMarkdown(match[1] ?? "").trim() || "unknown";
 	}
 	return "unknown";
+}
+
+function noWinBranchValue(report) {
+	const explicit = selectionValue(report, "No-win branch");
+	if (explicit !== "unknown") return explicit;
+	const branches = noWinBranches(report);
+	return branches.length > 0 ? branches.join(", ") : "unknown";
+}
+
+function noWinBranches(report) {
+	return uniqueStrings([...branchListValue(selectionValue(report, "No-win branch")), ...inferredNoWinBranches(report)]);
+}
+
+function branchListValue(value) {
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "" || normalized === "unknown" || /\bnone\b/iu.test(normalized)) return [];
+	return value
+		.split(/[,/]/u)
+		.map((item) => stripMarkdown(item).toLowerCase())
+		.filter((item) => ["algorithmic", "caching", "io", "no-win"].includes(item));
+}
+
+function inferredNoWinBranches(report) {
+	return ["algorithmic", "caching", "io"].filter((branch) => /\bno-win-result\s*:\s*(?:yes|true)\b/iu.test(branchSection(report, branch)));
+}
+
+function branchSection(report, branch) {
+	const lines = report.split(/\r?\n/u);
+	const startPattern = new RegExp(String.raw`^\s*-?\s*${escapeRegExp(branch)}(?:\s+branch)?\s*:`, "iu");
+	const otherStartPattern = new RegExp(
+		String.raw`^\s*-?\s*(?:${["algorithmic", "caching", "io"].filter((name) => name !== branch).map(escapeRegExp).join("|")})(?:\s+branch)?\s*:`,
+		"iu",
+	);
+	const section = [];
+	let collecting = false;
+	for (const line of lines) {
+		if (startPattern.test(line)) {
+			collecting = true;
+			section.push(line);
+			continue;
+		}
+		if (!collecting) continue;
+		if (/^##\s+/u.test(line) || otherStartPattern.test(line)) break;
+		section.push(line);
+	}
+	return section.join("\n");
+}
+
+function uniqueStrings(values) {
+	return [...new Set(values.filter(Boolean))];
 }
 
 function stripMarkdown(value) {
