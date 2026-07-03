@@ -1142,7 +1142,7 @@ describe("AgentSession TTSR resume gate", () => {
 			type: "toolCall",
 			id: "call_ttsr_abort_reason",
 			name: "mock_edit",
-			arguments: { snippet: "let val = result.unwrap(" },
+			arguments: { snippet: 'let val = result.expect("msg")' },
 		};
 
 		const makeToolCallMsg = (stopReason: "toolUse" | "aborted" = "toolUse"): AssistantMessage => ({
@@ -1172,7 +1172,15 @@ describe("AgentSession TTSR resume gate", () => {
 				const signal = options?.signal;
 				if (streamCallCount === 1) {
 					queueMicrotask(() => {
-						const partial = makeToolCallMsg();
+						const toolPartial = makeToolCallMsg();
+						const textStartPartial: AssistantMessage = {
+							...toolPartial,
+							content: [...toolPartial.content, { type: "text", text: "" }],
+						};
+						const violatingPartial: AssistantMessage = {
+							...toolPartial,
+							content: [...toolPartial.content, { type: "text", text: 'let val = result.unwrap("oops")' }],
+						};
 						if (signal) {
 							signal.addEventListener(
 								"abort",
@@ -1186,19 +1194,26 @@ describe("AgentSession TTSR resume gate", () => {
 								{ once: true },
 							);
 						}
-						stream.push({ type: "start", partial });
-						stream.push({ type: "toolcall_start", contentIndex: 0, partial });
+						stream.push({ type: "start", partial: toolPartial });
+						stream.push({ type: "toolcall_start", contentIndex: 0, partial: toolPartial });
+						stream.push({ type: "toolcall_delta", contentIndex: 0, delta: "{}", partial: toolPartial });
 						stream.push({
-							type: "toolcall_delta",
+							type: "toolcall_end",
 							contentIndex: 0,
-							delta: 'let val = result.unwrap("oops")',
-							partial,
+							toolCall: toolCallContent,
+							partial: toolPartial,
 						});
-						// The TTSR abort placeholder is only minted for tool calls that reached
-						// `toolcall_end`: the agent loop drops incomplete tool calls from an
-						// aborted turn (partial args are unsafe to replay). Complete the call
-						// before the rule-driven abort fires so the labeled placeholder survives.
-						stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: toolCallContent, partial });
+						// Completed tool calls in an aborted assistant turn get synthetic results;
+						// incomplete calls are intentionally dropped as unsafe to replay. Trigger
+						// TTSR from trailing text after `toolcall_end` so this covers the completed
+						// tool-call placeholder contract instead of racing the abort before retain.
+						stream.push({ type: "text_start", contentIndex: 1, partial: textStartPartial });
+						stream.push({
+							type: "text_delta",
+							contentIndex: 1,
+							delta: 'let val = result.unwrap("oops")',
+							partial: violatingPartial,
+						});
 					});
 				} else {
 					pushContinuationStream(stream, () => {});

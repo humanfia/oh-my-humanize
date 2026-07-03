@@ -273,7 +273,13 @@ describe("AgentSession empty stop guard", () => {
 	it("ends auto-retry state when empty stop retries hit the cap", async () => {
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const { session, mock } = await createHarness(
-			[{ throw: "503 service unavailable: overloaded_error" }, emptyStop(), emptyStop(), emptyStop(), emptyStop()],
+			[
+				{ throw: "503 service unavailable: overloaded_error retry-after-ms=5" },
+				emptyStop(),
+				emptyStop(),
+				emptyStop(),
+				emptyStop(),
+			],
 			{
 				"retry.enabled": true,
 				"retry.baseDelayMs": 5,
@@ -321,7 +327,7 @@ describe("AgentSession empty stop guard", () => {
 		expect(session.retryAttempt).toBe(0);
 		expect(assistantText(session.agent.state.messages)).toContain("fresh unrelated success");
 
-		mock.push({ throw: "503 service unavailable: overloaded_error" });
+		mock.push({ throw: "503 service unavailable: overloaded_error retry-after-ms=5" });
 		mock.push({ content: ["fresh retry success"], stopReason: "stop" });
 		await expectPromptCompletes(session.prompt("recover with fresh retry budget"));
 		await session.waitForIdle();
@@ -343,10 +349,10 @@ describe("AgentSession empty stop guard", () => {
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const { session, mock } = await createHarness(
 			[
-				{ throw: "503 service unavailable: overloaded_error" },
+				{ throw: "503 service unavailable: overloaded_error retry-after-ms=5" },
 				emptyStop(),
-				{ throw: "503 service unavailable: overloaded_error" },
-				{ throw: "503 service unavailable: overloaded_error" },
+				{ throw: "503 service unavailable: overloaded_error retry-after-ms=5" },
+				{ throw: "503 service unavailable: overloaded_error retry-after-ms=5" },
 			],
 			{
 				"retry.enabled": true,
