@@ -7,9 +7,17 @@ import * as path from "node:path";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
 import * as deepseekModule from "@oh-my-pi/pi-ai/registry/deepseek";
 import * as kagiModule from "@oh-my-pi/pi-ai/registry/kagi";
+import {
+	type OAuthProviderInterface,
+	registerOAuthProvider,
+	unregisterOAuthProviders,
+} from "@oh-my-pi/pi-ai/registry/oauth";
+import * as anthropicModule from "@oh-my-pi/pi-ai/registry/oauth/anthropic";
 import * as ollamaCloudModule from "@oh-my-pi/pi-ai/registry/ollama-cloud";
 import * as aiStream from "@oh-my-pi/pi-ai/stream";
 import { removeWithRetries } from "../../utils/src/temp";
+
+const RUNTIME_PROVIDER_SOURCE = "auth-storage-api-key-login-test";
 
 function countCredentialRows(dbPath: string, provider: string): number {
 	const db = new Database(dbPath, { readonly: true });
@@ -46,6 +54,7 @@ describe("AuthStorage api-key login upsert", () => {
 	let dbPath = "";
 	let store: SqliteAuthCredentialStore | null = null;
 	let authStorage: AuthStorage | null = null;
+	let loginAnthropicConsoleSpy: Mock<typeof anthropicModule.loginAnthropicConsole>;
 	let loginDeepSeekSpy: Mock<typeof deepseekModule.loginDeepSeek>;
 	let loginKagiSpy: Mock<typeof kagiModule.loginKagi>;
 	let loginOllamaCloudSpy: Mock<typeof ollamaCloudModule.loginOllamaCloud>;
@@ -56,6 +65,7 @@ describe("AuthStorage api-key login upsert", () => {
 		dbPath = path.join(tempDir, "agent.db");
 		store = await SqliteAuthCredentialStore.open(dbPath);
 		authStorage = new AuthStorage(store);
+		loginAnthropicConsoleSpy = vi.spyOn(anthropicModule, "loginAnthropicConsole");
 		loginDeepSeekSpy = vi.spyOn(deepseekModule, "loginDeepSeek");
 		loginKagiSpy = vi.spyOn(kagiModule, "loginKagi");
 		loginOllamaCloudSpy = vi.spyOn(ollamaCloudModule, "loginOllamaCloud");
@@ -63,6 +73,7 @@ describe("AuthStorage api-key login upsert", () => {
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
+		unregisterOAuthProviders(RUNTIME_PROVIDER_SOURCE);
 		store?.close();
 		store = null;
 		authStorage = null;
@@ -97,8 +108,110 @@ describe("AuthStorage api-key login upsert", () => {
 		expect(stored.credential.key).toBe("same-kagi-key");
 		expect(store.getApiKey("kagi")).toBe("same-kagi-key");
 		expect(await authStorage.getApiKey("kagi", "session-kagi-relogin")).toBe("same-kagi-key");
+		expect(await authStorage.resolveApiKey("kagi", "session-kagi-relogin")).toEqual({
+			apiKey: "same-kagi-key",
+		});
 	});
 
+	it("persists only Console logins with the Anthropic request profile across SQLite reopen", async () => {
+		if (!store || !authStorage || !dbPath) throw new Error("test setup failed");
+
+		await authStorage.set("anthropic", {
+			type: "oauth",
+			access: "oauth-access-token",
+			refresh: "oauth-refresh-token",
+			expires: Date.now() + 60 * 60_000,
+		});
+		expect(await authStorage.resolveApiKey("anthropic", "oauth-session")).toEqual({
+			apiKey: "oauth-access-token",
+		});
+
+		loginAnthropicConsoleSpy.mockResolvedValueOnce("console-api-key");
+		await authStorage.login("anthropic-console", {
+			onAuth: () => {},
+			onPrompt: async () => "",
+		});
+
+		expect(store.listAuthCredentials("anthropic-console")).toEqual([]);
+		expect(store.listAuthCredentials("anthropic").map(entry => entry.credential)).toEqual([
+			{ type: "api_key", key: "console-api-key", apiKeyRequestProfile: "anthropic-console" },
+		]);
+
+		store.close();
+		store = await SqliteAuthCredentialStore.open(dbPath);
+		authStorage = new AuthStorage(store);
+		await authStorage.reload();
+
+		expect(await authStorage.resolveApiKey("anthropic", "reopened-session")).toEqual({
+			apiKey: "console-api-key",
+			apiKeyRequestProfile: "anthropic-console",
+		});
+	});
+
+	it("does not let a runtime provider assign the reserved Anthropic Console request profile", async () => {
+		if (!store || !authStorage) throw new Error("test setup failed");
+
+		const runtimeProvider: OAuthProviderInterface & { readonly apiKeyRequestProfile: "anthropic-console" } = {
+			id: "runtime-console-profile",
+			name: "Untrusted runtime Console profile",
+			sourceId: RUNTIME_PROVIDER_SOURCE,
+			storeCredentialsAs: "anthropic",
+			apiKeyRequestProfile: "anthropic-console",
+			login: async () => "runtime-api-key",
+		};
+		registerOAuthProvider(runtimeProvider);
+
+		await authStorage.login("runtime-console-profile", {
+			onAuth: () => {},
+			onPrompt: async () => "",
+		});
+
+		expect(store.listAuthCredentials("runtime-console-profile")).toEqual([]);
+		expect(store.listAuthCredentials("anthropic").map(entry => entry.credential)).toEqual([
+			{ type: "api_key", key: "runtime-api-key" },
+		]);
+		expect(await authStorage.resolveApiKey("anthropic", "runtime-profile-session")).toEqual({
+			apiKey: "runtime-api-key",
+		});
+	});
+
+	it("keeps legacy profile-free API-key rows profile-free after SQLite reopen", async () => {
+		if (!store || !authStorage || !dbPath) throw new Error("test setup failed");
+
+		store.saveApiKey("anthropic", "legacy-api-key");
+		store.close();
+		store = await SqliteAuthCredentialStore.open(dbPath);
+		authStorage = new AuthStorage(store);
+		await authStorage.reload();
+
+		expect(await authStorage.resolveApiKey("anthropic", "legacy-session")).toEqual({
+			apiKey: "legacy-api-key",
+		});
+	});
+
+	it("clears a resolver's Console profile when a retry resolves a plain API key", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		await authStorage.set("anthropic", {
+			type: "api_key",
+			key: "console-api-key",
+			apiKeyRequestProfile: "anthropic-console",
+		});
+		const resolver = authStorage.resolver("anthropic", { sessionId: "profile-switch-session" });
+		const resolveWithProfile = async (lastChance: boolean, error: unknown) =>
+			resolver.resolveWithMetadata?.({ lastChance, error });
+
+		expect(await resolveWithProfile(false, undefined)).toEqual({
+			apiKey: "console-api-key",
+			apiKeyRequestProfile: "anthropic-console",
+		});
+
+		await authStorage.set("anthropic", { type: "api_key", key: "plain-api-key" });
+		expect(await resolveWithProfile(false, Object.assign(new Error("401"), { status: 401 }))).toEqual({
+			apiKey: "plain-api-key",
+			apiKeyRequestProfile: undefined,
+		});
+	});
 	it("appends a different api-key row when re-login returns a new key", async () => {
 		if (!store || !authStorage || !dbPath) throw new Error("test setup failed");
 

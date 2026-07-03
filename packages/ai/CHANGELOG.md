@@ -6,6 +6,11 @@
 
 - Added headless login options for OpenAI Codex device-code auth, Claude subscription OAuth, and Anthropic Console API-key creation, with shared credential storage aliases for their primary providers.
 
+### Fixed
+
+- Fixed Anthropic Console API-key requests for non-Haiku Claude models by preserving the Console login profile through credential storage and retries, then applying Claude billing attestation only on the official Anthropic transport without changing regular API-key, OAuth, Haiku, or custom-gateway requests.
+- Prevented auth-broker v1 from destructively replacing or exposing profiled API-key credentials; unsupported remote writes now fail before any credential mutation.
+
 ## [16.3.4] - 2026-07-03
 
 ### Added

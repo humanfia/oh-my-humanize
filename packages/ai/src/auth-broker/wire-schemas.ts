@@ -13,9 +13,13 @@
  * they round-trip through the broker instead of being dropped (see below).
  */
 import { type } from "arktype";
-import { REMOTE_REFRESH_SENTINEL } from "../auth-storage";
+import { type AuthCredential, REMOTE_REFRESH_SENTINEL } from "../auth-storage";
 
 // ─── Credential payloads ───────────────────────────────────────────────────
+/** Profiled API keys require a broker protocol newer than legacy v1. */
+export function isProfiledApiKeyCredential(credential: AuthCredential): boolean {
+	return credential.type === "api_key" && credential.apiKeyRequestProfile !== undefined;
+}
 
 /** Real OAuth credential (broker-side) — refresh token is the actual upstream value. */
 export const oauthCredentialSchema = type({
