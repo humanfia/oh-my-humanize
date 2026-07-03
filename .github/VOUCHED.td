@@ -57,6 +57,7 @@ handlecusion
 haosenwang1018
 heyitsgilbert
 hezhiyang2000
+hpost
 igasmi
 infernix
 inprealpha
@@ -81,6 +82,7 @@ lyc-aon
 m3ridian-zero
 makomakogo
 masonc15
+mattwilkinsonn
 maximhar
 maxvisionai
 metaphorics
@@ -92,6 +94,7 @@ nnk97
 nszceta
 ogrodev
 oldschoola
+paralin
 parsifa1
 pgupta-git
 phanthh

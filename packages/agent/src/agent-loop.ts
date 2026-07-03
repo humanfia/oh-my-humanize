@@ -26,6 +26,7 @@ import {
 	wrapInbandToolStream,
 } from "@oh-my-pi/pi-ai/dialect";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { type CursorExecResolvedCarrier, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import {
 	createHarmonyAuditEvent,
 	detectHarmonyLeakInAssistantMessage,
@@ -918,7 +919,13 @@ async function runLoopBody(
 					// Create placeholder tool results for any tool calls in the aborted message
 					// This maintains the tool_use/tool_result pairing that the API requires
 					type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
-					const toolCalls = message.content.filter((c): c is ToolCallContent => c.type === "toolCall");
+					// Cursor exec-resolved blocks already have their toolResult buffered
+					// for out-of-band emission; a placeholder aborted result here would
+					// pair a duplicate to the same toolCallId (issue #4348 codex review).
+					const toolCalls = message.content.filter(
+						(c): c is ToolCallContent =>
+							c.type === "toolCall" && (c as CursorExecResolvedCarrier)[kCursorExecResolved] !== true,
+					);
 					const toolResults: ToolResultMessage[] = [];
 					for (const toolCall of toolCalls) {
 						const result = createAbortedToolResult(toolCall, stream, message.stopReason, message.errorMessage);
@@ -957,7 +964,15 @@ async function runLoopBody(
 				// trailing tool_use may be truncated with incomplete arguments — those calls
 				// are abandoned below. (`error`/`aborted` already returned above.)
 				type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
-				const toolCalls = message.content.filter((c): c is ToolCallContent => c.type === "toolCall");
+				// A Cursor exec-channel synthesized `toolCall` block carries
+				// `kCursorExecResolved` because Cursor already executed the tool
+				// server-side (via the bridge) and buffered the result for
+				// out-of-band emission — running it here again would duplicate the
+				// same side-effecting call (issue #4348 review by @chatgpt-codex-connector).
+				const toolCalls = message.content.filter(
+					(c): c is ToolCallContent =>
+						c.type === "toolCall" && (c as CursorExecResolvedCarrier)[kCursorExecResolved] !== true,
+				);
 				const runnableStop = message.stopReason === "toolUse" || message.stopReason === "stop";
 				hasMoreToolCalls = runnableStop && toolCalls.length > 0;
 
@@ -1807,7 +1822,13 @@ async function executeToolCalls(
 		afterToolCall,
 	} = config;
 	type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
-	const toolCalls = assistantMessage.content.filter((c): c is ToolCallContent => c.type === "toolCall");
+	// Defensive: the outer loop already filters exec-resolved blocks before
+	// deciding to invoke `executeToolCalls`, but skip them here too so the
+	// guarantee lives with the code that would re-run the tool.
+	const toolCalls = assistantMessage.content.filter(
+		(c): c is ToolCallContent =>
+			c.type === "toolCall" && (c as CursorExecResolvedCarrier)[kCursorExecResolved] !== true,
+	);
 	const emittedToolResults: ToolResultMessage[] = [];
 	const toolCallInfos = toolCalls.map(call => ({ id: call.id, name: call.name }));
 	const batchId = `${assistantMessage.timestamp ?? Date.now()}_${toolCalls[0]?.id ?? "batch"}`;
@@ -2246,8 +2267,55 @@ async function executeToolCalls(
 }
 
 /**
- * Create a tool result for a tool call that was aborted or errored before execution.
- * Maintains the tool_use/tool_result pairing required by the API.
+ * Discriminator embedded in {@link AgentToolResult.details} and
+ * {@link ToolResultMessage.details} for tool calls that were emitted by the
+ * assistant but never actually invoked locally.
+ *
+ * The synthetic result exists only to preserve the tool_use / tool_result
+ * pairing the provider API requires; no `tool.execute()` ran. UI, telemetry,
+ * and history consumers can key on `__synthetic === true` to render or
+ * classify these as "call emitted, not executed" instead of a real local
+ * tool failure — the mislabeling this discriminator was introduced to fix
+ * (#4321): a provider-side stream error after tool-call emission (e.g. Codex
+ * websocket close) was surfaced by the CLI as if the local tool had failed.
+ *
+ * `source` names the assistant-side termination state that prevented
+ * execution; `upstreamError` is the provider-reported message when the turn
+ * ended with `stopReason === "error"`.
+ */
+export interface SyntheticToolResultDetails {
+	__synthetic: true;
+	source: "assistant_stop_aborted" | "assistant_stop_error" | "assistant_stop_skipped" | "assistant_stop_length";
+	executed: false;
+	upstreamError?: string;
+}
+
+function syntheticDetailsFor(
+	reason: "aborted" | "error" | "skipped" | "length",
+	errorMessage: string | undefined,
+): SyntheticToolResultDetails {
+	const source: SyntheticToolResultDetails["source"] =
+		reason === "aborted"
+			? "assistant_stop_aborted"
+			: reason === "error"
+				? "assistant_stop_error"
+				: reason === "length"
+					? "assistant_stop_length"
+					: "assistant_stop_skipped";
+	return {
+		__synthetic: true,
+		source,
+		executed: false,
+		...(reason === "error" && errorMessage ? { upstreamError: errorMessage } : {}),
+	};
+}
+
+/**
+ * Create a tool result for a tool call that was emitted by the assistant but
+ * never invoked locally. Maintains the tool_use / tool_result pairing the
+ * provider API requires, and tags {@link SyntheticToolResultDetails} so
+ * consumers can distinguish this from a real local tool failure without
+ * string-matching the content (#4321).
  */
 function createAbortedToolResult(
 	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
@@ -2262,10 +2330,11 @@ function createAbortedToolResult(
 				? "Tool call was not executed because the assistant hit its output token limit (stop_reason: length) before the arguments could complete; the recorded arguments are truncated and unsafe to run. Do NOT retry by re-emitting the same large payload — split the work into several smaller tool calls (e.g. for `write`/`edit`, write the first chunk then append the rest with subsequent `edit` insert ops, or break the file into multiple `write` targets)"
 				: reason === "skipped"
 					? "Tool call was not executed because the assistant ended its turn"
-					: "Tool execution failed due to an error";
-	const result: AgentToolResult<any> = {
+					: "Tool call was not executed because the provider stream ended with an error before the tool could run";
+	const details = syntheticDetailsFor(reason, errorMessage);
+	const result: AgentToolResult<SyntheticToolResultDetails> = {
 		content: [{ type: "text", text: errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],
-		details: {},
+		details,
 	};
 
 	stream.push({
@@ -2283,12 +2352,12 @@ function createAbortedToolResult(
 		isError: true,
 	});
 
-	const toolResultMessage: ToolResultMessage = {
+	const toolResultMessage: ToolResultMessage<SyntheticToolResultDetails> = {
 		role: "toolResult",
 		toolCallId: toolCall.id,
 		toolName: toolCall.name,
 		content: result.content,
-		details: {},
+		details,
 		isError: true,
 		timestamp: Date.now(),
 	};

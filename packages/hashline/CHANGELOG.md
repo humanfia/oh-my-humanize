@@ -2,13 +2,19 @@
 
 ## [Unreleased]
 
+## [16.3.3] - 2026-07-02
+
 ### Breaking Changes
 
-- Removed `SnapshotStore.byHashExact`; consumers resolve tags via `byHash`, which returns the most recently recorded version on a collision.
+- Removed SnapshotStore.byHashExact. Consumers should now use byHash, which resolves collisions by returning the most recently recorded version.
 
 ### Changed
 
-- Improved robustness of patch application by resolving 16-bit snapshot tag collisions to the most recent version rather than rejecting them.
+- Improved patch application robustness by resolving 16-bit snapshot tag collisions to the most recent version instead of rejecting them.
+
+### Fixed
+
+- Fixed frequent edit rejections after a structural-summary read (affecting parseable code over 100 lines) by automatically inlining unseen anchor lines and merging them into the snapshot's seen lines, allowing immediate retries to succeed without requiring a separate range re-read.
 
 ## [16.3.0] - 2026-07-02
 

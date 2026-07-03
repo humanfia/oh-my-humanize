@@ -2,18 +2,27 @@
 
 ## [Unreleased]
 
+## [16.3.3] - 2026-07-02
+
 ### Added
 
-- Added support for overlaying Anthropic per-tier usage limits onto cached usage reports
-- Improved Anthropic credential ranking by using drain-rate pressure for weekly usage limits
+- Added comprehensive tracking and credential-ranking support for Anthropic per-tier and weekly usage limits, including Claude Fable weekly caps. This prevents a single exhausted model-scoped cap from blocking the entire OAuth credential and improves credential selection based on drain-rate pressure.
 
-- Added Claude Fable weekly usage tracking to the Anthropic usage provider: the OAuth usage endpoint's new generic `limits` array is parsed for model-scoped weekly windows (`kind: "weekly_scoped"`), so `omp usage`, `/usage`, and usage history now surface a separate `Claude 7 Day (Fable)` row (id `anthropic:7d:fable`) alongside the shared 5h/7d windows — mirroring how Codex Spark rows are tracked. The `session`/`weekly_all` entries also backfill the shared 5h/7d windows if the legacy `five_hour`/`seven_day` buckets ever go null (as `seven_day_opus`/`seven_day_sonnet` already have).
-- Added `scopeLimits`/`blockScope` to the Anthropic credential-ranking strategy so an exhausted Fable/Mythos weekly cap no longer blocks the whole OAuth credential: credential-wide exhaustion gating now considers only shared umbrella windows plus the requested model family's own scoped cap, and reactive usage-limit blocks for Fable/Mythos requests land in a per-tier backoff scope (mirroring the Antigravity per-counter precedent).
+### Changed
+
+- Updated Claude Fable reasoning replay to use bare text instead of wrapped thinking tags
 
 ### Fixed
 
-- Fixed Anthropic OAuth usage reporting to stop retrying on 429 rate-limit errors
-- Fixed usage cache to correctly persist null values during cold-start failure backoff windows
+- Improved robustness of single-argument tool calls by automatically remapping mislabeled string arguments.
+- Fixed Anthropic OAuth usage reporting to stop retrying on 429 rate-limit errors.
+- Fixed usage cache to correctly persist null values during cold-start failure backoff windows.
+- Fixed cursor-agent persisted transcripts losing tool-call structure for native execution tools, ensuring replayed tool results are correctly paired with their corresponding calls.
+- Fixed OpenAI-compatible streaming usage parsing to prefer non-zero nested cached token counts when the root cached_tokens value is zero.
+- Added automatic detection and remediation for custom proxies returning signature errors on Anthropic thinking blocks, allowing the client to automatically retry with unsigned blocks and prompt the user to adjust their configuration.
+- Fixed potential hangs in GitLab Duo Workflow setup by adding proper timeout and abort signal handling to REST fetches.
+- Fixed Cursor proxy tunnel setup hanging indefinitely by adding abort and timeout handling.
+- Fixed Devin Connect streaming reader vulnerability to corrupt frame lengths by capping payloads at 16 MiB and throwing an envelope error immediately.
 
 ## [16.3.1] - 2026-07-02
 

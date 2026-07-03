@@ -6,9 +6,17 @@
 
 - Added terminal tool results so final-result tools can end an agent loop cleanly
   without synthesizing an aborted assistant message.
+## [16.3.3] - 2026-07-02
+
 ### Changed
 
-- Support dynamic model resolution to enable seamless mid-run model switching
+- Enabled dynamic model resolution to support seamless mid-run model switching.
+
+### Fixed
+
+- Fixed an issue in the Cursor agent where assistant messages containing native tool calls could duplicate text blocks on replay.
+- Fixed a bug where Cursor agent exec-channel tools (such as bash, write, and delete) were executed a second time after server-side execution.
+- Improved error handling for tool calls interrupted by upstream provider stream errors, distinguishing transport/provider failures from local tool execution failures in the CLI, events, and messages.
 
 ## [16.3.0] - 2026-07-02
 
