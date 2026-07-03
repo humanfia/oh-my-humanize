@@ -2,7 +2,7 @@ import type { KnownProvider } from "@oh-my-pi/pi-catalog";
 import { aimlApiProvider } from "./aimlapi";
 import { alibabaCodingPlanProvider } from "./alibaba-coding-plan";
 import { amazonBedrockProvider } from "./amazon-bedrock";
-import { anthropicProvider } from "./anthropic";
+import { anthropicCodeProvider, anthropicConsoleProvider, anthropicProvider } from "./anthropic";
 import { azureProvider } from "./azure";
 import { cerebrasProvider } from "./cerebras";
 import { cloudflareAiGatewayProvider } from "./cloudflare-ai-gateway";
@@ -76,7 +76,10 @@ import { zhipuCodingPlanProvider } from "./zhipu-coding-plan";
 const ALL = [
 	azureProvider,
 	openaiCodexProvider,
+	openaiCodexDeviceProvider,
 	anthropicProvider,
+	anthropicCodeProvider,
+	anthropicConsoleProvider,
 	zaiProvider,
 	kimiCodeProvider,
 	openrouterProvider,
@@ -85,7 +88,6 @@ const ALL = [
 	devinProvider,
 	googleAntigravityProvider,
 	googleGeminiCliProvider,
-	openaiCodexDeviceProvider,
 	xaiOauthProvider,
 	gitlabDuoProvider,
 	gitLabDuoWorkflowProvider,
