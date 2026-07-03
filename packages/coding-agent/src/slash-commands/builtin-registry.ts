@@ -1307,8 +1307,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 					if (manualInput.hasPending()) {
 						const pendingProvider = manualInput.pendingProviderId;
 						const message = pendingProvider
-							? `OAuth login already in progress for ${pendingProvider}. Paste the redirect URL with /login <url>.`
-							: "OAuth login already in progress. Paste the redirect URL with /login <url>.";
+							? `OAuth login already in progress for ${pendingProvider}. Paste the authorization code here, or use /login <redirect URL>.`
+							: "OAuth login already in progress. Paste the authorization code here, or use /login <redirect URL>.";
 						runtime.ctx.showWarning(message);
 						runtime.ctx.editor.setText("");
 						return;
@@ -1330,8 +1330,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			if (manualInput.hasPending()) {
 				const provider = manualInput.pendingProviderId;
 				const message = provider
-					? `OAuth login already in progress for ${provider}. Paste the redirect URL with /login <url>.`
-					: "OAuth login already in progress. Paste the redirect URL with /login <url>.";
+					? `OAuth login already in progress for ${provider}. Paste the authorization code here, or use /login <redirect URL>.`
+					: "OAuth login already in progress. Paste the authorization code here, or use /login <redirect URL>.";
 				runtime.ctx.showWarning(message);
 				runtime.ctx.editor.setText("");
 				return;
