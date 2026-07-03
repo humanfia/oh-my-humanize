@@ -230,15 +230,15 @@ describe("performance-optimization-search flow contract", () => {
 		);
 	});
 
-	it("fails closed when a baseline command is a truncated here document", async () => {
+	it("fails closed when a baseline command emits a here-document diagnostic", async () => {
 		const cwd = await createGitRepo();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 
 		await expect(
 			runScriptFile(cwd, "capture-baseline.js", {
 				task: {
-					baselineCommand: "python - <<'PY'",
-					benchmarkCommand: "python - <<'PY'",
+					baselineCommand: "printf '%s\\n' 'sh: warning: here-document at line 1 delimited by end-of-file' >&2",
+					benchmarkCommand: "python -c \"print('split_arg_string 20000 loops 0.485742s')\"",
 					validationCommand: "python -c \"print('validation')\"",
 				},
 			}),
