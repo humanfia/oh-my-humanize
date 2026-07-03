@@ -6,7 +6,7 @@ name: Vouch (PR gate)
 
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
 
 permissions:
   contents: read # read VOUCHED.td from the base branch
@@ -21,7 +21,13 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - id: manual-vouch
+        name: Detect maintainer-applied vouch label
+        if: ${{ github.event.action == 'labeled' && github.event.label.name == 'vouched' }}
+        run: echo "status=manual" >> "$GITHUB_OUTPUT"
+
       - id: vouch
+        if: ${{ github.event.action != 'labeled' || github.event.label.name != 'vouched' }}
         uses: mitchellh/vouch/action/check-pr@v1
         with:
           pr-number: ${{ github.event.pull_request.number }}
@@ -31,24 +37,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Survivors of the gate (vouched, or auto-allowed collaborators/bots) get
-      # a FRESH `vouched` label on every (re)open / ready-for-review. robomp
+      # Survivors of the gate (vouched, manually labeled, or auto-allowed collaborators/bots)
+      # get a FRESH `vouched` label on every (re)open / ready-for-review / push. robomp
       # reviews ONLY on that label event (ROBOMP_PR_REVIEW_TRIGGER=vouched_label),
       # so review is always triggered by a just-validated PR, never a stale label.
       - name: Label vouched PRs for robomp review
-        if: ${{ steps.vouch.outputs.status == 'vouched' || steps.vouch.outputs.status == 'allowed' }}
+        if: ${{ steps.manual-vouch.outputs.status == 'manual' || steps.vouch.outputs.status == 'vouched' || steps.vouch.outputs.status == 'allowed' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          MANUAL_VOUCH: ${{ steps.manual-vouch.outputs.status == 'manual' }}
         run: |
           gh label create vouched --repo "$REPO" --color 2da44e --description "Passed the vouch gate" --force
-          # remove+add so a fresh `labeled` event fires even when the label
-          # persisted across close/reopen (re-adding an existing label emits no
-          # event). The check above just re-validated, so trust is never stale.
-          gh issue edit "$PR" --repo "$REPO" --remove-label vouched || true
           gh issue edit "$PR" --repo "$REPO" --remove-label needs-vouch || true
-          gh issue edit "$PR" --repo "$REPO" --add-label vouched
+          if [ "$MANUAL_VOUCH" != "true" ]; then
+            # remove+add so a fresh `labeled` event fires even when the label
+            # persisted across close/reopen (re-adding an existing label emits no
+            # event). The check above just re-validated, so trust is never stale.
+            gh issue edit "$PR" --repo "$REPO" --remove-label vouched || true
+            gh issue edit "$PR" --repo "$REPO" --add-label vouched
+          fi
 
       - name: Mark PRs that still need a vouch
         if: ${{ steps.vouch.outputs.status == 'closed' }}
