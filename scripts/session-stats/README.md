@@ -96,7 +96,7 @@ reads of the same file, the largest single tool results, compactions, and
 edit-failure churn.
 
 The LLM phase (default `anthropic/claude-sonnet-4-6` via `@oh-my-pi/pi-ai`,
-credentials resolved through omp's auth storage — stored key, OAuth, or env
+credentials resolved through OMH's auth storage — stored key, OAuth, or env
 var) classifies the costliest sessions: multi-topic sessions that should have
 been split or handed off, task spawns that were wasteful or failed to transfer
 context, and the biggest waste sources with concrete fixes. A final aggregate

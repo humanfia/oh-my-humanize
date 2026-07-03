@@ -9,7 +9,7 @@ import type {
 } from "../types";
 
 /**
- * Wire types for the omp auth-gateway.
+ * Wire types for the OMH auth-gateway.
  *
  * The gateway sits between unauthenticated clients (containerized omp,
  * llm-git, …) and the broker. It accepts provider-format HTTP requests

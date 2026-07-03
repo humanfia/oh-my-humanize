@@ -1302,7 +1302,9 @@ def test_impl_gate_allows_later_authorized_event_to_reach_repo_commands(
     assert calls
 
 
-def test_impl_gate_ignores_skipped_authorized_event(db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_impl_gate_ignores_skipped_authorized_event(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls: list[list[str] | tuple[str, ...]] = []
 
     def record_repo_command(_bindings: ToolBindings, cmd: list[str] | tuple[str, ...], *, timeout: float | None = None):
@@ -2020,7 +2022,7 @@ def test_gh_open_pr_refuses_failed_bun_check_before_push_or_pr(
     fake_bun.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fakebin}{os.pathsep}{os.environ['PATH']}")
     (bindings.workspace.repo_dir / "package.json").write_text(
-        json.dumps({"scripts": {"check": "tsc --noEmit"}}) + "\n",
+        json.dumps({"scripts": {"check": "bun check"}}) + "\n",
         encoding="utf-8",
     )
 
@@ -2166,9 +2168,11 @@ def test_gh_push_branch_rejects_dirty_worktree(db: Database, tmp_path: Path) -> 
 def test_gh_push_branch_runs_fix_and_check_before_pushing(
     db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gh_push_branch must run `bun run fix` then `bun check` (when defined)
-    before the push reaches the remote. Same gate as `gh_open_pr` so a
-    follow-up commit can't break CI."""
+    """gh_push_branch must amend `bun run fix` output, then run `bun check`.
+
+    Same gate as `gh_open_pr` so a follow-up commit can't break CI before the
+    push reaches the remote.
+    """
     import os
     import subprocess
 
@@ -2303,7 +2307,7 @@ def test_gh_push_branch_runs_fix_and_check_before_pushing(
     # Both gates ran, and fix preceded check (both have one call recorded).
     assert fix_calls.read_text() == "called"
     assert check_calls.read_text() == "called"
-    # The formatter's diff was committed by the bot as a `style: bun run fix` commit.
+    # The formatter's diff was folded into the existing bot-authored commit.
     log = subprocess.run(
         ["git", "-C", str(ws.repo_dir), "log", "--format=%an <%ae> %s", "-n", "2"],
         capture_output=True,
@@ -2311,9 +2315,28 @@ def test_gh_push_branch_runs_fix_and_check_before_pushing(
         check=True,
     )
     lines = log.stdout.strip().splitlines()
-    assert lines[0].startswith("robomp-bot <robomp-bot@example.invalid> style: bun run fix"), lines
+    assert lines == [
+        "robomp-bot <robomp-bot@example.invalid> feat: follow-up",
+        "robomp-bot <robomp-bot@example.invalid> init",
+    ]
+    assert "style: bun run fix" not in log.stdout
+    assert (ws.repo_dir / "src.txt").read_text() == "formatted\n"
+    status = subprocess.run(
+        ["git", "-C", str(ws.repo_dir), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert status.stdout == ""
     # And the branch ended up on the remote at the new head.
     assert result.startswith(f"pushed {ws.branch} ")
+    remote_src = subprocess.run(
+        ["git", "--git-dir", str(bare), "show", f"refs/heads/{ws.branch}:src.txt"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert remote_src.stdout == "formatted\n"
     refs = subprocess.run(
         ["git", "-C", str(bare), "for-each-ref", "--format=%(refname)"],
         capture_output=True,
@@ -2551,7 +2574,7 @@ def test_gh_push_branch_aborts_on_failed_bun_check(
     monkeypatch.setenv("PATH", f"{fakebin}{os.pathsep}{os.environ['PATH']}")
 
     (ws.repo_dir / "package.json").write_text(
-        json.dumps({"scripts": {"check": "tsc --noEmit"}}) + "\n",
+        json.dumps({"scripts": {"check": "bun check"}}) + "\n",
         encoding="utf-8",
     )
     (ws.repo_dir / "feature.txt").write_text("feature\n")
@@ -2707,7 +2730,7 @@ def test_gh_push_branch_skip_checks_bypasses_failing_bun_check(
     monkeypatch.setenv("PATH", f"{fakebin}{os.pathsep}{os.environ['PATH']}")
 
     (ws.repo_dir / "package.json").write_text(
-        json.dumps({"scripts": {"fix": "ruff format", "check": "tsc --noEmit"}}) + "\n",
+        json.dumps({"scripts": {"fix": "ruff format", "check": "bun check"}}) + "\n",
         encoding="utf-8",
     )
     (ws.repo_dir / "feature.txt").write_text("feature\n")
@@ -2920,10 +2943,10 @@ def test_gh_push_branch_skip_checks_still_refuses_dirty_worktree(
     assert not any(r.startswith("refs/heads/farm/") for r in refs.stdout.splitlines()), refs.stdout
 
 
-def test_gh_open_pr_runs_fix_then_check_and_commits_fixup(
+def test_gh_open_pr_runs_fix_then_check_and_amends_formatter_output(
     db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gh_open_pr runs `bun run fix`, commits any diff as the bot, then runs `bun check`."""
+    """gh_open_pr runs `bun run fix`, amends its diff, then runs `bun check`."""
     import os
     import subprocess
 
@@ -3078,7 +3101,7 @@ def test_gh_open_pr_runs_fix_then_check_and_commits_fixup(
     # Both bun stages ran, and fix preceded check.
     assert fix_calls.read_text() == "called"
     assert check_calls.read_text() == "called"
-    # The formatter diff was committed by the bot as a "style:" commit.
+    # The formatter diff was amended into the existing bot-authored commit.
     log = subprocess.run(
         ["git", "-C", str(ws.repo_dir), "log", "--format=%an|%ae|%s", "-2"],
         capture_output=True,
@@ -3086,8 +3109,12 @@ def test_gh_open_pr_runs_fix_then_check_and_commits_fixup(
         check=True,
     )
     lines = log.stdout.strip().splitlines()
-    assert lines[0] == "robomp-bot|robomp-bot@example.invalid|style: bun run fix"
-    assert lines[1].endswith("|feat: initial change")
+    assert lines == [
+        "robomp-bot|robomp-bot@example.invalid|feat: initial change",
+        "robomp-bot|robomp-bot@example.invalid|init",
+    ]
+    assert "style: bun run fix" not in log.stdout
+    assert (ws.repo_dir / "src.txt").read_text() == "formatted\n"
     # Worktree is clean again (gate before push would have rejected otherwise).
     status = subprocess.run(
         ["git", "-C", str(ws.repo_dir), "status", "--porcelain"],
@@ -3106,6 +3133,13 @@ def test_gh_open_pr_runs_fix_then_check_and_commits_fixup(
         check=True,
     )
     assert f"refs/heads/{ws.branch}" in refs.stdout.splitlines()
+    remote_src = subprocess.run(
+        ["git", "--git-dir", str(bare), "show", f"refs/heads/{ws.branch}:src.txt"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert remote_src.stdout == "formatted\n"
 
 
 def test_gh_open_pr_refuses_dirty_worktree_before_fix(

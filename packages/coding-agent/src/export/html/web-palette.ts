@@ -1,11 +1,11 @@
 /**
- * Web/export palette — the omp brand identity shared by the collab-web live
- * client (`my.omp.sh/`) and every public HTML export / share viewer (`/s/<id>`).
+ * Web/export palette — the omh brand identity shared by the collab-web live
+ * client (`my.omh.sh/`) and every public HTML export / share viewer (`/s/<id>`).
  *
  * Why this exists separately from `modes/theme/dark.json`: the `dark` theme is
  * the **default TUI theme** — its amber accent (`#febc38`) drives the terminal
  * status line, syntax highlighting, thinking levels, and bash/python mode
- * colors for every omp user. The public web artifacts want the collab-web
+ * colors for every omh user. The public web artifacts want the collab-web
  * pink/purple identity instead, so they pin this palette rather than inheriting
  * the TUI's. Editing `dark.json` to repurpose it for the web would repaint
  * every terminal; this file keeps the two surfaces decoupled.

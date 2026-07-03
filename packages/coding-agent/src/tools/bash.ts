@@ -22,6 +22,7 @@ import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer 
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
+import { workflowScriptEnvironment } from "../workflow/script-runtime-env";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { applyBashFixups } from "./bash-command-fixup";
@@ -51,7 +52,18 @@ function resolveTerminalEnvironment(
 	policy: ShellEnvironmentPolicy | undefined,
 	env: Record<string, string> | undefined,
 ): Record<string, string> | undefined {
-	return policy === "workflow" ? buildShellEnvironment(policy, env) : env;
+	return buildShellEnvironment(policy, env);
+}
+
+function resolveInteractiveTerminalEnvironment(
+	policy: ShellEnvironmentPolicy | undefined,
+	env: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (policy !== "workflow") return env;
+	return {
+		...workflowScriptEnvironment({}),
+		...env,
+	};
 }
 
 /**
@@ -1065,7 +1077,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					cwd: commandCwd,
 					timeoutMs,
 					signal,
-					env: resolveTerminalEnvironment(this.session.shellEnvironmentPolicy, resolvedEnv),
+					env: resolveInteractiveTerminalEnvironment(this.session.shellEnvironmentPolicy, resolvedEnv),
 					artifactPath,
 					artifactId,
 				})

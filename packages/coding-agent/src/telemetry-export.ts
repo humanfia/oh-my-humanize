@@ -1,18 +1,18 @@
 /**
  * OTLP trace export bootstrap.
  *
- * oh-my-pi's agent core (`@oh-my-pi/pi-agent-core`) emits OpenTelemetry GenAI
+ * OMH's agent core (`@oh-my-pi/pi-agent-core`) emits OpenTelemetry GenAI
  * spans through the global `@opentelemetry/api` tracer, but only when a
  * TracerProvider is registered in the process — otherwise the API returns a
  * no-op tracer and the spans are silently dropped. The shipped CLI never
  * registered one, so headless / embedded hosts (e.g. an ACP harness that
- * spawns `omp` as a child process) had no way to collect omp's internal traces.
+ * spawns `omh` as a child process) had no way to collect OMH's internal traces.
  *
  * This module registers a NodeTracerProvider with an OTLP/proto exporter when
  * the standard `OTEL_EXPORTER_OTLP_ENDPOINT` (or `..._TRACES_ENDPOINT`) env var
  * is set, following the zero-code OTEL env contract: the exporter reads its
  * endpoint, headers, and timeout from `OTEL_EXPORTER_OTLP_*` itself. The
- * consuming process configures the destination entirely through env; omp stays
+ * consuming process configures the destination entirely through env; omh stays
  * provider-agnostic and ships no vendor coupling. Only the `http/protobuf`
  * transport is supported — an `OTEL_EXPORTER_OTLP*_PROTOCOL` of `grpc` or
  * `http/json` declines rather than misrouting spans.
@@ -26,7 +26,7 @@ import { logger, postmortem } from "@oh-my-pi/pi-utils";
 import type * as TraceNode from "@opentelemetry/sdk-trace-node";
 
 /**
- * Periodic flush interval. A long-lived `omp` process (the ACP server is
+ * Periodic flush interval. A long-lived `omh` process (the ACP server is
  * spawned once and reused across many turns) would otherwise hold finished
  * spans until the batch window elapses or the process exits.
  */
@@ -100,7 +100,7 @@ async function registerProvider(): Promise<void> {
 	const exporter = new OTLPTraceExporter();
 	const tracerProvider = new NodeTracerProvider({
 		resource: resourceFromAttributes({
-			"service.name": process.env.OTEL_SERVICE_NAME ?? "oh-my-pi",
+			"service.name": process.env.OTEL_SERVICE_NAME ?? "oh-my-humanize",
 		}),
 		spanProcessors: [new BatchSpanProcessor(exporter)],
 	});

@@ -1,5 +1,5 @@
 /**
- * Routing tests for `omp plugin install <local-path>` (#1945).
+ * Routing tests for `omh plugin install <local-path>` (#1945).
  *
  * Two layers of coverage:
  *  1. Spy-based: `runPluginCommand` with a local path calls

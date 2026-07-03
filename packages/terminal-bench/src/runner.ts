@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * terminal-bench-2 runner for the local `omp` build.
+ * terminal-bench-2 runner for the local OMH build.
  *
  * Orchestrates Harbor (`harbor run`) against the harbor-framework/terminal-bench-2
  * dataset using a custom agent (`agent/omp_local.py`) that installs the working
@@ -101,7 +101,7 @@ function defaultConfig(): Config {
 	};
 }
 
-const HELP = `terminal-bench-2 runner (local omp)
+const HELP = `terminal-bench-2 runner (local OMH)
 
 Usage: bun src/runner.ts [options] [-- <extra harbor args>]
 
@@ -110,15 +110,15 @@ Commands:
 
 Model / agent:
   -m, --model <provider/model>   Model (repeatable). Default anthropic/claude-sonnet-4-6
-      --agent <name>             omp (default) | oracle | nop | any harbor agent
-      --install <local|published> omp source. local = pack /work/pi (default)
-      --version <v>              omp version for published install (default: latest)
+      --agent <name>             omp (default OMH adapter) | oracle | nop | any harbor agent
+      --install <local|published> OMH source. local = pack /work/pi (default)
+      --version <v>              OMH version for published install (default: latest)
       --thinking <level>         off|minimal|low|medium|high|xhigh
       --advisor-model <p/m>      Second model reviewing the primary (spend summed in)
       --advisor-sync <off|1|3|5> Advisor catch-up backlog (default 1 = accurate spend; off = faster)
-      --tarball <path>           Reuse a prebuilt omp tarball (implies --no-build)
+      --tarball <path>           Reuse a prebuilt OMH tarball (implies --no-build)
       --no-build                 Skip packing; reuse newest tarball in bench dir
-      --env <KEY[=VALUE]>        Forward env into omp container (repeatable).
+      --env <KEY[=VALUE]>        Forward env into the OMH container (repeatable).
                                  KEY alone forwards host value; host PI_* auto-forwarded.
 
 Dataset / scale:
@@ -134,7 +134,7 @@ Gateway (auth, no keys in container):
       --gateway-token <tok>      Default "no-auth" (gateway runs --no-auth)
       --providers <csv>          Providers to route (default: model provider + anthropic,openai-codex)
       --no-gateway               Pass host provider API keys into containers instead
-      --web-search               Enable omp web_search (off by default; can't auth via gateway)
+      --web-search               Enable OMH web_search (off by default; can't auth via gateway)
       --allow-host <host>        harbor --allow-agent-host (repeatable)
 
 Output / control:
@@ -784,7 +784,7 @@ function readPkgVersion(): string {
 }
 
 function buildTarball(benchDir: string): string {
-	process.stdout.write(dim("packing local omp (bun pm pack)…\n"));
+	process.stdout.write(dim("packing local OMH (bun pm pack)...\n"));
 	const r = spawnSync("bun", ["pm", "pack", "--destination", benchDir], {
 		cwd: CODING_AGENT_DIR,
 		encoding: "utf8",
@@ -1101,7 +1101,7 @@ async function main(): Promise<void> {
 		if (!gatewayHealthOk(cfg.gatewayUrl)) {
 			process.stderr.write(
 				yellow(
-					`warning: gateway ${cfg.gatewayUrl} health check failed (continuing). Is the pm2 'omp-auth-gateway' running?\n`,
+					`warning: gateway ${cfg.gatewayUrl} health check failed (continuing). Is the pm2 'omh-auth-gateway' running?\n`,
 				),
 			);
 		}

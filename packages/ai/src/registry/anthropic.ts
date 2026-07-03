@@ -1,6 +1,11 @@
 import { $pickenv } from "@oh-my-pi/pi-utils";
 import { isFoundryEnabled } from "../utils/foundry";
-import type { OAuthCredentials, OAuthLoginCallbacks } from "./oauth/types";
+import {
+	loginAnthropic,
+	loginAnthropicClaudeCode,
+	loginAnthropicConsole,
+	refreshAnthropicToken,
+} from "./oauth/anthropic";
 import type { ProviderDefinition } from "./types";
 
 export const anthropicProvider = {
@@ -11,16 +16,26 @@ export const anthropicProvider = {
 		isFoundryEnabled()
 			? $pickenv("ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 			: $pickenv("ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"),
-	login: async (cb: OAuthLoginCallbacks) => {
-		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
-		const { loginAnthropic } = await import("./oauth/anthropic");
-		return loginAnthropic(cb);
-	},
-	refreshToken: async (credentials: OAuthCredentials) => {
-		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
-		const { refreshAnthropicToken } = await import("./oauth/anthropic");
-		return refreshAnthropicToken(credentials.refresh);
-	},
+	login: cb => loginAnthropic(cb),
+	refreshToken: credentials => refreshAnthropicToken(credentials.refresh),
 	callbackPort: 54545,
+	pasteCodeFlow: true,
+} as const satisfies ProviderDefinition;
+
+export const anthropicCodeProvider = {
+	id: "anthropic-code",
+	name: "Claude Code subscription login",
+	login: cb => loginAnthropicClaudeCode(cb),
+	refreshToken: credentials => refreshAnthropicToken(credentials.refresh),
+	storeCredentialsAs: "anthropic",
+	pasteCodeFlow: true,
+} as const satisfies ProviderDefinition;
+
+export const anthropicConsoleProvider = {
+	id: "anthropic-console",
+	name: "Claude Console account login",
+	login: cb => loginAnthropicConsole(cb),
+	storeCredentialsAs: "anthropic",
+	replaceCredentialsOnApiKeyLogin: true,
 	pasteCodeFlow: true,
 } as const satisfies ProviderDefinition;

@@ -2,7 +2,7 @@
  * OpenAI Responses HTTP wire-format ↔ omp Context bridge for the auth-gateway.
  *
  * Inbound: parses `POST /v1/responses` request bodies into a {@link ParsedRequest}.
- * Outbound: encodes omp's {@link AssistantMessage} (and event stream) back into
+ * Outbound: encodes OMH's {@link AssistantMessage} (and event stream) back into
  * the documented `response.*` SSE taxonomy or the non-streaming JSON shape.
  *
  * Spec: https://platform.openai.com/docs/api-reference/responses
@@ -485,7 +485,7 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	if (data.previous_response_id !== undefined) options.previousResponseId = data.previous_response_id;
 	if (data.user !== undefined) options.user = data.user;
 	if (isObj(data.metadata)) options.metadata = data.metadata;
-	// `store` is a stateful-storage hint that omp's gateway doesn't honour;
+	// `store` is a stateful-storage hint that OMH's gateway doesn't honour;
 	// silently accepted by the schema. No typed slot — drop.
 
 	return {

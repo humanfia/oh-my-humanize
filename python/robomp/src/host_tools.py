@@ -63,7 +63,7 @@ class AbortController:
     """Mutable handoff between the `abort_task` host tool and the worker.
 
     `signal()` is called from the host-tool thread to request an irrecoverable
-    teardown of the omp subprocess. The worker pre-populates `stop` with a
+    teardown of the OMH subprocess. The worker pre-populates `stop` with a
     thread-safe terminator (the same one used for queue cancellation and the
     hard-timeout watchdog), and inspects `triggered` after `prompt_and_wait`
     unblocks to decide whether the resulting `RpcError` is an intentional

@@ -2,21 +2,21 @@
 ###############################################################################
 # robomp — GitHub triage+fix bot orchestrator.
 #
-# Extends `pi-base` (from /Dockerfile, default target oh-my-pi/pi:dev) and adds
+# Extends `pi-base` (from /Dockerfile, default target oh-my-humanize/omh:dev) and adds
 # the robomp Python package + a Vite-built SolidJS dashboard bundle. The pi
 # toolchain (python + bun + rustup launcher + pi-natives + omp_rpc wheel +
-# /usr/local/bin/omp shim) all comes from PI_BASE; this file only layers what's
+# /usr/local/bin/omh shim) all comes from PI_BASE; this file only layers what's
 # robomp-specific.
 #
 # Build (from pi root):
-#     bun run pi:image                              # build oh-my-pi/pi:dev first
+#     bun run pi:image                              # build oh-my-humanize/omh:dev first
 #     docker build -f Dockerfile.robomp -t robomp:dev .
 #
 # Compose (recommended):
 #     docker compose --project-directory python/robomp build
 ###############################################################################
 
-ARG PI_BASE=oh-my-pi/pi:dev
+ARG PI_BASE=oh-my-humanize/omh:dev
 ARG BUN_VERSION=1.3.14
 
 ############################

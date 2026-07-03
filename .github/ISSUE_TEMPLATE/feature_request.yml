@@ -22,7 +22,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Which part of omp does this relate to?
+      description: Which part of omh does this relate to?
       options:
         - Provider / Model support
         - TUI / Display

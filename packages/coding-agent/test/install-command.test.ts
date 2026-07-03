@@ -1,5 +1,5 @@
 /**
- * Regression test for #1496 (bug 2): `omp install ./my-extension` used to be
+ * Regression test for #1496 (bug 2): `omh install ./my-extension` used to be
  * silently rewritten to `launch install ./my-extension` and forwarded to the
  * LLM as an initial prompt because no top-level `install` subcommand existed.
  *

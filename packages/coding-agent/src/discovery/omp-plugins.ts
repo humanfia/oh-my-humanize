@@ -4,7 +4,7 @@
  * When a user configures an extension via `extensions:` (in settings) or
  * `--extension`/`-e` (on the CLI), the docs promise that the package's
  * sibling directories — `skills/`, `hooks/pre|post/`, `tools/`, `commands/`,
- * `rules/`, `prompts/`, and `.mcp.json` — are picked up by omp's standard
+ * `rules/`, `prompts/`, and `.mcp.json` — are picked up by OMH's standard
  * discovery surfaces. The native `omp` provider in `builtin.ts` only walks
  * `.omp/` and `~/.omp/agent/`, so without this provider those sub-trees are
  * silently ignored.

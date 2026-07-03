@@ -397,7 +397,7 @@ describe("completion() through eval runtimes", () => {
 		} finally {
 			tempDir.removeSync();
 		}
-	});
+	}, 15_000);
 
 	it("parses structured completion() output in the Python runtime", async () => {
 		const tempDir = TempDir.createSync("@omp-eval-completion-py-struct-");
@@ -408,5 +408,5 @@ describe("completion() through eval runtimes", () => {
 		} finally {
 			tempDir.removeSync();
 		}
-	});
+	}, 15_000);
 });

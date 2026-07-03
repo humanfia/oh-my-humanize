@@ -13,6 +13,7 @@ interface WorkflowActivationOutput {
 interface WorkflowActivation {
 	id: string;
 	nodeId: string;
+	status?: string;
 	output?: WorkflowActivationOutput;
 }
 
@@ -133,6 +134,7 @@ describe("agent-build-review-loop flow contract", () => {
 				"pnpm test",
 			].join("\n"),
 		);
+		await fs.chmod(path.join(cwd, "workflow-output", "run-validation.sh"), 0o755);
 
 		await expect(runInitializeLoop(cwd)).rejects.toThrow("validation preflight setup blocker");
 		const evidence = await Bun.file(
@@ -160,6 +162,7 @@ describe("agent-build-review-loop flow contract", () => {
 				"pnpm test",
 			].join("\n"),
 		);
+		await fs.chmod(path.join(cwd, "workflow-output", "run-validation.sh"), 0o755);
 
 		const result = await runInitializeLoop(cwd);
 		const progress = result.statePatch.find(patch => patch.path === "/progress")?.value;
@@ -1530,7 +1533,7 @@ describe("agent-build-review-loop flow contract", () => {
 		);
 		await Bun.write(
 			path.join(cwd, "workflow-output", "round-1", "validation-summary.txt"),
-			"The builder reran validation after an earlier validation failure but only kept the latest stdout/stderr.\n",
+			"The builder ran a second validation attempt after an earlier validation failure and overwrote validation stdout/stderr logs.\n",
 		);
 
 		await expect(runArchiveLoop(cwd, { decision: "complete" })).rejects.toThrow(
@@ -1710,7 +1713,7 @@ describe("agent-build-review-loop flow contract", () => {
 		}
 	});
 
-	it("writes a rejected archive and fails the attempt for setup-blocker routes", async () => {
+	it("writes a rejected archive and records setup-blocker routes as terminal rejections", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n");
@@ -1719,8 +1722,12 @@ describe("agent-build-review-loop flow contract", () => {
 			JSON.stringify({ status: "setup-blocker", reason: "clean-copy validation missing dependencies" }),
 		);
 
-		await expect(runArchiveLoop(cwd)).rejects.toThrow("agent-build-review-loop rejected");
+		const result = await runArchiveLoop(cwd);
 		const archive = await Bun.file(path.join(cwd, "workflow-output", "final-agent-loop-reject.md")).text();
+		expect(result.statePatch[0]?.value).toMatchObject({
+			terminalDecision: "reject",
+			file: "workflow-output/final-agent-loop-reject.md",
+		});
 		expect(archive).toContain("Terminal decision: reject");
 		expect(archive).toContain("setup-blocker-evidence.json");
 		await expect(Bun.file(path.join(cwd, "workflow-output", "tuple-state.json")).json()).resolves.toMatchObject({
@@ -1733,19 +1740,21 @@ describe("agent-build-review-loop flow contract", () => {
 		});
 	});
 
-	it("writes a rejected archive and fails when setup-blocker evidence only lives in review summary", async () => {
+	it("writes a rejected archive when setup-blocker evidence only lives in review summary", async () => {
 		const cwd = await createTempDir();
 		await fs.mkdir(path.join(cwd, "workflow-output"), { recursive: true });
 		await Bun.write(path.join(cwd, "task.md"), "Validation Command:\ntrue\n");
 
-		await expect(
-			runArchiveLoop(cwd, {
-				decision: "reject",
-				reason: "setup blocker evidence is terminal; archive/reject instead of looping into another build round",
-				setupBlockerEvidenceFiles: ["reviewRound:summary"],
-			}),
-		).rejects.toThrow("agent-build-review-loop rejected");
+		const result = await runArchiveLoop(cwd, {
+			decision: "reject",
+			reason: "setup blocker evidence is terminal; archive/reject instead of looping into another build round",
+			setupBlockerEvidenceFiles: ["reviewRound:summary"],
+		});
 		const archive = await Bun.file(path.join(cwd, "workflow-output", "final-agent-loop-reject.md")).text();
+		expect(result.statePatch[0]?.value).toMatchObject({
+			terminalDecision: "reject",
+			file: "workflow-output/final-agent-loop-reject.md",
+		});
 		expect(archive).toContain("Terminal decision: reject");
 		expect(archive).toContain("reviewRound:summary");
 		expect(archive).toContain("setup blocker evidence is terminal");
@@ -1919,7 +1928,7 @@ async function runArchiveLoop(
 		process.chdir(cwd);
 		return await execute({
 			activation: { id: "activation-archive-loop" },
-			completedActivations: [],
+			completedActivations: completedArchiveLineage(),
 			state: {
 				reviewRoute,
 			},
@@ -1927,6 +1936,14 @@ async function runArchiveLoop(
 	} finally {
 		process.chdir(originalCwd);
 	}
+}
+
+function completedArchiveLineage(): WorkflowActivation[] {
+	return ["initialBuildRound", "reviewRound", "classifyReviewRoute", "semanticArchiveGuard"].map((nodeId, index) => ({
+		id: `activation-${index + 1}-${nodeId}`,
+		nodeId,
+		status: "completed",
+	}));
 }
 
 async function createTempDir(): Promise<string> {

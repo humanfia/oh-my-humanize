@@ -13,7 +13,7 @@
  * (including from subagents) read the cached decision without prompting.
  *
  * When the user grants consent, push is automatically active against the
- * bundled endpoint (`dev.autoqaPush.endpoint`, default `qa.omp.sh`). Each
+ * bundled endpoint (`dev.autoqaPush.endpoint`, default `qa.omh.sh`). Each
  * insert schedules a background flush that POSTs pending rows and deletes
  * them on HTTP 2xx. `PI_AUTO_QA_PUSH=1` forces push in non-interactive
  * environments where the consent dialog never fires. Tool execution is

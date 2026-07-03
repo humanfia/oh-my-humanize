@@ -8,6 +8,7 @@ function makeSession(bridge: ClientBridge): ToolSession {
 		cwd: "/tmp",
 		hasUI: false,
 		skills: [],
+		shellEnvironmentPolicy: undefined,
 		getSessionFile: () => null,
 		settings: {
 			get(key: string) {
@@ -41,6 +42,14 @@ afterEach(() => {
 });
 
 describe("BashTool ACP terminal routing", () => {
+	function terminalEnv(entries: Array<{ name: string; value: string }> | undefined): Record<string, string> {
+		const env: Record<string, string> = {};
+		for (const entry of entries ?? []) {
+			env[entry.name] = entry.value;
+		}
+		return env;
+	}
+
 	it("routes through bridge, emits terminalId update, and releases the handle", async () => {
 		const stubText = "hello from terminal\n";
 
@@ -75,6 +84,11 @@ describe("BashTool ACP terminal routing", () => {
 		const params = createSpy.mock.calls[0]![0];
 		expect(params.command).toBe("/bin/bash");
 		expect(params.args).toEqual(["-l", "-c", "echo hi"]);
+
+		const env = terminalEnv(params.env);
+		expect(env.CI).toBe("1");
+		expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+		expect(env.PAGER).toBe("cat");
 
 		// The first onUpdate must carry the terminalId so the editor can embed it
 		expect(updates.length).toBeGreaterThanOrEqual(1);

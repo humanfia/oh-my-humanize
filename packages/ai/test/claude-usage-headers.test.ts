@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { claudeCodeVersion } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { claudeCodeVersion } from "@oh-my-pi/pi-ai/providers/anthropic-constants";
 import type { UsageFetchContext, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai/usage";
 import { claudeRankingStrategy, claudeUsageProvider } from "@oh-my-pi/pi-ai/usage/claude";
 

@@ -1531,7 +1531,10 @@ def test_webhook_directive_on_unknown_issue_is_queued_with_metadata(env) -> None
         row = get_database(cfg.sqlite_path).get_event("dir-1")
     close_database()
     assert row is not None
-    assert row.state == "queued"
+    # TestClient starts the real worker pool; it may claim the event before the
+    # assertion observes SQLite. The webhook contract is that the event is
+    # accepted and carries directive metadata into the active queue.
+    assert row.state in {"queued", "running"}
     directive = row.payload.get("_robomp_directive")
     assert directive == {"body": "please refactor X", "author": "can1357", "pragmas": [], "authorizes_impl": True}
 

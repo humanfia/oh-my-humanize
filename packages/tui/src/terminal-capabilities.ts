@@ -499,6 +499,10 @@ export interface RuntimeTerminal extends TerminalInfo {
 	textSizing: boolean;
 }
 
+export function terminalSupportsTextSizing(terminalId: TerminalId = TERMINAL_ID): boolean {
+	return getTerminalInfo(terminalId).textSizing;
+}
+
 export const TERMINAL: RuntimeTerminal = (() => {
 	const resolved = getTerminalInfo(TERMINAL_ID).clone();
 
@@ -525,6 +529,7 @@ export const TERMINAL: RuntimeTerminal = (() => {
 	// ignores DECCARA) exercises the padded-string fallback. Integration tests opt
 	// in explicitly through setTerminalDeccara.
 	resolved.deccara = detectRectangularSgrSupport(resolved.id, Bun.env) && !isBunTestRuntime();
+	resolved.textSizing = false;
 	return resolved;
 })();
 

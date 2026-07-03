@@ -970,7 +970,7 @@ and optional mTLS material (`CLAUDE_CODE_CLIENT_CERT`, `CLAUDE_CODE_CLIENT_KEY`)
 `NODE_EXTRA_CA_CERTS` (PEM file path or inline PEM, mirroring Node's contract)
 is honoured on every provider fetch — OpenAI-compatible, Codex, Ollama, Azure
 Responses, Google, and Anthropic alike — for corporate relays or private CA
-bundles. Bun's `fetch` does not consume the env var natively, so omp injects
+bundles. Bun's `fetch` does not consume the env var natively, so omh injects
 the bundle into `RequestInit.tls.ca` and seeds the system root store
 alongside it.
 
@@ -1068,14 +1068,14 @@ Official docs: [Application Default Credentials](https://cloud.google.com/docs/a
 
 ### CLI Login
 
-Authenticate via the [`omp`](https://omp.sh) coding-agent CLI, which drives this library's OAuth/API-key flows in-process and persists into `agent.db`:
+Authenticate via the [`omh`](https://omh.sh) coding-agent CLI, which drives this library's OAuth/API-key flows in-process and persists into `agent.db`:
 
 ```bash
-omp auth-broker login              # interactive provider selection
-omp auth-broker login anthropic    # login to a specific provider
-omp auth-broker login vllm         # store vLLM API key (or placeholder for local no-auth)
-omp auth-broker list               # list supported providers
-omp auth-broker logout             # interactive — pick a stored credential to remove
+omh auth-broker login              # interactive provider selection
+omh auth-broker login anthropic    # login to a specific provider
+omh auth-broker login vllm         # store vLLM API key (or placeholder for local no-auth)
+omh auth-broker list               # list supported providers
+omh auth-broker logout             # interactive — pick a stored credential to remove
 ```
 
 Credentials are saved to `agent.db` in the agent directory. `/login qianfan` opens the Qianfan console and stores the pasted API key.

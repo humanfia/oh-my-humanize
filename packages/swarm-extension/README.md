@@ -1,8 +1,8 @@
 # Swarm Extension
 
-Multi-agent orchestration for oh-my-pi. Define agent workflows in YAML — pipelines, parallel fan-outs, sequential chains, or any DAG — and run them unattended until completion.
+Multi-agent orchestration for oh-my-humanize. Define agent workflows in YAML — pipelines, parallel fan-outs, sequential chains, or any DAG — and run them unattended until completion.
 
-Each agent is a full oh-my-pi subagent with access to every tool: bash, python, read, write, edit, grep, find, fetch, web_search, browser. The orchestrator manages lifecycle and ordering; agents communicate through the shared workspace filesystem.
+Each agent is a full oh-my-humanize subagent with access to every tool: bash, python, read, write, edit, grep, find, fetch, web_search, browser. The orchestrator manages lifecycle and ordering; agents communicate through the shared workspace filesystem.
 
 Use it for anything: research pipelines, code generation, data processing, content creation, analysis workflows, CI-like automation — any multi-step task that benefits from specialized agents working in coordination.
 
@@ -19,16 +19,18 @@ bun install
 
 ```bash
 # Foreground — runs until complete, no timeout:
-omp-swarm path/to/swarm.yaml
+omh-swarm path/to/swarm.yaml
 
 # Background — survives terminal close:
-nohup omp-swarm path/to/swarm.yaml \
+nohup omh-swarm path/to/swarm.yaml \
   > pipeline.log 2>&1 & disown
 ```
 
+`omp-swarm` remains available as a compatibility alias.
+
 The standalone runner has no timeout. It runs iteration after iteration until the pipeline finishes or you kill it.
 
-### Inside oh-my-pi (TUI)
+### Inside OMH (TUI)
 
 Register the extension in your config (`~/.omp/config.json` or `.omp/config.json`):
 
@@ -384,7 +386,7 @@ Execution per iteration: scraper_a + scraper_b (wave 1) -> transformer (wave 2) 
 
 ### What Agents Can Do
 
-Each agent is a full oh-my-pi session. It can:
+Each agent is a full OMH session. It can:
 
 - **bash/python**: Run commands, scripts, install packages, process data
 - **read/write/edit**: Create and modify files in the workspace
@@ -436,7 +438,7 @@ tracking/status.json      -> Cumulative state
 
 ## Models
 
-Any model configured in omp works. Set a swarm default and optionally override per agent:
+Any model configured in omh works. Set a swarm default and optionally override per agent:
 
 ```yaml
 swarm:
@@ -465,7 +467,7 @@ src/cli.ts   Standalone runner (no TUI, no timeout)
 src/swarm/
   schema.ts           YAML parsing + validation
   dag.ts              Dependency graph, cycle detection, topological sort
-  executor.ts         Spawns agents via oh-my-pi's runSubprocess
+  executor.ts         Spawns agents via OMH's runSubprocess
   pipeline.ts         Iteration loop + wave controller
   state.ts            Filesystem state persistence
   render.ts           Progress display formatting

@@ -94,14 +94,14 @@ class Settings(BaseSettings):
     # agent having reached a terminal tool (`gh_open_pr`,
     # `mark_unable_to_reproduce`, `abort_task`) for a `bug`/`documentation`
     # classification, the driver sends up to this many "you stopped before
-    # opening a PR — continue" reminder prompts into the same omp session.
+    # opening a PR — continue" reminder prompts into the same OMH session.
     # Set to 0 to disable.
     task_completion_max_reminders: int = Field(2, alias="ROBOMP_TASK_COMPLETION_MAX_REMINDERS")
-    omp_command: str = Field("omp", alias="ROBOMP_OMP_COMMAND")
+    omp_command: str = Field("omh", alias="ROBOMP_OMP_COMMAND")
 
     # Graceful shutdown (Phase B). On SIGTERM the dispatcher stops claiming
     # new work, then waits up to `drain` seconds for in-flight events to
-    # complete cleanly; any still running after that get their omp
+    # complete cleanly; any still running after that get their OMH
     # subprocess killed and the row left in `running` so it requeues on
     # next start. Sum of both MUST stay below the compose `stop_grace_period`.
     shutdown_drain_timeout_seconds: float = Field(25.0, alias="ROBOMP_SHUTDOWN_DRAIN_TIMEOUT_SECONDS")
@@ -306,8 +306,7 @@ class Settings(BaseSettings):
     @property
     def maintainer_logins(self) -> frozenset[str]:
         items = [
-            piece.strip().lstrip("@").lower().removesuffix("[bot]")
-            for piece in self.maintainer_logins_raw.split(",")
+            piece.strip().lstrip("@").lower().removesuffix("[bot]") for piece in self.maintainer_logins_raw.split(",")
         ]
         return frozenset(item for item in items if item)
 

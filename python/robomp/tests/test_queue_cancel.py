@@ -3,7 +3,7 @@
 These tests stay at the public-ish surface of `WorkerPool` — they exercise the
 hook registration contextvar that workers use and verify the dispatcher marks
 cancelled events as failed with the documented marker. They do NOT spin up a
-real omp subprocess; that's covered by the integration smoke test.
+real OMH subprocess; that's covered by the integration smoke test.
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ async def test_dispatch_marks_cancelled_event_failed_with_marker(
     row = _row("d3")
 
     async def fake_dispatch(self: WorkerPool, r: EventRow, *, slot_uid: int | None = None) -> None:
-        # Simulate cancellation hitting mid-task and the omp subprocess raising.
+        # Simulate cancellation hitting mid-task and the OMH subprocess raising.
         await pool.cancel_event(r.delivery_id)
         raise RuntimeError("subprocess died")
 

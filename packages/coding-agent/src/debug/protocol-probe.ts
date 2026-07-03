@@ -26,6 +26,7 @@ import {
 	TERMINAL,
 	Text,
 	type TextSizingScale,
+	terminalSupportsTextSizing,
 } from "@oh-my-pi/pi-tui";
 import { DynamicBorder } from "../modes/components/dynamic-border";
 import { theme } from "../modes/theme/theme";
@@ -196,7 +197,7 @@ export class ProtocolProbeComponent extends Container {
 	constructor(options: ProtocolProbeOptions) {
 		super();
 		const hyperlinksOn = TERMINAL.hyperlinks;
-		const sizingOn = TERMINAL.textSizing;
+		const sizingOn = TERMINAL.textSizing && terminalSupportsTextSizing(TERMINAL.id);
 		const yesNo = (on: boolean) => (on ? theme.fg("success", "supported") : theme.fg("muted", "unsupported"));
 
 		this.addChild(new DynamicBorder());
@@ -217,7 +218,7 @@ export class ProtocolProbeComponent extends Container {
 			new Text(
 				[
 					`${theme.fg("muted", "Hyperlinks (OSC 8)")} — ${yesNo(hyperlinksOn)}`,
-					`  \x1b]8;;https://github.com/can1357/oh-my-pi\x07oh-my-pi repo\x1b]8;;\x07`,
+					`  \x1b]8;;https://github.com/humanfia/oh-my-humanize\x07oh-my-humanize repo\x1b]8;;\x07`,
 				].join("\n"),
 				1,
 				0,

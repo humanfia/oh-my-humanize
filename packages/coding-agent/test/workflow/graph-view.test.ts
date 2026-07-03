@@ -1158,7 +1158,7 @@ describe("workflow graph view rendering", () => {
 		);
 	});
 
-	it("surfaces active human checkpoint prompts with fail-closed guidance", () => {
+	it("surfaces active human checkpoint prompts with explicit stop guidance", () => {
 		const definition: WorkflowDefinition = {
 			name: "human-gate",
 			version: 1,
@@ -1196,7 +1196,7 @@ describe("workflow graph view rendering", () => {
 		expect(text).toContain("Human checkpoint");
 		expect(text).toContain("human prompt: Verify the operator understands scope and evidence before proceeding.");
 		expect(text).toContain("human input: default Decision: stop");
-		expect(text).toContain("choose Decision: proceed only after reading evidence");
+		expect(text).toContain("choose proceed only when evidence is sufficient");
 	});
 
 	it("renders edge annotations with directed connectors but without composed arrow fragments", () => {

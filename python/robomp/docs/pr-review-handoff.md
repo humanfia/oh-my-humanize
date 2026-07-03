@@ -38,7 +38,7 @@ GitHub webhook
                  └─ worker.run_task(task_kind=..., inputs=TaskInputs, …)
                       ├─ ToolBindings(inbound_thread_number=pr_number, inbound_is_pr=…)
                       ├─ _build_prompt(task_kind, …) → persona.<prompt>(...)
-                      ├─ RpcClient(omp --mode rpc, cwd=worktree, custom_tools=host_tools.build(bindings))
+                      ├─ RpcClient(omh --mode rpc, cwd=worktree, custom_tools=host_tools.build(bindings))
                       └─ _drive_turn(...)  → completion/dirty reminders until terminal tool / clean
 ```
 

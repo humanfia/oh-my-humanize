@@ -105,7 +105,7 @@ providers:
 
 - `auth`: `apiKey` (default), `none`, or `oauth`; for `models.yml` custom models, `oauth` is accepted by schema but does not waive the `apiKey` requirement
 - `discovery.type`: `ollama`, `llama.cpp`, `lm-studio`, `openai-models-list`, `proxy`, or `litellm`
-- `transport`: `pi-native` only. When set, every model under that provider is sent to an `omp auth-gateway` compatible `baseUrl` via `POST /v1/pi/stream`; `apiKey` is the gateway bearer.
+- `transport`: `pi-native` only. When set, every model under that provider is sent to an `omh auth-gateway` compatible `baseUrl` via `POST /v1/pi/stream`; `apiKey` is the gateway bearer.
 
 ## Validation rules (current)
 
@@ -488,14 +488,14 @@ disabledProviders:
 
 String entries apply everywhere. Scoped entries apply when the current working directory is the configured path or one of its subdirectories. Use `path`, `paths`, `pathPrefix`, or `pathPrefixes`; use `models` for `enabledModels`, `providers` for `disabledProviders`, or `values` for either.
 
-## `/model` and `omp models`
+## `/model` and `omh models`
 
 Both surfaces keep provider-prefixed models visible and selectable.
 
 They now also expose canonical/coalesced models:
 
 - `/model` includes a canonical view alongside provider tabs
-- `omp models` prints provider-grouped tables of every concrete model, and `omp models canonical` prints the coalesced canonical view
+- `omh models` prints provider-grouped tables of every concrete model, and `omh models canonical` prints the coalesced canonical view
 
 Selecting a canonical entry stores the canonical selector. Selecting a provider row stores the explicit `provider/modelId`.
 

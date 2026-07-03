@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Build the standalone share-viewer page the omp relay serves at `GET /s/<id>`.
+ * Build the standalone share-viewer page the omh relay serves at `GET /s/<id>`.
  *
  * Same template as HTML exports, but with no embedded session: share-loader.js
  * (injected right after the empty #session-data tag) fetches the sealed blob
@@ -19,14 +19,14 @@ if (!outPath) {
 }
 
 const loaderJs = await Bun.file(new URL("../src/export/html/share-loader.js", import.meta.url).pathname).text();
-// Pin the omp brand palette (collab-web pink/purple identity) — the viewer is
-// a public artifact matching the live my.omp.sh client, not a per-user export
+// Pin the OMH brand palette (collab-web pink/purple identity) — the viewer is
+// a public artifact matching the live my.omh.sh client, not a per-user export
 // that should mirror the host's terminal theme.
 const themeVars = await generateThemeVars("web");
 
 const html = getTemplate()
 	.replace("<theme-vars/>", () => `<style>:root { ${themeVars} }</style>`)
-	.replace("<title>Session Export</title>", () => "<title>omp session</title>")
+	.replace("<title>Session Export</title>", () => "<title>omh session</title>")
 	.replace("{{SESSION_DATA}}</script>", () => `</script>\n  <script>${loaderJs}</script>`);
 
 if (html.includes("{{SESSION_DATA}}")) throw new Error("session-data placeholder survived substitution");

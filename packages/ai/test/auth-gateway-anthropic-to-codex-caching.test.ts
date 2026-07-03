@@ -50,7 +50,7 @@ const gateway = await checkAuthGatewayE2EAvailable();
 // cache floor with headroom.
 const SYSTEM_PARAGRAPH = `
 You are a precise assistant participating in an automated end-to-end test of
-the omp auth-gateway's cross-protocol prompt-caching pipeline. The request
+the OMH auth-gateway's cross-protocol prompt-caching pipeline. The request
 arrives over the Anthropic Messages wire format but is fulfilled by an
 OpenAI Codex backend, so the gateway must preserve the cached prefix across
 the translation. Always respond with extreme brevity: a single short word or

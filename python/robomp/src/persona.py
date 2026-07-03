@@ -151,7 +151,7 @@ def kickoff_pr_review(*, repo: RepoInfo, pr: PullRequestInfo, workspace: Workspa
 
 
 def resume_triage(*, repo: RepoInfo, issue: IssueInfo, workspace: Workspace) -> str:
-    """Resume prompt for a `triage_issue` task whose omp session already exists."""
+    """Resume prompt for a `triage_issue` task whose OMH session already exists."""
     return render(_load("resume_triage.md"), {"repo": repo, "issue": issue, "workspace": workspace})
 
 

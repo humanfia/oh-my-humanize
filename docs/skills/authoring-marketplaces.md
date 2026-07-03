@@ -1,11 +1,11 @@
 ---
 name: authoring-marketplaces
-description: Use when creating a new omp marketplace. Covers marketplace.json schema, source types, install commands, and publishing.
+description: Use when creating a new OMH marketplace. Covers marketplace.json schema, source types, install commands, and publishing.
 ---
 
 # Authoring Marketplaces
 
-A marketplace is a Git repository (or local directory) that contains a catalog file at either `.omp-plugin/marketplace.json` (preferred for omp-specific catalogs) or `.claude-plugin/marketplace.json` (Claude Code-compatible; used as the fallback). Anyone can author one. Users add it with `/marketplace add owner/repo` and then install individual plugins from it.
+A marketplace is a Git repository (or local directory) that contains a catalog file at either `.omp-plugin/marketplace.json` (preferred for OMH-specific catalogs) or `.claude-plugin/marketplace.json` (Claude Code-compatible; used as the fallback). Anyone can author one. Users add it with `/marketplace add owner/repo` and then install individual plugins from it.
 
 ## Minimum viable marketplace
 
@@ -43,7 +43,7 @@ Push to GitHub. Users install with:
 
 ## marketplace.json schema
 
-The catalog file lives at either `.omp-plugin/marketplace.json` or `.claude-plugin/marketplace.json` in the repository root. omp prefers the `.omp-plugin/` path and falls back to the Claude path; a repository may publish both to expose tool-specific catalogs from a single source tree.
+The catalog file lives at either `.omp-plugin/marketplace.json` or `.claude-plugin/marketplace.json` in the repository root. OMH prefers the `.omp-plugin/` path and falls back to the Claude path; a repository may publish both to expose tool-specific catalogs from a single source tree.
 
 ### Top-level fields
 
@@ -87,7 +87,7 @@ The catalog file lives at either `.omp-plugin/marketplace.json` or `.claude-plug
     "email": "plugins@acme.example"
   },
   "metadata": {
-    "description": "Official Acme plugins for oh-my-pi"
+    "description": "Official Acme plugins for OMH"
   },
   "plugins": [
     {
@@ -206,7 +206,7 @@ my-plugin/
   README.md                ← recommended: description + usage
 ```
 
-> Note: extension modules declared via `package.json` `omp.extensions` are **not** loaded from marketplace installs — that mechanism only applies to npm-installed or `omp plugin link`ed plugins. Ship marketplace plugin behavior through the conventional directories above.
+> Note: extension modules declared via `package.json` `omp.extensions` are **not** loaded from marketplace installs — that mechanism only applies to npm-installed or `omh plugin link`ed plugins. Ship marketplace plugin behavior through the conventional directories above.
 
 ## Install command
 
@@ -219,8 +219,8 @@ my-plugin/
 CLI equivalent:
 
 ```
-omp plugin marketplace add owner/repo
-omp plugin install name@marketplace-name
+omh plugin marketplace add owner/repo
+omh plugin install name@marketplace-name
 ```
 
 Scope behavior:
@@ -245,7 +245,7 @@ Invalid: `-bad-start`, `bad-end-`, `.dot-start`, `Under_score`, `HAS_CAPS`
 
 ## Publishing workflow
 
-1. Create `marketplace.json` at `.omp-plugin/marketplace.json` (omp-only) or `.claude-plugin/marketplace.json` (shared with Claude Code) in a new Git repo.
+1. Create `marketplace.json` at `.omp-plugin/marketplace.json` (OMH-only) or `.claude-plugin/marketplace.json` (shared with Claude Code) in a new Git repo.
 2. Add plugin entries pointing to subdirectories (or external sources).
 3. Push to GitHub.
 4. Share the `owner/repo` string. Users add it with `/marketplace add owner/repo`.

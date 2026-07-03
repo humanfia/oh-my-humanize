@@ -15,7 +15,7 @@ export interface IssueCardProps {
 // Verbatim cancel-confirm copy retained from the previous running table so the
 // operator-facing wording does not drift.
 const CANCEL_CONFIRM =
-  "Kill this running task? The omp subprocess dies and the row lands in 'failed'.";
+  "Kill this running task? The OMH subprocess dies and the row lands in 'failed'.";
 
 // One issue = one card. Full shape when the item has an issue ref (the
 // common case); compact shape for orphan deliveries with no bound issue.

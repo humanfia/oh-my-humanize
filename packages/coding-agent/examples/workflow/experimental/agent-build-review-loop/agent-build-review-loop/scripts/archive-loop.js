@@ -7,7 +7,7 @@ const progressText = await readOptionalText("progress.md");
 const VALIDATION_RERUN_PATTERNS = [
 	/\b(?:another|additional|later|subsequent)\s+validation\s+(?:run|attempt)\b/iu,
 	/\b(?:second|third|fourth|fifth)\s+validation\s+(?:run|attempt)\b/iu,
-	/\boverwrit(?:e|es|ten|ing)\s+validation[- /](?:stdout|stderr|logs?)\b/iu,
+	/\b(?:overwrit(?:e|es|ten|ing)|overwrote)\s+(?:the\s+)?validation[- /](?:stdout|stderr|logs?)\b/iu,
 ];
 const reviewRoute = workflowContext.state?.reviewRoute && typeof workflowContext.state.reviewRoute === "object" ? workflowContext.state.reviewRoute : {};
 const isRejectArchive = reviewRoute.decision === "reject";

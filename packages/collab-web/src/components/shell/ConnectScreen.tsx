@@ -49,7 +49,7 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 						autoComplete="off"
 						autoFocus
 					/>
-					<span className="sh-field-hint">paste a /collab link from any omp session</span>
+					<span className="sh-field-hint">paste a /collab link from any omh session</span>
 				</label>
 				<label className="sh-field">
 					<span className="sh-field-label">display name</span>

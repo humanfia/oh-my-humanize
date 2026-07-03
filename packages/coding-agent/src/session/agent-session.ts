@@ -1144,7 +1144,7 @@ function buildSessionMetadata(
 		if (typeof accountUuid === "string" && accountUuid.length > 0) {
 			userId.account_uuid = accountUuid;
 			// Claude Code's `device_id` is a stable 64-hex account-scoped install
-			// identifier. Include both omp's persistent install id and the Claude
+			// identifier. Include both OMH's persistent install id and the Claude
 			// account UUID so two accounts on the same install do not share a device.
 			userId.device_id = deriveClaudeDeviceId(getInstallId(), accountUuid);
 		}
@@ -1751,6 +1751,7 @@ export class AgentSession {
 	 *  These are folded into the matched tool call's `toolResult` content as an
 	 *  in-band system reminder, instead of spawning a separate follow-up turn. */
 	#perToolTtsrInjections = new Map<string, Rule[]>();
+	#pendingToolTtsrInterrupts = new Map<string, Rule[]>();
 	#ttsrAbortPending = false;
 	#ttsrRetryToken = 0;
 	#ttsrResumePromise: Promise<void> | undefined = undefined;
@@ -1836,7 +1837,7 @@ export class AgentSession {
 		if (mode === "off") return;
 		try {
 			this.#powerAssertion = MacOSPowerAssertion.start({
-				reason: "Oh My Pi agent session",
+				reason: "Oh My Humanize agent session",
 				idle: true,
 				display: mode === "display" || mode === "system",
 				system: mode === "system",
@@ -3559,6 +3560,7 @@ export class AgentSession {
 			this.#resetStreamingEditState();
 			// TTSR: Reset buffer on turn start
 			this.#ttsrManager?.resetBuffer();
+			this.#pendingToolTtsrInterrupts.clear();
 		}
 
 		// TTSR: Increment message count on turn end (for repeat-after-gap tracking)
@@ -3598,6 +3600,7 @@ export class AgentSession {
 			const assistantEvent = event.assistantMessageEvent;
 			let matchContext: TtsrMatchContext | undefined;
 			let streamingToolCall: ToolCall | undefined;
+			const targetMessageTimestamp = event.message.role === "assistant" ? event.message.timestamp : undefined;
 
 			if (assistantEvent.type === "text_delta") {
 				matchContext = { source: "text" };
@@ -3606,12 +3609,24 @@ export class AgentSession {
 			} else if (assistantEvent.type === "toolcall_delta") {
 				streamingToolCall = this.#getStreamingToolCallBlock(event.message, assistantEvent.contentIndex);
 				matchContext = this.#getTtsrToolMatchContext(streamingToolCall, assistantEvent.contentIndex);
+			} else if (assistantEvent.type === "toolcall_end") {
+				streamingToolCall = this.#getStreamingToolCallBlock(event.message, assistantEvent.contentIndex);
+				matchContext = this.#getTtsrToolMatchContext(streamingToolCall, assistantEvent.contentIndex);
+				const pendingMatches = this.#takePendingToolTtsrInterrupt(matchContext);
+				if (
+					pendingMatches.length > 0 &&
+					this.#routeTtsrMatches(pendingMatches, matchContext, assistantEvent.type, targetMessageTimestamp)
+				) {
+					return;
+				}
 			}
 
 			if (matchContext && "delta" in assistantEvent) {
-				const targetMessageTimestamp = event.message.role === "assistant" ? event.message.timestamp : undefined;
 				const matches = this.#checkTtsrStream(assistantEvent.delta, matchContext, streamingToolCall);
-				if (matches.length > 0 && this.#handleTtsrMatches(matches, matchContext, targetMessageTimestamp)) {
+				if (
+					matches.length > 0 &&
+					this.#routeTtsrMatches(matches, matchContext, assistantEvent.type, targetMessageTimestamp)
+				) {
 					return;
 				}
 				// ast-grep `astCondition` rules match against the reconstructed edit/write
@@ -3619,7 +3634,10 @@ export class AgentSession {
 				// call is async, so this path is awaited and self-throttled by the manager.
 				if (matchContext.source === "tool" && this.#ttsrManager?.hasAstRules()) {
 					const astMatches = await this.#checkTtsrAstStream(matchContext, streamingToolCall);
-					if (astMatches.length > 0 && this.#handleTtsrMatches(astMatches, matchContext, targetMessageTimestamp)) {
+					if (
+						astMatches.length > 0 &&
+						this.#routeTtsrMatches(astMatches, matchContext, assistantEvent.type, targetMessageTimestamp)
+					) {
 						return;
 					}
 				}
@@ -4331,6 +4349,34 @@ export class AgentSession {
 		}
 	}
 
+	#ttsrToolStreamKey(matchContext: TtsrMatchContext): string | undefined {
+		if (matchContext.source !== "tool") return undefined;
+		return matchContext.streamKey;
+	}
+
+	#queuePendingToolTtsrInterrupt(matchContext: TtsrMatchContext, rules: Rule[]): boolean {
+		const key = this.#ttsrToolStreamKey(matchContext);
+		if (!key) return false;
+		const bucket = this.#pendingToolTtsrInterrupts.get(key) ?? [];
+		const seen = new Set(bucket.map(rule => rule.name));
+		for (const rule of rules) {
+			if (seen.has(rule.name)) continue;
+			bucket.push(rule);
+			seen.add(rule.name);
+		}
+		if (bucket.length === 0) return false;
+		this.#pendingToolTtsrInterrupts.set(key, bucket);
+		return true;
+	}
+
+	#takePendingToolTtsrInterrupt(matchContext: TtsrMatchContext): Rule[] {
+		const key = this.#ttsrToolStreamKey(matchContext);
+		if (!key) return [];
+		const rules = this.#pendingToolTtsrInterrupts.get(key) ?? [];
+		this.#pendingToolTtsrInterrupts.delete(key);
+		return rules;
+	}
+
 	/** Tool-call id whose argument deltas triggered a TTSR match, when known. */
 	#extractTtsrToolCallId(matchContext: TtsrMatchContext): string | undefined {
 		if (matchContext.source !== "tool") return undefined;
@@ -4441,11 +4487,29 @@ export class AgentSession {
 		return false;
 	}
 
+	#routeTtsrMatches(
+		matches: Rule[],
+		matchContext: TtsrMatchContext,
+		eventType: "text_delta" | "thinking_delta" | "toolcall_delta" | "toolcall_end",
+		targetMessageTimestamp: number | undefined,
+	): boolean {
+		if (
+			eventType === "toolcall_delta" &&
+			matchContext.source === "tool" &&
+			this.#shouldInterruptForTtsrMatch(matches, matchContext) &&
+			this.#queuePendingToolTtsrInterrupt(matchContext, matches)
+		) {
+			return false;
+		}
+		return this.#handleTtsrMatches(matches, matchContext, targetMessageTimestamp);
+	}
+
 	#queueDeferredTtsrInjectionIfNeeded(assistantMsg: AssistantMessage): void {
 		if (assistantMsg.stopReason === "aborted" || assistantMsg.stopReason === "error") {
 			// Tools that hadn't started by abort/error will never produce results to
 			// fold injections into — drop their stale per-tool entries.
 			this.#perToolTtsrInjections.clear();
+			this.#pendingToolTtsrInterrupts.clear();
 		}
 		if (this.#ttsrAbortPending || this.#pendingTtsrInjections.length === 0) {
 			return;
@@ -4686,17 +4750,20 @@ export class AgentSession {
 					this.#resolveTtsrResume();
 					return;
 				}
+				await this.agent.waitForIdle();
 
 				const targetAssistantIndex = this.#findTtsrAssistantIndex(targetMessageTimestamp);
 				if (!this.#ttsrAbortPending || this.#promptGeneration !== generation || targetAssistantIndex === -1) {
 					this.#ttsrAbortPending = false;
 					this.#pendingTtsrInjections = [];
 					this.#perToolTtsrInjections.clear();
+					this.#pendingToolTtsrInterrupts.clear();
 					this.#resolveTtsrResume();
 					return;
 				}
 				this.#ttsrAbortPending = false;
 				this.#perToolTtsrInjections.clear();
+				this.#pendingToolTtsrInterrupts.clear();
 				const ttsrSettings = this.#ttsrManager?.getSettings();
 				if (ttsrSettings?.contextMode === "discard") {
 					// Remove the partial/aborted assistant turn from agent state
@@ -5515,7 +5582,7 @@ export class AgentSession {
 	 * `metadata.user_id` shaped like real Claude Code's `getAPIMetadata` output:
 	 * `{ session_id, account_uuid, device_id }`. `account_uuid` is included only
 	 * when an Anthropic OAuth credential with a known account UUID is loaded;
-	 * `device_id` is derived from both the persistent omp install id and that
+	 * `device_id` is derived from both the persistent OMH install id and that
 	 * account UUID. Resolving live keeps the value in sync with auth-state changes
 	 * (login/logout, token refresh that surfaces a new account UUID) without
 	 * needing to re-call `#syncAgentSessionId()` on every such event.
@@ -13393,6 +13460,7 @@ export class AgentSession {
 		if (transientProviderBackoffMs !== undefined && transientProviderBackoffMs > delayMs) {
 			delayMs = transientProviderBackoffMs;
 		}
+		let explicitWaitMs = parsedRetryAfterMs;
 		let switchedCredential = false;
 		let switchedModel = false;
 		// Set when a usage-limit error pinned the wait to credential
@@ -13443,6 +13511,7 @@ export class AgentSession {
 				if (usageLimitWaitMs > delayMs) {
 					delayMs = usageLimitWaitMs;
 				}
+				explicitWaitMs = usageLimitWaitMs;
 			}
 		}
 
@@ -13491,14 +13560,20 @@ export class AgentSession {
 		// assistant error message is preserved in agent state so the caller
 		// can act on it.
 		const maxDelayMs = retrySettings.maxDelayMs;
-		if (maxDelayMs > 0 && delayMs > maxDelayMs && !switchedCredential && !switchedModel) {
+		if (
+			explicitWaitMs !== undefined &&
+			maxDelayMs > 0 &&
+			explicitWaitMs > maxDelayMs &&
+			!switchedCredential &&
+			!switchedModel
+		) {
 			const attempt = this.#retryAttempt;
 			this.#retryAttempt = 0;
 			await this.#emitSessionEvent({
 				type: "auto_retry_end",
 				success: false,
 				attempt,
-				finalError: `Provider requested ${delayMs}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
+				finalError: `Provider requested ${explicitWaitMs}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
 			});
 			this.#resolveRetry();
 			return false;
@@ -15449,8 +15524,8 @@ export class AgentSession {
 	 * @returns Path to exported file
 	 */
 	async exportToHtml(outputPath?: string): Promise<string> {
-		// Public HTML export ships in the omp brand palette (collab-web
-		// pink/purple), matching my.omp.sh — not the host's terminal theme.
+		// Public HTML export ships in the omh brand palette (collab-web
+		// pink/purple), matching my.omh.sh — not the host's terminal theme.
 		// Callers who want a themed export can pass `palette: "theme"` with
 		// `themeName` directly to `exportSessionToHtml`.
 		const { exportSessionToHtml } = await import("../export/html");

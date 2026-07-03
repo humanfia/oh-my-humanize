@@ -32,6 +32,7 @@ const MISE_TOOL = "github:humanfia/oh-my-humanize";
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const RELEASE_METADATA_TIMEOUT_MS = 30_000;
 const BINARY_DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
+const COMPAT_APP_NAME = "omp";
 
 /**
  * Core native addon package. Bumped in lock-step with {@link PACKAGE} so the
@@ -95,6 +96,17 @@ export function parseUpdateArgs(args: string[]): { force: boolean; check: boolea
 		check: args.includes("--check") || args.includes("-c"),
 		plugins: args.includes("--plugins") || args.includes("-l"),
 	};
+}
+
+export function resolveUpdateBinaryPath(
+	which: (command: string) => string | null | undefined = $which,
+): string | undefined {
+	const names = APP_NAME === COMPAT_APP_NAME ? [APP_NAME] : [APP_NAME, COMPAT_APP_NAME];
+	for (const name of names) {
+		const resolved = which(name);
+		if (resolved) return resolved;
+	}
+	return undefined;
 }
 
 async function getBunGlobalBinDir(): Promise<string | undefined> {
@@ -189,7 +201,7 @@ function isPathInDirectory(filePath: string, directoryPath: string): boolean {
 	return isPathInDirectoryLexical(resolvedFile, dirReal);
 }
 
-type UpdateMethod = "brew" | "mise" | "bun" | "binary";
+type UpdateMethod = "brew" | "mise" | "bun" | "source" | "binary";
 
 interface UpdateMethodResolutionOptions {
 	homebrewPrefix?: string;
@@ -197,7 +209,28 @@ interface UpdateMethodResolutionOptions {
 	miseDataDir?: string;
 }
 
-type UpdateTarget = { method: "brew" } | { method: "mise" } | { method: "bun" } | { method: "binary"; path: string };
+type UpdateTarget =
+	| { method: "brew" }
+	| { method: "mise" }
+	| { method: "bun" }
+	| { method: "source"; path: string }
+	| { method: "binary"; path: string };
+
+function isWindowsSourceLauncherPath(filePath: string): boolean {
+	const ext = path.extname(filePath).toLowerCase();
+	return ext === ".cmd" || ext === ".bat";
+}
+
+function isSourceRepositoryLauncherPath(filePath: string): boolean {
+	const resolved = tryRealpath(filePath);
+	if (!resolved) return false;
+	if (path.basename(resolved) !== COMPAT_APP_NAME) return false;
+	const scriptsDir = path.dirname(resolved);
+	if (path.basename(scriptsDir) !== "scripts") return false;
+	const packageDir = path.dirname(scriptsDir);
+	if (path.basename(packageDir) !== "coding-agent") return false;
+	return fs.existsSync(path.join(packageDir, "src", "cli.ts"));
+}
 
 function resolveUpdateMethod(
 	ompPath: string,
@@ -208,7 +241,9 @@ function resolveUpdateMethod(
 	if (homebrewPrefix && isPathInDirectory(ompPath, path.join(homebrewPrefix, "bin"))) return "brew";
 	if (miseBinDirs.some(dir => isPathInDirectory(ompPath, dir))) return "mise";
 	if (miseDataDir && isPathInDirectory(ompPath, path.join(miseDataDir, "shims"))) return "mise";
+	if (isSourceRepositoryLauncherPath(ompPath)) return "source";
 	if (bunBinDir && isPathInDirectory(ompPath, bunBinDir)) return "bun";
+	if (isWindowsSourceLauncherPath(ompPath)) return "source";
 	return "binary";
 }
 
@@ -229,7 +264,7 @@ async function resolveUpdateTarget(): Promise<UpdateTarget> {
 
 	if (ompPath) {
 		const method = resolveUpdateMethod(ompPath, bunBinDir, { homebrewPrefix, miseBinDirs, miseDataDir });
-		if (method === "binary") return { method, path: ompPath };
+		if (method === "binary" || method === "source") return { method, path: ompPath };
 		return { method };
 	}
 
@@ -576,7 +611,7 @@ function getBinaryName(): string {
  * Resolve the path that OMH maps to in the user's PATH.
  */
 function resolveOmpPath(): string | undefined {
-	return $which(APP_NAME) ?? undefined;
+	return resolveUpdateBinaryPath();
 }
 
 /**
@@ -628,6 +663,56 @@ async function unlinkIfExists(filePath: string): Promise<void> {
 	} catch (err) {
 		if (!isEnoent(err)) throw err;
 	}
+}
+
+export function resolveWindowsCompatBinarySibling(
+	targetPath: string,
+	platform: NodeJS.Platform = process.platform,
+): string | undefined {
+	if (platform !== "win32") return undefined;
+	const pathApi = targetPath.includes("\\") || /^[A-Za-z]:/.test(targetPath) ? path.win32 : path;
+	const basename = pathApi.basename(targetPath).toLowerCase();
+	if (basename === `${APP_NAME}.exe`) return pathApi.join(pathApi.dirname(targetPath), `${COMPAT_APP_NAME}.exe`);
+	if (basename === `${COMPAT_APP_NAME}.exe`) return pathApi.join(pathApi.dirname(targetPath), `${APP_NAME}.exe`);
+	return undefined;
+}
+
+export function resolvePosixCompatBinarySibling(
+	targetPath: string,
+	platform: NodeJS.Platform = process.platform,
+): string | undefined {
+	if (platform === "win32") return undefined;
+	const basename = path.basename(targetPath);
+	if (basename === APP_NAME) return path.join(path.dirname(targetPath), COMPAT_APP_NAME);
+	if (basename === COMPAT_APP_NAME) return path.join(path.dirname(targetPath), APP_NAME);
+	return undefined;
+}
+
+export async function syncWindowsCompatBinarySibling(
+	targetPath: string,
+	platform: NodeJS.Platform = process.platform,
+): Promise<string | undefined> {
+	const siblingPath = resolveWindowsCompatBinarySibling(targetPath, platform);
+	if (!siblingPath) return undefined;
+	await fs.promises.copyFile(targetPath, siblingPath);
+	return siblingPath;
+}
+
+export async function syncPosixCompatBinarySibling(
+	targetPath: string,
+	platform: NodeJS.Platform = process.platform,
+): Promise<string | undefined> {
+	const siblingPath = resolvePosixCompatBinarySibling(targetPath, platform);
+	if (!siblingPath) return undefined;
+	await fs.promises.rm(siblingPath, { force: true });
+	await fs.promises.symlink(path.basename(targetPath), siblingPath);
+	return siblingPath;
+}
+
+async function syncCompatBinarySibling(targetPath: string): Promise<string | undefined> {
+	return process.platform === "win32"
+		? syncWindowsCompatBinarySibling(targetPath)
+		: syncPosixCompatBinarySibling(targetPath);
 }
 
 /**
@@ -872,6 +957,10 @@ async function updateViaBinaryAt(targetPath: string, expectedVersion: string): P
 		expectedVersion,
 		verifyInstalledVersion,
 	});
+	const siblingPath = await syncCompatBinarySibling(targetPath);
+	if (siblingPath) {
+		console.log(chalk.dim(`Updated compatibility binary: ${siblingPath}`));
+	}
 	// Reclaim backups from earlier updates whose owning process has since exited.
 	await sweepStaleBackups(targetPath);
 	printVerifiedVersion(expectedVersion);
@@ -920,6 +1009,10 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 			await updateViaMise(release.version, opts.force);
 		} else if (target.method === "bun") {
 			await updateViaBun(release.version);
+		} else if (target.method === "source") {
+			throw new Error(
+				`${APP_NAME} at ${target.path} is a source launcher; re-run the source installer to update this install`,
+			);
 		} else {
 			await updateViaBinaryAt(target.path, release.version);
 		}

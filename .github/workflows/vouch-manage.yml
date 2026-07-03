@@ -23,8 +23,10 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write # retrigger PR gate after a maintainer vouches an author
   contents: write # commit VOUCHED.td
   discussions: write # read the comment / acknowledge
+  pull-requests: read # find open PRs by the newly vouched author
 
 jobs:
   manage:
@@ -32,7 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mitchellh/vouch/action/manage-by-discussion@v1
+      - id: vouch
+        uses: mitchellh/vouch/action/manage-by-discussion@f44860978966ace98fb11aaaa20f2b27d7543e13
         with:
           discussion-number: ${{ github.event.discussion.number }}
           comment-node-id: ${{ github.event.comment.node_id }}
@@ -42,3 +45,40 @@ jobs:
           roles: admin,maintain,write
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Recheck open PRs for vouched authors
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          DISCUSSION_AUTHOR: ${{ github.event.discussion.user.login }}
+        run: |
+          body="$(printf '%s' "$COMMENT_BODY" | tr -d '\r')"
+          first_line="${body%%$'\n'*}"
+          trimmed="${first_line#"${first_line%%[![:space:]]*}"}"
+          first_word="${trimmed%%[[:space:]]*}"
+          keyword="$(printf '%s' "$first_word" | tr '[:upper:]' '[:lower:]')"
+          case "$keyword" in
+            !vouch|!denounce|!unvouch) ;;
+            *) exit 0 ;;
+          esac
+
+          target="$(printf '%s' "$trimmed" | grep -Eo '@[A-Za-z0-9-]+' | head -n 1 | tr -d '@' || true)"
+          if [ -z "$target" ]; then
+            target="$DISCUSSION_AUTHOR"
+          fi
+
+          rows="$(gh pr list --repo "$REPO" --state open --author "$target" --json number,headRefOid --jq '.[] | [.number, .headRefOid] | @tsv')"
+          if [ -z "$rows" ]; then
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r pr_number head_sha; do
+            if [ -z "$pr_number" ] || [ -z "$head_sha" ]; then
+              continue
+            fi
+            gh workflow run vouch-pr.yml --repo "$REPO" \
+              -f pr_number="$pr_number" \
+              -f head_sha="$head_sha" \
+              -f author_login="$target"
+          done <<< "$rows"

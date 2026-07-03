@@ -5,7 +5,7 @@
  * Rules (applied in order):
  *  0. Looks like a filesystem path (`.`, `..`, `./…`, `..\…`, `/…`, `~/…`,
  *     `C:\…`, `\\unc`) -> local. Routed through `PluginManager.link()` so the
- *     `omp plugin install <path>` and `omp plugin link <path>` flows agree.
+ *     `omh plugin install <path>` and `omh plugin link <path>` flows agree.
  *  1. Starts with `@` (scoped npm) -> always npm.
  *  2. Contains `@` after the first character -> split on the LAST `@`.
  *     If the right-hand side is a known marketplace name, it's a marketplace ref.

@@ -48,12 +48,31 @@ function stalledBody(bytes: Uint8Array[] = []): ReadableStream<Uint8Array> {
 }
 
 function delayedBody(chunks: Array<{ atMs: number; bytes: Uint8Array }>): ReadableStream<Uint8Array> {
+	let closed = false;
+	const timers: NodeJS.Timeout[] = [];
 	return new ReadableStream<Uint8Array>({
 		start(controller) {
 			for (const chunk of chunks) {
-				setTimeout(() => controller.enqueue(chunk.bytes), chunk.atMs);
+				const timer = setTimeout(() => {
+					if (closed) return;
+					controller.enqueue(chunk.bytes);
+				}, chunk.atMs);
+				timer.unref?.();
+				timers.push(timer);
 			}
-			setTimeout(() => controller.close(), Math.max(...chunks.map(chunk => chunk.atMs)) + 1);
+			const lastChunkAtMs = chunks.length === 0 ? 0 : Math.max(...chunks.map(chunk => chunk.atMs));
+			const closeTimer = setTimeout(() => {
+				if (closed) return;
+				closed = true;
+				controller.close();
+			}, lastChunkAtMs + 1);
+			closeTimer.unref?.();
+			timers.push(closeTimer);
+		},
+		cancel() {
+			closed = true;
+			for (const timer of timers) clearTimeout(timer);
+			timers.length = 0;
 		},
 	});
 }
@@ -335,9 +354,9 @@ describe("streamPiNative event flow", () => {
 		const final = baseAssistant({ content: [{ type: "text", text: "hello world" }] });
 		const chunks = [
 			{ atMs: 0, bytes: sseEventBytes({ type: "start", partial: baseAssistant() }) },
-			{ atMs: 15, bytes: sseEventBytes({ type: "text_delta", contentIndex: 0, delta: "hello", partial: final }) },
-			{ atMs: 35, bytes: sseEventBytes({ type: "text_delta", contentIndex: 0, delta: " world", partial: final }) },
-			{ atMs: 55, bytes: sseEventBytes({ type: "done", reason: "stop", message: final }) },
+			{ atMs: 300, bytes: sseEventBytes({ type: "text_delta", contentIndex: 0, delta: "hello", partial: final }) },
+			{ atMs: 800, bytes: sseEventBytes({ type: "text_delta", contentIndex: 0, delta: " world", partial: final }) },
+			{ atMs: 1300, bytes: sseEventBytes({ type: "done", reason: "stop", message: final }) },
 		];
 		const fetchImpl: FetchImpl = (async () =>
 			new Response(delayedBody(chunks), {
@@ -348,8 +367,8 @@ describe("streamPiNative event flow", () => {
 		const stream = streamPiNative(fakeModel(), baseContext, {
 			apiKey: "k",
 			fetch: fetchImpl,
-			streamFirstEventTimeoutMs: 40,
-			streamIdleTimeoutMs: 30,
+			streamFirstEventTimeoutMs: 1_000,
+			streamIdleTimeoutMs: 700,
 		});
 
 		const result = await stream.result();
@@ -410,7 +429,10 @@ describe("streamPiNative event flow", () => {
 			signal: controller.signal,
 		});
 
-		await Bun.sleep(0);
+		for (let attempt = 0; captured.signal === undefined && attempt < 50; attempt += 1) {
+			await Bun.sleep(10);
+		}
+		expect(captured.signal).toBeDefined();
 		expect(captured.signal?.aborted).toBe(false);
 		controller.abort(new Error("caller aborted"));
 

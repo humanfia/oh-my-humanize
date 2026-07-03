@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "omp-rpc"
 version = "0.1.0"
-description = "Typed Python client for the omp coding-agent RPC protocol"
+description = "Typed Python client for the OMH coding-agent RPC protocol"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "OpenAI Codex" }]
+authors = [{ name = "oh-my-humanize maintainers" }]
 keywords = ["omp", "rpc", "agent", "coding-agent", "jsonl", "stdio"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -23,9 +23,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://omp.sh/"
-Repository = "https://github.com/can1357/oh-my-pi"
-Documentation = "https://github.com/can1357/oh-my-pi/blob/main/docs/rpc.md"
+Homepage = "https://omh.sh/"
+Repository = "https://github.com/humanfia/oh-my-humanize"
+Documentation = "https://github.com/humanfia/oh-my-humanize/blob/main/docs/rpc.md"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

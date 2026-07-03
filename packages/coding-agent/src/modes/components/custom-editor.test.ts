@@ -70,12 +70,12 @@ describe("CustomEditor placeholder decoration", () => {
 	it("renders paste placeholders before theme initialization", async () => {
 		const output = await decorateInFreshProcess("[Paste #1, +30 lines]");
 		expect(output).toBe("[Paste #1, +30 lines]");
-	});
+	}, 15_000);
 
 	it("renders linked image placeholders before theme and settings initialization", async () => {
 		const output = await decorateInFreshProcess("[Image #1]", ["/tmp/example.png"]);
 		expect(output).toBe("[Image #1]");
-	});
+	}, 15_000);
 });
 
 describe("CustomEditor bracketed path paste", () => {

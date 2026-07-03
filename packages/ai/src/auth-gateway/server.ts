@@ -1,5 +1,5 @@
 /**
- * omp auth-gateway HTTP server.
+ * OMH auth-gateway HTTP server.
  *
  * Accepts any provider-format request (OpenAI chat-completions, Anthropic
  * messages, OpenAI Responses) and dispatches through pi-ai's `streamSimple()`

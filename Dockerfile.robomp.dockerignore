@@ -1,5 +1,5 @@
 # Build context for `Dockerfile.robomp` (robomp:dev). Shadows .dockerignore
-# for this file only — the pi-root build uses Dockerfile.dockerignore instead.
+# for this file only — the OMH build uses Dockerfile.dockerignore instead.
 #
 # Note: this duplicates most of the entries in Dockerfile.dockerignore. That's
 # the cost of per-Dockerfile shadows (no shared file to factor common rules
@@ -11,7 +11,7 @@ target/
 dist/
 runs/
 
-# Per-host scratch the pi codebase uses for parallel agents / worktrees.
+# Per-host scratch the OMH codebase uses for parallel agents / worktrees.
 .fallow/
 .worktrees/
 .wt/
@@ -45,19 +45,21 @@ CPU.*
 coverage/
 .nyc_output/
 __pycache__/
+.pytest_cache/
+.ruff_cache/
 compaction-results/
 changes/
 
 # Generated files (the in-image build regenerates them).
-packages/coding-agent/src/internal-urls/docs-index.generated.ts
+packages/coding-agent/src/internal-urls/docs-index.generated.txt
 packages/natives/native/.build/
-packages/natives/native/pi_natives.darwin-*.node
-packages/natives/native/pi_natives.dev.node
+packages/natives/native/pi_natives*.node
 packages/ai/test/.temp-images/
 python/omp-rpc/src/omp_rpc.egg-info/
 python/robomp/data/
 python/robomp/.cache/
-python/robomp/src/robomp/static/
+python/robomp/*.egg-info/
+python/robomp/src/static/
 python/robomp/web/dist/
 
 # Scratch files the repo creates ad-hoc.

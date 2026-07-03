@@ -23,6 +23,17 @@ const RESEARCH_REPRODUCTION_SCRIPT_DIR = `${import.meta.dir}/../../../examples/w
 const RELEASE_HARDENING_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/release-hardening/release-hardening/scripts`;
 const BUG_TRIAGE_REPRO_FIX_SCRIPT_DIR = `${import.meta.dir}/../../../examples/workflow/experimental/bug-triage-repro-fix/bug-triage-repro-fix/scripts`;
 
+async function writeDocumentationArchivePrerequisites(cwd: string): Promise<void> {
+	await Bun.write(
+		`${cwd}/workflow-output/documentation-audit-digest.md`,
+		"# Consolidated Audit Findings\n\nDocumentation audit findings were consolidated before archive.\n",
+	);
+	await Bun.write(
+		`${cwd}/workflow-output/omh-runtime/artifacts/archive-docs/1-consistencyReview.md`,
+		"verdict finish\nDocumentation reviewer accepted the retained patch evidence.\n",
+	);
+}
+
 interface DirectoryEntry {
 	name: string;
 	isDirectory(): boolean;
@@ -1247,6 +1258,7 @@ describe("example workflow scripts", () => {
 					? true
 					: evaluateWorkflowCondition(edge.condition.source, {
 							state: {
+								task: { negativeControlCommand: "" },
 								reproduction: { exercised: true },
 								variant: { validationExercised: true },
 							},
@@ -4548,7 +4560,9 @@ describe("example workflow scripts", () => {
 			["Objective:", "Repair stale docs without dropping unrelated documented behavior."].join("\n"),
 		);
 		await Bun.write(`${cwd}/workflow-output/documentation-validation.md`, "44 passed\n");
+		await Bun.write(`${cwd}/workflow-output/documentation-patch.md`, "Patch rationale: preserve base_url docs.\n");
 		await Bun.write(`${cwd}/workflow-output/documentation-rollback.md`, "Restore changed docs.\n");
+		await writeDocumentationArchivePrerequisites(cwd);
 
 		const result = await runExampleDefinition({
 			cwd,
@@ -4650,7 +4664,9 @@ describe("example workflow scripts", () => {
 			["Objective:", "Repair stale docs without dropping unrelated documented behavior."].join("\n"),
 		);
 		await Bun.write(`${cwd}/workflow-output/documentation-validation.md`, "44 passed\n");
+		await Bun.write(`${cwd}/workflow-output/documentation-patch.md`, "Patch rationale: preserve base_url docs.\n");
 		await Bun.write(`${cwd}/workflow-output/documentation-rollback.md`, "Restore changed docs.\n");
+		await writeDocumentationArchivePrerequisites(cwd);
 
 		const result = await runExampleDefinition({
 			cwd,
@@ -4727,6 +4743,7 @@ describe("example workflow scripts", () => {
 		);
 		await Bun.write(`${cwd}/workflow-output/validation-stdout.txt`, `${baselineFailure}\n`);
 		await Bun.write(`${cwd}/workflow-output/documentation-patch.md`, "Rollback note: restore docs/testing.rst.\n");
+		await writeDocumentationArchivePrerequisites(cwd);
 
 		const result = await runExampleDefinition({
 			cwd,
@@ -4788,6 +4805,7 @@ describe("example workflow scripts", () => {
 			["Objective:", "Repair docs and carry rollback evidence into the archive."].join("\n"),
 		);
 		await Bun.write(`${cwd}/workflow-output/documentation-validation.md`, "44 passed\n");
+		await writeDocumentationArchivePrerequisites(cwd);
 		await Bun.write(
 			`${cwd}/workflow-output/documentation-patch.md`,
 			[
@@ -4853,6 +4871,7 @@ describe("example workflow scripts", () => {
 			["Objective:", "Repair docs and carry a patch-scoped rollback line into the archive."].join("\n"),
 		);
 		await Bun.write(`${cwd}/workflow-output/documentation-validation.md`, "44 passed\n");
+		await writeDocumentationArchivePrerequisites(cwd);
 		await Bun.write(
 			`${cwd}/workflow-output/documentation-patch.md`,
 			[
@@ -5982,7 +6001,10 @@ describe("example workflow scripts", () => {
 		const previousCwd = process.cwd();
 
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
-		await Bun.write(`${cwd}/task.md`, "Benchmark Command:\necho benchmark\n\nValidation Command:\necho validation\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			"Benchmark Command:\nprintf 'mean 1.23 ms'\n\nValidation Command:\necho validation\n",
+		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
 		await runGit(cwd, ["config", "user.name", "OMH Test"]);
@@ -5999,7 +6021,7 @@ describe("example workflow scripts", () => {
 			initialState: {
 				task: {
 					baselineCommand:
-						"bash -lc 'set -euo pipefail; printf generated > Cargo.lock; mkdir -p target/debug; printf build > target/debug/build-output'",
+						"bash -lc 'set -euo pipefail; printf generated > Cargo.lock; mkdir -p target/debug; printf build > target/debug/build-output; printf \"mean 1.23 ms\"'",
 				},
 			},
 		});
@@ -6026,7 +6048,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			await Bun.write(
 				`${cwd}/task.md`,
-				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+				["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 			);
 			await runGit(cwd, ["init"]);
 			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -6070,7 +6092,7 @@ describe("example workflow scripts", () => {
 				`${cwd}/task.md`,
 				[
 					"Benchmark Command:",
-					"echo benchmark >/tmp/word-counter-benchmark.out",
+					"printf 'mean 1.23 ms' >/tmp/word-counter-benchmark.out",
 					"",
 					"Validation Command:",
 					"echo validation",
@@ -6124,7 +6146,7 @@ describe("example workflow scripts", () => {
 				`${cwd}/task.md`,
 				[
 					"Benchmark Command:",
-					"echo benchmark",
+					"printf 'mean 1.23 ms'",
 					"",
 					"Validation Command:",
 					"printf 'validation command shape is invalid\\n' >&2; exit 17",
@@ -6639,7 +6661,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -6657,7 +6679,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 			},
@@ -6682,7 +6704,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -6702,7 +6724,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 				runtime: {
@@ -6727,7 +6749,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -6769,7 +6791,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -6788,7 +6810,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 				runtime: {
@@ -6815,7 +6837,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -6833,7 +6855,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 					sharedGitWorktrees: [],
 				},
@@ -6860,7 +6882,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -6878,7 +6900,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 					sharedGitWorktrees: [linkedWorktree],
 				},
@@ -6901,7 +6923,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await fs.mkdir(`${cwd}/workflow-output/tmp`, { recursive: true });
 		await runGit(cwd, ["init"]);
@@ -6919,7 +6941,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 			},
@@ -6931,7 +6953,9 @@ describe("example workflow scripts", () => {
 			validationExitCode: 0,
 		});
 		expect(result.scheduler.state.benchmark).not.toHaveProperty("isolationViolation");
-		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain("echo benchmark");
+		expect(await Bun.file(`${cwd}/workflow-output/performance-benchmark.md`).text()).toContain(
+			"printf 'mean 1.23 ms'",
+		);
 	});
 
 	it("materializes performance branch state into canonical reports before benchmark joins", async () => {
@@ -6942,7 +6966,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -6960,7 +6984,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 				algorithmic: {
@@ -7011,7 +7035,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7076,7 +7100,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 				algorithmic: {
@@ -7111,7 +7135,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7154,7 +7178,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 				caching: {
@@ -7183,7 +7207,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7212,7 +7236,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 			},
@@ -7236,7 +7260,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7268,7 +7292,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 			},
@@ -7292,7 +7316,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7310,7 +7334,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 			},
@@ -7334,7 +7358,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7352,7 +7376,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 			},
@@ -7376,7 +7400,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7406,7 +7430,7 @@ describe("example workflow scripts", () => {
 			writes: ["/benchmark"],
 			initialState: {
 				task: {
-					benchmarkCommand: "echo benchmark",
+					benchmarkCommand: "printf 'mean 1.23 ms'",
 					validationCommand: "echo validation",
 				},
 			},
@@ -7436,7 +7460,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			await Bun.write(
 				`${cwd}/task.md`,
-				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+				["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 			);
 			await runGit(cwd, ["init"]);
 			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7467,7 +7491,7 @@ describe("example workflow scripts", () => {
 				initialState: {
 					task: {
 						text: await Bun.file(`${cwd}/task.md`).text(),
-						benchmarkCommand: "echo benchmark",
+						benchmarkCommand: "printf 'mean 1.23 ms'",
 						validationCommand: "echo validation",
 					},
 				},
@@ -7505,7 +7529,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			await Bun.write(
 				`${cwd}/task.md`,
-				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+				["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 			);
 			await runGit(cwd, ["init"]);
 			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7558,7 +7582,7 @@ describe("example workflow scripts", () => {
 					task: {
 						text: await Bun.file(`${cwd}/task.md`).text(),
 						scratchRoot: runTmp,
-						benchmarkCommand: "echo benchmark",
+						benchmarkCommand: "printf 'mean 1.23 ms'",
 						validationCommand: "echo validation",
 					},
 				},
@@ -7594,7 +7618,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			const taskText = [
 				"Benchmark Command:",
-				"echo benchmark",
+				"printf 'mean 1.23 ms'",
 				"",
 				"Validation Command:",
 				"echo validation",
@@ -7633,7 +7657,7 @@ describe("example workflow scripts", () => {
 					task: {
 						text: taskText,
 						scratchRoot: runTmp,
-						benchmarkCommand: "echo benchmark",
+						benchmarkCommand: "printf 'mean 1.23 ms'",
 						validationCommand: "echo validation",
 					},
 				},
@@ -7672,7 +7696,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			const taskText = [
 				"Benchmark Command:",
-				`CARGO_TARGET_DIR=${cacheRoot} TMPDIR=${runTmp}/algorithmic/tmp echo benchmark`,
+				`CARGO_TARGET_DIR=${cacheRoot} TMPDIR=${runTmp}/algorithmic/tmp printf 'mean 1.23 ms'`,
 				"",
 				"Validation Command:",
 				`CARGO_TARGET_DIR=${cacheRoot} echo validation`,
@@ -7707,7 +7731,7 @@ describe("example workflow scripts", () => {
 					task: {
 						text: taskText,
 						scratchRoot: runTmp,
-						benchmarkCommand: `CARGO_TARGET_DIR=${cacheRoot} echo benchmark`,
+						benchmarkCommand: `CARGO_TARGET_DIR=${cacheRoot} printf 'mean 1.23 ms'`,
 						validationCommand: `CARGO_TARGET_DIR=${cacheRoot} echo validation`,
 					},
 				},
@@ -7737,9 +7761,13 @@ describe("example workflow scripts", () => {
 
 		try {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
-			const taskText = ["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join(
-				"\n",
-			);
+			const taskText = [
+				"Benchmark Command:",
+				"printf 'mean 1.23 ms'",
+				"",
+				"Validation Command:",
+				"echo validation",
+			].join("\n");
 			await Bun.write(`${cwd}/task.md`, taskText);
 			await runGit(cwd, ["init"]);
 			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7781,7 +7809,7 @@ describe("example workflow scripts", () => {
 					task: {
 						text: taskText,
 						scratchRoot: runTmp,
-						benchmarkCommand: "echo benchmark",
+						benchmarkCommand: "printf 'mean 1.23 ms'",
 						validationCommand: "echo validation",
 					},
 				},
@@ -7813,7 +7841,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			await Bun.write(
 				`${cwd}/task.md`,
-				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+				["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 			);
 			await runGit(cwd, ["init"]);
 			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7840,7 +7868,7 @@ describe("example workflow scripts", () => {
 				initialState: {
 					task: {
 						text: await Bun.file(`${cwd}/task.md`).text(),
-						benchmarkCommand: "echo benchmark",
+						benchmarkCommand: "printf 'mean 1.23 ms'",
 						validationCommand: "echo validation",
 					},
 				},
@@ -7872,7 +7900,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			await Bun.write(
 				`${cwd}/task.md`,
-				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+				["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 			);
 			await runGit(cwd, ["init"]);
 			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7901,7 +7929,7 @@ describe("example workflow scripts", () => {
 					task: {
 						text: await Bun.file(`${cwd}/task.md`).text(),
 						scratchRoot: runTmp,
-						benchmarkCommand: "echo benchmark",
+						benchmarkCommand: "printf 'mean 1.23 ms'",
 						validationCommand: "echo validation",
 					},
 				},
@@ -7936,7 +7964,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			await Bun.write(
 				`${cwd}/task.md`,
-				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+				["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 			);
 			await runGit(cwd, ["init"]);
 			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -7949,7 +7977,7 @@ describe("example workflow scripts", () => {
 					"# IO candidate",
 					"",
 					`worktree: ${runTmp}/branches/io/worktree`,
-					"Benchmark command run in the lane worktree: echo benchmark",
+					"Benchmark command run in the lane worktree: printf 'mean 1.23 ms'",
 					"Validation command run from the unmodified shared workspace with cwd: .",
 					"candidate patch path: workflow-output/perf-io-candidate.diff",
 				].join("\n"),
@@ -7966,7 +7994,7 @@ describe("example workflow scripts", () => {
 					task: {
 						text: await Bun.file(`${cwd}/task.md`).text(),
 						scratchRoot: runTmp,
-						benchmarkCommand: "echo benchmark",
+						benchmarkCommand: "printf 'mean 1.23 ms'",
 						validationCommand: "echo validation",
 					},
 				},
@@ -8001,7 +8029,7 @@ describe("example workflow scripts", () => {
 			await Bun.write(`${cwd}/src.txt`, "baseline\n");
 			await Bun.write(
 				`${cwd}/task.md`,
-				["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+				["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 			);
 			await runGit(cwd, ["init"]);
 			await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -8038,7 +8066,7 @@ describe("example workflow scripts", () => {
 					task: {
 						text: await Bun.file(`${cwd}/task.md`).text(),
 						scratchRoot: runTmp,
-						benchmarkCommand: "echo benchmark",
+						benchmarkCommand: "printf 'mean 1.23 ms'",
 						validationCommand: "echo validation",
 					},
 				},
@@ -9828,7 +9856,10 @@ describe("example workflow scripts", () => {
 		const previousCwd = process.cwd();
 
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
-		await Bun.write(`${cwd}/task.md`, "Benchmark Command:\necho benchmark\n\nValidation Command:\necho validation\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			"Benchmark Command:\nprintf 'mean 1.23 ms'\n\nValidation Command:\necho validation\n",
+		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
 		await runGit(cwd, ["config", "user.name", "OMH Test"]);
@@ -9880,7 +9911,10 @@ describe("example workflow scripts", () => {
 		const previousCwd = process.cwd();
 
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
-		await Bun.write(`${cwd}/task.md`, "Benchmark Command:\necho benchmark\n\nValidation Command:\necho validation\n");
+		await Bun.write(
+			`${cwd}/task.md`,
+			"Benchmark Command:\nprintf 'mean 1.23 ms'\n\nValidation Command:\necho validation\n",
+		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
 		await runGit(cwd, ["config", "user.name", "OMH Test"]);
@@ -10252,7 +10286,7 @@ describe("example workflow scripts", () => {
 		await Bun.write(`${cwd}/README.md`, "baseline\n");
 		await Bun.write(
 			`${cwd}/task.md`,
-			["Benchmark Command:", "echo benchmark", "", "Validation Command:", "echo validation"].join("\n"),
+			["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "echo validation"].join("\n"),
 		);
 		await runGit(cwd, ["init"]);
 		await runGit(cwd, ["config", "user.email", "omh@example.invalid"]);
@@ -10292,7 +10326,9 @@ describe("example workflow scripts", () => {
 		using tempDir = TempDir.createSync("@omh-performance-validation-blocked-positive-");
 		const cwd = tempDir.path();
 		const previousCwd = process.cwd();
-		const taskText = ["Benchmark Command:", "echo benchmark", "", "Validation Command:", "exit 101"].join("\n");
+		const taskText = ["Benchmark Command:", "printf 'mean 1.23 ms'", "", "Validation Command:", "exit 101"].join(
+			"\n",
+		);
 
 		await Bun.write(`${cwd}/src.txt`, "baseline\n");
 		await Bun.write(`${cwd}/task.md`, taskText);

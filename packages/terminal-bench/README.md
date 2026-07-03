@@ -1,7 +1,7 @@
 # @oh-my-pi/terminal-bench
 
 Run [harbor-framework/terminal-bench-2](https://github.com/harbor-framework/terminal-bench-2)
-against the **local `omp` build** with a live progress / spend / success dashboard.
+against the **local OMH build** with a live progress / spend / success dashboard.
 
 It drives [Harbor](https://github.com/laude-institute/harbor) (the official TB-2
 harness) under the hood and renders its own dashboard by polling each trial's
@@ -27,7 +27,7 @@ harbor: ...
 
 ## How it works
 
-1. **Local omp, not npm.** Harbor's built-in `pi` agent installs the upstream
+1. **Local OMH, not npm.** Harbor's built-in `pi` agent installs the upstream
    `@mariozechner/pi-coding-agent`. This runner instead packs the working tree —
    `bun pm pack` in `packages/coding-agent`, which bundles every workspace TS
    package into `dist/cli.js` — and a custom Harbor agent
@@ -37,9 +37,9 @@ harbor: ...
    `bun .../dist/cli.js --print --mode json --no-session --auto-approve`.
 2. **Auth via the host gateway — no keys in containers.** A generated
    `~/.omp/agent/models.yml` routes the model providers' `baseUrl` at the host
-   pm2 `omp-auth-gateway` (`http://host.docker.internal:4000`, `transport:
+   pm2 `omh-auth-gateway` (`http://host.docker.internal:4000`, `transport:
    pi-native`). The gateway resolves credentials host-side; containers only ever
-   see a dummy `apiKey`. Cost/tokens are parsed from omp's `message_end` events.
+   see a dummy `apiKey`. Cost/tokens are parsed from OMH `message_end` events.
 3. **Live dashboard.** Harbor's own output is redirected to `harbor.log`; this
    process owns the terminal and polls `<jobDir>/result.json` (authoritative
    totals) + `<jobDir>/<trial>/result.json` (per-task reward/cost/tokens).
@@ -48,7 +48,7 @@ harbor: ...
 
 - **Docker** running (Docker Desktop on macOS — provides `host.docker.internal`).
 - **Harbor**: `uv tool install harbor` (provides `harbor` on `PATH`).
-- **Auth gateway** running on the host (pm2 `omp-auth-gateway`, default
+- **Auth gateway** running on the host (pm2 `omh-auth-gateway`, default
   `127.0.0.1:4000`, started `--no-auth` on loopback). Check:
   `curl -s 127.0.0.1:4000/healthz`.
 
@@ -67,9 +67,9 @@ bun src/runner.ts [options] [-- <extra harbor args>]
 | `-i/-x, --include/--exclude <glob>` | — | Task filters (repeatable) |
 | `--thinking <level>` | — | `off…xhigh` |
 | `--advisor-model <p/m>` | — | Second model reviewing the primary; spend summed in |
-| `--agent <name>` | `omp` | `oracle`/`nop`/any harbor agent (bypasses omp) |
+| `--agent <name>` | `omp` | `oracle`/`nop`/any Harbor agent (bypasses OMH; `omp` is the adapter name) |
 | `--install <local\|published>` | `local` | `published` = npm `@oh-my-pi/pi-coding-agent` |
-| `--tarball <path>` / `--no-build` | — | Reuse a prebuilt omp tarball |
+| `--tarball <path>` / `--no-build` | — | Reuse a prebuilt OMH tarball |
 | `--gateway-url <url>` | `http://host.docker.internal:4000` | |
 | `--no-gateway` | off | Pass host provider keys into containers instead |
 | `--allow-host <h>` | — | `harbor --allow-agent-host` (allowlist tasks) |

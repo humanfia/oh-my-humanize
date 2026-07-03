@@ -39,6 +39,11 @@ export type {
 	ToolUsageStats,
 } from "./types";
 
+function standaloneCommandName(): string {
+	const invoked = process.argv[1]?.split(/[\\/]/).pop() ?? "";
+	return invoked.startsWith("omp-stats") ? "omp-stats" : "omh-stats";
+}
+
 /**
  * Format cost in dollars.
  */
@@ -110,11 +115,12 @@ async function main(): Promise<void> {
 	});
 
 	if (values.help) {
+		const cliName = standaloneCommandName();
 		console.log(`
-omp-stats - AI Usage Statistics Dashboard
+${cliName} - AI Usage Statistics Dashboard
 
 Usage:
-  omp-stats [options]
+  ${cliName} [options]
 
 Options:
   -p, --port <port>  Port for the dashboard server (default: 3847)
@@ -123,10 +129,10 @@ Options:
   -h, --help         Show this help message
 
 Examples:
-  omp-stats              # Start dashboard server
-  omp-stats --json       # Print stats as JSON
-  omp-stats --port 8080  # Start on custom port
-  omp-stats --sync       # Sync and show summary
+  ${cliName}              # Start dashboard server
+  ${cliName} --json       # Print stats as JSON
+  ${cliName} --port 8080  # Start on custom port
+  ${cliName} --sync       # Sync and show summary
 `);
 		return;
 	}

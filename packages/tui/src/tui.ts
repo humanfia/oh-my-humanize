@@ -3398,7 +3398,7 @@ export class TUI extends Container {
 			// (copy-screen-to-scrollback-then-erase). Always follow with ED 2 so
 			// the viewport is cleared regardless; on real kitty, ED 2 over the
 			// now-blank screen is a no-op and does not push a second copy.
-			if (TERMINAL.supportsScreenToScrollback) buffer += "\x1b[22J";
+			if (TERMINAL.supportsScreenToScrollback && !isMultiplexerSession()) buffer += "\x1b[22J";
 			buffer += "\x1b[2J\x1b[H";
 		}
 		if (imageTransmitBuffer.length > 0) buffer += imageTransmitBuffer;

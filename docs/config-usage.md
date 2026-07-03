@@ -75,7 +75,7 @@ Project-level bases:
 
 ## Profiles
 
-A named profile (`omp --profile <name>`, the `--alias` shortcut, or `OMP_PROFILE` / `PI_PROFILE`) relocates the OMP user base. When a profile is active, every OMP-native user-level path written here as `~/.omp/agent/...` resolves to `~/.omp/profiles/<name>/agent/...` instead.
+A named profile (`omh --profile <name>`, the `--alias` shortcut, or `OMP_PROFILE` / `PI_PROFILE`) relocates the OMP user base. When a profile is active, every OMP-native user-level path written here as `~/.omp/agent/...` resolves to `~/.omp/profiles/<name>/agent/...` instead.
 
 The relocation is uniform across the native provider (`builtin.ts`) and the generic `config.ts` helpers, so it covers slash commands, rules, prompts, instructions, hooks, tools, extensions, settings, skills, and MCP, plus the top-level `SYSTEM.md` / `RULES.md` / `AGENTS.md` files and runtime state (sessions, blobs, `agent.db`). A profile sees only its own OMP config, never the default profile's `~/.omp/agent`.
 
@@ -147,7 +147,7 @@ The runtime settings model is layered:
 
 1. Global settings: `~/.omp/agent/config.yml`
 2. Project settings: discovered via settings capability (`settings.json` and `config.yml` from providers)
-3. CLI config overlays: `omp --config <path>` / repeated `--config` files, loaded as `config.yml`-style YAML for this process only
+3. CLI config overlays: `omh --config <path>` / repeated `--config` files, loaded as `config.yml`-style YAML for this process only
 4. Runtime overrides: in-memory, non-persistent
 5. Schema defaults: from `SETTINGS_SCHEMA`
 

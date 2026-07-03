@@ -6,7 +6,7 @@
  * - /swarm status             — Show current pipeline status
  *
  * Usage: Add this extension's directory to your extensions config,
- * then use /swarm in any oh-my-pi session.
+ * then use /swarm in any OMH session.
  */
 
 import * as fs from "node:fs/promises";

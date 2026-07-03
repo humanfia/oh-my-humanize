@@ -25,7 +25,7 @@
  *   bun scripts/rewrite-changelog.ts --package coding-agent
  *   bun scripts/rewrite-changelog.ts --model google/gemini-3.5-flash
  *
- * Auth: resolves the provider API key through omp's auth storage
+ * Auth: resolves the provider API key through OMH's auth storage
  * (~/.omp/agent/agent.db: stored key, OAuth, or env var fallback).
  */
 

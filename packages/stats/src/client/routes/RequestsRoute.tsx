@@ -106,7 +106,7 @@ export function RequestsRoute({ active, refreshTrigger, onRequestClick }: Reques
 
 	return (
 		<div className="stats-route-container">
-			<Panel title="All Recent Requests" subtitle="Up to 50 most recent requests processed by OMP">
+			<Panel title="All Recent Requests" subtitle="Up to 50 most recent requests processed by OMH">
 				<AsyncBoundary loading={loading} error={error} data={recentRequests}>
 					<DataTable
 						columns={columns}

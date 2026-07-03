@@ -287,7 +287,7 @@ async def triage_issue(
         # claims to close this issue via Closes/Fixes/Resolves syntax or
         # the Development panel. We never replay closing-PR detection on
         # a follow-up because by then the bot has already committed
-        # resources (workspace, omp session) to this issue.
+        # resources (workspace, OMH session) to this issue.
         try:
             closing_prs = await github.list_closing_pull_requests(repo.full_name, issue.number)
         except GitHubError as exc:

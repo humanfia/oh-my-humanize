@@ -48,6 +48,8 @@ export interface ProviderDefinition {
 	readonly getApiKey?: (credentials: OAuthCredentials) => string;
 	/** Store OAuth credentials under a different provider id (e.g. `openai-codex-device` ⇒ `openai-codex`). */
 	readonly storeCredentialsAs?: string;
+	/** Replace the target provider's credentials when a string-returning login stores an API key. */
+	readonly replaceCredentialsOnApiKeyLogin?: boolean;
 	// --- coding-agent login UX ---
 	/** Auth-broker local callback-server port. Presence ⇒ entry in `CALLBACK_PORTS`. */
 	readonly callbackPort?: number;

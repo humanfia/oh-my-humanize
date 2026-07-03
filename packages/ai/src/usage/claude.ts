@@ -2,7 +2,7 @@ import { scheduler } from "node:timers/promises";
 import { bareModelId, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import * as AIError from "../error";
-import { claudeCodeVersion } from "../providers/anthropic";
+import { claudeCodeVersion } from "../providers/anthropic-constants";
 import {
 	type CredentialRankingContext,
 	type CredentialRankingStrategy,

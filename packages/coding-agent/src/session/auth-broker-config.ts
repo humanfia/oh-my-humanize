@@ -1,5 +1,5 @@
 /**
- * Resolve auth-broker connection configuration for the local omp client.
+ * Resolve auth-broker connection configuration for the local OMH client.
  *
  * This is a thin coding-agent wrapper around the shared resolver in
  * `@oh-my-pi/pi-ai/auth-broker/discover` that preserves the process-lifetime

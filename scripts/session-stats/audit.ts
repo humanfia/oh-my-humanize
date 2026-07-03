@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Token-usage audit over the local omp session corpus (~/.omp/agent/sessions/).
+ * Token-usage audit over the local OMH session corpus (~/.omp/agent/sessions/).
  *
  * Phase 1 (scan, no LLM): walks recent sessions, sums *real* per-request usage
  * (input/output/cacheRead/cacheWrite + nominal cost recorded in each assistant
@@ -22,7 +22,7 @@
  *   bun scripts/session-stats/audit.ts --folder Projects-pi --max-llm 6
  *   bun scripts/session-stats/audit.ts --json out.json
  *
- * Auth: resolves an API key for the classifier provider through omp's auth
+ * Auth: resolves an API key for the classifier provider through OMH's auth
  * storage (~/.omp/agent/agent.db: stored key, OAuth, or env var fallback).
  */
 

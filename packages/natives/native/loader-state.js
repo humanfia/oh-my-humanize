@@ -617,13 +617,16 @@ function installNativeTokioRuntime(bindings) {
 	}
 }
 
+export function buildNativeAddonDownloadUrl(filename) {
+	return `https://github.com/humanfia/oh-my-humanize/releases/latest/download/${filename}`;
+}
 
 function buildHelpMessage(ctx) {
 	if (ctx.isCompiledBinary) {
 		const expectedPaths = ctx.addonFilenames.map(filename => `  ${path.join(ctx.versionedDir, filename)}`).join("\n");
 		const downloadHints = ctx.addonFilenames
 			.map(filename => {
-				const downloadUrl = `https://github.com/can1357/oh-my-pi/releases/latest/download/${filename}`;
+				const downloadUrl = buildNativeAddonDownloadUrl(filename);
 				const targetPath = path.join(ctx.versionedDir, filename);
 				return `  curl -fsSL "${downloadUrl}" -o "${targetPath}"`;
 			})

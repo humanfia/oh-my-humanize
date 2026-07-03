@@ -26,17 +26,19 @@ Local observability dashboard for AI usage statistics.
 
 ```bash
 # Start dashboard server (default: http://localhost:3847)
-omp stats
+omh stats
 
 # Custom port
-omp stats --port 8080
+omh stats --port 8080
 
 # Print summary to console
-omp stats --summary
+omh stats --summary
 
 # Output as JSON (for scripting)
-omp stats --json
+omh stats --json
 ```
+
+The standalone package also installs `omh-stats`; `omp-stats` remains available as a compatibility alias.
 
 ### Programmatic
 

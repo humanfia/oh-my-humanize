@@ -1,4 +1,4 @@
-"""Harbor agent that runs the LOCAL oh-my-pi (`omp`) build inside task containers.
+"""Harbor agent that runs the local OMH build inside task containers.
 
 Unlike Harbor's built-in `pi` agent (which `npm i -g @mariozechner/pi-coding-agent`),
 this installs the working tree at `/work/pi`:
@@ -122,6 +122,7 @@ def _env(name: str, default: str = "") -> str:
 def _truthy(value: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
+
 def _loads(line: str) -> dict | None:
     line = line.strip()
     if not line.startswith("{"):
@@ -170,11 +171,15 @@ class OmpLocal(BaseInstalledAgent):
         self._tarball = _env("OMP_TB_TARBALL")
         self._pkg_version = _env("OMP_TB_VERSION", "latest")
         self._models_yaml_path = _env("OMP_TB_MODELS_YAML")
-        self._gateway_url = _env("OMP_TB_GATEWAY_URL", "http://host.docker.internal:4000")
+        self._gateway_url = _env(
+            "OMP_TB_GATEWAY_URL", "http://host.docker.internal:4000"
+        )
         self._gateway_token = _env("OMP_TB_GATEWAY_TOKEN", "no-auth-dummy")
         self._gateway_providers = [
             p.strip()
-            for p in _env("OMP_TB_GATEWAY_PROVIDERS", "anthropic,openai-codex").split(",")
+            for p in _env("OMP_TB_GATEWAY_PROVIDERS", "anthropic,openai-codex").split(
+                ","
+            )
             if p.strip()
         ]
         self._thinking = _env("OMP_TB_THINKING")
@@ -212,7 +217,9 @@ class OmpLocal(BaseInstalledAgent):
     def get_version_command(self) -> str | None:
         if self._binary:
             return f"{shlex.quote(self._cli)} --version"
-        return self._wrap(f"{shlex.quote(self._bun)} {shlex.quote(self._cli)} --version")
+        return self._wrap(
+            f"{shlex.quote(self._bun)} {shlex.quote(self._cli)} --version"
+        )
 
     @override
     def parse_version(self, stdout: str) -> str:
@@ -227,7 +234,7 @@ class OmpLocal(BaseInstalledAgent):
         PATH during `run()` too — not just for the entrypoint.
         """
         return (
-            f'export BUN_INSTALL={shlex.quote(self._home + "/.bun")}; '
+            f"export BUN_INSTALL={shlex.quote(self._home + '/.bun')}; "
             f'export PATH="{self._home}/.bun/bin:$PATH"; '
             f"{command}"
         )
@@ -235,7 +242,9 @@ class OmpLocal(BaseInstalledAgent):
     @override
     async def install(self, environment: BaseEnvironment) -> None:
         # Resolve the agent user's HOME first (root vs non-root tasks differ).
-        home = (await self.exec_as_agent(environment, command='printf %s "$HOME"')).stdout
+        home = (
+            await self.exec_as_agent(environment, command='printf %s "$HOME"')
+        ).stdout
         self._home = (home or "/root").strip() or "/root"
 
         if self._binary:
@@ -264,7 +273,7 @@ class OmpLocal(BaseInstalledAgent):
                     "set -e; "
                     f"export BUN_INSTALL={shlex.quote(self._home + '/.bun')}; "
                     f'curl -fsSL https://bun.sh/install | bash -s "bun-v{self._bun_version}"; '
-                    f'{shlex.quote(self._home + "/.bun/bin/bun")} --version'
+                    f"{shlex.quote(self._home + '/.bun/bin/bun')} --version"
                 ),
             )
             self._bun = f"{self._home}/.bun/bin/bun"
@@ -281,7 +290,9 @@ class OmpLocal(BaseInstalledAgent):
 
     async def _install_local(self, environment: BaseEnvironment) -> str:
         if not self._tarball:
-            raise RuntimeError("OMP_TB_INSTALL=local requires OMP_TB_TARBALL (host tarball path)")
+            raise RuntimeError(
+                "OMP_TB_INSTALL=local requires OMP_TB_TARBALL (host tarball path)"
+            )
         await environment.upload_file(self._tarball, _TARBALL_DST)
         app = f"{self._home}/.omp-bench/app"
         await self.exec_as_agent(
@@ -294,7 +305,7 @@ class OmpLocal(BaseInstalledAgent):
                 # Bundle inlines workspace TS; only externalized deps are needed.
                 # Skip heavy optionals (transformers/sherpa) but add the native addon.
                 "bun install --production --omit=optional; "
-                'arch=$(uname -m); '
+                "arch=$(uname -m); "
                 'case "$arch" in aarch64|arm64) na=arm64 ;; x86_64|amd64) na=x64 ;; '
                 '*) echo "unsupported arch $arch" >&2; exit 4 ;; esac; '
                 # Native leaf MUST match the bundle version exactly (loader/API skew
@@ -309,7 +320,9 @@ class OmpLocal(BaseInstalledAgent):
 
     async def _install_binary(self, environment: BaseEnvironment) -> str:
         """Probe container arch, upload only the matching self-contained omp binary."""
-        arch = (await self.exec_as_agent(environment, command="uname -m")).stdout.strip()
+        arch = (
+            await self.exec_as_agent(environment, command="uname -m")
+        ).stdout.strip()
         if arch in ("aarch64", "arm64"):
             hostbin = self._binary_arm64
         elif arch in ("x86_64", "amd64"):
@@ -317,11 +330,15 @@ class OmpLocal(BaseInstalledAgent):
         else:
             raise RuntimeError(f"binary mode: unsupported container arch {arch!r}")
         if not hostbin:
-            raise RuntimeError(f"binary mode: no omp binary provided for container arch {arch}")
+            raise RuntimeError(
+                f"binary mode: no omp binary provided for container arch {arch}"
+            )
         app_dir = f"{self._home}/.omp-bench"
         dst = f"{app_dir}/omp"
         staging = "/tmp/omp-bin"
-        await self.exec_as_agent(environment, command=f"mkdir -p {shlex.quote(app_dir)}")
+        await self.exec_as_agent(
+            environment, command=f"mkdir -p {shlex.quote(app_dir)}"
+        )
         await environment.upload_file(hostbin, staging)
         await self.exec_as_agent(
             environment,
@@ -352,7 +369,9 @@ class OmpLocal(BaseInstalledAgent):
         else:
             content = self._generate_models_yaml()
             staged = _MODELS_DST
-            heredoc = f"cat > {_MODELS_DST} <<'OMP_MODELS_EOF'\n{content}\nOMP_MODELS_EOF"
+            heredoc = (
+                f"cat > {_MODELS_DST} <<'OMP_MODELS_EOF'\n{content}\nOMP_MODELS_EOF"
+            )
             await self.exec_as_agent(environment, command=heredoc)
         await self.exec_as_agent(
             environment,
@@ -363,7 +382,10 @@ class OmpLocal(BaseInstalledAgent):
         )
 
     def _generate_models_yaml(self) -> str:
-        lines = ["# Generated by terminal-bench runner — routes auth via host gateway.", "providers:"]
+        lines = [
+            "# Generated by terminal-bench runner — routes auth via host gateway.",
+            "providers:",
+        ]
         for provider in self._gateway_providers:
             lines += [
                 f"  {provider}:",
@@ -443,7 +465,9 @@ class OmpLocal(BaseInstalledAgent):
         context: AgentContext,
     ) -> None:
         if not self.model_name or "/" not in self.model_name:
-            raise ValueError("model must be 'provider/model' (e.g. anthropic/claude-sonnet-4-6)")
+            raise ValueError(
+                "model must be 'provider/model' (e.g. anthropic/claude-sonnet-4-6)"
+            )
         provider, model = self.model_name.split("/", 1)
 
         if self._binary:
@@ -475,20 +499,24 @@ class OmpLocal(BaseInstalledAgent):
         # mounted agent log dir; populate_context_post_run parses it on the host.
         run = " ".join(parts) + f" > /logs/agent/{_OUTPUT_FILENAME} 2>&1"
         if self._advisor_model:
-            # Preserve omp's exit code, then collect advisor spend into the mounted dir.
+            # Preserve OMH's exit code, then collect advisor spend into the mounted dir.
             run += (
                 "; rc=$?; "
                 f'find "$HOME/.omp/agent/sessions" -name __advisor.jsonl -exec cat {{}} + '
                 f"> /logs/agent/{_ADVISOR_FILENAME} 2>/dev/null || true; exit $rc"
             )
-        # Exec env for the omp run. Direct-auth (no-gateway) mode contributes the
+        # Exec env for the OMH run. Direct-auth (no-gateway) mode contributes the
         # selected providers' keys (via exec env, never argv); forwarded PI_* /
         # --env knobs apply last so an explicit --env always wins.
         run_env: dict[str, str] = {}
         if not self._gateway_on:
             run_env.update(self._collect_provider_keys(provider))
         run_env.update(self._forward_env)
-        await self.exec_as_agent(environment, command=run if self._binary else self._wrap(run), env=run_env or None)
+        await self.exec_as_agent(
+            environment,
+            command=run if self._binary else self._wrap(run),
+            env=run_env or None,
+        )
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
@@ -500,7 +528,9 @@ class OmpLocal(BaseInstalledAgent):
         if main.empty() and advisor.empty():
             return
         total_cost = main.cost + advisor.cost
-        context.n_input_tokens = main.in_tok + main.cache_read + advisor.in_tok + advisor.cache_read
+        context.n_input_tokens = (
+            main.in_tok + main.cache_read + advisor.in_tok + advisor.cache_read
+        )
         context.n_output_tokens = main.out_tok + advisor.out_tok
         context.n_cache_tokens = main.cache_read + advisor.cache_read
         context.cost_usd = total_cost if total_cost > 0 else None
@@ -512,7 +542,7 @@ class OmpLocal(BaseInstalledAgent):
         }
 
     def _sum_main(self, path: Path, acc: "_Usage") -> None:
-        """Sum assistant `message_end` usage from omp's stdout JSONL."""
+        """Sum assistant `message_end` usage from OMH's stdout JSONL."""
         if not path.exists():
             return
         for line in path.read_text(errors="replace").splitlines():

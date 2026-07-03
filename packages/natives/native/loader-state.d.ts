@@ -55,6 +55,8 @@ export interface ResolveLoaderCandidatesInput {
 
 export function resolveLoaderCandidates(input: ResolveLoaderCandidatesInput): string[];
 
+export function buildNativeAddonDownloadUrl(filename: string): string;
+
 export interface CleanupStaleNativeVersionsInput {
 	nativesDir: string;
 	currentVersion: string;

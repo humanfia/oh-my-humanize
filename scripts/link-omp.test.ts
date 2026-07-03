@@ -66,6 +66,7 @@ describe("scripts/link-omp.sh", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stderr).toBe("");
+		expect(fs.readlinkSync(path.join(bunInstall, "bin", "omh"))).toBe(targetWrapper);
 		expect(fs.readlinkSync(path.join(bunInstall, "bin", "omp"))).toBe(targetWrapper);
 	});
 
@@ -93,7 +94,9 @@ describe("scripts/link-omp.sh", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stderr).toBe("");
+		expect(fs.readlinkSync(path.join(globalBin, "omh"))).toBe(targetWrapper);
 		expect(fs.readlinkSync(path.join(globalBin, "omp"))).toBe(targetWrapper);
+		expect(fs.existsSync(path.join(dir, "unused-bun-install", "bin", "omh"))).toBe(false);
 		expect(fs.existsSync(path.join(dir, "unused-bun-install", "bin", "omp"))).toBe(false);
 	});
 });

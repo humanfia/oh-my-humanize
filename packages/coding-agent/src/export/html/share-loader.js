@@ -89,7 +89,7 @@
           new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'))
         ).json();
         if (data && data.header && data.header.title) {
-          document.title = data.header.title + ' — omp session';
+          document.title = data.header.title + ' - omh session';
         }
         return data;
       }

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added headless login options for OpenAI Codex device-code auth, Claude subscription OAuth, and Anthropic Console API-key creation, with shared credential storage aliases for their primary providers.
+
 ## [16.3.4] - 2026-07-03
 
 ### Added

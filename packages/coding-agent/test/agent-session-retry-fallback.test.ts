@@ -1373,6 +1373,7 @@ describe("AgentSession retry fallback", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
+			"retry.modelFallback": true,
 			"retry.fallbackChains": {
 				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
 			},
@@ -1429,6 +1430,7 @@ describe("AgentSession retry fallback", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
+			"retry.modelFallback": true,
 			"retry.fallbackChains": {
 				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
 			},

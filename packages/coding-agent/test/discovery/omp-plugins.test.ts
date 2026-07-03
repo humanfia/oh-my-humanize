@@ -252,7 +252,7 @@ test("linked plugins (only in lockfile, not in package.json#dependencies) are su
 	// `omp plugin link ./local-ext` creates a symlink under
 	// `<plugins>/node_modules/<pkg>` plus a lockfile entry, but it never
 	// touches `<plugins>/package.json#dependencies`. The discovery path must
-	// still find the package — otherwise the documented `omp install
+	// still find the package — otherwise the documented `omh install
 	// ./local-extension` workflow leaves the sibling skills/hooks/tools
 	// invisible (see PR #1498 review).
 	const pluginsDir = path.join(home, ".omp", "plugins");

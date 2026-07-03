@@ -28,6 +28,36 @@ async function drain(scheduler: StressRenderScheduler, term: VirtualTerminal): P
 	await scheduler.drain(term);
 }
 
+const NO_MULTIPLEXER_ENV: Record<string, string | undefined> = {
+	TMUX: undefined,
+	STY: undefined,
+	ZELLIJ: undefined,
+	CMUX_WORKSPACE_ID: undefined,
+	CMUX_SURFACE_ID: undefined,
+	TERM: "xterm-256color",
+	TERM_PROGRAM: undefined,
+	PI_TUI_RESIZE_IN_PLACE: undefined,
+};
+
+async function withEnvPatch<T>(patch: Record<string, string | undefined>, run: () => T | Promise<T>): Promise<T> {
+	const saved: Record<string, string | undefined> = {};
+	for (const key in patch) {
+		saved[key] = Bun.env[key];
+		const value = patch[key];
+		if (value === undefined) delete Bun.env[key];
+		else Bun.env[key] = value;
+	}
+	try {
+		return await run();
+	} finally {
+		for (const key in saved) {
+			const value = saved[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+	}
+}
+
 describe("ToolExecutionComponent SSH repaint seams", () => {
 	const components: ToolExecutionComponent[] = [];
 
@@ -102,76 +132,80 @@ describe("ToolExecutionComponent SSH repaint seams", () => {
 	});
 
 	it("removes streamed SSH placeholder rows from the terminal buffer when the first result arrives", async () => {
-		const term = new VirtualTerminal(90, 8, 1_000);
-		const scheduler = new StressRenderScheduler();
-		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		const component = new ToolExecutionComponent("ssh", { __partialJson: '{"host"' }, {}, undefined, tui);
-		components.push(component);
-		tui.addChild(component);
-		tui.addChild(new Footer(5));
+		await withEnvPatch(NO_MULTIPLEXER_ENV, async () => {
+			const term = new VirtualTerminal(90, 8, 1_000);
+			const scheduler = new StressRenderScheduler();
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+			const component = new ToolExecutionComponent("ssh", { __partialJson: '{"host"' }, {}, undefined, tui);
+			components.push(component);
+			tui.addChild(component);
+			tui.addChild(new Footer(5));
 
-		try {
-			tui.start();
-			await drain(scheduler, term);
-			expect(plainBuffer(term).some(row => row.includes("SSH: […]"))).toBe(true);
-			expect(plainBuffer(term).some(row => row.includes("$ …"))).toBe(true);
+			try {
+				tui.start();
+				await drain(scheduler, term);
+				expect(plainBuffer(term).some(row => row.includes("SSH: […]"))).toBe(true);
+				expect(plainBuffer(term).some(row => row.includes("$ …"))).toBe(true);
 
-			component.updateArgs({
-				host: "router",
-				command: "uptime",
-				__partialJson: '{"host":"router","command":"uptime"}',
-			});
-			component.setArgsComplete();
-			tui.requestRender();
-			await drain(scheduler, term);
+				component.updateArgs({
+					host: "router",
+					command: "uptime",
+					__partialJson: '{"host":"router","command":"uptime"}',
+				});
+				component.setArgsComplete();
+				tui.requestRender();
+				await drain(scheduler, term);
 
-			component.updateResult(sshResult("partial output"), true);
-			tui.requestRender();
-			await drain(scheduler, term);
+				component.updateResult(sshResult("partial output"), true);
+				tui.requestRender();
+				await drain(scheduler, term);
 
-			const rows = plainBuffer(term);
-			expect(rows.some(row => row.includes("SSH: […]"))).toBe(false);
-			expect(rows.some(row => row.includes("$ …"))).toBe(false);
-			expect(rows.some(row => row.includes("⏳ SSH: [router]"))).toBe(true);
-			expect(rows.some(row => row.includes("Output"))).toBe(true);
-			expect(rows.some(row => row.includes("partial output"))).toBe(true);
-		} finally {
-			tui.stop();
-			await term.flush();
-		}
+				const rows = plainBuffer(term);
+				expect(rows.some(row => row.includes("SSH: […]"))).toBe(false);
+				expect(rows.some(row => row.includes("$ …"))).toBe(false);
+				expect(rows.some(row => row.includes("⏳ SSH: [router]"))).toBe(true);
+				expect(rows.some(row => row.includes("Output"))).toBe(true);
+				expect(rows.some(row => row.includes("partial output"))).toBe(true);
+			} finally {
+				tui.stop();
+				await term.flush();
+			}
+		});
 	});
 
 	it("removes provisional SSH partial chrome from the terminal buffer when the result settles", async () => {
-		const term = new VirtualTerminal(90, 8, 1_000);
-		const scheduler = new StressRenderScheduler();
-		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		const component = new ToolExecutionComponent("ssh", { host: "router", command: "uptime" }, {}, undefined, tui);
-		components.push(component);
-		tui.addChild(component);
-		tui.addChild(new Footer(5));
+		await withEnvPatch(NO_MULTIPLEXER_ENV, async () => {
+			const term = new VirtualTerminal(90, 8, 1_000);
+			const scheduler = new StressRenderScheduler();
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+			const component = new ToolExecutionComponent("ssh", { host: "router", command: "uptime" }, {}, undefined, tui);
+			components.push(component);
+			tui.addChild(component);
+			tui.addChild(new Footer(5));
 
-		try {
-			tui.start();
-			await drain(scheduler, term);
-			component.updateResult(sshResult("partial output"), true);
-			tui.requestRender();
-			await drain(scheduler, term);
-			const partialRows = plainBuffer(term);
-			expect(partialRows.some(row => row.includes("SSH: [router]"))).toBe(true);
-			expect(partialRows.some(row => row.includes("partial output"))).toBe(true);
+			try {
+				tui.start();
+				await drain(scheduler, term);
+				component.updateResult(sshResult("partial output"), true);
+				tui.requestRender();
+				await drain(scheduler, term);
+				const partialRows = plainBuffer(term);
+				expect(partialRows.some(row => row.includes("SSH: [router]"))).toBe(true);
+				expect(partialRows.some(row => row.includes("partial output"))).toBe(true);
 
-			component.updateResult(sshResult("final output"), false);
-			tui.requestRender();
-			await drain(scheduler, term);
+				component.updateResult(sshResult("final output"), false);
+				tui.requestRender();
+				await drain(scheduler, term);
 
-			const rows = plainBuffer(term);
-			expect(rows.some(row => row.includes("partial output"))).toBe(false);
-			expect(rows.filter(row => row.includes("SSH: [router]"))).toHaveLength(1);
-			expect(rows.some(row => row.includes("Output"))).toBe(true);
-			expect(rows.some(row => row.includes("final output"))).toBe(true);
-		} finally {
-			tui.stop();
-			await term.flush();
-		}
+				const rows = plainBuffer(term);
+				expect(rows.some(row => row.includes("partial output"))).toBe(false);
+				expect(rows.filter(row => row.includes("SSH: [router]"))).toHaveLength(1);
+				expect(rows.some(row => row.includes("Output"))).toBe(true);
+				expect(rows.some(row => row.includes("final output"))).toBe(true);
+			} finally {
+				tui.stop();
+				await term.flush();
+			}
+		});
 	});
 });

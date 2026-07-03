@@ -587,9 +587,10 @@ class RpcClientTests(unittest.TestCase):
             **kwargs,
         )
 
-    def test_command_builder_supports_common_rpc_options(self) -> None:
+    def test_command_builder_defaults_to_omh_and_supports_common_rpc_options(
+        self,
+    ) -> None:
         client = RpcClient(
-            executable="omp",
             model="openrouter/anthropic/claude-sonnet-4.6",
             cwd="/tmp/workspace",
             thinking="high",
@@ -605,7 +606,7 @@ class RpcClientTests(unittest.TestCase):
         self.assertEqual(
             client.command,
             (
-                "omp",
+                "omh",
                 "--mode",
                 "rpc",
                 "--model",

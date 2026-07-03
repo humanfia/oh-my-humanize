@@ -14,7 +14,7 @@ export interface ChangelogEntry {
  * Returns `[]` when `changelogPath` is `undefined` (package directory not
  * resolvable — see `getChangelogPath`) or the file is missing. Callers MUST NOT
  * synthesize a fallback path from the host project's cwd; doing so caused issue
- * #1423 (the host project's `CHANGELOG.md` was rendered as omp's).
+ * #1423 (the host project's `CHANGELOG.md` was rendered as OMH's).
  */
 export async function parseChangelog(changelogPath: string | undefined): Promise<ChangelogEntry[]> {
 	if (!changelogPath) {

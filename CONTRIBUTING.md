@@ -1,4 +1,4 @@
-# Contributing to oh-my-pi
+# Contributing to oh-my-humanize
 
 Thanks for your interest in contributing. This project uses a lightweight
 **vouch** system to decide when automated review should start. Please read this

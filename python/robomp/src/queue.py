@@ -106,7 +106,7 @@ class WorkerPool:
 
         Cleanly interrupted tasks intentionally leave their DB row in
         `running` so the next `WorkerPool.start()` re-queues them via
-        `reset_stuck_running()`. The resumed omp session then picks up via
+        `reset_stuck_running()`. The resumed OMH session then picks up via
         `--continue` from the persisted JSONL transcript.
         """
         self._shutting_down = True
@@ -128,7 +128,7 @@ class WorkerPool:
         if not still_running:
             return
         # 3. Time's up — for every still-running task: fire its cancel hook
-        #    if one was registered (kills the omp subprocess); otherwise
+        #    if one was registered (kills the OMH subprocess); otherwise
         #    cancel the asyncio task itself so a worker stuck pre-hook
         #    (e.g. waiting on the slot pool or inside RpcClient.__enter__)
         #    cannot proceed to spawn a fresh subprocess after stop()
@@ -287,7 +287,7 @@ class WorkerPool:
                 # `stop()` deliberately interrupted this delivery —
                 # leave the row in `running` so `reset_stuck_running()`
                 # flips it back to `queued` on the next start and the
-                # resumed omp session picks up via `--continue`.
+                # resumed OMH session picks up via `--continue`.
                 # Other exceptions during the drain window (which
                 # would also see `_shutting_down=True`) MUST still
                 # mark the row failed; otherwise a genuine bug gets

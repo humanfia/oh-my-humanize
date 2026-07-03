@@ -569,7 +569,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 				},
 				signal: this.ctrl.signal,
 				body: JSON.stringify({
-					client_name: "oh-my-pi",
+					client_name: "oh-my-humanize",
 					redirect_uris: [redirectUri],
 					grant_types: ["authorization_code", "refresh_token"],
 					response_types: ["code"],

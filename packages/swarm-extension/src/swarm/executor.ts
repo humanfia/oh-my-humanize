@@ -1,5 +1,5 @@
 /**
- * Swarm agent execution via oh-my-pi's subagent infrastructure.
+ * Swarm agent execution via OMH's subagent infrastructure.
  *
  * Wraps `runSubprocess` to spawn individual swarm agents with full tool access.
  * Each agent runs in the swarm workspace with its task instructions as the user prompt.

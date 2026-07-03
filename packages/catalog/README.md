@@ -1,6 +1,6 @@
 # @oh-my-pi/pi-catalog
 
-Model catalog for [oh-my-pi](https://github.com/can1357/oh-my-pi): bundled model database, provider discovery, model identity, classification, and equivalence.
+Model catalog for [oh-my-humanize](https://github.com/humanfia/oh-my-humanize): bundled model database, provider discovery, model identity, classification, and equivalence.
 
 ## What's inside
 
@@ -39,5 +39,5 @@ Ships TypeScript source directly (no build step); requires Bun ≥ 1.3.14.
 
 ## References
 
-- [Monorepo README](https://github.com/can1357/oh-my-pi#readme)
+- [Monorepo README](https://github.com/humanfia/oh-my-humanize#readme)
 - [CHANGELOG](./CHANGELOG.md)

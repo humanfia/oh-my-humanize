@@ -1,8 +1,8 @@
 # Settings
 
-`omp` resolves settings from built-in defaults, a persistent global config file, optional project-local config, one-shot CLI overlays, and in-memory runtime overrides. Reach for project settings when one repository needs a different provider set, model role, tool policy, memory backend, or UI behavior than your global defaults — without touching your machine-wide configuration.
+`omh` resolves settings from built-in defaults, a persistent global config file, optional project-local config, one-shot CLI overlays, and in-memory runtime overrides. Reach for project settings when one repository needs a different provider set, model role, tool policy, memory backend, or UI behavior than your global defaults — without touching your machine-wide configuration.
 
-Settings are stored as plain YAML mappings. Every key, its type, default, and enum values come from the settings schema, and you can inspect or change any of them with `omp config` or the interactive `/settings` panel.
+Settings are stored as plain YAML mappings. Every key, its type, default, and enum values come from the settings schema, and you can inspect or change any of them with `omh config` or the interactive `/settings` panel.
 
 - For model/provider credentials, `.env` files, and the env-var table that resolves API keys, see [Providers](./providers.md).
 - For custom model definitions in `models.yml`, see [Models](./models.md).
@@ -13,16 +13,16 @@ Settings are stored as plain YAML mappings. Every key, its type, default, and en
 
 | Scope | Path | Read behavior | Write behavior |
 |---|---|---|---|
-| Global | `~/.omp/agent/config.yml` | The main persistent settings file. Always loaded. | `/settings`, `omp config set`, and `omp config reset` write here. |
+| Global | `~/.omp/agent/config.yml` | The main persistent settings file. Always loaded. | `/settings`, `omh config set`, and `omh config reset` write here. |
 | Global legacy | `~/.omp/agent/settings.json` | Migrated into `config.yml` once, only when `config.yml` does not yet exist. | Not written after migration; the original is renamed to `settings.json.bak`. |
 | Project | `<cwd>/.omp/config.yml` (plus `.omp/settings.json`) | Loaded when the process working directory has a non-empty `.omp/`. | Read-only from settings commands; edit the file by hand. |
 | Project legacy | `<cwd>/.omp/settings.json` | Still read; project `config.yml` is merged on top of it. | Not written by settings commands. |
 | CLI overlay | Any file passed with `--config <file>` | Loaded after global and project settings, for that one process. Repeatable. | Never persisted. |
 | Runtime overrides | In-memory only | Set by dedicated CLI flags (`--model`, `--approval-mode`, …) and feature env vars. | Never persisted. |
 
-`PI_CODING_AGENT_DIR` relocates the `~/.omp/agent` base directory. When it is set, the global `config.yml`, the auth store (`agent.db`), and everything else under the agent directory move with it. Use `omp config path` to print the active agent directory.
+`PI_CODING_AGENT_DIR` relocates the `~/.omp/agent` base directory. When it is set, the global `config.yml`, the auth store (`agent.db`), and everything else under the agent directory move with it. Use `omh config path` to print the active agent directory.
 
-Native project settings are intentionally scoped to the process working directory's `.omp/` folder — settings discovery does **not** walk ancestor directories looking for the nearest `.omp/`. Other discovery providers (Claude, Codex, Gemini, Cursor, OpenCode) can also contribute project-level settings from their own files; those are read-only from `omp` settings commands and can be turned off by provider id (see [Provider and source disabling](#provider-and-source-disabling)).
+Native project settings are intentionally scoped to the process working directory's `.omp/` folder — settings discovery does **not** walk ancestor directories looking for the nearest `.omp/`. Other discovery providers (Claude, Codex, Gemini, Cursor, OpenCode) can also contribute project-level settings from their own files; those are read-only from `omh` settings commands and can be turned off by provider id (see [Provider and source disabling](#provider-and-source-disabling)).
 
 ## Config file formats
 
@@ -34,23 +34,23 @@ The global `config.yml` is always YAML. The generic config loader used for other
 
 ## Reading and writing settings
 
-Use the interactive `/settings` panel inside a session, or the `omp config` command from a shell. Both operate on the merged effective settings, but every persistent write lands in the **global** file only.
+Use the interactive `/settings` panel inside a session, or the `omh config` command from a shell. Both operate on the merged effective settings, but every persistent write lands in the **global** file only.
 
 ```bash
-omp config list                 # all settings with current effective values
-omp config list --json          # same, machine-readable
-omp config get theme.dark       # one value
-omp config get theme.dark --json
-omp config set compaction.enabled false
-omp config set defaultThinkingLevel medium
-omp config reset steeringMode   # restore a key to its schema default
-omp config path                 # print the active agent directory
+omh config list                 # all settings with current effective values
+omh config list --json          # same, machine-readable
+omh config get theme.dark       # one value
+omh config get theme.dark --json
+omh config set compaction.enabled false
+omh config set defaultThinkingLevel medium
+omh config reset steeringMode   # restore a key to its schema default
+omh config path                 # print the active agent directory
 ```
 
 For users who want the full first-run animation on normal launches, set `startup.showSplash`:
 
 ```bash
-omp config set startup.showSplash true
+omh config set startup.showSplash true
 ```
 
 This only controls the startup splash animation. It does not rerun setup or change setup state, and `startup.quiet: true` still suppresses all startup chrome including the splash.
@@ -59,17 +59,17 @@ This only controls the startup splash animation. It does not rerun setup or chan
 
 | Command | Effect |
 |---|---|
-| `omp config list` | Print every setting grouped by tab, with its current value and type. `--json` emits an object keyed by setting path with `{ value, type, description }`. |
-| `omp config get <key>` | Print the effective value of one key. Unknown keys exit non-zero. `--json` emits `{ key, value, type, description }`. |
-| `omp config set <key> <value>` | Parse `<value>` against the key's schema type and write it to the global `config.yml`. |
-| `omp config reset <key>` | Write the key's schema **default** back to the global config (this persists the default, it does not delete the key). |
-| `omp config path` | Print the active agent directory (honors `PI_CODING_AGENT_DIR`). |
+| `omh config list` | Print every setting grouped by tab, with its current value and type. `--json` emits an object keyed by setting path with `{ value, type, description }`. |
+| `omh config get <key>` | Print the effective value of one key. Unknown keys exit non-zero. `--json` emits `{ key, value, type, description }`. |
+| `omh config set <key> <value>` | Parse `<value>` against the key's schema type and write it to the global `config.yml`. |
+| `omh config reset <key>` | Write the key's schema **default** back to the global config (this persists the default, it does not delete the key). |
+| `omh config path` | Print the active agent directory (honors `PI_CODING_AGENT_DIR`). |
 
-`omp config` with no subcommand, or `--help`, prints the help and lists settings. The `--json` flag is accepted by `list`, `get`, `set`, and `reset`.
+`omh config` with no subcommand, or `--help`, prints the help and lists settings. The `--json` flag is accepted by `list`, `get`, `set`, and `reset`.
 
 ### Value parsing
 
-`omp config set` parses the value string according to the target key's schema type. The string is trimmed first.
+`omh config set` parses the value string according to the target key's schema type. The string is trimmed first.
 
 | Type | Accepted input | Notes |
 |---|---|---|
@@ -84,7 +84,7 @@ Keys must match a real schema path exactly. There is no shorthand — set `theme
 
 ### Where writes go
 
-`omp config set`, `omp config reset`, `/settings`, and any runtime settings change all write to the global `config.yml` under the active agent directory. They never write to `<cwd>/.omp/config.yml`. To create a project-local override, edit that file directly (see [Project-local config](#project-local-config)). Saves are debounced and re-read the file under a lock, so external edits made while a session is open are preserved.
+`omh config set`, `omh config reset`, `/settings`, and any runtime settings change all write to the global `config.yml` under the active agent directory. They never write to `<cwd>/.omp/config.yml`. To create a project-local override, edit that file directly (see [Project-local config](#project-local-config)). Saves are debounced and re-read the file under a lock, so external edits made while a session is open are preserved.
 
 ## Precedence
 
@@ -212,8 +212,8 @@ Keep secrets out of committed project config unless your repository policy allow
 Use `--config` for a temporary layer that should not persist:
 
 ```bash
-omp --config ./local/ci-settings.yml "check this failure"
-omp --config ./base.yml --config ./experiment.yml "try this model"
+omh --config ./local/ci-settings.yml "check this failure"
+omh --config ./base.yml --config ./experiment.yml "try this model"
 ```
 
 Overlay paths are resolved relative to the process working directory (and `~` is expanded). Each overlay must parse as a YAML mapping; a missing file, invalid YAML, or a top-level array/scalar is a hard error — it does **not** silently fall back to lower-precedence settings.
@@ -278,7 +278,7 @@ The default is an empty array (nothing disabled). For the two subsystems' provid
 
 ## Settings catalog
 
-Every key below is defined in the settings schema; `omp config list` shows the full set with current values. Defaults and enum values are taken from the schema. Settings that accept an env or flag override are noted; those overrides are process-local and not persisted.
+Every key below is defined in the settings schema; `omh config list` shows the full set with current values. Defaults and enum values are taken from the schema. Settings that accept an env or flag override are noted; those overrides are process-local and not persisted.
 
 ### Models
 
@@ -356,7 +356,7 @@ thinkingBudgets:
 
 ### Sampling
 
-A value of `-1` means "use the provider/model default" — `omp` does not send that parameter.
+A value of `-1` means "use the provider/model default" — `omh` does not send that parameter.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
@@ -411,7 +411,7 @@ tools:
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `tools.approvalMode` | enum | `yolo` | `always-ask` (auto-approve read-only), `write` (auto-approve read + workspace-write), `yolo` (auto-approve all tiers). `--approval-mode` and `--auto-approve`/`--yolo` override per run. |
-| `tools.approval` | record | `{}` | Per-tool policy keyed by tool name; each value is `allow`, `deny`, or `prompt`. e.g. `omp config set tools.approval '{"bash":"prompt"}'`. |
+| `tools.approval` | record | `{}` | Per-tool policy keyed by tool name; each value is `allow`, `deny`, or `prompt`. e.g. `omh config set tools.approval '{"bash":"prompt"}'`. |
 | `tools.discoveryMode` | enum | `auto` | `auto`, `off`, `mcp-only`, `all`. Controls dynamic tool discovery. |
 | `tools.essentialOverride` | array | `[]` | Tool names kept available even when tools are narrowed. |
 | `tools.maxTimeout` | number | `0` | Max tool runtime in seconds; `0` = no cap. |
@@ -533,7 +533,7 @@ memory:
 | `autolearn.autoContinue` | boolean | `false` | When `autolearn.enabled`, auto-run one capture turn at stop (uses extra tokens). Off = a passive reminder rides your next turn. |
 | `autolearn.minToolCalls` | number | `5` | Only nudge after a turn that used at least this many tools. |
 
-`compaction` has additional tuning keys (idle compaction, supersede/drop heuristics) visible in `omp config list`. See [Compaction](./compaction.md) for the full strategy reference.
+`compaction` has additional tuning keys (idle compaction, supersede/drop heuristics) visible in `omh config list`. See [Compaction](./compaction.md) for the full strategy reference.
 
 ### Appearance and terminal
 
@@ -645,11 +645,11 @@ Provider credentials and custom model definitions are configured separately — 
 
 ### Other groups
 
-`omp config list` exposes many more grouped settings, including: `task.*` (subagent concurrency, isolation, model overrides), `skills.*` and `commands.*` (discovery toggles), `mcp.*`, `github.*`, `async.*`, `goal.*`, `loop.*`, `todo.*`, `magicKeywords.*`, `ttsr.*` (time-traveling stream rules), `display.*`, `startup.*`, `share.*`, `collab.*`, `stt.*`/`tts.*`, `memories.*`/`hindsight.*`/`mnemopi.*` (memory backends), and `bashInterceptor.*`. Each follows the same type/default rules shown above.
+`omh config list` exposes many more grouped settings, including: `task.*` (subagent concurrency, isolation, model overrides), `skills.*` and `commands.*` (discovery toggles), `mcp.*`, `github.*`, `async.*`, `goal.*`, `loop.*`, `todo.*`, `magicKeywords.*`, `ttsr.*` (time-traveling stream rules), `display.*`, `startup.*`, `share.*`, `collab.*`, `stt.*`/`tts.*`, `memories.*`/`hindsight.*`/`mnemopi.*` (memory backends), and `bashInterceptor.*`. Each follows the same type/default rules shown above.
 
 ## Legacy migration
 
-`omp` migrates older config shapes automatically. None of these require action; they are listed so you know what changes you may see in `config.yml`.
+`omh` migrates older config shapes automatically. None of these require action; they are listed so you know what changes you may see in `config.yml`.
 
 ### Startup migration to `config.yml`
 
@@ -678,10 +678,10 @@ Applied whenever raw settings are loaded (global, project, overlays, and runtime
 
 ### A project setting is not taking effect
 
-- Start `omp` from the directory that contains `.omp/config.yml`. Settings discovery only checks the current working directory's `.omp/`, not ancestor directories.
+- Start `omh` from the directory that contains `.omp/config.yml`. Settings discovery only checks the current working directory's `.omp/`, not ancestor directories.
 - Ensure `.omp/` is non-empty; empty config directories are ignored.
 - Confirm the file is valid YAML and its top level is a mapping.
-- Run `omp config get <key>` from that directory to see the effective value.
+- Run `omh config get <key>` from that directory to see the effective value.
 - Remember that `--config` overlays and runtime flags override project config.
 
 ### A global array disappeared in a project
@@ -695,11 +695,11 @@ Arrays replace; they do not append. If a project sets `disabledProviders`, `enab
 - Credentials can still come from environment variables, `.env`, OAuth, stored auth, or `models.yml`; disabling a provider blocks selection regardless, but verify you edited the right layer. See [Providers](./providers.md).
 - Restart the session if the model list was already initialized.
 
-### `omp config set` changed the wrong file
+### `omh config set` changed the wrong file
 
-`omp config set` and `omp config reset` always write the global `config.yml` under the active agent directory. Run `omp config path` to print it. For project-local settings, edit `<repo>/.omp/config.yml` directly.
+`omh config set` and `omh config reset` always write the global `config.yml` under the active agent directory. Run `omh config path` to print it. For project-local settings, edit `<repo>/.omp/config.yml` directly.
 
-### `omp config reset` did not remove my key
+### `omh config reset` did not remove my key
 
 `reset` writes the schema **default** value into the global config — it persists the default rather than deleting the key. To stop overriding a project value from global config, delete the key from `~/.omp/agent/config.yml` by hand.
 
@@ -711,6 +711,6 @@ Arrays replace; they do not append. If a project sets `disabledProviders`, `enab
 
 Some settings (model roles, eval backends, tiny-model device/precision, auth broker, PTY) are overridable by env vars or CLI flags for per-machine convenience, and those take precedence over `config.yml`. Unset the variable or drop the flag to let the persisted value win. See [Environment overrides](#environment-overrides) and [Environment variables](./environment-variables.md).
 
-### `omp config set <key>` says "Unknown setting"
+### `omh config set <key>` says "Unknown setting"
 
-Keys must match a schema path exactly, with no shorthand. Use `theme.dark`, not `theme`. Run `omp config list` to see every valid key.
+Keys must match a schema path exactly, with no shorthand. Use `theme.dark`, not `theme`. Run `omh config list` to see every valid key.

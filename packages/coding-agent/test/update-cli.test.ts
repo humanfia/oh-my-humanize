@@ -14,8 +14,13 @@ import {
 	pruneBunInstallCache,
 	replaceBinaryForUpdate,
 	resolveBunGlobalNodeModulesDirFromLocations,
+	resolvePosixCompatBinarySibling,
+	resolveUpdateBinaryPath,
 	resolveUpdateMethodForTest,
+	resolveWindowsCompatBinarySibling,
 	sweepStaleBackups,
+	syncPosixCompatBinarySibling,
+	syncWindowsCompatBinarySibling,
 } from "@oh-my-pi/pi-coding-agent/cli/update-cli";
 import Update from "@oh-my-pi/pi-coding-agent/commands/update";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -68,6 +73,26 @@ describe("parseUpdateArgs", () => {
 		expect(parseUpdateArgs(["update", "-l"])).toEqual({ force: false, check: false, plugins: true });
 	});
 });
+
+describe("update-cli binary path resolution", () => {
+	it("prefers the primary app binary and falls back to the compatibility binary", () => {
+		expect(
+			resolveUpdateBinaryPath(command => {
+				if (command === "omh") return "/opt/bin/omh";
+				if (command === "omp") return "/opt/bin/omp";
+				return null;
+			}),
+		).toBe("/opt/bin/omh");
+
+		expect(
+			resolveUpdateBinaryPath(command => {
+				if (command === "omp") return "/opt/bin/omp";
+				return null;
+			}),
+		).toBe("/opt/bin/omp");
+	});
+});
+
 describe("update-cli install target detection", () => {
 	it("uses bun update when prioritized omp is inside bun global bin", () => {
 		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omp", "/Users/test/.bun/bin");
@@ -85,6 +110,35 @@ describe("update-cli install target detection", () => {
 		const method = resolveUpdateMethodForTest("/Users/test/.local/bin/omp", undefined);
 
 		expect(method).toBe("binary");
+	});
+
+	it("does not classify installer source launchers as replaceable binaries", () => {
+		const method = resolveUpdateMethodForTest("C:\\Users\\test\\AppData\\Local\\omh\\omh.cmd", undefined);
+
+		expect(method).toBe("source");
+	});
+
+	it("keeps package-manager launchers classified before source launcher detection", () => {
+		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omh.cmd", "/Users/test/.bun/bin");
+
+		expect(method).toBe("bun");
+	});
+
+	it("classifies installer source symlinks as source even inside the bun bin directory", async () => {
+		const dir = await makeTempDir();
+		const binDir = path.join(dir, "bin");
+		const packageDir = path.join(dir, "source", "packages", "coding-agent");
+		await fs.mkdir(path.join(packageDir, "scripts"), { recursive: true });
+		await fs.mkdir(path.join(packageDir, "src"), { recursive: true });
+		await Bun.write(path.join(packageDir, "scripts", "omp"), "#!/bin/sh\nexec bun src/cli.ts\n");
+		await Bun.write(path.join(packageDir, "src", "cli.ts"), "export {};\n");
+		await fs.mkdir(binDir, { recursive: true });
+		const launcherPath = path.join(binDir, "omh");
+		await fs.symlink(path.join(packageDir, "scripts", "omp"), launcherPath);
+
+		const method = resolveUpdateMethodForTest(launcherPath, binDir);
+
+		expect(method).toBe("source");
 	});
 
 	it("uses Homebrew update when prioritized omp resolves into the Homebrew formula", async () => {
@@ -325,6 +379,52 @@ describe("update-cli binary replacement", () => {
 		expect(await Bun.file(targetPath).text()).toBe("new binary");
 		expect(await Bun.file(tempPath).exists()).toBe(false);
 		expect(await Bun.file(backupPath).exists()).toBe(false);
+	});
+});
+
+describe("update-cli Windows compatibility binary sync", () => {
+	it("resolves the compatibility sibling for primary and legacy executable names", () => {
+		expect(resolveWindowsCompatBinarySibling("C:\\Users\\test\\AppData\\Local\\omh\\omh.exe", "win32")).toBe(
+			"C:\\Users\\test\\AppData\\Local\\omh\\omp.exe",
+		);
+		expect(resolveWindowsCompatBinarySibling("C:\\Users\\test\\AppData\\Local\\omh\\omp.exe", "win32")).toBe(
+			"C:\\Users\\test\\AppData\\Local\\omh\\omh.exe",
+		);
+		expect(resolveWindowsCompatBinarySibling("/usr/local/bin/omh", "linux")).toBeUndefined();
+	});
+
+	it("copies the updated executable to the Windows compatibility sibling", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, "omh.exe");
+		const siblingPath = path.join(dir, "omp.exe");
+		await Bun.write(targetPath, "new binary");
+		await Bun.write(siblingPath, "old binary");
+
+		const syncedPath = await syncWindowsCompatBinarySibling(targetPath, "win32");
+
+		expect(syncedPath).toBe(siblingPath);
+		expect(await Bun.file(siblingPath).text()).toBe("new binary");
+	});
+});
+
+describe("update-cli POSIX compatibility binary sync", () => {
+	it("resolves the compatibility sibling for primary and legacy executable names", () => {
+		expect(resolvePosixCompatBinarySibling("/usr/local/bin/omh", "linux")).toBe("/usr/local/bin/omp");
+		expect(resolvePosixCompatBinarySibling("/usr/local/bin/omp", "linux")).toBe("/usr/local/bin/omh");
+		expect(resolvePosixCompatBinarySibling("C:\\Users\\test\\AppData\\Local\\omh\\omh.exe", "win32")).toBeUndefined();
+	});
+
+	it("links the missing primary alias when updating the legacy POSIX binary", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, "omp");
+		const siblingPath = path.join(dir, "omh");
+		await Bun.write(targetPath, "new binary");
+		await fs.chmod(targetPath, 0o755);
+
+		const syncedPath = await syncPosixCompatBinarySibling(targetPath, "linux");
+
+		expect(syncedPath).toBe(siblingPath);
+		expect(await fs.readlink(siblingPath)).toBe("omp");
 	});
 });
 

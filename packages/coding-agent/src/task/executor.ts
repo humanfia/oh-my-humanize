@@ -43,6 +43,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
+import { AUTO_THINKING, parseThinkingLevel } from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../tools/irc";
@@ -132,6 +133,15 @@ function normalizeModelPatterns(value: string | string[] | undefined): string[] 
 		.split(",")
 		.map(entry => entry.trim())
 		.filter(Boolean);
+}
+
+function modelPatternsHaveExplicitThinkingSuffix(modelPatterns: readonly string[]): boolean {
+	return modelPatterns.some(pattern => {
+		const colonIndex = pattern.lastIndexOf(":");
+		if (colonIndex <= -1) return false;
+		const selector = pattern.slice(colonIndex + 1);
+		return selector === "max" || selector === AUTO_THINKING || parseThinkingLevel(selector) !== undefined;
+	});
 }
 
 const SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX = "subagent:";
@@ -945,6 +955,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const abortActiveSession = (): Promise<void> => {
 		const session = activeSession;
 		if (!session) return Promise.resolve();
+		session.abortBash?.();
+		session.abortEval?.();
 		activeSessionAbortPromise ??= session.abort().catch(error => {
 			logger.debug("Subagent session abort cleanup failed", {
 				error: error instanceof Error ? error.message : String(error),
@@ -2168,14 +2180,17 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (model?.contextWindow && model.contextWindow > 0) {
 				progress.contextWindow = model.contextWindow;
 			}
-			if (model) {
-				progress.resolvedModel = explicitThinkingLevel
-					? formatModelSelectorValue(formatModelStringWithRouting(model), resolvedThinkingLevel)
-					: formatModelStringWithRouting(model);
-			}
-			const effectiveThinkingLevel = explicitThinkingLevel
+			const selectorOwnsThinkingLevel =
+				explicitThinkingLevel && modelPatternsHaveExplicitThinkingSuffix(modelPatterns);
+			const effectiveThinkingLevel = selectorOwnsThinkingLevel
 				? resolvedThinkingLevel
 				: (thinkingLevel ?? resolvedThinkingLevel);
+			if (model) {
+				progress.resolvedModel =
+					explicitThinkingLevel || thinkingLevel !== undefined
+						? formatModelSelectorValue(formatModelStringWithRouting(model), effectiveThinkingLevel)
+						: formatModelStringWithRouting(model);
+			}
 			resolvedAt = performance.now();
 
 			const effectiveCwd = worktree ?? cwd;

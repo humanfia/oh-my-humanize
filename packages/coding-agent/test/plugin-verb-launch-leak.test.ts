@@ -1,6 +1,6 @@
 /**
  * Regression test for #2935: the plugins docs advertise `omp list` / `omp remove`
- * as top-level commands, but only `omp install` is registered. Before the fix,
+ * as top-level commands, but only `omh install` is registered. Before the fix,
  * `resolveCliArgv(["list"])` rewrote the bare verb to `["launch", "list"]`, so
  * `omp list` silently started an interactive agent session with "list" as the
  * initial LLM prompt instead of managing plugins (the real command is
@@ -19,22 +19,22 @@ import { describe, expect, test } from "bun:test";
 import { isSubcommand, resolveCliArgv } from "../src/cli-commands";
 
 describe("documented-but-unregistered plugin verbs do not leak to launch (#2935)", () => {
-	test("bare `omp list` hints at `omp plugin list` instead of launching with 'list' as the prompt", () => {
+	test("bare `omh list` hints at `omh plugin list` instead of launching with 'list' as the prompt", () => {
 		const result = resolveCliArgv(["list"]);
 		// Must NOT be the old silent-launch behavior.
 		expect(result).not.toEqual({ argv: ["launch", "list"] });
 		expect(result).not.toHaveProperty("argv");
 		// Must point at the real command.
 		expect(result).toHaveProperty("error");
-		expect("error" in result && result.error).toContain("omp plugin list");
+		expect("error" in result && result.error).toContain("omh plugin list");
 	});
 
-	test("bare `omp remove` hints at `omp plugin uninstall` instead of launching with 'remove' as the prompt", () => {
+	test("bare `omh remove` hints at `omh plugin uninstall` instead of launching with 'remove' as the prompt", () => {
 		const result = resolveCliArgv(["remove"]);
 		expect(result).not.toEqual({ argv: ["launch", "remove"] });
 		expect(result).not.toHaveProperty("argv");
 		expect(result).toHaveProperty("error");
-		expect("error" in result && result.error).toContain("omp plugin uninstall");
+		expect("error" in result && result.error).toContain("omh plugin uninstall");
 	});
 
 	test("genuine multi-word prompts beginning with these verbs still route to launch", () => {

@@ -101,6 +101,8 @@ import type {
 import { transformMessages } from "./transform-messages";
 import { joinTextWithImagePlaceholder, NON_VISION_IMAGE_PLACEHOLDER, partitionVisionContent } from "./vision-guard";
 
+const NO_AUTH_API_KEY_SENTINEL = "N/A";
+
 export interface OpenAIModelIdentity {
 	provider: string;
 	id: string;
@@ -193,10 +195,17 @@ export function resolveOpenAIRequestSetup(
 	if (options.prependHeaders) {
 		headers = { ...options.prependHeaders(), ...headers };
 	}
+	const noAuthApiKey = apiKey === NO_AUTH_API_KEY_SENTINEL;
+	if (noAuthApiKey) {
+		apiKey =
+			canUseConfiguredAuthorizationHeader(model.provider) && hasAuthorizationHeader(headers)
+				? MODEL_AUTHORIZATION_HEADER_API_KEY
+				: undefined;
+	}
 	if (!apiKey && canUseConfiguredAuthorizationHeader(model.provider) && hasAuthorizationHeader(headers)) {
 		apiKey = MODEL_AUTHORIZATION_HEADER_API_KEY;
 	}
-	if (!apiKey) {
+	if (!apiKey && !noAuthApiKey) {
 		if (!$env.OPENAI_API_KEY) {
 			throw new AIError.MissingApiKeyError(
 				undefined,
@@ -205,8 +214,8 @@ export function resolveOpenAIRequestSetup(
 		}
 		apiKey = $env.OPENAI_API_KEY;
 	}
-	const rawApiKey: string = apiKey;
-	let requestApiKey = rawApiKey;
+	const rawApiKey = apiKey ?? "";
+	let requestApiKey: string | undefined = apiKey;
 
 	let copilotPremiumRequests: number | undefined;
 	let baseUrl = model.baseUrl;
@@ -274,9 +283,11 @@ export function resolveOpenAIRequestSetup(
 		baseUrl = baseUrl ?? ($env.OPENAI_BASE_URL?.trim() || options.defaultBaseUrl);
 	}
 	const requestHeaders = copyHeadersWithoutAuthorization(headers);
-	setBearerAuthorizationHeader(headers, requestApiKey, {
-		overrideExisting: requestApiKey !== MODEL_AUTHORIZATION_HEADER_API_KEY,
-	});
+	if (requestApiKey) {
+		setBearerAuthorizationHeader(headers, requestApiKey, {
+			overrideExisting: requestApiKey !== MODEL_AUTHORIZATION_HEADER_API_KEY,
+		});
+	}
 	return { copilotPremiumRequests, baseUrl, headers, query, requestHeaders };
 }
 

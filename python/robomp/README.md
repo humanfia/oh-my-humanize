@@ -1,6 +1,6 @@
 # roboomp
 
-Self-hosted GitHub triage bot. Drives [`omp --mode rpc`](https://github.com/can1357/oh-my-pi)
+Self-hosted GitHub triage bot. Drives [`omh --mode rpc`](https://github.com/humanfia/oh-my-humanize)
 as a subprocess against a per-issue git worktree, then writes back to GitHub
 through a sidecar that holds the PAT.
 
@@ -17,7 +17,7 @@ and branches:
 - `enhancement` / `proposal` → one comment, no PR.
 - `invalid` / `duplicate` → one brief comment.
 
-Follow-up issue comments and PR review comments resume the same omp session
+Follow-up issue comments and PR review comments resume the same OMH session
 (`--continue` against the persisted JSONL transcript). On orchestrator
 restart, in-flight events are re-queued and resume the same way.
 
@@ -25,7 +25,7 @@ restart, in-flight events are re-queued and resume the same way.
 
 Two containers, one trust boundary:
 
-- **robomp** — FastAPI + sqlite event queue + `WorkerPool` running `omp` in
+- **robomp** — FastAPI + sqlite event queue + `WorkerPool` running `omh` in
   per-issue worktrees under `/data/workspaces/`. Holds the HMAC key, never
   the PAT.
 - **gh-proxy** — sibling on an `internal: true` network. Holds `GITHUB_TOKEN`,
@@ -36,10 +36,10 @@ Flow: webhook → HMAC verify → `github_events.route` → sqlite `events`
 (dedup on `X-GitHub-Delivery`) → `WorkerPool` claims under
 `BEGIN IMMEDIATE` with an in-process `_inflight` set per `(owner, repo, n)`
 → `sandbox.ensure_workspace` produces a worktree on `farm/<8hex>/<slug>`
-→ `worker.run_task` spawns `omp --mode rpc` with `cwd=worktree`,
+→ `worker.run_task` spawns `omh --mode rpc` with `cwd=worktree`,
 persistent `session_dir`, model randomly drawn from `ROBOMP_MODEL` (CSV).
 
-The agent uses omp's built-in tools (`read`/`edit`/`bash`/`lsp`, scoped to
+The agent uses OMH's built-in tools (`read`/`edit`/`bash`/`lsp`, scoped to
 the worktree) plus the host tools in `src/host_tools.py` — the
 exclusive surface for GitHub writes. Every host-tool invocation is audited
 into the `tool_calls` table with credential-redacted args and results.
@@ -47,10 +47,10 @@ into the `tool_calls` table with credential-redacted args and results.
 ## Setup
 
 Requires Docker Compose v2 and a LiteLLM-style proxy on the host that your
-`~/.omp/agent/models.container.yml` points at (mounted into the container as `models.yml`; kept under a separate filename on the host so the host omp doesn't route through the gateway). roboomp lives inside the oh-my-pi
+`~/.omp/agent/models.container.yml` points at (mounted into the container as `models.yml`; kept under a separate filename on the host so the host OMH client doesn't route through the gateway). roboomp lives inside the oh-my-humanize
 monorepo at `python/robomp/`; both the docker build context and the
 `/work/pi` bind mount default to the parent monorepo (`../..`). Override
-`PI_ROOT` only if you want a different oh-my-pi checkout backing the build
+`PI_ROOT` only if you want a different oh-my-humanize checkout backing the build
 and runtime.
 
 Bot account needs **Write** on every repo in `ROBOMP_REPO_ALLOWLIST`. A
@@ -63,7 +63,7 @@ $EDITOR .env
 openssl rand -hex 32              # ROBOMP_GH_PROXY_HMAC_KEY
 openssl rand -hex 32              # GITHUB_WEBHOOK_SECRET
 
-bun run pi:image                  # build oh-my-pi/pi:dev (one-time / on pi change)
+bun run pi:image                  # build oh-my-humanize/omh:dev (one-time / on pi change)
 bun run robomp:build && bun run robomp:up
 curl -fsS http://localhost:8080/healthz
 ```
@@ -75,7 +75,7 @@ comment out `ROBOMP_GH_PROXY_URL` / `ROBOMP_GH_PROXY_HMAC_KEY` and set
 rejects a `.env` setting both).
 
 Build invalidation is bounded: editing roboomp Python touches only the
-runtime layer; editing pi source rebuilds `oh-my-pi/pi:dev`, which
+runtime layer; editing pi source rebuilds `oh-my-humanize/omh:dev`, which
 roboomp's `Dockerfile.robomp` extends via `FROM ${PI_BASE}`.
 
 ### Public URL
@@ -122,9 +122,9 @@ pytest -x tests/                              # unit suite, no network
 ROBOMP_INTEGRATION=1 pytest -x tests/test_worker_smoke.py
 ```
 
-The integration test spawns a real `omp --mode rpc` against an
-`httpx.MockTransport` GitHub and a local bare repo, so it needs `omp` on
-`PATH`. `bun run test:py` runs the unit suite.
+The integration test spawns a real `omh --mode rpc` against an
+`httpx.MockTransport` GitHub and a local bare repo, so it needs `omh` on
+`PATH` (or `ROBOMP_OMP_COMMAND` pointed at a compatible command). `bun run test:py` runs the unit suite.
 
 ## Security posture
 
@@ -184,7 +184,7 @@ The integration test spawns a real `omp --mode rpc` against an
 | Symptom | Check |
 |---|---|
 | `401 invalid signature` | `GITHUB_WEBHOOK_SECRET` mismatch with the repo webhook config. |
-| Container exits with `PI_ROOT … missing` | `/work/pi` mount empty inside the container; on the host either run `docker compose` from `python/robomp/` so `PI_ROOT` defaults to `../..`, or export `PI_ROOT` to a valid oh-my-pi checkout. |
+| Container exits with `PI_ROOT ... missing` | `/work/pi` mount empty inside the container; on the host either run `docker compose` from `python/robomp/` so `PI_ROOT` defaults to `../..`, or export `PI_ROOT` to a valid oh-my-humanize checkout. |
 | `git push: Authentication required` | Bot PAT lacks push, or `ROBOMP_BOT_LOGIN` does not identify the PAT account's mention handle (production: `roboomp`, no `@`/`[bot]`). |
 | `refusing to push: commit author identity mismatch` | Some commit not authored as `ROBOMP_GIT_AUTHOR_*`. The error lists the offending shas; `git commit --amend --reset-author --no-edit`. |
 | `refusing to push: working tree is dirty` | Uncommitted agent edits. Or just call `gh_open_pr`, which auto-commits `bun run fix` output. |

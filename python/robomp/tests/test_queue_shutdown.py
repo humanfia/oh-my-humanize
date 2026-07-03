@@ -1,7 +1,7 @@
 """Graceful shutdown drain + kill behavior on WorkerPool.
 
 These tests poke `WorkerPool` directly: they don't spin up a dispatcher loop
-or omp subprocess. The contract under test is `stop()`'s drain-then-kill
+or OMH subprocess. The contract under test is `stop()`'s drain-then-kill
 sequence and `_run_event`'s shutting-down branch that leaves the DB row in
 `running` so `reset_stuck_running()` can requeue it.
 """

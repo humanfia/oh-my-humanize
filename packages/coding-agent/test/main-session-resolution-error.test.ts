@@ -92,7 +92,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 			).rejects.toMatchObject({
 				name: "SessionResolutionError",
 				message: 'Session "019ea530-0000-7000-0000-000000000000" not found.',
-				hint: expect.stringContaining("omp --resume"),
+				hint: expect.stringContaining("omh --resume"),
 			});
 
 			// Confirm it's the exported class so `runRootCommand`'s `instanceof` check works.
@@ -119,7 +119,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 			).rejects.toMatchObject({
 				name: "SessionResolutionError",
 				message: 'Session "019ea530-0000-7000-0000-000000000000" not found.',
-				hint: expect.stringContaining("omp --resume"),
+				hint: expect.stringContaining("omh --resume"),
 			});
 		} finally {
 			vi.restoreAllMocks();

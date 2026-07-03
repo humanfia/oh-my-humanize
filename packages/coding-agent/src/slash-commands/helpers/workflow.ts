@@ -445,7 +445,10 @@ async function handleStartCommand(rest: string, runtime: SlashCommandRuntime): P
 				} satisfies WorkflowRunnerLifecycleOptions)
 			: undefined;
 	const runInBackground =
-		parsed.background === true || (parsed.background === undefined && runtime.outputWorkflowGraph !== undefined);
+		parsed.background === true ||
+		(parsed.background === undefined &&
+			runtime.outputWorkflowGraph !== undefined &&
+			!workflowStartReachesSessionTaskNode(pkg.definition, startNodeIds));
 	if (runInBackground && lifecycle === undefined) {
 		return usage("Workflow background start requires a frozen .omhflow artifact.", runtime);
 	}
@@ -796,7 +799,7 @@ async function handleStopCommand(rest: string, runtime: SlashCommandRuntime): Pr
 	await runtime.output(
 		[
 			`Workflow stop requested for detached attempt: ${attempt.id}`,
-			"OMP cannot confirm activation aborts or create a checkpoint because this attempt is not attached to this process.",
+			"OMH cannot confirm activation aborts or create a checkpoint because this attempt is not attached to this process.",
 			"Resume or inspect the session that owns the running workflow, then stop it there to produce confirmed lifecycle evidence.",
 		].join("\n"),
 	);
@@ -816,7 +819,7 @@ async function handleInterruptCommand(rest: string, runtime: SlashCommandRuntime
 	}
 	const active = findActiveWorkflowAttempt(runtime, attempt.id);
 	if (active === undefined) {
-		return usage(`Workflow attempt is not attached to this OMP session: ${attempt.id}`, runtime);
+		return usage(`Workflow attempt is not attached to this OMH session: ${attempt.id}`, runtime);
 	}
 	return interruptActiveWorkflowActivation(
 		runtime,
@@ -885,7 +888,7 @@ async function interruptActiveWorkflowActivation(
 	}
 	const controller = active.nodeAbortControllers.get(activation.id);
 	if (controller === undefined) {
-		return usage(`Workflow activation is not attached to this OMP session: ${activation.id}`, runtime);
+		return usage(`Workflow activation is not attached to this OMH session: ${activation.id}`, runtime);
 	}
 	active.lifecycle.stopDeadlineMs = deadlineMs;
 	if (!active.stopController.signal.aborted) {
@@ -1109,6 +1112,33 @@ function defaultWorkflowStartNodeIds(definition: WorkflowDefinition): string[] {
 	const roots = definition.nodes.filter(node => !incomingNodeIds.has(node.id)).map(node => node.id);
 	const fallback = definition.nodes[0]?.id;
 	return roots.length > 0 ? roots : fallback !== undefined ? [fallback] : [];
+}
+
+function workflowStartReachesSessionTaskNode(definition: WorkflowDefinition, startNodeIds: readonly string[]): boolean {
+	const byId = new Map(definition.nodes.map(node => [node.id, node]));
+	const outgoing = new Map<string, WorkflowEdge[]>();
+	for (const edge of definition.edges) {
+		const edges = outgoing.get(edge.from);
+		if (edges) {
+			edges.push(edge);
+		} else {
+			outgoing.set(edge.from, [edge]);
+		}
+	}
+
+	const queue = [...startNodeIds];
+	const visited = new Set<string>();
+	while (queue.length > 0) {
+		const nodeId = queue.shift();
+		if (nodeId === undefined || visited.has(nodeId)) continue;
+		visited.add(nodeId);
+		const node = byId.get(nodeId);
+		if (node?.type === "agent" || node?.type === "review") return true;
+		for (const edge of outgoing.get(nodeId) ?? []) {
+			queue.push(edge.to);
+		}
+	}
+	return false;
 }
 
 function workflowUnattendedHumanNodeError(definition: WorkflowDefinition): string | undefined {
@@ -2052,7 +2082,7 @@ function resolveRuntimeBindingModelAudit(
 	if (modelResolution !== undefined) return result.audit;
 	return {
 		...result.audit,
-		error: "no available models from oh-my-pi runtime configuration",
+		error: "no available models from OMH runtime configuration",
 	};
 }
 
@@ -2121,7 +2151,7 @@ async function formatWorkflowCheckpointNotFound(checkpointId: string, runtime: S
 	return [
 		`Workflow checkpoint not found in current session: ${checkpointId}`,
 		`Checkpoint exists in session ${match.sessionId}.`,
-		`Resume that session first: omp --resume ${match.sessionId}`,
+		`Resume that session first: omh --resume ${match.sessionId}`,
 		`Then run: /workflow restart ${match.checkpointId}`,
 		`Family: ${match.familyId}`,
 	].join("\n");
@@ -2420,7 +2450,8 @@ function formatWorkflowHelp(): string {
 		"",
 		"Common paths:",
 		"- Start: /workflow start <flow-or-path> [--unattended]",
-		"- TUI starts run in the background by default; text/headless starts run in the foreground unless --background is passed.",
+		"- TUI starts agent/review workflows in the foreground by default; script-only TUI starts can run in the background.",
+		"- Text/headless starts run in the foreground unless --background is passed.",
 		"- Unattended start rejects human checkpoints before launch.",
 		"- Monitor: /workflow status, /workflow graph, /workflow dashboard status",
 		"- Screen space: /workflow dashboard collapse, /workflow dashboard compact, /workflow dashboard show",

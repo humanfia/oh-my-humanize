@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the dev `omp` wrapper into Bun's global bin directory.
+# Install the dev `omh` wrapper into Bun's global bin directory.
 #
 # Replaces the bun-shebang symlink that `bun --cwd=packages/coding-agent link`
 # creates (pointing at `src/cli.ts`) with the safer wrapper at
@@ -27,5 +27,7 @@ if [ -z "$global_bin" ]; then
 fi
 
 mkdir -p "$global_bin"
+ln -sfn "$target" "$global_bin/omh"
 ln -sfn "$target" "$global_bin/omp"
+echo "link-omp: linked $global_bin/omh -> $target"
 echo "link-omp: linked $global_bin/omp -> $target"

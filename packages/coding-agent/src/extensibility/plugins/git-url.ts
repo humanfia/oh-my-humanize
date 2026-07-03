@@ -26,7 +26,7 @@ const KNOWN_HOSTS: Record<string, (pathname: string, hash: string) => { user: st
 };
 
 /**
- * Namespaced shorthand prefixes accepted by `omp plugin install`, mapped to
+ * Namespaced shorthand prefixes accepted by `omh plugin install`, mapped to
  * their canonical host. `PluginManager.install` normalizes non-GitHub prefixes
  * before invoking bun because bun only treats `github:` as a hosted shorthand.
  */

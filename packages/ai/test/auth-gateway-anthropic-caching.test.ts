@@ -10,7 +10,7 @@
  * `~/.omp/auth-gateway.token`.
  *
  * To run: `bun --cwd packages/ai test test/auth-gateway-anthropic-caching.test.ts`
- * with the gateway live (`omp auth-gateway serve` or pm2).
+ * with the gateway live (`omh auth-gateway serve` or pm2).
  */
 import { describe, expect, it } from "bun:test";
 import { AUTH_GATEWAY_E2E_URL, checkAuthGatewayE2EAvailable } from "./helpers";
@@ -39,7 +39,7 @@ const gateway = await checkAuthGatewayE2EAvailable();
 // stable across runs of this test.
 const SYSTEM_PARAGRAPH = `
 You are a precise assistant participating in an automated end-to-end test of
-the omp auth-gateway's Anthropic prompt-caching pipeline. The same system
+the OMH auth-gateway's Anthropic prompt-caching pipeline. The same system
 prompt will be reused across two turns; the gateway must place a cache
 breakpoint on the final system block so that the second request hits the
 ephemeral cache instead of being re-tokenized from scratch. Always respond

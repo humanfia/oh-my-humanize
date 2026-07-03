@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { parseWorkflowDefinition } from "../../src/workflow/definition";
 import { executeWorkflowNode } from "../../src/workflow/node-runtime";
 import type { WorkflowActivation } from "../../src/workflow/scheduler";
@@ -55,6 +56,16 @@ function activation(nodeId: string): WorkflowActivation {
 	};
 }
 
+const runtimeTempDir = TempDir.createSync("@omh-session-runtime-test-");
+
+afterAll(() => {
+	runtimeTempDir.removeSync();
+});
+
+function runtimeCwd(): string {
+	return runtimeTempDir.path();
+}
+
 describe("session workflow runtime host", () => {
 	it("maps script nodes to an eval runner when configured", async () => {
 		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
@@ -62,7 +73,7 @@ describe("session workflow runtime host", () => {
 		if (!node) throw new Error("expected shell node");
 		let capturedRequest: WorkflowScriptEvalRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runEvalScript: async request => {
 				capturedRequest = request;
 				return {
@@ -100,7 +111,7 @@ describe("session workflow runtime host", () => {
 		if (!node) throw new Error("expected python node");
 		let capturedRequest: WorkflowScriptEvalRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runEvalScript: async request => {
 				capturedRequest = request;
 				return {
@@ -146,7 +157,7 @@ edges: []
 		if (!node) throw new Error("expected validate node");
 		let capturedRequest: WorkflowScriptEvalRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runEvalScript: async request => {
 				capturedRequest = request;
 				return {
@@ -168,7 +179,7 @@ edges: []
 		let capturedRequest: WorkflowShellScriptRequest | undefined;
 		let evalCalled = false;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runEvalScript: async () => {
 				evalCalled = true;
 				return {
@@ -222,7 +233,7 @@ edges: []
 		if (!node) throw new Error("expected validate node");
 		let capturedRequest: WorkflowShellScriptRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runShellScript: async request => {
 				capturedRequest = request;
 				return {
@@ -242,7 +253,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "shell");
 		if (!node) throw new Error("expected shell node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runEvalScript: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -269,7 +280,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "shell");
 		if (!node) throw new Error("expected shell node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runEvalScript: async () => ({
 				exitCode: 0,
 				output: [
@@ -296,7 +307,7 @@ edges: []
 		const definition = parseWorkflowDefinition(scriptWorkflow, { sourcePath: "workflow.yml" });
 		const node = definition.nodes.find(candidate => candidate.id === "build");
 		if (!node) throw new Error("expected build node");
-		const host = createSessionWorkflowRuntimeHost({ cwd: process.cwd() });
+		const host = createSessionWorkflowRuntimeHost({ cwd: runtimeCwd() });
 
 		await expect(
 			host.runAgentNode?.({
@@ -315,7 +326,7 @@ edges: []
 		if (!node) throw new Error("expected build node");
 		let capturedRequest: WorkflowAgentTaskRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async request => {
 				capturedRequest = request;
 				return {
@@ -334,12 +345,13 @@ edges: []
 			modelOverride: "openai/gpt-4o",
 		});
 
-		expect(capturedRequest).toEqual({
+		expect(capturedRequest).toMatchObject({
 			agent: "task",
 			activationId: "activation-build",
 			nodeId: "build",
 			modelOverride: "openai/gpt-4o",
 			modelOverrideAuthFallback: false,
+			timeoutMs: 3600000,
 			task: {
 				id: "build",
 				description: "Builder · Build",
@@ -347,6 +359,8 @@ edges: []
 				assignment: "Implement the workflow feature.",
 			},
 		});
+		expect(capturedRequest?.signal).toBeInstanceOf(AbortSignal);
+		expect(typeof capturedRequest?.onProgress).toBe("function");
 		expect(output).toEqual({
 			summary: "agent completed",
 			data: { exitCode: 0 },
@@ -358,7 +372,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "build");
 		if (!node) throw new Error("expected build node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: "agent completed",
@@ -389,7 +403,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "build");
 		if (!node) throw new Error("expected build node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: "The structured report is in the session transcript.",
@@ -427,7 +441,7 @@ edges: []
 		if (!node) throw new Error("expected build node");
 		const longOutput = "workspace finding\n".repeat(900);
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: longOutput,
@@ -463,7 +477,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "build");
 		if (!node) throw new Error("expected build node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -494,7 +508,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "build");
 		if (!node) throw new Error("expected build node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify(
@@ -546,7 +560,7 @@ edges: []
 			},
 		});
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: taskOutput,
@@ -576,7 +590,7 @@ edges: []
 		const controller = new AbortController();
 		let capturedRequest: WorkflowAgentTaskRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async request => {
 				capturedRequest = request;
 				return {
@@ -596,7 +610,11 @@ edges: []
 		});
 
 		const captured = capturedRequest as (WorkflowAgentTaskRequest & { signal?: AbortSignal }) | undefined;
-		expect(captured?.signal).toBe(controller.signal);
+		expect(captured?.signal).toBeInstanceOf(AbortSignal);
+		expect(captured?.signal?.aborted).toBe(false);
+		controller.abort("operator-stop");
+		expect(captured?.signal?.aborted).toBe(true);
+		expect(captured?.signal?.reason).toBe("operator-stop");
 	});
 
 	it("preserves provider request context in failed agent node diagnostics", async () => {
@@ -604,7 +622,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "build");
 		if (!node) throw new Error("expected build node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 1,
 				output: "",
@@ -632,7 +650,7 @@ edges: []
 		if (!node) throw new Error("expected review node");
 		let capturedRequest: WorkflowAgentTaskRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async request => {
 				capturedRequest = request;
 				return {
@@ -679,7 +697,7 @@ edges: []
 		if (!node) throw new Error("expected review node");
 		const longReview = `${"review detail\n".repeat(900)}finish`;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: longReview,
@@ -711,7 +729,7 @@ edges: []
 		const controller = new AbortController();
 		let capturedRequest: WorkflowAgentTaskRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async request => {
 				capturedRequest = request;
 				return {
@@ -732,7 +750,11 @@ edges: []
 		});
 
 		const captured = capturedRequest as (WorkflowAgentTaskRequest & { signal?: AbortSignal }) | undefined;
-		expect(captured?.signal).toBe(controller.signal);
+		expect(captured?.signal).toBeInstanceOf(AbortSignal);
+		expect(captured?.signal?.aborted).toBe(false);
+		controller.abort("operator-stop");
+		expect(captured?.signal?.aborted).toBe(true);
+		expect(captured?.signal?.reason).toBe("operator-stop");
 	});
 
 	it("extracts review verdicts nested in the reviewer output explanation", async () => {
@@ -740,7 +762,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -771,7 +793,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: ["Review findings:", "- all acceptance criteria are satisfied", "", "COMPLETE"].join("\n"),
@@ -798,7 +820,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -831,7 +853,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -866,7 +888,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -900,7 +922,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -931,7 +953,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -964,7 +986,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -997,7 +1019,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -1028,7 +1050,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: [
@@ -1061,7 +1083,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -1093,7 +1115,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: [
@@ -1124,7 +1146,7 @@ edges: []
 		const node = definition.nodes.find(candidate => candidate.id === "review");
 		if (!node) throw new Error("expected review node");
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runAgentTask: async () => ({
 				exitCode: 0,
 				output: JSON.stringify({
@@ -1156,7 +1178,7 @@ edges: []
 		if (!node) throw new Error("expected approve node");
 		let capturedRequest: WorkflowHumanInputRequest | undefined;
 		const host = createSessionWorkflowRuntimeHost({
-			cwd: process.cwd(),
+			cwd: runtimeCwd(),
 			runHumanInput: async request => {
 				capturedRequest = request;
 				return {

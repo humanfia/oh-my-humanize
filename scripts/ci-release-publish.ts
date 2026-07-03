@@ -101,6 +101,7 @@ export const packages: PublishPackage[] = [
 		extraTypeConfigs: ["tsconfig.publish.client.json"],
 	},
 	{ dir: "packages/agent", kind: "typescript" },
+	{ dir: "packages/swarm-extension", kind: "typescript" },
 	{ dir: "packages/coding-agent", kind: "typescript", publishBin: { omh: "dist/cli.js", omp: "dist/cli.js" } },
 ];
 
@@ -153,6 +154,12 @@ async function rewriteManifest(pkg: PublishPackage, write: boolean): Promise<Pac
 }
 
 async function preparePackage(pkg: PublishPackage): Promise<PackageManifest> {
+	return prepareTypescriptPackage(pkg.dir, !isDryRun);
+}
+
+export async function prepareTypescriptPackage(pkgRelDir: string, write: boolean): Promise<PackageManifest> {
+	const pkg = packages.find(entry => entry.dir === pkgRelDir);
+	if (pkg?.kind !== "typescript") throw new Error(`No TypeScript publish package declared for ${pkgRelDir}`);
 	const pkgDir = path.join(repoRoot, pkg.dir);
 	for (const argv of pkg.preBuild ?? []) {
 		await $`${argv}`.cwd(pkgDir);
@@ -161,7 +168,7 @@ async function preparePackage(pkg: PublishPackage): Promise<PackageManifest> {
 	for (const cfg of pkg.extraTypeConfigs ?? []) {
 		await $`bun x tsgo -p ${cfg}`.cwd(pkgDir);
 	}
-	return rewriteManifest(pkg, !isDryRun);
+	return rewriteManifest(pkg, write);
 }
 
 /**

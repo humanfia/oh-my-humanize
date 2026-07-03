@@ -34,6 +34,7 @@ import {
 	TERMINAL,
 	Text,
 	TUI,
+	terminalSupportsTextSizing,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
@@ -649,10 +650,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
 		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
 		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
-		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
-		// capability (`TERMINAL.textSizing` defaults on for Kitty) so it stays off
-		// unless the user opts in, and never emits raw escapes on other terminals.
-		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.textSizing);
+		// OSC 66 text-sizing is Kitty-only; keep runtime emission opt-in while
+		// gating the setting against the terminal's static capability.
+		setTerminalTextSizing(settings.get("tui.textSizing") && terminalSupportsTextSizing(TERMINAL.id));
 		this.chatContainer = new TranscriptContainer();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new AnchoredLiveContainer();
@@ -974,7 +974,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// custom messages, branch summaries, and compaction summaries) and the user
 		// set no explicit `mode_change` (which #reconcileModeFromSession just
 		// restored). SDK startup metadata and extension `custom` state entries are
-		// ignored. This way `omp --continue` (or auto-resume) that finds no recent
+		// ignored. This way `omh --continue` (or auto-resume) that finds no recent
 		// session and creates a fresh one still honors the default, while a session
 		// with restored context or an explicit mode keeps its reconciled mode. Scoped
 		// to launch (not the switch reconciler above) so /new and the plan-approval →

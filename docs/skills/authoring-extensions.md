@@ -1,11 +1,11 @@
 ---
 name: authoring-extensions
-description: Use when creating a new omp extension. Covers ExtensionAPI, factory signature, tool/command/event registration, and local-dev testing.
+description: Use when creating a new OMH extension. Covers ExtensionAPI, factory signature, tool/command/event registration, and local-dev testing.
 ---
 
 # Authoring Extensions
 
-Extensions are the primary way to add capabilities to `oh-my-pi`. A single extension module can register tools the LLM can call, slash commands users can invoke, and event handlers that run throughout the session lifecycle — all from one TypeScript file.
+Extensions are the primary way to add capabilities to OMH. A single extension module can register tools the LLM can call, slash commands users can invoke, and event handlers that run throughout the session lifecycle — all from one TypeScript file.
 
 ## Minimum viable extension
 
@@ -19,7 +19,7 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-That is a working extension. Drop it into `~/.omp/agent/extensions/hello.ts` and restart omp to see the notification.
+That is a working extension. Drop it into `~/.omp/agent/extensions/hello.ts` and restart OMH to see the notification.
 
 ## Full example
 
@@ -75,24 +75,24 @@ export default function myExtension(pi: ExtensionAPI) {
 
 ## Discovery paths
 
-omp loads extension modules from these sources:
+OMH loads extension modules from these sources:
 
 1. Native `.omp` locations discovered through the capability system:
    - `<cwd>/.omp/extensions/`
    - `~/.omp/agent/extensions/`
    - legacy extension paths listed in `.omp/settings.json#extensions` or `~/.omp/agent/settings.json#extensions`
-2. Installed plugins under `~/.omp/plugins/node_modules` (`omp plugin install` npm/git specs, or `omp plugin link`) via their `omp.extensions`/`pi.extensions` manifests. Marketplace cache installs do not feed extension modules — they surface skills/commands/hooks/tools/MCP only.
-3. Explicit configured paths passed by the CLI (`omp --extension ./my-ext.ts`, also `-e`; `--hook` is treated as an alias) and by the `extensions:` setting in config.
+2. Installed plugins under `~/.omp/plugins/node_modules` (`omh plugin install` npm/git specs, or `omh plugin link`) via their `omp.extensions`/`pi.extensions` manifests. Marketplace cache installs do not feed extension modules — they surface skills/commands/hooks/tools/MCP only.
+3. Explicit configured paths passed by the CLI (`omh --extension ./my-ext.ts`, also `-e`; `--hook` is treated as an alias) and by the `extensions:` setting in config.
 
 The runtime de-duplicates by resolved absolute path — first seen wins.
 
-When a path points to a directory, omp resolves the entry point in this order:
+When a path points to a directory, OMH resolves the entry point in this order:
 
 1. `package.json` with `omp.extensions` (or legacy `pi.extensions`) field
 2. `index.ts`
 3. `index.js`
 
-When scanning an `extensions/` directory, omp also loads direct `*.ts`/`*.js` files and one-level subdirectories that have `index.ts`, `index.js`, or a manifest.
+When scanning an `extensions/` directory, OMH also loads direct `*.ts`/`*.js` files and one-level subdirectories that have `index.ts`, `index.js`, or a manifest.
 
 Extension packages can also bundle sibling capability directories. When a package is loaded through `extensions:` or `--extension`/`-e`, the `omp-plugins` provider discovers its `skills/`, `hooks/pre|post/`, `tools/`, `commands/`, `rules/`, `prompts/`, and `.mcp.json`.
 
@@ -224,7 +224,7 @@ Extensions are a strict superset of hooks. New authoring should use `ExtensionAP
 
 ## Debugging
 
-omp writes structured logs to a rotating file under `~/.omp/logs/` (debug level is always on; nothing is written to the console, which would corrupt the TUI). Tail today's log to see extension load diagnostics:
+OMH writes structured logs to a rotating file under `~/.omp/logs/` (debug level is always on; nothing is written to the console, which would corrupt the TUI). Tail today's log to see extension load diagnostics:
 
 ```
 tail -f ~/.omp/logs/omp.$(date +%F).log

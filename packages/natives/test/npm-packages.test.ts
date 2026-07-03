@@ -22,6 +22,7 @@ describe("generated native npm leaf packages", () => {
 		expect(addonFiles).toContain(manifest.main.slice("./".length));
 		expect(manifest.files).toContain("*.node");
 		expect(manifest.files).toContain("README.md");
+		expect(manifest.repository.url).toBe("git+https://github.com/humanfia/oh-my-humanize.git");
 		expect("exports" in manifest).toBe(false);
 	});
 

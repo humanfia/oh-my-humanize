@@ -5,32 +5,125 @@ name: Vouch (PR gate)
 # only reads .github/VOUCHED.td from the base repo and calls the GitHub API.
 
 on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to recheck after a vouch list update
+        required: true
+      head_sha:
+        description: Pull request head SHA
+        required: true
+      author_login:
+        description: Pull request author login
+        required: true
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, labeled]
 
 permissions:
   contents: read # read VOUCHED.td from the base branch
   pull-requests: read
+  actions: write # approve pending pull_request workflow runs after a vouch
   issues: write # add/remove PR labels and post the one-time needs-vouch note
 
 concurrency:
-  group: vouch-pr-${{ github.event.pull_request.number }}
+  group: vouch-pr-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - id: denounced-author
+        name: Detect denounced PR author
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.pull_request.user.login || inputs.author_login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+        run: |
+          content="$(gh api "repos/$REPO/contents/.github/VOUCHED.td?ref=$BASE_REF" --jq .content 2>/dev/null | tr -d '\n' | base64 -d || true)"
+          if [ -z "$content" ]; then
+            echo "status=clear" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          normalize_login() {
+            printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -e 's/^@//' -e 's/^github://'
+          }
+
+          target="$(normalize_login "$AUTHOR")"
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            token="${line%%[[:space:]]*}"
+            if [ -z "$token" ]; then
+              continue
+            fi
+            case "$token" in
+              -*) ;;
+              *) continue ;;
+            esac
+            denounced="$(normalize_login "${token#-}")"
+            if [ "$denounced" = "$target" ]; then
+              echo "status=denounced" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done <<< "$content"
+
+          echo "status=clear" >> "$GITHUB_OUTPUT"
+
       - id: manual-vouch
         name: Detect maintainer-applied vouch label
-        if: ${{ github.event.action == 'labeled' && github.event.label.name == 'vouched' }}
-        run: echo "status=manual" >> "$GITHUB_OUTPUT"
+        if: ${{ github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'vouched' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LABELER: ${{ github.actor }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          content="$(gh api "repos/$REPO/contents/.github/VOUCHED.td?ref=$BASE_REF" --jq .content 2>/dev/null | tr -d '\n' | base64 -d || true)"
+          if [ -z "$content" ]; then
+            echo "status=ignored" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          normalize_login() {
+            printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -e 's/^@//' -e 's/^github://'
+          }
+
+          target="$(normalize_login "$AUTHOR")"
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            token="${line%%[[:space:]]*}"
+            if [ -z "$token" ]; then
+              continue
+            fi
+            case "$token" in
+              -*) ;;
+              *) continue ;;
+            esac
+            denounced="$(normalize_login "${token#-}")"
+            if [ "$denounced" = "$target" ]; then
+              echo "status=denounced" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done <<< "$content"
+
+          permission="$(gh api "repos/$REPO/collaborators/$LABELER/permission" --jq '.permission' 2>/dev/null || echo none)"
+          case "$permission" in
+            admin|maintain|write)
+              echo "status=manual" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "status=ignored" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       - id: vouch
-        if: ${{ github.event.action != 'labeled' || github.event.label.name != 'vouched' }}
-        uses: mitchellh/vouch/action/check-pr@v1
+        if: ${{ steps.denounced-author.outputs.status != 'denounced' && (github.event_name == 'workflow_dispatch' || github.event.action != 'labeled' || github.event.label.name != 'vouched') }}
+        uses: mitchellh/vouch/action/check-pr@f44860978966ace98fb11aaaa20f2b27d7543e13
         with:
-          pr-number: ${{ github.event.pull_request.number }}
+          pr-number: ${{ github.event.pull_request.number || inputs.pr_number }}
           auto-close: false
           require-vouch: true # report unvouched, but leave the PR open
           # vouched-file: .github/VOUCHED.td (default)
@@ -38,38 +131,91 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Survivors of the gate (vouched, manually labeled, or auto-allowed collaborators/bots)
-      # get a FRESH `vouched` label on every (re)open / ready-for-review / push. robomp
-      # reviews ONLY on that label event (ROBOMP_PR_REVIEW_TRIGGER=vouched_label),
-      # so review is always triggered by a just-validated PR, never a stale label.
+      # get a FRESH `vouched` label on every (re)open / ready-for-review / push. External
+      # webhook consumers such as robomp review ONLY on that label event
+      # (ROBOMP_PR_REVIEW_TRIGGER=vouched_label), so review is always triggered by a
+      # just-validated PR, never a stale label. GitHub Actions CI is approved below;
+      # GITHUB_TOKEN-created labels do not schedule fresh workflow runs.
       - name: Label vouched PRs for robomp review
-        if: ${{ steps.manual-vouch.outputs.status == 'manual' || steps.vouch.outputs.status == 'vouched' || steps.vouch.outputs.status == 'allowed' }}
+        if: ${{ steps.denounced-author.outputs.status != 'denounced' && (steps.manual-vouch.outputs.status == 'manual' || steps.vouch.outputs.status == 'vouched' || steps.vouch.outputs.status == 'allowed' || steps.vouch.outputs.status == 'skipped') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ github.event.pull_request.number || inputs.pr_number }}
           MANUAL_VOUCH: ${{ steps.manual-vouch.outputs.status == 'manual' }}
         run: |
           gh label create vouched --repo "$REPO" --color 2da44e --description "Passed the vouch gate" --force
-          gh issue edit "$PR" --repo "$REPO" --remove-label needs-vouch || true
+          remove_label() {
+            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$1" --silent >/dev/null || true
+          }
+          add_label() {
+            gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=$1" --silent >/dev/null
+          }
+
+          remove_label needs-vouch
           if [ "$MANUAL_VOUCH" != "true" ]; then
-            # remove+add so a fresh `labeled` event fires even when the label
-            # persisted across close/reopen (re-adding an existing label emits no
-            # event). The check above just re-validated, so trust is never stale.
-            gh issue edit "$PR" --repo "$REPO" --remove-label vouched || true
-            gh issue edit "$PR" --repo "$REPO" --add-label vouched
+            # remove+add so a fresh webhook `labeled` event fires even when the
+            # label persisted across close/reopen (re-adding an existing label
+            # emits no event). The check above just re-validated, so trust is
+            # never stale.
+            remove_label vouched
+            add_label vouched
           fi
 
-      - name: Mark PRs that still need a vouch
-        if: ${{ steps.vouch.outputs.status == 'closed' }}
+      - name: Approve pending PR CI runs
+        if: ${{ steps.denounced-author.outputs.status != 'denounced' && (steps.manual-vouch.outputs.status == 'manual' || steps.vouch.outputs.status == 'vouched' || steps.vouch.outputs.status == 'allowed' || steps.vouch.outputs.status == 'skipped') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR: ${{ github.event.pull_request.number || inputs.pr_number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head_sha }}
+          APPROVE_POLL_SECONDS: 60
+          APPROVE_POLL_INTERVAL_SECONDS: 5
+        run: |
+          case "$PR" in
+            ''|*[!0-9]*)
+              echo "Invalid PR number for CI approval: $PR" >&2
+              exit 1
+              ;;
+          esac
+
+          deadline=$((SECONDS + APPROVE_POLL_SECONDS))
+          while :; do
+            run_rows="$(gh api "repos/$REPO/actions/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=50" --jq \
+              ".workflow_runs[] | select(.name == \"CI\") | select(any(.pull_requests[]?; .number == $PR)) | [.id, .status] | @tsv")"
+            approved_waiting=false
+            if [ -n "$run_rows" ]; then
+              while IFS=$'\t' read -r run_id status; do
+                if [ -z "$run_id" ]; then
+                  continue
+                fi
+                if [ "$status" = "waiting" ]; then
+                  gh api -X POST "repos/$REPO/actions/runs/$run_id/approve" --silent >/dev/null
+                  approved_waiting=true
+                fi
+              done <<< "$run_rows"
+              if [ "$approved_waiting" = "true" ]; then
+                break
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "No waiting CI pull_request workflow run found yet for $HEAD_SHA; leaving CI to the next PR event." >&2
+              break
+            fi
+            sleep "$APPROVE_POLL_INTERVAL_SECONDS"
+          done
+
+      - name: Mark PRs that still need a vouch
+        if: ${{ steps.vouch.outputs.status == 'closed' || steps.manual-vouch.outputs.status == 'ignored' || steps.manual-vouch.outputs.status == 'denounced' || steps.denounced-author.outputs.status == 'denounced' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr_number }}
+          AUTHOR: ${{ github.event.pull_request.user.login || inputs.author_login }}
         run: |
           gh label create needs-vouch --repo "$REPO" --color d29922 --description "Maintainer vouch required before automated review" --force
-          gh issue edit "$PR" --repo "$REPO" --remove-label vouched || true
-          gh issue edit "$PR" --repo "$REPO" --add-label needs-vouch
+          gh api -X DELETE "repos/$REPO/issues/$PR/labels/vouched" --silent >/dev/null || true
+          gh api -X POST "repos/$REPO/issues/$PR/labels" -f labels[]=needs-vouch --silent >/dev/null
 
           existing="$(gh api "repos/$REPO/issues/$PR/comments" --jq \
             '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("needs a maintainer vouch")))] | length')"

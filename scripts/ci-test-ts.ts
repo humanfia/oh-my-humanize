@@ -103,15 +103,18 @@ const nativeAndIntegrationPackages = [
 // and is outside every CI TS bucket.
 const localOnlyWorkspacePackages = ["packages/mnemopi", "python/robomp/web"];
 
-// Repo-level script tests. CI's `workspace` bucket only runs the concurrency
-// regression (it's the GHA-config guard that must gate merges); a local full run
-// also exercises the release-notes and link-omp tests. (A `ci-test-ts.test.ts`
-// entry used to sit here but the file never existed — bun silently ignores
-// unmatched filters when at least one other filter matches.)
+// Repo-level script tests. CI's `workspace` bucket runs the workflow-guard
+// tests that protect repository automation; a local full run also exercises
+// release-note and install-link coverage. (A `ci-test-ts.test.ts` entry used to
+// sit here but the file never existed — bun silently ignores unmatched filters
+// when at least one other filter matches.)
+const ciRepoScriptTests = ["scripts/ci-concurrency.test.ts", "scripts/vouch-workflow.test.ts"];
+
 const repoScriptTests = [
 	"scripts/ci-concurrency.test.ts",
 	"scripts/ci-release-notes.test.ts",
 	"scripts/link-omp.test.ts",
+	"scripts/vouch-workflow.test.ts",
 ];
 
 const codingAgentNativePathPatterns = [
@@ -337,7 +340,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 				{
 					label: "scripts",
 					cwd: ".",
-					command: ["bun", "test", "--parallel=4", ...onlyFailuresArgs, "scripts/ci-concurrency.test.ts"],
+					command: ["bun", "test", "--parallel=4", ...onlyFailuresArgs, ...ciRepoScriptTests],
 				},
 			];
 		case "native":
@@ -417,6 +420,47 @@ function isScrubbedEnvVar(key: string): boolean {
 	return /_(API_KEY|OAUTH_TOKEN)$/.test(key) || key.includes("BEARER_TOKEN");
 }
 
+const TERMINAL_ENV_BASELINE: Record<string, string | undefined> = {
+	TMUX: undefined,
+	TMUX_PANE: undefined,
+	STY: undefined,
+	ZELLIJ: undefined,
+	ZELLIJ_PANE_ID: undefined,
+	ZELLIJ_SESSION_NAME: undefined,
+	KITTY_WINDOW_ID: undefined,
+	GHOSTTY_RESOURCES_DIR: undefined,
+	WEZTERM_PANE: undefined,
+	ITERM_SESSION_ID: undefined,
+	VSCODE_PID: undefined,
+	ALACRITTY_WINDOW_ID: undefined,
+	WT_SESSION: undefined,
+	TERM_PROGRAM: undefined,
+	TERM_PROGRAM_VERSION: undefined,
+	TERM_SESSION_ID: undefined,
+	TERM_FEATURES: undefined,
+	COLORTERM: undefined,
+	PI_FORCE_IMAGE_PROTOCOL: undefined,
+	PI_FORCE_SYNC_OUTPUT: undefined,
+	PI_NO_SYNC_OUTPUT: undefined,
+	PI_TUI_SYNC_OUTPUT: undefined,
+	PI_FORCE_HYPERLINKS: undefined,
+	PI_NO_HYPERLINKS: undefined,
+	PI_NO_DECCARA: undefined,
+	PI_TUI_RESIZE_IN_PLACE: undefined,
+	PI_FORCE_TUI_RESIZE_IN_PLACE: undefined,
+	PI_NOTIFICATIONS: undefined,
+	CMUX_WORKSPACE_ID: undefined,
+	CMUX_SURFACE_ID: undefined,
+	WSL_DISTRO_NAME: undefined,
+	WSL_INTEROP: undefined,
+	SSH_CONNECTION: undefined,
+	SSH_TTY: undefined,
+	SSH_CLIENT: undefined,
+	COLUMNS: undefined,
+	LINES: undefined,
+	TERM: "xterm-256color",
+};
+
 async function runTestCommand(testCommand: TestCommand): Promise<void> {
 	const cwd = path.join(repoRoot, testCommand.cwd);
 	const renderedCommand = testCommand.command.map(shellQuote).join(" ");
@@ -460,6 +504,7 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 function buildChildEnv(): Record<string, string | undefined> {
 	const env: Record<string, string | undefined> = {
 		...Bun.env,
+		...TERMINAL_ENV_BASELINE,
 		GITHUB_ACTIONS: "",
 		BUN_JSC_useConcurrentGC: "0",
 		BUN_JSC_numberOfGCMarkers: "1",

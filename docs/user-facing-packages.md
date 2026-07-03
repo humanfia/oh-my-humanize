@@ -4,7 +4,7 @@ This page indexes README-only user-facing package CLIs and features that need ro
 
 ## Root-docs policy
 
-- **Include** root docs coverage for package-local CLIs, extension features, dashboards, and benchmark runners that users can run directly or through `omp`.
+- **Include** root docs coverage for package-local CLIs, extension features, dashboards, and benchmark runners that users can run directly or through `omh`.
 - **Exclude explicitly** when a package/crate is internal implementation only; point to the architecture doc that owns it.
 - Package READMEs and manifests remain the source of truth for package-local setup and flags; root docs make the feature discoverable and link to exact source paths.
 - Internal Rust crates remain covered by native architecture docs unless promoted as standalone user-facing commands or APIs. The contributor-facing map lives at [`native-crates.md`](./native-crates.md); today every `crates/*` entry is internal to `@oh-my-pi/pi-natives` and the embedded shell, so [`natives-architecture.md`](./natives-architecture.md) and the surrounding native docs own them.
@@ -15,9 +15,9 @@ This page indexes README-only user-facing package CLIs and features that need ro
 
 Sources: [`packages/swarm-extension/README.md`](../packages/swarm-extension/README.md), [`packages/swarm-extension/package.json`](../packages/swarm-extension/package.json), [`packages/swarm-extension/src/cli.ts`](../packages/swarm-extension/src/cli.ts), [`packages/swarm-extension/src/extension.ts`](../packages/swarm-extension/src/extension.ts).
 
-- Package: `@oh-my-pi/swarm-extension`; bin: `omp-swarm`.
+- Package: `@oh-my-pi/swarm-extension`; bin: `omh-swarm` (`omp-swarm` compatibility alias).
 - Feature: multi-agent DAG orchestration from YAML swarms, supporting `pipeline`, `parallel`, and `sequential` modes.
-- Standalone CLI: `omp-swarm path/to/swarm.yaml` runs until completion or process termination.
+- Standalone CLI: `omh-swarm path/to/swarm.yaml` runs until completion or process termination.
 - TUI extension mode: add the package path to `extensions`, then use `/swarm run <file.yaml>`, `/swarm status <name>`, or `/swarm help`.
 - Inputs: YAML under top-level `swarm` with `name`, `workspace`, `mode`, optional `target_count`/`model`, and `agents` with `role`, `task`, optional `model`, `waits_for`, and `reports_to`.
 - Side effects/output: creates the workspace if needed and persists state/logs under `<workspace>/.swarm_<name>/`.
@@ -28,9 +28,9 @@ Sources: [`packages/swarm-extension/README.md`](../packages/swarm-extension/READ
 Sources: [`packages/terminal-bench/README.md`](../packages/terminal-bench/README.md), [`packages/terminal-bench/package.json`](../packages/terminal-bench/package.json), [`packages/terminal-bench/src/runner.ts`](../packages/terminal-bench/src/runner.ts), [`packages/terminal-bench/agent/omp_local.py`](../packages/terminal-bench/agent/omp_local.py).
 
 - Package: private `@oh-my-pi/terminal-bench`; bin: `tb2`.
-- Feature: runs `harbor-framework/terminal-bench-2` against a local or published `omp` build with a live progress, spend, token, ETA, and pass/fail dashboard.
+- Feature: runs `harbor-framework/terminal-bench-2` against a local or published OMH build with a live progress, spend, token, ETA, and pass/fail dashboard.
 - CLI: `bun src/runner.ts [options] [-- <extra harbor args>]`; package bin exposes `tb2`.
-- Modes: default `omp` agent, `oracle`/`nop`/any Harbor agent via `--agent`; local source packing by default, published npm install via `--install published`; `cleanup` command removes leftover Harbor Docker resources.
+- Modes: default OMH adapter (`omp_local.py` / Harbor agent id `omp`), `oracle`/`nop`/any Harbor agent via `--agent`; local source packing by default, published npm install via `--install published`; `cleanup` command removes leftover Harbor Docker resources.
 - Key inputs: `--model`, `--tasks`, `--concurrency`, `--attempts`, `--include`, `--exclude`, `--dataset`, `--thinking`, `--advisor-model`, gateway options, `--tarball`, `--no-build`, `--dry-run`, and passthrough Harbor args.
 - Outputs: Harbor job directories plus `_bench/<jobName>/report.md`, `harbor.log`, and generated `models.yml` under `--jobs-dir`.
 - Side effects/limits: requires Docker, Harbor, and usually the host auth gateway; local install packs `packages/coding-agent`; web search is off by default because it cannot authenticate through the gateway; Alpine/musl task images are unsupported by the native prebuilds.
@@ -39,9 +39,9 @@ Sources: [`packages/terminal-bench/README.md`](../packages/terminal-bench/README
 
 Sources: [`packages/stats/README.md`](../packages/stats/README.md), [`packages/stats/package.json`](../packages/stats/package.json), [`packages/coding-agent/src/cli/stats-cli.ts`](../packages/coding-agent/src/cli/stats-cli.ts).
 
-- Package: `@oh-my-pi/omp-stats`; bin: `omp-stats`; main user path: `omp stats`.
+- Package: `@oh-my-pi/omp-stats`; bin: `omh-stats` (`omp-stats` compatibility alias); main user path: `omh stats`.
 - Feature: local observability dashboard for AI usage statistics from session JSONL logs.
-- CLI modes: `omp stats` starts the dashboard server, opens `http://localhost:3847`, and keeps running; `omp stats --port <port>` changes the port; `omp stats --summary` prints a console summary; `omp stats --json` prints JSON and exits.
+- CLI modes: `omh stats` starts the dashboard server, opens `http://localhost:3847`, and keeps running; `omh stats --port <port>` changes the port; `omh stats --summary` prints a console summary; `omh stats --json` prints JSON and exits.
 - Programmatic API: exports helpers such as `syncAllSessions()` and `getDashboardStats()` for embedding.
 - Inputs/storage: reads `~/.omp/agent/sessions/`; stores aggregates in `~/.omp/stats.db`.
 - Outputs: dashboard metrics and API endpoints including `/api/stats`, `/api/stats/models`, `/api/stats/folders`, `/api/stats/timeseries`, and `/api/sync`.

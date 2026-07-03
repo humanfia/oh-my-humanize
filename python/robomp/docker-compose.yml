@@ -20,7 +20,7 @@ services:
       args:
         # Tag of the pre-built pi-base image produced by `bun run pi:image`
         # (sources: pi root /Dockerfile). Override per-environment as needed.
-        PI_BASE: oh-my-pi/pi:dev
+        PI_BASE: oh-my-humanize/omh:dev
     image: robomp:dev
     container_name: robomp
     # Phase B (graceful shutdown): gives the orchestrator at least
@@ -74,7 +74,7 @@ services:
       ROBOMP_REPLAY_TOKEN: ${ROBOMP_REPLAY_TOKEN:-}
 
       # --- container-fixed paths ---
-      ROBOMP_OMP_COMMAND: omp
+      ROBOMP_OMP_COMMAND: omh
       ROBOMP_WORKSPACE_ROOT: /data/workspaces
       ROBOMP_SQLITE_PATH: /data/robomp.sqlite
       ROBOMP_LOG_DIR: /data/logs

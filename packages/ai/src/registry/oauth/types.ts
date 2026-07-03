@@ -62,4 +62,6 @@ export interface OAuthProviderInterface {
 	getApiKey?(credentials: OAuthCredentials): string;
 	/** Store resulting OAuth credentials under a different provider id. */
 	readonly storeCredentialsAs?: string;
+	/** Replace the target provider's credentials when a string-returning login stores an API key. */
+	readonly replaceCredentialsOnApiKeyLogin?: boolean;
 }

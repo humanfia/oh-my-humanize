@@ -118,8 +118,8 @@ describe("PluginListComponent", () => {
 
 		const text = stripVTControlCharacters(component.render(120).join("\n"));
 		expect(text).toContain("No plugins installed");
-		expect(text).toContain("omp plugin install <package>");
-		expect(text).toContain("omp plugin install <name>@<marketplace>");
+		expect(text).toContain("omh plugin install <package>");
+		expect(text).toContain("omh plugin install <name>@<marketplace>");
 	});
 
 	it("routes enter on a marketplace entry to onMarketplaceSelect", () => {

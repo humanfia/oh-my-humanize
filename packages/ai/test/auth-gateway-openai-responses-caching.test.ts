@@ -11,7 +11,7 @@
  * `~/.omp/auth-gateway.token`.
  *
  * To run: `bun --cwd packages/ai test test/auth-gateway-openai-responses-caching.test.ts`
- * with the gateway live (`omp auth-gateway serve` or pm2).
+ * with the gateway live (`omh auth-gateway serve` or pm2).
  */
 import { describe, expect, it } from "bun:test";
 import { AUTH_GATEWAY_E2E_URL, checkAuthGatewayE2EAvailable } from "./helpers";
@@ -44,7 +44,7 @@ const gateway = await checkAuthGatewayE2EAvailable();
 // automatic-caching floor with plenty of headroom.
 const INSTRUCTIONS_PARAGRAPH = `
 You are a precise assistant participating in an automated end-to-end test of
-the omp auth-gateway's OpenAI Responses prompt-caching pipeline. The same
+the OMH auth-gateway's OpenAI Responses prompt-caching pipeline. The same
 instructions block will be reused across two turns; OpenAI automatically
 caches identical prefixes ≥1024 tokens, so the second turn must see the
 same prefix bytes as the first or the cache misses silently. Always respond

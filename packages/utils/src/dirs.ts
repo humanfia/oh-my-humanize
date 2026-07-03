@@ -218,7 +218,7 @@ type XdgCategory = "data" | "state" | "cache";
 
 /**
  * Resolves and caches all omp directory paths. On Linux, when XDG environment
- * variables are set, paths are redirected under $XDG_*_HOME/omp/. A new
+ * variables are set, paths are redirected under $XDG_*_HOME/omh/. A new
  * instance is created whenever the agent directory changes, which naturally
  * invalidates all cached paths.
  */
@@ -227,7 +227,7 @@ class DirResolver {
 	readonly agentDir: string;
 
 	// Per-category base dirs. Without XDG, all three equal configRoot / agentDir.
-	// With XDG on Linux, they point to $XDG_*_HOME/omp/.
+	// With XDG on Linux, they point to $XDG_*_HOME/omh/.
 	readonly #rootDirs: Record<XdgCategory, string>;
 	readonly #agentDirs: Record<XdgCategory, string>;
 
@@ -244,14 +244,14 @@ class DirResolver {
 		const isDefault = this.agentDir === defaultAgent;
 
 		// XDG is a Linux convention. On supported platforms, default profile state
-		// resolves under $XDG_*_HOME/omp once `omp config init-xdg` has migrated
+		// resolves under $XDG_*_HOME/omh once `omh config init-xdg` has migrated
 		// the user's data. Named profiles follow a stricter rule: the XDG choice
 		// is keyed on the profile-specific XDG path, never the base app root.
 		//
 		// Why: if we consulted the base app root for named profiles too, the same
 		// profile could resolve to `~/.omp/profiles/<name>` on first activation
-		// (when no $XDG_*_HOME/omp exists yet) and then silently move to
-		// `$XDG_*_HOME/omp/profiles/<name>` the moment the base appeared, orphaning
+		// (when no $XDG_*_HOME/omh exists yet) and then silently move to
+		// `$XDG_*_HOME/omh/profiles/<name>` the moment the base appeared, orphaning
 		// the earlier state. Pinning on the profile path means a profile's location
 		// is decided at first activation and stays put until the user explicitly
 		// migrates it (e.g. by mkdir'ing the XDG profile dir).
@@ -287,7 +287,7 @@ class DirResolver {
 			state: xdgState ?? this.configRoot,
 			cache: xdgCache ?? this.configRoot,
 		};
-		// XDG flattens the agent/ prefix: ~/.omp/agent/sessions → $XDG_DATA_HOME/omp/sessions
+		// XDG flattens the agent/ prefix: ~/.omp/agent/sessions -> $XDG_DATA_HOME/omh/sessions
 		this.#agentDirs = {
 			data: xdgData ?? this.agentDir,
 			state: xdgState ?? this.agentDir,
@@ -614,7 +614,7 @@ export function getPythonEnvDir(): string {
 	return dirs.rootSubdir("python-env", "data");
 }
 
-/** Get the shared Python gateway state directory (~/.omp/agent/python-gateway; XDG default: $XDG_STATE_HOME/omp/python-gateway). */
+/** Get the shared Python gateway state directory (~/.omp/agent/python-gateway; XDG default: $XDG_STATE_HOME/omh/python-gateway). */
 export function getPythonGatewayDir(): string {
 	return dirs.agentSubdir(undefined, "python-gateway", "state");
 }
@@ -752,7 +752,7 @@ export function getWorkflowMonitorCacheDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, path.join("cache", "workflows"), "cache");
 }
 
-/** Get the document conversion cache directory (~/.omp/agent/cache/document-conversions; XDG default: $XDG_CACHE_HOME/omp/cache/document-conversions). */
+/** Get the document conversion cache directory (~/.omp/agent/cache/document-conversions; XDG default: $XDG_CACHE_HOME/omh/cache/document-conversions). */
 export function getDocumentConversionCacheDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, path.join("cache", "document-conversions"), "cache");
 }

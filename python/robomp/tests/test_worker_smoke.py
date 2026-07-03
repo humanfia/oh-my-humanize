@@ -1,11 +1,11 @@
 """Gated end-to-end smoke test.
 
-Runs only when ROBOMP_INTEGRATION=1 and `omp` is available on PATH (or via
+Runs only when ROBOMP_INTEGRATION=1 and `omh` is available on PATH (or via
 ROBOMP_OMP_COMMAND). Spins up:
 
 - a local bare git repo with a trivial failing test,
 - a fake GitHub API via httpx.MockTransport that records comments + PRs,
-- a real `omp --mode rpc` subprocess driven by `worker.run_task`.
+- a real `omh --mode rpc` subprocess driven by `worker.run_task`.
 
 Asserts that triage_issue produces:
 - at least one issue comment,
@@ -30,7 +30,7 @@ INTEGRATION = os.environ.get("ROBOMP_INTEGRATION") == "1"
 
 pytestmark = pytest.mark.skipif(
     not INTEGRATION,
-    reason="ROBOMP_INTEGRATION=1 required to run the omp-backed smoke test",
+    reason="ROBOMP_INTEGRATION=1 required to run the OMH-backed smoke test",
 )
 
 

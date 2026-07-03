@@ -24,6 +24,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	buildNativeAddonDownloadUrl,
 	cleanupStaleNativeVersions,
 	getAddonFilenames,
 	resolveLoaderCandidates,
@@ -36,6 +37,12 @@ const winWorkspaceNativeDir = "C:\\Users\\Admin\\dev\\oh-my-pi\\packages\\native
 const posixNodeModulesNativeDir = "/home/u/proj/node_modules/@oh-my-pi/pi-natives/native";
 
 describe("windows native addon staging", () => {
+	it("points manual native addon downloads at the OMH release repository", () => {
+		expect(buildNativeAddonDownloadUrl("pi_natives.linux-x64.node")).toBe(
+			"https://github.com/humanfia/oh-my-humanize/releases/latest/download/pi_natives.linux-x64.node",
+		);
+	});
+
 	it("stages only on Windows node_modules installs", () => {
 		// Windows + node_modules install + npm (not compiled) → stage.
 		expect(

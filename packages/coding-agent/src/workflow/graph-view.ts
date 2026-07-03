@@ -2303,7 +2303,7 @@ export function formatWorkflowFocusLines(view: WorkflowGraphView): string[] {
 	if (focus.humanPrompt !== undefined) {
 		lines.push(`human prompt: ${formatSingleLineWorkflowDetail(focus.humanPrompt)}`);
 		lines.push(
-			"human input: default Decision: proceed; choose stop or checkpoint explicitly when evidence is insufficient; h help for controls",
+			"human input: default Decision: stop; choose proceed only when evidence is sufficient; h help for controls",
 		);
 	}
 	if (focus.activity !== undefined) {
@@ -2341,7 +2341,7 @@ function formatWorkflowFocusStatus(focus: WorkflowGraphFocusView): string {
 
 function formatRunningWorkflowNode(node: WorkflowGraphNodeView): string {
 	const label = formatWorkflowNodeDisplayName(node.id);
-	if (node.kind === "Human checkpoint") return `${label} waiting for operator input (default Decision: proceed)`;
+	if (node.kind === "Human checkpoint") return `${label} waiting for operator input (default Decision: stop)`;
 	return `${label} running`;
 }
 

@@ -21,12 +21,12 @@ describe("QR encoder", () => {
 	}> = [
 		{ text: "HELLO WORLD", ecl: "M", mask: 0, version: 1, size: 21, hash: "a28227450c6dd5ab" },
 		{
-			text: "https://my.omp.sh/#mgAYTZwEnpRQtca0CTgn-Q.gdJU",
+			text: "https://my.omh.sh/#mgAYTZwEnpRQtca0CTgn-Q.gdJU",
 			ecl: "M",
 			mask: 4,
 			version: 4,
 			size: 33,
-			hash: "4af2f66e1b06a5b1",
+			hash: "0caf3e7f96332774",
 		},
 		{
 			text: "https://web.example/collab/#relay.example.com:8443/r/AbCdEfGhIjKlMnOp.0123456789abcdef",
@@ -64,9 +64,9 @@ describe("QR encoder", () => {
 
 	it("deterministically selects a penalty-minimizing mask when none is forced", () => {
 		// Auto mask is the lowest-penalty choice; locking it guards the penalty rules.
-		const qr = QrCode.encodeText("https://my.omp.sh/#demo", "M");
+		const qr = QrCode.encodeText("https://my.omh.sh/#demo", "M");
 		expect(qr.mask).toBe(1);
-		expect(matrixFingerprint(qr)).toBe("ee820c588fe36d99");
+		expect(matrixFingerprint(qr)).toBe("27cba7aaa44ef439");
 	});
 
 	it("throws when the payload exceeds version 40 at the chosen EC level", () => {
@@ -88,7 +88,7 @@ describe("QR encoder", () => {
 
 describe("renderQrHalfBlocks", () => {
 	it("frames the symbol in a light quiet zone wide enough for the margin", () => {
-		const qr = QrCode.encodeText("https://omp.sh/#demo", "M");
+		const qr = QrCode.encodeText("https://omh.sh/#demo", "M");
 		const margin = 3;
 		const lines = renderQrHalfBlocks(qr, { margin });
 		// Visible cell width = symbol + both margins.

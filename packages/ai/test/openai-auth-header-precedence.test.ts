@@ -87,4 +87,23 @@ describe("OpenAI-compatible auth headers", () => {
 
 		expect(headers).toEqual(["Bearer provider-config-key"]);
 	});
+
+	it("preserves configured Authorization headers when keyless custom providers pass the no-auth sentinel", async () => {
+		const baseModel = getBundledModel("openai", "gpt-4o-mini") as Model<"openai-responses">;
+		const model: Model<"openai-responses"> = {
+			...baseModel,
+			provider: "rust-cat",
+			id: "gpt-5.5",
+			baseUrl: "https://rust.cat/v1",
+			headers: {
+				...baseModel.headers,
+				Authorization: "Bearer provider-config-key",
+			},
+		};
+		const headers: string[] = [];
+
+		await drainResponses(model, "N/A", createCompletedResponsesFetch(headers));
+
+		expect(headers).toEqual(["Bearer provider-config-key"]);
+	});
 });

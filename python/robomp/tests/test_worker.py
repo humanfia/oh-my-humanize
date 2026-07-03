@@ -2,7 +2,7 @@
 
 These tests swap `robomp.worker.RpcClient` for a recording fake so we can
 observe the `extra_args` and `set_todos` decisions the driver takes based on
-whether the workspace's omp session directory already holds a JSONL transcript.
+whether the workspace's OMH session directory already holds a JSONL transcript.
 """
 
 from __future__ import annotations

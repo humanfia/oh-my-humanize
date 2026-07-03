@@ -5,9 +5,36 @@ cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 WORK_DIR="$(mktemp -d)"
 TMP_WORK_DIR="$WORK_DIR/tmp"
+natives_pkg_backup=""
+agent_pkg_backup=""
+swarm_pkg_backup=""
+swarm_dist_backup=""
+swarm_dist_existed=0
 mkdir -p "$TMP_WORK_DIR"
 export TMPDIR="$TMP_WORK_DIR"
-trap 'rm -rf "$WORK_DIR"' EXIT
+
+cleanup() {
+   if [ -n "$natives_pkg_backup" ] && [ -f "$natives_pkg_backup" ]; then
+      cp "$natives_pkg_backup" "$ROOT_DIR/packages/natives/package.json"
+   fi
+   if [ -n "$agent_pkg_backup" ] && [ -f "$agent_pkg_backup" ]; then
+      cp "$agent_pkg_backup" "$ROOT_DIR/packages/coding-agent/package.json"
+   fi
+   if [ -n "$swarm_pkg_backup" ] && [ -f "$swarm_pkg_backup" ]; then
+      cp "$swarm_pkg_backup" "$ROOT_DIR/packages/swarm-extension/package.json"
+   fi
+   if [ -n "$swarm_dist_backup" ]; then
+      rm -rf "$ROOT_DIR/packages/swarm-extension/dist"
+      if [ "$swarm_dist_existed" -eq 1 ] && [ -d "$swarm_dist_backup" ]; then
+         cp -R "$swarm_dist_backup" "$ROOT_DIR/packages/swarm-extension/dist"
+      fi
+   fi
+   rm -rf "$WORK_DIR"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 section() {
    echo ""
@@ -15,24 +42,22 @@ section() {
 }
 
 smoke_cli() {
-   local omp_bin="$1"
+   local cli_bin="$1"
    local runtime_dir
    runtime_dir="$(mktemp -d "$WORK_DIR/compiled-runtime.XXXXXX")"
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --version
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --help >/dev/null
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" stats --summary >/dev/null
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$cli_bin" --version
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$cli_bin" --help >/dev/null
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$cli_bin" stats --summary >/dev/null
    # Spawns bundled workers and serves the stats dashboard once. Regression
    # probe for #1011/#1027 worker loading and for npm/compiled distributions
    # missing the dashboard assets that `stats --summary` never touches.
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --smoke-test
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$cli_bin" --smoke-test
 }
 
 find_tarball() {
    local pattern="$1"
    local matches=()
-   shopt -s nullglob
-   matches=("$pattern")
-   shopt -u nullglob
+   mapfile -t matches < <(compgen -G "$pattern" || true)
 
    if [ "${#matches[@]}" -ne 1 ]; then
       echo "Expected exactly one tarball matching: $pattern"
@@ -48,7 +73,9 @@ bun --cwd=packages/coding-agent run build
 
 BINARY_DIR="$WORK_DIR/binary-bin"
 mkdir -p "$BINARY_DIR"
-cp packages/coding-agent/dist/omp "$BINARY_DIR/omp"
+cp packages/coding-agent/dist/omh "$BINARY_DIR/omh"
+ln -sfn "$BINARY_DIR/omh" "$BINARY_DIR/omp"
+smoke_cli "$BINARY_DIR/omh"
 smoke_cli "$BINARY_DIR/omp"
 
 section "Source install smoke"
@@ -57,6 +84,7 @@ SOURCE_BUN_HOME="$WORK_DIR/bun-source"
    export BUN_INSTALL="$SOURCE_BUN_HOME"
    export PATH="$BUN_INSTALL/bin:$PATH"
    bun --cwd="$ROOT_DIR/packages/coding-agent" link
+   smoke_cli "$BUN_INSTALL/bin/omh"
    smoke_cli "$BUN_INSTALL/bin/omp"
 )
 
@@ -100,8 +128,30 @@ for pkg in utils wire hashline catalog ai mnemopi snapcompact agent tui stats co
    )
 done
 
+# Swarm extension is now published as a first-class package. Pack it through
+# the same declaration emit + manifest rewrite path used by release publish so
+# the install smoke covers dist/types and its CLI bins.
+swarm_pkg_backup="$WORK_DIR/swarm-extension-package.json.orig"
+swarm_dist_backup="$WORK_DIR/swarm-extension-dist.orig"
+cp "$ROOT_DIR/packages/swarm-extension/package.json" "$swarm_pkg_backup"
+if [ -d "$ROOT_DIR/packages/swarm-extension/dist" ]; then
+   swarm_dist_existed=1
+   cp -R "$ROOT_DIR/packages/swarm-extension/dist" "$swarm_dist_backup"
+fi
+swarm_rc=0
+{
+   bun -e 'import { prepareTypescriptPackage } from "./scripts/ci-release-publish.ts"; await prepareTypescriptPackage("packages/swarm-extension", true);' &&
+      (cd "$ROOT_DIR/packages/swarm-extension" && bun pm pack --destination "$TARBALL_DIR" --quiet >/dev/null)
+} || swarm_rc=$?
+cp "$swarm_pkg_backup" "$ROOT_DIR/packages/swarm-extension/package.json"
+rm -rf "$ROOT_DIR/packages/swarm-extension/dist"
+if [ "$swarm_dist_existed" -eq 1 ] && [ -d "$swarm_dist_backup" ]; then
+   cp -R "$swarm_dist_backup" "$ROOT_DIR/packages/swarm-extension/dist"
+fi
+[ "$swarm_rc" -eq 0 ] || exit "$swarm_rc"
+
 # 4. Pack the coding agent with its *published* manifest: release swaps
-#    `bin.omp` from `src/cli.ts` to the prepack bundle `dist/cli.js`. The repo
+#    CLI bins from `src/cli.ts` to the prepack bundle `dist/cli.js`. The repo
 #    manifest keeps pointing at source so `bun link`/`install.sh --source`
 #    work without a build, so the swap must be reproduced here for the smoke
 #    to exercise the bundled worker-host entry the published package ships.
@@ -116,20 +166,21 @@ agent_rc=0
 cp "$agent_pkg_backup" "$ROOT_DIR/packages/coding-agent/package.json"
 [ "$agent_rc" -eq 0 ] || exit "$agent_rc"
 
-utils_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-utils-*.tgz)"
-wire_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-wire-*.tgz)"
-natives_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-natives-[0-9]*.tgz)"
-natives_leaf_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-natives-"$host_tag"-*.tgz)"
-hashline_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-hashline-*.tgz)"
-catalog_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-catalog-*.tgz)"
-ai_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-ai-*.tgz)"
-mnemopi_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-mnemopi-*.tgz)"
-snapcompact_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-snapcompact-*.tgz)"
-agent_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-agent-core-*.tgz)"
-tui_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-tui-*.tgz)"
-stats_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-omp-stats-*.tgz)"
-coding_agent_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-coding-agent-*.tgz)"
-collab_web_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-collab-web-*.tgz)"
+utils_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-utils-*.tgz")"
+wire_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-wire-*.tgz")"
+natives_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-natives-[0-9]*.tgz")"
+natives_leaf_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-natives-$host_tag-*.tgz")"
+hashline_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-hashline-*.tgz")"
+catalog_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-catalog-*.tgz")"
+ai_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-ai-*.tgz")"
+mnemopi_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-mnemopi-*.tgz")"
+snapcompact_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-snapcompact-*.tgz")"
+agent_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-agent-core-*.tgz")"
+tui_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-tui-*.tgz")"
+stats_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-omp-stats-*.tgz")"
+coding_agent_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-pi-coding-agent-*.tgz")"
+collab_web_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-collab-web-*.tgz")"
+swarm_extension_tgz="$(find_tarball "$TARBALL_DIR/oh-my-pi-swarm-extension-*.tgz")"
 
 TARBALL_APP_DIR="$WORK_DIR/tarball-install"
 mkdir -p "$TARBALL_APP_DIR"
@@ -155,12 +206,13 @@ mkdir -p "$TARBALL_APP_DIR"
 			'@oh-my-pi/pi-tui': '$tui_tgz',
 			'@oh-my-pi/omp-stats': '$stats_tgz',
 			'@oh-my-pi/pi-coding-agent': '$coding_agent_tgz',
-			'@oh-my-pi/collab-web': '$collab_web_tgz'
+			'@oh-my-pi/collab-web': '$collab_web_tgz',
+			'@oh-my-pi/swarm-extension': '$swarm_extension_tgz'
 		};
 		require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
 	"
 
-   bun add "$utils_tgz" "$wire_tgz" "$natives_tgz" "$hashline_tgz" "$catalog_tgz" "$ai_tgz" "$mnemopi_tgz" "$snapcompact_tgz" "$agent_tgz" "$tui_tgz" "$stats_tgz" "$coding_agent_tgz" "$collab_web_tgz"
+   bun add "$utils_tgz" "$wire_tgz" "$natives_tgz" "$hashline_tgz" "$catalog_tgz" "$ai_tgz" "$mnemopi_tgz" "$snapcompact_tgz" "$agent_tgz" "$tui_tgz" "$stats_tgz" "$coding_agent_tgz" "$collab_web_tgz" "$swarm_extension_tgz"
    # The platform leaf must arrive through the core's optionalDependencies +
    # override, not as a direct dependency — assert it landed before smoking so a
    # resolution regression is distinguishable from a runtime loader bug.
@@ -178,6 +230,27 @@ mkdir -p "$TARBALL_APP_DIR"
       echo "Collab web tarball did not install built dist/index.html"
       exit 1
    }
+   [ -f "node_modules/@oh-my-pi/swarm-extension/dist/types/extension.d.ts" ] || {
+      echo "Swarm extension tarball did not install dist/types/extension.d.ts"
+      exit 1
+   }
+   swarm_help="$(./node_modules/.bin/omh-swarm 2>&1 || true)"
+   case "$swarm_help" in
+      *"Usage: omh-swarm <path-to-yaml>"*) ;;
+      *)
+         echo "Unexpected omh-swarm help output: $swarm_help"
+         exit 1
+         ;;
+   esac
+   swarm_compat_help="$(./node_modules/.bin/omp-swarm 2>&1 || true)"
+   case "$swarm_compat_help" in
+      *"Usage: omp-swarm <path-to-yaml>"*) ;;
+      *)
+         echo "Unexpected omp-swarm help output: $swarm_compat_help"
+         exit 1
+         ;;
+   esac
+   smoke_cli ./node_modules/.bin/omh
    smoke_cli ./node_modules/.bin/omp
 )
 

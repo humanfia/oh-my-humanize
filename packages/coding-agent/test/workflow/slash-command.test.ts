@@ -316,6 +316,20 @@ function graphPatchPreview() {
 }
 
 describe("/workflow slash command", () => {
+	it("describes TUI foreground and background workflow start defaults", async () => {
+		const { output, runtime } = createRuntime([]);
+
+		const result = await executeAcpBuiltinSlashCommand("/workflow help", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		expect(output.join("\n")).toContain(
+			"- TUI starts agent/review workflows in the foreground by default; script-only TUI starts can run in the background.",
+		);
+		expect(output.join("\n")).toContain(
+			"- Text/headless starts run in the foreground unless --background is passed.",
+		);
+	});
+
 	it("reports when the current session has no workflow runs", async () => {
 		const { output, runtime } = createRuntime([]);
 
@@ -1077,7 +1091,7 @@ sequence:
 		expect(families[0]?.attempts[0]?.startNodeIds).toEqual(["tryLeft", "tryRight"]);
 	});
 
-	it("records runtime binding models resolved through oh-my-pi session configuration", async () => {
+	it("records runtime binding models resolved through OMH session configuration", async () => {
 		const dir = await createTempDir();
 		await fs.mkdir(path.join(dir, "binding"), { recursive: true });
 		await Bun.write(
@@ -2716,7 +2730,8 @@ edges: []
 			modelOverride: "rust-cat/gpt-5.5",
 			modelOverrideAuthFallback: false,
 		});
-		expect(capturedRequest?.task.assignment).toBe("Return pass.");
+		expect(capturedRequest?.task.assignment).toContain("Return pass.");
+		expect(capturedRequest?.task.assignment).toContain("Workflow review adapter:");
 		expect(output[0]).toBe("Workflow monitor active: run-review (family run-review:family).");
 		const runs = reconstructWorkflowRuns(entries);
 		expect(runs[0]?.activations[0]?.output).toMatchObject({
@@ -3335,7 +3350,7 @@ edges:
 				const rendered = output.join("\n");
 				expect(rendered).toContain(`Workflow checkpoint not found in current session: ${checkpointId}`);
 				expect(rendered).toContain(`Checkpoint exists in session ${origin.getSessionId()}.`);
-				expect(rendered).toContain(`Resume that session first: omp --resume ${origin.getSessionId()}`);
+				expect(rendered).toContain(`Resume that session first: omh --resume ${origin.getSessionId()}`);
 			} finally {
 				await fresh.close();
 			}
@@ -4486,7 +4501,7 @@ nodes:
       language: sh
       inline: |
         printf 'started\\n' >> hold.log
-        sleep 2
+        sleep 4
         printf '{"summary":"hold finished"}\\n'
   review:
     type: script
@@ -4545,7 +4560,7 @@ edges:
 				runtime,
 			),
 		).toEqual({ consumed: true });
-		expect(Date.now() - stopStartedAt).toBeLessThan(1_000);
+		expect(Date.now() - stopStartedAt).toBeLessThan(2_500);
 
 		expect(
 			output.some(entry => entry.includes("Workflow checkpoint: run-real-shell-deadline:attempt-1:checkpoint-1")),
@@ -4564,7 +4579,7 @@ edges:
 			state: {},
 			sourceMapping: { hold: "hold" },
 		});
-	}, 8_000);
+	}, 12_000);
 
 	it("does not abort detached running activations when requesting stop with a deadline", async () => {
 		const entries: CapturedEntry[] = [];

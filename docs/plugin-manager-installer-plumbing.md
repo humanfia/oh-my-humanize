@@ -1,6 +1,6 @@
 # Plugin manager and installer plumbing
 
-This document describes how `omp plugin` npm/git/link operations mutate plugin state on disk and how installed npm/git/link plugins become runtime capabilities (tools and extensions today, hooks/commands path resolution available). Marketplace installs use separate marketplace registries and cache plumbing; see `docs/marketplace.md`.
+This document describes how `omh plugin` npm/git/link operations mutate plugin state on disk and how installed npm/git/link plugins become runtime capabilities (tools and extensions today, hooks/commands path resolution available). Marketplace installs use separate marketplace registries and cache plumbing; see `docs/marketplace.md`.
 
 ## Scope and architecture
 
@@ -9,14 +9,14 @@ There are two plugin-management implementations in the codebase:
 1. **Active path used by CLI commands**: `PluginManager` (`src/extensibility/plugins/manager.ts`)
 2. **Legacy helper module**: installer functions (`src/extensibility/plugins/installer.ts`)
 
-`omp plugin` npm/git/link actions go through `PluginManager`; marketplace actions go through `MarketplaceManager`. `install` classifies each target (`classifyInstallTarget` in `cli/classify-install-target.ts`): `name@marketplace` routes to the marketplace manager, local paths route to `PluginManager.link()`, git and npm specs to `PluginManager.install()`.
+`omh plugin` npm/git/link actions go through `PluginManager`; marketplace actions go through `MarketplaceManager`. `install` classifies each target (`classifyInstallTarget` in `cli/classify-install-target.ts`): `name@marketplace` routes to the marketplace manager, local paths route to `PluginManager.link()`, git and npm specs to `PluginManager.install()`.
 
 `installer.ts` still documents important safety checks and filesystem behavior, but it is not the path used by `src/commands/plugin.ts` + `src/cli/plugin-cli.ts`.
 
 ## Lifecycle: from CLI invocation to runtime availability
 
 ```text
-omp plugin <npm/link action> ...
+omh plugin <npm/link action> ...
   -> src/commands/plugin.ts
   -> runPluginCommand(...) in src/cli/plugin-cli.ts
   -> PluginManager method (install/list/uninstall/link/...)
@@ -25,7 +25,7 @@ omp plugin <npm/link action> ...
   -> getAllPluginToolPaths(cwd) / getAllPluginExtensionPaths(cwd)
   -> custom tool loader imports tool modules; extension loader imports extension modules
 
-omp plugin install name@marketplace / omp install name@marketplace
+omh plugin install name@marketplace / omh install name@marketplace
   -> MarketplaceManager
   -> mutate ~/.omp/marketplaces.json, ~/.omp/plugins/installed_plugins.json, cache dirs
   -> installed marketplace plugin cache is surfaced as plugin roots/capabilities
@@ -115,7 +115,7 @@ Malformed `package.json` JSON is a hard failure at read time; malformed manifest
 
 Because update is install-driven:
 
-- `omp plugin install pkg@newVersion` updates dependency and lockfile version.
+- `omh plugin install pkg@newVersion` updates dependency and lockfile version.
 - Existing settings are preserved; state entry is overwritten for version/features/enabled.
 - No separate “check updates” or transactional migration logic exists.
 

@@ -640,7 +640,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: dict[str, Any] = Body(...),
         x_robomp_token: str | None = Header(None, alias="X-Robomp-Replay-Token"),
     ) -> JSONResponse:
-        """Stop a running event. The omp subprocess is killed; the row lands in
+        """Stop a running event. The OMH subprocess is killed; the row lands in
         `failed` with `cancelled by operator` as the error.
         """
         bag = request.app.state.bag
@@ -656,7 +656,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if event is None:
             raise HTTPException(404, f"unknown delivery {delivery_id}")
         if event.state != "running":
-            raise HTTPException(409, f"delivery {delivery_id} is {event.state}; only running deliveries can be cancelled")
+            raise HTTPException(
+                409, f"delivery {delivery_id} is {event.state}; only running deliveries can be cancelled"
+            )
 
         pool: WorkerPool = bag["pool"]
         fired = await pool.cancel_event(delivery_id)

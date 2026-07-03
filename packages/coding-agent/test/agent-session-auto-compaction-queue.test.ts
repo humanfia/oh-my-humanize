@@ -671,7 +671,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 	});
 
 	it("resolves a pending retry before active-goal compaction continuation returns", async () => {
-		// Codex review on #3175: a retry can succeed with a non-empty text stop
+		// Regression from #3175 review: a retry can succeed with a non-empty text stop
 		// that is already over the active-goal compaction threshold. If the
 		// compaction pre-empt schedules its own continuation before the normal
 		// bottom-of-handler `#resolveRetry()` call runs, the session stays
@@ -758,7 +758,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		};
 		session.agent.emitExternalEvent({ type: "message_end", message: recoveredOverThreshold });
 		await withTimeout(retryEnded, 1000, "Retry end timed out");
-		expect(session.isRetrying).toBe(true);
+		expect(session.isRetrying).toBe(false);
 
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [recoveredOverThreshold] });
 

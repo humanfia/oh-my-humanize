@@ -9,6 +9,7 @@ from robomp.config import Settings, reset_settings_cache
 def test_settings_load_from_env(env: dict[str, str]) -> None:
     cfg = Settings()  # type: ignore[call-arg]
     assert cfg.bot_login == "robomp-bot"
+    assert cfg.omp_command == "omh"
     assert cfg.repo_allowlist == frozenset({"octo/widget"})
     assert cfg.allows("octo/widget")
     assert cfg.allows("Octo/Widget")
@@ -113,9 +114,7 @@ def test_bot_login_normalizes_mention_case_and_app_suffix(
     assert cfg.bot_login == "roboomp"
 
 
-def test_maintainer_logins_normalize_csv_entries(
-    monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
-) -> None:
+def test_maintainer_logins_normalize_csv_entries(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
     monkeypatch.setenv("ROBOMP_MAINTAINER_LOGINS", " can1357, @ROBOOMP , @Alice[bot] ,, ")
     reset_settings_cache()
     cfg = Settings()  # type: ignore[call-arg]

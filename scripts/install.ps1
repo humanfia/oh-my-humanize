@@ -209,13 +209,74 @@ function Install-Bun {
     Assert-BunVersion $MinimumBunVersion
 }
 
+function Normalize-PathEntry {
+    param([string]$Value)
+
+    $expanded = [Environment]::ExpandEnvironmentVariables($Value)
+    try {
+        $full = [System.IO.Path]::GetFullPath($expanded)
+    } catch {
+        $full = $expanded
+    }
+
+    return $full.TrimEnd([char]0x5c, [char]0x2f)
+}
+
+function Test-PathContainsDirectory {
+    param(
+        [string]$PathValue,
+        [string]$Directory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return $false
+    }
+
+    $target = Normalize-PathEntry $Directory
+    foreach ($entry in ($PathValue -split ";")) {
+        if ([string]::IsNullOrWhiteSpace($entry)) {
+            continue
+        }
+        if ((Normalize-PathEntry $entry) -ieq $target) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Add-InstallDirToCurrentPath {
+    if (-not (Test-PathContainsDirectory $env:Path $InstallDir)) {
+        $env:Path = "$InstallDir;$env:Path"
+    }
+}
+
+function Add-InstallDirToUserPath {
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (Test-PathContainsDirectory $UserPath $InstallDir) {
+        Add-InstallDirToCurrentPath
+        return $false
+    }
+
+    Write-Host "Adding $InstallDir to PATH..."
+    $NewUserPath = if ([string]::IsNullOrWhiteSpace($UserPath)) { $InstallDir } else { "$UserPath;$InstallDir" }
+    [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
+    Add-InstallDirToCurrentPath
+    return $true
+}
+
 function Show-OmhPathHint {
+    param([bool]$PathChanged = $false)
+
     try {
         $command = Get-Command omh -ErrorAction Stop
         Write-Host "Run 'omh' to get started: $($command.Source)"
     } catch {
         Write-Host "Installed omh, but it is not on PATH yet." -ForegroundColor Yellow
-        Write-Host "Add Bun's global bin to PATH, then run omh." -ForegroundColor Yellow
+        if ($PathChanged) {
+            Write-Host "Restart your terminal, then run omh." -ForegroundColor Yellow
+        } else {
+            Write-Host "Add $InstallDir to PATH, then run omh." -ForegroundColor Yellow
+        }
     }
 }
 
@@ -303,9 +364,11 @@ function Install-ViaBun {
     Write-Host "Source: $targetSourceDir"
     Write-Host "Launcher: $(Join-Path $InstallDir "omh.cmd")"
 
+    $pathChanged = Add-InstallDirToUserPath
+
     Configure-BashShell
 
-    Show-OmhPathHint
+    Show-OmhPathHint $pathChanged
 }
 
 function Install-Binary {
@@ -340,13 +403,7 @@ function Install-Binary {
     Write-Host ""
     Write-Host "✓ Installed omh to $OutPath" -ForegroundColor Green
 
-    # Add to PATH if not already there
-    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $needsRestart = $UserPath -notlike "*$InstallDir*"
-    if ($needsRestart) {
-        Write-Host "Adding $InstallDir to PATH..."
-        [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
-    }
+    $needsRestart = Add-InstallDirToUserPath
 
     Configure-BashShell
 

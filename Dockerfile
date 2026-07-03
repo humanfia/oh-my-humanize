@@ -1,24 +1,24 @@
 # syntax=docker/dockerfile:1.7-labs
 ###############################################################################
-# oh-my-pi — pi image
+# oh-my-humanize — omh image
 #
 # Stages:
 #   natives-builder — Rust + Bun → pi_natives.linux-<arch>.node
 #   wheel-builder   — omp_rpc Python wheel
 #   pi-base         — python + bun + rustup launcher + natives + omp_rpc
-#                     + /usr/local/bin/omp shim
+#                     + /usr/local/bin/omh shim
 #   pi-runtime      — pi-base + pi source + bun install      (DEFAULT, runnable)
 #
 # Build:
-#     docker build -t oh-my-pi/pi:dev .                          # default = pi-runtime
-#     docker build --target pi-base -t oh-my-pi/pi-base:dev .    # base for derived images
+#     docker build -t oh-my-humanize/omh:dev .                       # default = pi-runtime
+#     docker build --target pi-base -t oh-my-humanize/omh-base:dev . # base for derived images
 #
 # Run:
-#     docker run --rm oh-my-pi/pi:dev --help
-#     docker run --rm -it -v "$PWD":/work oh-my-pi/pi:dev cli    # interactive omp
+#     docker run --rm oh-my-humanize/omh:dev --help
+#     docker run --rm -it -v "$PWD":/work oh-my-humanize/omh:dev cli # interactive omh
 #
 # Consume as a base in another Dockerfile (see Dockerfile.robomp):
-#     ARG PI_BASE=oh-my-pi/pi:dev
+#     ARG PI_BASE=oh-my-humanize/omh:dev
 #     FROM ${PI_BASE} AS pi-base
 ###############################################################################
 
@@ -59,7 +59,7 @@ COPY --parents \
     /pi/
 
 # Layer 2 — hydrate node_modules from the manifests above.
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN bun install --filter @oh-my-pi/pi-natives --frozen-lockfile --ignore-scripts
 
 # Layer 3 — full source. `Dockerfile.dockerignore` keeps target/, node_modules/,
 # dist/, runs/, editor noise, etc. out of the context. node_modules from Layer 2
@@ -94,11 +94,11 @@ COPY python/omp-rpc /src
 RUN python -m build --wheel --outdir /out
 
 ############################
-# 3) pi-base — python + bun + rustup + natives + omp_rpc + omp shim
+# 3) pi-base — python + bun + rustup + natives + omp_rpc + omh shim
 #
 # Sharable runtime base. Derived images (pi-runtime below, Dockerfile.robomp)
 # extend this and overlay their own source tree. Default PI_ROOT=/work/pi is
-# friendly to derived images that mount a host pi checkout there; pi-runtime
+# friendly to derived images that mount a host OMH source checkout there; pi-runtime
 # overrides it to /pi because its source is baked in.
 ############################
 FROM python:3.12-slim-bookworm AS pi-base
@@ -141,24 +141,25 @@ COPY --from=natives-builder /out/pi_natives.linux-*.node /opt/bun/bin/
 COPY --from=wheel-builder /out/*.whl /tmp/wheels/
 RUN pip install /tmp/wheels/omp_rpc-*.whl && rm -rf /tmp/wheels
 
-# `omp` shim — runs the coding-agent CLI against $PI_ROOT via Bun. Derived
-# images override PI_ROOT to point at wherever their pi source lives.
+# `omh` shim — runs the coding-agent CLI against $PI_ROOT via Bun. Derived
+# images override PI_ROOT to point at wherever their OMH source lives.
 RUN printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     ': "${PI_ROOT:=/work/pi}"' \
     'if [ ! -d "$PI_ROOT/packages/coding-agent" ]; then' \
-    '  echo "pi: PI_ROOT=$PI_ROOT does not look like a pi checkout" >&2' \
+    '  echo "omh: PI_ROOT=$PI_ROOT does not look like an OMH source checkout" >&2' \
     '  exit 127' \
     'fi' \
     'exec bun "$PI_ROOT/packages/coding-agent/src/cli.ts" "$@"' \
-    > /usr/local/bin/omp \
-    && chmod +x /usr/local/bin/omp
+    > /usr/local/bin/omh \
+    && chmod +x /usr/local/bin/omh \
+    && ln -sfn /usr/local/bin/omh /usr/local/bin/omp
 
 ############################
 # 4) pi-runtime — pi-base + pi source + bun install (DEFAULT)
 #
-# A self-contained, runnable omp image. `docker run oh-my-pi/pi:dev --help`
+# A self-contained, runnable omh image. `docker run oh-my-humanize/omh:dev --help`
 # Just Works without a host checkout.
 ############################
 FROM pi-base AS pi-runtime
@@ -177,7 +178,7 @@ COPY --parents \
     python/robomp/web/package.json \
     /pi/
 
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN bun install --filter @oh-my-pi/pi-coding-agent --production --omit optional --frozen-lockfile --ignore-scripts
 
 # Pi source. `Dockerfile.dockerignore` keeps **/node_modules out of the context
 # so stale isolated-linker symlinks from a host install can't shadow the
@@ -188,5 +189,5 @@ COPY . /pi/
 # package.json's `prepare` script normally handles this on a vanilla install.
 RUN bun --cwd=packages/coding-agent run gen:docs
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/omp"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/omh"]
 CMD ["--help"]

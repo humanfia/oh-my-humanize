@@ -16,23 +16,6 @@ async function getUiTheme() {
 	return theme!;
 }
 
-async function waitForRenderedText(
-	component: ToolExecutionComponent,
-	width: number,
-	expectedText: string,
-): Promise<string> {
-	const deadline = Date.now() + 1_000;
-	let rendered = "";
-	while (Date.now() < deadline) {
-		rendered = Bun.stripANSI(component.render(width).join("\n"));
-		if (rendered.includes(expectedText)) {
-			return rendered;
-		}
-		await Bun.sleep(10);
-	}
-	return rendered;
-}
-
 beforeEach(async () => {
 	await Settings.init({ inMemory: true, cwd: process.cwd() });
 });
@@ -145,7 +128,8 @@ describe("apply_patch rendering", () => {
 			expect(before).not.toContain("(preview)");
 
 			component.setArgsComplete();
-			const after = await waitForRenderedText(component, 160, "(preview)");
+			await component.whenPreviewSettled();
+			const after = Bun.stripANSI(component.render(160).join("\n"));
 			expect(after).toContain("(preview)");
 			expect(after).toContain("const value = 2;");
 		} finally {

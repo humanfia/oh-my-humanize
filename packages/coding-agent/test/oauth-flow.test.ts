@@ -61,7 +61,7 @@ async function completeLocalOAuthCallback(url: string): Promise<void> {
 }
 
 describe("mcp oauth flow", () => {
-	it("uses oh-my-pi client name for dynamic client registration", async () => {
+	it("uses oh-my-humanize client name for dynamic client registration", async () => {
 		let registrationPayload: Record<string, unknown> | null = null;
 
 		const flow = new MCPOAuthFlow(
@@ -79,7 +79,7 @@ describe("mcp oauth flow", () => {
 		const authUrl = new URL(url);
 
 		expect(registrationPayload).not.toBeNull();
-		expect((registrationPayload as { client_name?: string } | null)?.client_name).toBe("oh-my-pi");
+		expect((registrationPayload as { client_name?: string } | null)?.client_name).toBe("oh-my-humanize");
 		expect(authUrl.searchParams.get("client_id")).toBe("registered-client-id");
 		expect(authUrl.searchParams.get("state")).toBe("test-state");
 	});
