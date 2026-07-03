@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Claude Code subscription OAuth login consuming a pasted authorization code as an agent message; pending paste-code logins now capture the next non-command editor submission directly.
+
 ## [16.3.4] - 2026-07-03
 
 ### Fixed
