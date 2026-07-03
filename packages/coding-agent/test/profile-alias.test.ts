@@ -246,9 +246,9 @@ describe("profile alias installer", () => {
 				"/home/me/.zshrc",
 				[
 					"before",
-					"# >>> omp profile alias: omp-work >>>",
-					"alias omp-work='command omp --profile=old'",
-					"# <<< omp profile alias: omp-work <<<",
+					"# >>> omh profile alias: omp-work >>>",
+					"alias omp-work='command omh --profile=old'",
+					"# <<< omh profile alias: omp-work <<<",
 					"after",
 				].join("\n"),
 			],
@@ -278,7 +278,7 @@ describe("profile alias installer", () => {
 		// was interrupted or hand-edited. Appending a fresh block would let the
 		// *next* install splice from the stale start through the new end, deleting
 		// the user config in between. Refuse and preserve the file untouched.
-		const original = ["# >>> omp profile alias: omp-work >>>", "omp-work() {", "export SECRET=keepme"].join("\n");
+		const original = ["# >>> omh profile alias: omp-work >>>", "omp-work() {", "export SECRET=keepme"].join("\n");
 		const files = new Map<string, string>([["/home/me/.zshrc", original]]);
 		let wrote = false;
 

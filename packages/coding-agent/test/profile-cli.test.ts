@@ -135,7 +135,7 @@ describe("global --profile flag", () => {
 			configPath: "/home/me/.bashrc",
 			aliasName: "omp-work",
 			profile: "work",
-			command: "omp --profile=work",
+			command: "omh --profile=work",
 			reloadedWith: ". '/home/me/.bashrc'",
 		});
 		const outSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -160,7 +160,7 @@ describe("global --profile flag", () => {
 			configPath: "/home/me/.bashrc",
 			aliasName: "omp-work",
 			profile: "work",
-			command: "omp --profile=work",
+			command: "omh --profile=work",
 			reloadedWith: ". '/home/me/.bashrc'",
 		});
 		const outSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -185,7 +185,7 @@ describe("global --profile flag", () => {
 			configPath: "/home/me/.bashrc",
 			aliasName: "omp-work",
 			profile: "work",
-			command: "omp --profile=work",
+			command: "omh --profile=work",
 			reloadedWith: ". '/home/me/.bashrc'",
 		});
 		const outSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);

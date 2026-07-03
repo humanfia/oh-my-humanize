@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, getConfigDirName, getPythonGatewayDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
+import { APP_NAME, getAgentDir, getConfigDirName, getPythonGatewayDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
 
 describe("python gateway directory", () => {
@@ -39,19 +39,18 @@ describe("python gateway directory", () => {
 
 		process.env.PI_CONFIG_DIR = `.omp-test-${Snowflake.next()}`;
 		process.env.XDG_STATE_HOME = path.join(tempRoot, "state");
-		await fs.mkdir(path.join(process.env.XDG_STATE_HOME, "omp"), { recursive: true });
-
+		await fs.mkdir(path.join(process.env.XDG_STATE_HOME, APP_NAME), { recursive: true });
 		const defaultAgentDir = path.join(os.homedir(), getConfigDirName(), "agent");
 		setAgentDir(defaultAgentDir);
 
-		expect(getPythonGatewayDir()).toBe(path.join(process.env.XDG_STATE_HOME, "omp", "python-gateway"));
+		expect(getPythonGatewayDir()).toBe(path.join(process.env.XDG_STATE_HOME, APP_NAME, "python-gateway"));
 	});
 
 	it("keeps custom agent profiles isolated from XDG shared state", async () => {
 		if (process.platform === "win32") return;
 
 		process.env.XDG_STATE_HOME = path.join(tempRoot, "state");
-		await fs.mkdir(path.join(process.env.XDG_STATE_HOME, "omp"), { recursive: true });
+		await fs.mkdir(path.join(process.env.XDG_STATE_HOME, APP_NAME), { recursive: true });
 		const customAgentDir = path.join(tempRoot, "custom-agent");
 
 		setAgentDir(customAgentDir);

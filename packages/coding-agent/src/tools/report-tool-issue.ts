@@ -23,6 +23,7 @@ import { Database } from "bun:sqlite";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import { $env, $flag, getAutoQaDbDir, getInstallId, logger, VERSION } from "@oh-my-pi/pi-utils";
+import { APP_NAME } from "@oh-my-pi/pi-utils/dirs";
 import { type } from "arktype";
 import type { Settings } from "..";
 import type { ToolSession } from "./index";
@@ -353,7 +354,7 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 		if (rows.length === 0) return { pushed: totalPushed, ok: true };
 
 		const body = JSON.stringify({
-			agent: { name: "omp", version: VERSION },
+			agent: { name: APP_NAME, version: VERSION },
 			installId: getInstallId(),
 			// Coarse host fingerprint for triage — `darwin`/`linux`/`win32` +
 			// `arm64`/`x64`. Useful for "is this bug arch-specific?" without
