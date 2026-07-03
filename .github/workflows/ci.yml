@@ -57,7 +57,7 @@ jobs:
    # ref (or from a tagged main HEAD) is also treated as a release.
    release_metadata:
       name: Resolve release metadata
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       outputs:
          is-release: ${{ steps.detect.outputs.is-release }}
          release-tag: ${{ steps.detect.outputs.release-tag }}
@@ -109,7 +109,7 @@ jobs:
    # retention window (see build-native action) is the effective TTL.
    native_artifact_lookup:
       name: Look up cached native artifacts
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       outputs:
          source-hash: ${{ steps.compute.outputs.source-hash }}
          linux-x64-run-id: ${{ steps.find.outputs.linux-x64-run-id }}
@@ -200,7 +200,7 @@ jobs:
    # Fast lint, type check, and browser bundle build (no Rust, no native build needed)
    check:
       name: Lint, type check & web build
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
@@ -216,7 +216,7 @@ jobs:
       name: "Native: Linux x64 (${{ matrix.variant }})"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-release == 'true' || needs.native_artifact_lookup.outputs.linux-x64-run-id == '' }}
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       strategy:
          fail-fast: false
          matrix:
@@ -248,7 +248,7 @@ jobs:
             include:
                - { os: omp-kata, platform: linux, arch: arm64, target: aarch64-unknown-linux-gnu }
                - { os: omp-kata, platform: win32, arch: x64, target: x86_64-pc-windows-msvc, variant: baseline }
-      runs-on: ${{ matrix.os }}
+      runs-on: ${{ github.repository == 'can1357/oh-my-pi' && matrix.os || 'ubuntu-22.04' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/build-native
@@ -284,7 +284,7 @@ jobs:
               save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
    test_workspace:
       name: Test TS workspace fast
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       needs: [native_linux_x64, native_artifact_lookup]
       if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 20
@@ -314,7 +314,7 @@ jobs:
 
    test_coding_agent_singleton:
       name: Test coding-agent singleton/global-state (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       needs: [native_linux_x64, native_artifact_lookup]
       if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 20
@@ -346,7 +346,7 @@ jobs:
 
    test_ts_native:
       name: Test TS native/integration packages
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       needs: [native_linux_x64, native_artifact_lookup]
       if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
@@ -377,7 +377,7 @@ jobs:
 
    test_coding_agent_ui:
       name: Test coding-agent UI/TUI (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       needs: [native_linux_x64, native_artifact_lookup]
       if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
@@ -408,7 +408,7 @@ jobs:
 
    test_coding_agent_runtime:
       name: Test coding-agent runtime/session (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       needs: [native_linux_x64, native_artifact_lookup]
       if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
@@ -440,7 +440,7 @@ jobs:
 
    test_coding_agent_native:
       name: Test coding-agent native/unit (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       needs: [native_linux_x64, native_artifact_lookup]
       if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 25
@@ -471,7 +471,7 @@ jobs:
 
    test_smoke:
       name: Test CLI smoke (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       needs: [native_linux_x64, native_artifact_lookup]
       if: ${{ !cancelled() && needs.native_linux_x64.result != 'failure' }}
       timeout-minutes: 15
@@ -502,7 +502,7 @@ jobs:
 
    install_methods:
       name: Install method smoke tests
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
+      runs-on: ${{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/ensure-rust-toolchain

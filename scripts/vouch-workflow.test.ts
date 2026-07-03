@@ -41,6 +41,10 @@ function asString(value: unknown, label: string): string {
 	return value;
 }
 
+function githubExpression(expression: string): string {
+	return `$${expression}`;
+}
+
 async function parseWorkflow(file: string): Promise<JsonObject> {
 	return asObject(Bun.YAML.parse(await Bun.file(file).text()), file);
 }
@@ -406,6 +410,38 @@ exit 2
 		const types = asArray(pullRequest.types, "on.pull_request.types");
 
 		expect(types).toEqual(["opened", "reopened", "synchronize", "ready_for_review"]);
+	});
+
+	it("keeps fork main CI off unavailable self-hosted runners", async () => {
+		const workflow = await parseWorkflow(ciWorkflowPath);
+		const jobs = asObject(workflow.jobs, "jobs");
+		const upstreamOnlyRunner = githubExpression(
+			"{{ github.event_name != 'pull_request' && github.repository == 'can1357/oh-my-pi' && 'omp-kata' || 'ubuntu-22.04' }}",
+		);
+		const sharedJobs = [
+			"release_metadata",
+			"native_artifact_lookup",
+			"check",
+			"native_linux_x64",
+			"test_workspace",
+			"test_coding_agent_singleton",
+			"test_ts_native",
+			"test_coding_agent_ui",
+			"test_coding_agent_runtime",
+			"test_coding_agent_native",
+			"test_smoke",
+			"install_methods",
+		];
+
+		for (const jobName of sharedJobs) {
+			const job = asObject(jobs[jobName], `jobs.${jobName}`);
+			expect(asString(job["runs-on"], `${jobName}.runs-on`)).toBe(upstreamOnlyRunner);
+		}
+
+		const kataJob = asObject(jobs.native_cross_platform_kata, "jobs.native_cross_platform_kata");
+		expect(asString(kataJob["runs-on"], "native_cross_platform_kata.runs-on")).toBe(
+			githubExpression("{{ github.repository == 'can1357/oh-my-pi' && matrix.os || 'ubuntu-22.04' }}"),
+		);
 	});
 
 	it("supports workflow dispatch rechecks after discussion vouches", async () => {
