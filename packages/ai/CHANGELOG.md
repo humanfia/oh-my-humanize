@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [16.3.4] - 2026-07-03
+
+### Added
+
+- Added support for Baseten as an AI provider
+
+### Changed
+
+- Improved Claude usage reliability by removing proactive hard-blocking for Fable and Mythos tiers
+
+### Fixed
+
+- Fixed Anthropic OAuth account rotation to exclude unreliable model-scoped Fable/Mythos weekly caps from proactive hard-blocking, ensuring they act only as ranking priority hints while still allowing reactive 429-fallback to rotate and reach serviceable siblings.
+
 ## [16.3.3] - 2026-07-02
 
 ### Added
