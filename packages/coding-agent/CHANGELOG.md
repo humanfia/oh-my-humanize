@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed Claude Code subscription OAuth login consuming a pasted authorization code as an agent message; pending paste-code logins now capture the next non-command editor submission directly.
+- Fixed Claude Console API-key credentials retaining their Console request profile through model resolution, retries, and Anthropic web-search calls.
 
 ## [16.3.4] - 2026-07-03
 

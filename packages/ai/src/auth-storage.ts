@@ -11,7 +11,7 @@ import { Database, type Statement } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
-import type { ApiKeyResolver } from "./auth-retry";
+import type { ApiKeyRequestProfile, ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
 import { getProviderDefinition, PASTE_CODE_LOGIN_PROVIDERS } from "./registry";
@@ -60,6 +60,7 @@ const USAGE_RANKING_METRIC_EPSILON = 1e-9;
 export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
+	apiKeyRequestProfile?: ApiKeyRequestProfile;
 };
 
 export type OAuthCredential = {
@@ -77,6 +78,12 @@ export type AuthStorageData = Record<string, AuthCredentialEntry>;
  * first — mirrors {@link AuthStorage.getApiKey}'s resolution order.
  */
 export type CredentialOriginKind = "runtime" | "config" | "oauth" | "api_key" | "env" | "fallback";
+
+/** API key and request metadata selected by one credential-resolution pass. */
+export interface ResolvedApiKey {
+	apiKey: string;
+	apiKeyRequestProfile?: ApiKeyRequestProfile;
+}
 
 /**
  * Structured provenance for a provider's auth, for UI that needs a machine
@@ -287,15 +294,47 @@ export interface AuthCredentialSnapshot {
  *   a remote broker; mutating methods (`replace*`, `upsert*`, `delete*ForProvider`)
  *   throw because login flows route through the broker, not the client.
  */
+/** Atomic outcome for a legacy-v1 upsert guarded against profiled API-key rows. */
+export type GuardedCredentialUpsertResult =
+	| { ok: true; credentials: StoredAuthCredential[] }
+	| { ok: false; reason: "profiled_credentials_present" };
+
 export interface AuthCredentialStore {
 	close(): void;
 	listAuthCredentials(provider?: string): StoredAuthCredential[];
 	updateAuthCredential(id: number, credential: AuthCredential): void;
 	deleteAuthCredential(id: number, disabledCause: string): void;
 	tryDisableAuthCredentialIfMatches(id: number, expectedData: string, disabledCause: string): boolean;
+	/**
+	 * Optional CAS update used when persistence can be changed by another process.
+	 * The update must affect the active row only when its serialized data still
+	 * equals `expectedData`.
+	 */
+	tryUpdateAuthCredentialIfMatches?(
+		id: number,
+		provider: string,
+		expectedData: string,
+		credential: AuthCredential,
+	): boolean;
 	replaceAuthCredentialsForProvider(provider: string, credentials: AuthCredential[]): StoredAuthCredential[];
 	upsertAuthCredentialForProvider(provider: string, credential: AuthCredential): StoredAuthCredential[];
+	/**
+	 * Optional atomic legacy-v1 write. Implementations must check that the
+	 * provider has no active profiled API-key row and perform the upsert in the
+	 * same transaction.
+	 */
+	upsertAuthCredentialForProviderIfUnprofiled?(
+		provider: string,
+		credential: AuthCredential,
+	): GuardedCredentialUpsertResult;
 	deleteAuthCredentialsForProvider(provider: string, disabledCause: string): void;
+	/**
+	 * Optional capability preflight for logins that will persist a profiled API
+	 * key. Called before the provider login starts so stores that cannot preserve
+	 * the profile can reject without triggering browser, OAuth, or key-creation
+	 * side effects.
+	 */
+	preflightApiKeyRequestProfile?(profile: ApiKeyRequestProfile): void | Promise<void>;
 	getCache(key: string, options?: { includeExpired?: boolean }): string | null;
 	setCache(key: string, value: string, expiresAtSec: number): void;
 	cleanExpiredCache(): void;
@@ -830,7 +869,9 @@ function raceCredentialRefreshWithSignal<T>(
 function authCredentialEquals(left: AuthCredential, right: AuthCredential): boolean {
 	if (left.type !== right.type) return false;
 	if (left.type === "api_key") {
-		return right.type === "api_key" && left.key === right.key;
+		return (
+			right.type === "api_key" && left.key === right.key && left.apiKeyRequestProfile === right.apiKeyRequestProfile
+		);
 	}
 	if (right.type !== "oauth") return false;
 	return (
@@ -1526,18 +1567,49 @@ export class AuthStorage {
 		return true;
 	}
 
-	/**
-	 * Persist a refreshed credential addressed by id, not a positional index.
-	 * A concurrent disable can reorder/shrink the provider's row array while an
-	 * async refresh is in flight, so a pre-await index is unsafe; resolving the
-	 * row by id at write time lands the rotated token on the correct row. Returns
-	 * the row's current index, or -1 when it was disabled/removed mid-refresh.
-	 */
+	/** Persist a credential by stable row id for non-broker refresh paths. */
 	#replaceCredentialById(provider: string, id: number, credential: AuthCredential): number {
 		const entries = this.#getStoredCredentials(provider);
 		const index = entries.findIndex(entry => entry.id === id);
 		if (index === -1) return -1;
 		this.#store.updateAuthCredential(id, credential);
+		const updated = [...entries];
+		updated[index] = { id, credential };
+		this.#setStoredCredentials(provider, updated);
+		return index;
+	}
+
+	/**
+	 * CAS-persist a refreshed credential addressed by id. The expected value is
+	 * the exact OAuth credential captured before the network refresh, so a peer
+	 * replacement cannot be overwritten when the await completes.
+	 */
+	#replaceCredentialByIdIfMatches(
+		provider: string,
+		id: number,
+		expectedCredential: AuthCredential,
+		credential: AuthCredential,
+	): number {
+		const entries = this.#getStoredCredentials(provider);
+		const index = entries.findIndex(entry => entry.id === id);
+		if (index === -1) return -1;
+		const expected = serializeCredential(provider, expectedCredential);
+		if (!expected) return -1;
+
+		let replaced: boolean;
+		if (this.#store.tryUpdateAuthCredentialIfMatches) {
+			replaced = this.#store.tryUpdateAuthCredentialIfMatches(id, provider, expected.data, credential);
+		} else {
+			// Custom stores cannot promise cross-process isolation. Conservatively
+			// re-read immediately before their legacy update and only write an exact
+			// match; SQLite always takes the atomic capability above.
+			const persisted = this.#store.listAuthCredentials(provider).find(entry => entry.id === id);
+			const persistedData = persisted ? serializeCredential(provider, persisted.credential)?.data : undefined;
+			replaced = persistedData === expected.data;
+			if (replaced) this.#store.updateAuthCredential(id, credential);
+		}
+		if (!replaced) return -1;
+
 		const updated = [...entries];
 		updated[index] = { id, credential };
 		this.#setStoredCredentials(provider, updated);
@@ -1878,10 +1950,17 @@ export class AuthStorage {
 		const manualCodeInput = PASTE_CODE_LOGIN_PROVIDERS.has(provider)
 			? () => ctrl.onPrompt({ message: "Paste the authorization code (or full redirect URL):" })
 			: undefined;
-		// Built-in registry first, then runtime-registered extension providers.
-		const def = getProviderDefinition(provider) ?? getOAuthProvider(provider);
+		// Resolve built-ins separately from runtime extensions. Reserved request
+		// profiles are capabilities of trusted ProviderDefinitions only; a custom
+		// provider may choose the storage target, but cannot mint a reserved profile.
+		const builtInDef = getProviderDefinition(provider);
+		const def = builtInDef ?? getOAuthProvider(provider);
 		if (!def?.login) {
 			throw new AIError.ConfigurationError(`Unknown OAuth provider: ${provider}`);
+		}
+		const apiKeyRequestProfile = builtInDef?.apiKeyRequestProfile;
+		if (apiKeyRequestProfile !== undefined) {
+			await this.#store.preflightApiKeyRequestProfile?.(apiKeyRequestProfile);
 		}
 		const result = await def.login({
 			onAuth: ctrl.onAuth,
@@ -1897,7 +1976,10 @@ export class AuthStorage {
 				return;
 			}
 			const targetProvider = def.storeCredentialsAs ?? provider;
-			const newCredential: ApiKeyCredential = { type: "api_key", key: result };
+			const newCredential: ApiKeyCredential =
+				apiKeyRequestProfile === undefined
+					? { type: "api_key", key: result }
+					: { type: "api_key", key: result, apiKeyRequestProfile };
 			if (def.replaceCredentialsOnApiKeyLogin) {
 				await this.set(targetProvider, newCredential);
 				return;
@@ -3815,29 +3897,26 @@ export class AuthStorage {
 	 * 5. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
 	 * 6. Fallback resolver (models.yml custom providers, last-resort)
 	 */
-	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
-		// Runtime override takes highest priority
+	async resolveApiKey(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+	): Promise<ResolvedApiKey | undefined> {
+		// Runtime override takes highest priority.
 		const runtimeKey = this.#runtimeOverrides.get(provider);
-		if (runtimeKey) {
-			return runtimeKey;
-		}
+		if (runtimeKey) return { apiKey: runtimeKey };
 
 		// Config override: explicit apiKey pinned in models.yml beats the broker's
 		// OAuth credentials. The user redirected a provider at a custom baseUrl
-		// (e.g. an auth-gateway) and supplied the bearer for that endpoint —
-		// honor it instead of forwarding an upstream OAuth token that the proxy
-		// won't accept.
+		// (e.g. an auth-gateway) and supplied the bearer for that endpoint — honor
+		// it instead of forwarding an upstream OAuth token that the proxy won't accept.
 		const configKey = this.#configOverrides.get(provider);
-		if (configKey) {
-			return configKey;
-		}
+		if (configKey) return { apiKey: configKey };
 
 		// Precedence: a deliberate OAuth login wins, then an explicit env var, then a stored
 		// static api_key (which may be a stale broker-migrated copy) as a last resort.
 		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
-		if (oauthResolved) {
-			return oauthResolved.apiKey;
-		}
+		if (oauthResolved) return { apiKey: oauthResolved.apiKey };
 
 		// Past OAuth: the session sticky (if any) is stale — the request authenticates via
 		// env/api_key/fallback, not OAuth, so clear it now so getOAuthAccountId() correctly
@@ -3845,16 +3924,26 @@ export class AuthStorage {
 		if (sessionId) this.#sessionLastCredential.get(provider)?.delete(sessionId);
 
 		const envKey = getEnvApiKey(provider);
-		if (envKey) return envKey;
+		if (envKey) return { apiKey: envKey };
 
 		const apiKeySelection = this.#selectCredentialByType(provider, "api_key", sessionId);
 		if (apiKeySelection) {
 			this.#recordSessionCredential(provider, sessionId, "api_key", apiKeySelection.index);
-			return this.#configValueResolver(apiKeySelection.credential.key);
+			const apiKey = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (apiKey === undefined) return undefined;
+			return apiKeySelection.credential.apiKeyRequestProfile === undefined
+				? { apiKey }
+				: { apiKey, apiKeyRequestProfile: apiKeySelection.credential.apiKeyRequestProfile };
 		}
 
-		// Fall back to custom resolver (e.g., models.json custom providers)
-		return this.#fallbackResolver?.(provider) ?? undefined;
+		// Fall back to custom resolver (e.g., models.json custom providers).
+		const fallbackKey = this.#fallbackResolver?.(provider);
+		return fallbackKey === undefined ? undefined : { apiKey: fallbackKey };
+	}
+
+	/** Compatibility wrapper returning only the selected API-key bytes. */
+	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
+		return (await this.resolveApiKey(provider, sessionId, options))?.apiKey;
 	}
 
 	/**
@@ -4309,16 +4398,23 @@ export class AuthStorage {
 	 */
 	resolver(provider: string, options?: { sessionId?: string; baseUrl?: string; modelId?: string }): ApiKeyResolver {
 		const { sessionId, baseUrl, modelId } = options ?? {};
-		return async ({ lastChance, error, signal }) => {
+		const resolveWithMetadata = async ({
+			lastChance,
+			error,
+			signal,
+		}: Parameters<ApiKeyResolver>[0]): Promise<ResolvedApiKey | undefined> => {
 			if (error === undefined) {
-				return this.getApiKey(provider, sessionId, { baseUrl, modelId, signal });
+				return this.resolveApiKey(provider, sessionId, { baseUrl, modelId, forceRefresh: false, signal });
 			}
 			if (lastChance) {
 				await this.rotateSessionCredential(provider, sessionId, { error, modelId, signal });
-				return this.getApiKey(provider, sessionId, { baseUrl, modelId, signal });
+				return this.resolveApiKey(provider, sessionId, { baseUrl, modelId, forceRefresh: false, signal });
 			}
-			return this.getApiKey(provider, sessionId, { baseUrl, modelId, forceRefresh: true, signal });
+			return this.resolveApiKey(provider, sessionId, { baseUrl, modelId, forceRefresh: true, signal });
 		};
+		const resolver: ApiKeyResolver = async ctx => (await resolveWithMetadata(ctx))?.apiKey;
+		resolver.resolveWithMetadata = resolveWithMetadata;
+		return resolver;
 	}
 
 	// ─── Auth Broker integration ────────────────────────────────────────────
@@ -4359,17 +4455,9 @@ export class AuthStorage {
 		const existing = this.#oauthRefreshInFlight.get(id);
 		if (existing) return raceCredentialRefreshWithSignal(existing, signal);
 
-		const promise = (async () => {
-			this.#bumpGeneration("credential-refresh-start");
-			try {
-				return await this.#forceRefreshCredentialByIdUnshared(id, signal);
-			} catch (error) {
-				this.#bumpGeneration("credential-refresh-failure");
-				throw error;
-			} finally {
-				this.#oauthRefreshInFlight.delete(id);
-			}
-		})();
+		const promise = this.#forceRefreshCredentialByIdUnshared(id, signal).finally(() => {
+			this.#oauthRefreshInFlight.delete(id);
+		});
 		this.#oauthRefreshInFlight.set(id, promise);
 		return raceCredentialRefreshWithSignal(promise, signal);
 	}
@@ -4438,11 +4526,9 @@ export class AuthStorage {
 				enterpriseUrl: refreshed.enterpriseUrl ?? attempted.enterpriseUrl,
 				apiEndpoint: refreshed.apiEndpoint ?? attempted.apiEndpoint,
 			};
-			// Persist by id: the array may have been reordered/shrunk while the
-			// refresh was in flight, so the pre-await positional index is unsafe. A
-			// -1 means the row was disabled/removed mid-refresh — surface that as a
-			// miss rather than implying a live row the snapshot won't contain.
-			if (this.#replaceCredentialById(provider, id, updated) === -1) {
+			// The OAuth call above performed no persistence. Commit only if the row
+			// still contains the exact credential we attempted before the await.
+			if (this.#replaceCredentialByIdIfMatches(provider, id, attempted, updated) === -1) {
 				throw new AIError.ValidationError(`No credential with id=${id}`);
 			}
 			return {
@@ -4456,20 +4542,15 @@ export class AuthStorage {
 	}
 
 	/**
-	 * Disable the credential with the given id and emit a
-	 * {@link CredentialDisabledEvent}. Used by the auth-broker server to honour
-	 * `POST /v1/credential/:id/disable`. Returns `false` when no such row exists.
+	 * Disable one cached credential with a persisted-data CAS. A stale legacy-v1
+	 * cache must never disable a row that another process replaced with a
+	 * profiled credential.
 	 */
 	disableCredentialById(id: number, disabledCause: string): boolean {
 		for (const [provider, entries] of this.#data) {
 			const index = entries.findIndex(entry => entry.id === id);
 			if (index === -1) continue;
-			this.#store.deleteAuthCredential(id, disabledCause);
-			const next = entries.filter((_value, idx) => idx !== index);
-			this.#setStoredCredentials(provider, next);
-			this.#resetProviderAssignments(provider);
-			this.#emitCredentialDisabled({ provider, disabledCause });
-			return true;
+			return this.#tryDisableCredentialAtIfMatches(provider, index, entries[index].credential, disabledCause);
 		}
 		return false;
 	}
@@ -4501,6 +4582,51 @@ export class AuthStorage {
 				identityKey: resolveCredentialIdentityKey(provider, persisted),
 			};
 		});
+	}
+
+	/**
+	 * Legacy-v1 upload guarded against profiled API-key rows. SQLite performs
+	 * the guard and upsert under one immediate transaction; custom stores get a
+	 * conservative persisted re-read immediately before their legacy upsert.
+	 */
+	upsertLegacyV1Credential(
+		provider: string,
+		credential: AuthCredential,
+	): { ok: true; entries: AuthCredentialSnapshotEntry[] } | { ok: false; reason: "profiled_credentials_present" } {
+		const guarded = this.#store.upsertAuthCredentialForProviderIfUnprofiled;
+		let result: GuardedCredentialUpsertResult;
+		if (guarded) {
+			result = guarded.call(this.#store, provider, credential);
+		} else {
+			const containsProfiledRow = this.#store
+				.listAuthCredentials(provider)
+				.some(entry => entry.credential.type === "api_key" && entry.credential.apiKeyRequestProfile !== undefined);
+			result = containsProfiledRow
+				? { ok: false, reason: "profiled_credentials_present" }
+				: { ok: true, credentials: this.#store.upsertAuthCredentialForProvider(provider, credential) };
+		}
+		if (!result.ok) return result;
+
+		const stored = result.credentials;
+		this.#setStoredCredentials(
+			provider,
+			stored.map(entry => ({ id: entry.id, credential: entry.credential })),
+		);
+		this.#resetProviderAssignments(provider);
+		return {
+			ok: true,
+			entries: stored.map(entry => {
+				const persisted = entry.credential;
+				const redacted: SnapshotCredential =
+					persisted.type === "api_key" ? persisted : { ...persisted, refresh: REMOTE_REFRESH_SENTINEL };
+				return {
+					id: entry.id,
+					provider: entry.provider,
+					credential: redacted,
+					identityKey: resolveCredentialIdentityKey(provider, persisted),
+				};
+			}),
+		};
 	}
 
 	/**
@@ -4605,9 +4731,13 @@ function normalizeStoredIdentityKey(identityKey: string | null | undefined): str
 
 function serializeCredential(provider: string, credential: AuthCredential): SerializedCredentialRecord | null {
 	if (credential.type === "api_key") {
+		const data: { key: string; apiKeyRequestProfile?: ApiKeyRequestProfile } = { key: credential.key };
+		if (credential.apiKeyRequestProfile !== undefined) {
+			data.apiKeyRequestProfile = credential.apiKeyRequestProfile;
+		}
 		return {
 			credentialType: "api_key",
-			data: JSON.stringify({ key: credential.key }),
+			data: JSON.stringify(data),
 			identityKey: null,
 		};
 	}
@@ -4632,11 +4762,11 @@ function deserializeCredential(row: AuthRow): AuthCredential | null {
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 		return null;
 	}
-	if (row.credential_type === "api_key") {
-		const data = parsed as Record<string, unknown>;
-		if (typeof data.key === "string") {
-			return { type: "api_key", key: data.key };
+	if (row.credential_type === "api_key" && "key" in parsed && typeof parsed.key === "string") {
+		if ("apiKeyRequestProfile" in parsed && parsed.apiKeyRequestProfile === "anthropic-console") {
+			return { type: "api_key", key: parsed.key, apiKeyRequestProfile: parsed.apiKeyRequestProfile };
 		}
+		return { type: "api_key", key: parsed.key };
 	}
 	if (row.credential_type === "oauth") {
 		return { type: "oauth", ...(parsed as Record<string, unknown>) } as AuthCredential;
@@ -4766,6 +4896,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	#listDisabledByProviderStmt: Statement;
 	#insertStmt: Statement;
 	#updateStmt: Statement;
+	#updateIfMatchesStmt: Statement;
 	#deleteStmt: Statement;
 	#deleteIfMatchesStmt: Statement;
 	#deleteByProviderStmt: Statement;
@@ -4800,6 +4931,9 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		);
 		this.#updateStmt = this.#db.prepare(
 			`UPDATE auth_credentials SET credential_type = ?, data = ?, identity_key = ?, updated_at = ${SQLITE_NOW_EPOCH} WHERE id = ?`,
+		);
+		this.#updateIfMatchesStmt = this.#db.prepare(
+			`UPDATE auth_credentials SET credential_type = ?, data = ?, identity_key = ?, updated_at = ${SQLITE_NOW_EPOCH} WHERE id = ? AND data = ? AND disabled_cause IS NULL`,
 		);
 		this.#deleteStmt = this.#db.prepare(
 			`UPDATE auth_credentials SET disabled_cause = ?, updated_at = ${SQLITE_NOW_EPOCH} WHERE id = ?`,
@@ -5220,58 +5354,88 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		return result;
 	}
 
-	upsertAuthCredentialForProvider(provider: string, credential: AuthCredential): StoredAuthCredential[] {
-		const upsert = this.#db.transaction((providerName: string, item: AuthCredential) => {
-			const serialized = serializeCredential(providerName, item);
-			if (!serialized) return this.listAuthCredentials(providerName);
-			const existingRows = this.#listActiveByProviderStmt.all(providerName) as AuthRow[];
-			const existing = existingRows.map(row => ({
-				id: row.id,
-				credential: deserializeCredential(row),
-				identityKey: resolveRowCredentialIdentityKey(providerName, row),
-			}));
+	#upsertAuthCredentialForProviderInTransaction(providerName: string, item: AuthCredential): StoredAuthCredential[] {
+		const serialized = serializeCredential(providerName, item);
+		if (!serialized) return this.listAuthCredentials(providerName);
+		const existingRows = this.#listActiveByProviderStmt.all(providerName) as AuthRow[];
+		const existing = existingRows.map(row => ({
+			id: row.id,
+			credential: deserializeCredential(row),
+			identityKey: resolveRowCredentialIdentityKey(providerName, row),
+		}));
 
-			if (item.type === "oauth") {
-				for (const row of existing) {
-					if (row.credential && row.credential.type === "api_key") {
-						this.#deleteStmt.run("replaced by oauth login", row.id);
-					}
-				}
-			}
-
-			let targetId: number | null = null;
+		if (item.type === "oauth") {
 			for (const row of existing) {
-				if (!matchesReplacementCredential(providerName, row.credential, row.identityKey, item)) continue;
-				if (targetId === null) {
-					targetId = row.id;
-					this.#updateStmt.run(serialized.credentialType, serialized.data, serialized.identityKey, row.id);
-					continue;
+				if (row.credential && row.credential.type === "api_key") {
+					this.#deleteStmt.run("replaced by oauth login", row.id);
 				}
-				this.#deleteStmt.run("replaced by newer credential", row.id);
 			}
+		}
 
+		let targetId: number | null = null;
+		for (const row of existing) {
+			if (!matchesReplacementCredential(providerName, row.credential, row.identityKey, item)) continue;
 			if (targetId === null) {
-				const row = this.#insertStmt.get(
-					providerName,
-					serialized.credentialType,
-					serialized.data,
-					serialized.identityKey,
-				) as { id?: number } | undefined;
-				targetId = row?.id ?? null;
+				targetId = row.id;
+				this.#updateStmt.run(serialized.credentialType, serialized.data, serialized.identityKey, row.id);
+				continue;
 			}
+			this.#deleteStmt.run("replaced by newer credential", row.id);
+		}
 
-			const activeRows = this.#listActiveByProviderStmt.all(providerName) as AuthRow[];
-			const result: StoredAuthCredential[] = [];
-			for (const row of activeRows) {
-				const activeCredential = deserializeCredential(row);
-				if (!activeCredential) continue;
-				result.push(toStoredAuthCredential(row, activeCredential));
-			}
-			return result;
-		});
+		if (targetId === null) {
+			const row = this.#insertStmt.get(
+				providerName,
+				serialized.credentialType,
+				serialized.data,
+				serialized.identityKey,
+			) as { id?: number } | undefined;
+			targetId = row?.id ?? null;
+		}
+
+		const activeRows = this.#listActiveByProviderStmt.all(providerName) as AuthRow[];
+		const result: StoredAuthCredential[] = [];
+		for (const row of activeRows) {
+			const activeCredential = deserializeCredential(row);
+			if (!activeCredential) continue;
+			result.push(toStoredAuthCredential(row, activeCredential));
+		}
+		return result;
+	}
+
+	upsertAuthCredentialForProvider(provider: string, credential: AuthCredential): StoredAuthCredential[] {
+		const upsert = this.#db.transaction((providerName: string, item: AuthCredential) =>
+			this.#upsertAuthCredentialForProviderInTransaction(providerName, item),
+		);
 
 		const result = upsert(provider, credential);
 		this.#purgeSupersededDisabledRows(provider, result);
+		return result;
+	}
+
+	upsertAuthCredentialForProviderIfUnprofiled(
+		provider: string,
+		credential: AuthCredential,
+	): GuardedCredentialUpsertResult {
+		const guardedUpsert = this.#db.transaction(
+			(providerName: string, item: AuthCredential): GuardedCredentialUpsertResult => {
+				const activeRows = this.#listActiveByProviderStmt.all(providerName) as AuthRow[];
+				const containsProfiledRow = activeRows.some(row => {
+					const existing = deserializeCredential(row);
+					return existing?.type === "api_key" && existing.apiKeyRequestProfile !== undefined;
+				});
+				if (containsProfiledRow) return { ok: false, reason: "profiled_credentials_present" };
+				return {
+					ok: true,
+					credentials: this.#upsertAuthCredentialForProviderInTransaction(providerName, item),
+				};
+			},
+		);
+
+		// Acquire the write reservation before checking. No peer can introduce a
+		// profiled row between this read and the upsert.
+		const result = guardedUpsert.immediate(provider, credential);
+		if (result.ok) this.#purgeSupersededDisabledRows(provider, result.credentials);
 		return result;
 	}
 
@@ -5328,6 +5492,30 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			}
 		} catch {
 			// Ignore update failures
+		}
+	}
+
+	tryUpdateAuthCredentialIfMatches(
+		id: number,
+		provider: string,
+		expectedData: string,
+		credential: AuthCredential,
+	): boolean {
+		try {
+			const serialized = serializeCredential(provider, credential);
+			if (!serialized) return false;
+			const result = this.#updateIfMatchesStmt.run(
+				serialized.credentialType,
+				serialized.data,
+				serialized.identityKey,
+				id,
+				expectedData,
+			) as { changes: number };
+			if (result.changes !== 1) return false;
+			this.#purgeSupersededDisabledRows(provider, this.listAuthCredentials(provider));
+			return true;
+		} catch {
+			return false;
 		}
 	}
 
@@ -5575,6 +5763,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		this.#listDisabledByProviderStmt.finalize();
 		this.#insertStmt.finalize();
 		this.#updateStmt.finalize();
+		this.#updateIfMatchesStmt.finalize();
 		this.#deleteStmt.finalize();
 		this.#deleteIfMatchesStmt.finalize();
 		this.#deleteByProviderStmt.finalize();

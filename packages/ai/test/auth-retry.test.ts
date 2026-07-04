@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
-import type { ApiKeyResolveContext, OAuthAccess, OAuthAccessSource } from "@oh-my-pi/pi-ai";
-import { isApiKeyResolver, isAuthRetryableError, resolveApiKeyOnce, withAuth, withOAuthAccess } from "@oh-my-pi/pi-ai";
+import type { ApiKeyResolveContext, ApiKeyResolver, OAuthAccess, OAuthAccessSource } from "@oh-my-pi/pi-ai";
+import {
+	isApiKeyResolver,
+	isAuthRetryableError,
+	resolveApiKeyOnce,
+	resolveApiKeyOnceWithMetadata,
+	seedApiKeyResolver,
+	withAuth,
+	withOAuthAccess,
+} from "@oh-my-pi/pi-ai";
 
 function authError(status = 401): Error & { status: number } {
 	return Object.assign(new Error(`${status} authentication_error`), { status });
@@ -29,6 +37,73 @@ describe("isApiKeyResolver / resolveApiKeyOnce", () => {
 		expect(resolved).toBe("minted");
 		// Initial resolve must look like an initial resolve, not a retry.
 		expect(seen).toEqual({ lastChance: false, error: undefined, signal: undefined });
+	});
+
+	it("resolves a key and its request profile atomically", async () => {
+		const resolver = (() => {
+			throw new Error("the key-only compatibility path must not run");
+		}) as ApiKeyResolver;
+		resolver.resolveWithMetadata = async ctx => {
+			expect(ctx).toEqual({ lastChance: false, error: undefined, signal: undefined });
+			return { apiKey: "console-key", apiKeyRequestProfile: "anthropic-console" };
+		};
+
+		expect(await resolveApiKeyOnceWithMetadata(resolver)).toEqual({
+			apiKey: "console-key",
+			apiKeyRequestProfile: "anthropic-console",
+		});
+	});
+});
+
+describe("seedApiKeyResolver", () => {
+	it("returns the rich seed synchronously through the compatibility entry, then delegates metadata resolution", async () => {
+		const retryError = authError();
+		const contexts: ApiKeyResolveContext[] = [];
+		const delegate = (() => {
+			throw new Error("the metadata-aware delegate path must run");
+		}) as ApiKeyResolver;
+		delegate.resolveWithMetadata = async ctx => {
+			contexts.push(ctx);
+			return { apiKey: "delegated-metadata-key" };
+		};
+		const resolver = seedApiKeyResolver({ apiKey: "seed-key", apiKeyRequestProfile: "anthropic-console" }, delegate);
+
+		const initial = resolver({ lastChance: false, error: undefined });
+		expect(typeof initial).toBe("string");
+		expect(initial).toBe("seed-key");
+
+		const delegatedInitial = resolver.resolveWithMetadata!({ lastChance: false, error: undefined });
+		expect(typeof (delegatedInitial as PromiseLike<unknown>).then).toBe("function");
+		expect(await delegatedInitial).toEqual({ apiKey: "delegated-metadata-key" });
+		expect(await resolver.resolveWithMetadata!({ lastChance: true, error: retryError })).toEqual({
+			apiKey: "delegated-metadata-key",
+		});
+		expect(contexts).toEqual([
+			{ lastChance: false, error: undefined },
+			{ lastChance: true, error: retryError },
+		]);
+	});
+
+	it("returns the rich seed synchronously through metadata resolution, then delegates compatibility resolution", async () => {
+		const retryError = authError();
+		const contexts: ApiKeyResolveContext[] = [];
+		const delegate = (async ctx => {
+			contexts.push(ctx);
+			return "delegated-compatibility-key";
+		}) as ApiKeyResolver;
+		const resolver = seedApiKeyResolver({ apiKey: "seed-key", apiKeyRequestProfile: "anthropic-console" }, delegate);
+
+		const initial = resolver.resolveWithMetadata!({ lastChance: false, error: undefined });
+		expect(initial).toEqual({ apiKey: "seed-key", apiKeyRequestProfile: "anthropic-console" });
+
+		const delegatedInitial = resolver({ lastChance: false, error: undefined });
+		expect(typeof (delegatedInitial as PromiseLike<unknown>).then).toBe("function");
+		expect(await delegatedInitial).toBe("delegated-compatibility-key");
+		expect(await resolver({ lastChance: true, error: retryError })).toBe("delegated-compatibility-key");
+		expect(contexts).toEqual([
+			{ lastChance: false, error: undefined },
+			{ lastChance: true, error: retryError },
+		]);
 	});
 });
 
@@ -158,6 +233,33 @@ describe("withAuth", () => {
 		);
 		expect(result).toBe("ok");
 		expect(keys).toEqual(["k0", "k1"]);
+	});
+
+	it("preserves a rich seed and retries the same key when its request profile changes", async () => {
+		const delegate = (() => {
+			throw new Error("the key-only compatibility path must not run");
+		}) as ApiKeyResolver;
+		delegate.resolveWithMetadata = ctx => {
+			expect(ctx.error).toBeInstanceOf(Error);
+			return { apiKey: "shared-key" };
+		};
+		const resolver = seedApiKeyResolver(
+			{ apiKey: "shared-key", apiKeyRequestProfile: "anthropic-console" },
+			delegate,
+		);
+		const attempts: Array<{ apiKey: string; apiKeyRequestProfile?: "anthropic-console" }> = [];
+
+		const result = await withAuth(resolver, async (apiKey, resolution) => {
+			attempts.push({ apiKey, apiKeyRequestProfile: resolution.apiKeyRequestProfile });
+			if (resolution.apiKeyRequestProfile) throw authError();
+			return "plain-success";
+		});
+
+		expect(result).toBe("plain-success");
+		expect(attempts).toEqual([
+			{ apiKey: "shared-key", apiKeyRequestProfile: "anthropic-console" },
+			{ apiKey: "shared-key", apiKeyRequestProfile: undefined },
+		]);
 	});
 });
 

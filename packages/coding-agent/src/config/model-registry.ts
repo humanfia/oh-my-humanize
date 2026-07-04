@@ -48,7 +48,7 @@ const STARTUP_MODEL_CACHE_PROVIDER_IDS: readonly string[] = [
 // packages/ai/src/registry/lm-studio.ts, and packages/ai/src/registry/vllm.ts.
 const LOCAL_PROVIDER_PLACEHOLDERS = new Set<string>(["llama-cpp-local", "lm-studio-local", "vllm-local"]);
 
-import type { ApiKeyResolver, FetchImpl } from "@oh-my-pi/pi-ai";
+import type { ApiKeyResolver, FetchImpl, ResolvedApiKey } from "@oh-my-pi/pi-ai";
 import { registerOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import { getBundledModelReferenceIndex, resolveModelReference } from "@oh-my-pi/pi-catalog/identity";
@@ -1880,8 +1880,20 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Get API key for a model.
+	 * Resolve a model credential and its request metadata in one storage pass.
 	 */
+	async resolveApiKey(model: Model<Api>, sessionId?: string): Promise<ResolvedApiKey | undefined> {
+		const commandKey = this.#resolveCommandBackedApiKey(model.provider);
+		if (commandKey.configured) {
+			return commandKey.value === undefined ? undefined : { apiKey: commandKey.value };
+		}
+		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
+			return { apiKey: kNoAuth };
+		}
+		return this.authStorage.resolveApiKey(model.provider, sessionId, { baseUrl: model.baseUrl, modelId: model.id });
+	}
+
+	/** Compatibility wrapper returning only the selected API-key bytes. */
 	async getApiKey(model: Model<Api>, sessionId?: string): Promise<string | undefined> {
 		const commandKey = this.#resolveCommandBackedApiKey(model.provider);
 		if (commandKey.configured) return commandKey.value;
@@ -1892,12 +1904,33 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Get API key for a provider (e.g., "openai").
+	 * Resolve a provider credential and its request metadata in one storage pass.
 	 *
 	 * `options.forceRefresh` powers step (b) of the auth-retry policy — it
 	 * re-mints the session-sticky OAuth token even when the cached copy still
 	 * looks valid. `options.signal` is threaded into any broker-bound refresh.
 	 */
+	async resolveApiKeyForProvider(
+		provider: string,
+		sessionId?: string,
+		options?: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal },
+	): Promise<ResolvedApiKey | undefined> {
+		const commandKey = this.#resolveCommandBackedApiKey(provider);
+		if (commandKey.configured) {
+			return commandKey.value === undefined ? undefined : { apiKey: commandKey.value };
+		}
+		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
+			return { apiKey: kNoAuth };
+		}
+		return this.authStorage.resolveApiKey(provider, sessionId, {
+			baseUrl: options?.baseUrl,
+			modelId: options?.modelId,
+			forceRefresh: options?.forceRefresh,
+			signal: options?.signal,
+		});
+	}
+
+	/** Compatibility wrapper returning only the selected API-key bytes. */
 	async getApiKeyForProvider(
 		provider: string,
 		sessionId?: string,
@@ -1908,20 +1941,15 @@ export class ModelRegistry {
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
 			return kNoAuth;
 		}
-		return this.authStorage.getApiKey(provider, sessionId, {
-			baseUrl: options?.baseUrl,
-			modelId: options?.modelId,
-			forceRefresh: options?.forceRefresh,
-			signal: options?.signal,
-		});
+		return this.authStorage.getApiKey(provider, sessionId, options);
 	}
 
 	/**
 	 * Build an {@link ApiKeyResolver} implementing the central a/b/c auth-retry
 	 * policy. Accepts a provider id with options, or a model with an optional
 	 * session id (`resolver(model, sessionId)`) which derives `baseUrl`/`modelId`
-	 * from the model. Callers that need the initial key for a guard can call
-	 * `resolveApiKeyOnce(resolver)`.
+	 * from the model. Metadata-aware callers can use
+	 * `resolveApiKeyOnceWithMetadata(resolver)` without a separate getter.
 	 */
 	resolver(provider: string, options?: ApiKeyResolverOptions): ApiKeyResolver;
 	resolver(model: ApiKeyResolverModel, sessionId?: string): ApiKeyResolver;

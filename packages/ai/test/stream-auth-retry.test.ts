@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ApiKeyResolveContext } from "@oh-my-pi/pi-ai";
+import type { ApiKeyResolveContext, ApiKeyResolver } from "@oh-my-pi/pi-ai";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai";
 import { streamSimple } from "@oh-my-pi/pi-ai/stream";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@oh-my-pi/pi-ai/types";
@@ -240,28 +240,102 @@ describe("streamSimple resolver auth retry", () => {
 		expect(retryResolves).toBe(0);
 	});
 
-	it("escalates refresh-same then switch in order (2-retry ordering)", async () => {
-		const keys: unknown[] = [];
+	it("retries the same key when its atomically resolved profile changes", async () => {
+		const attempts: Array<{ apiKey: unknown; apiKeyRequestProfile: unknown }> = [];
 		registerCustomApi(
 			API,
 			(_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
-				pushKey(keys, options);
+				attempts.push({
+					apiKey: options?.apiKey,
+					apiKeyRequestProfile: options?.apiKeyRequestProfile,
+				});
 				const stream = new AssistantMessageEventStream();
-				queueMicrotask(() => (options?.apiKey === "switch-key" ? ok(stream) : stream.fail(authError())));
+				queueMicrotask(() => (options?.apiKeyRequestProfile ? stream.fail(authError()) : ok(stream)));
 				return stream;
 			},
 			SOURCE_ID,
 		);
 
-		const stream = streamSimple(model(), context, {
-			apiKey: async ctx => (ctx.error === undefined ? "old-key" : ctx.lastChance ? "switch-key" : "refresh-key"),
-		});
+		const apiKey = (() => {
+			throw new Error("the key-only compatibility path must not run");
+		}) as ApiKeyResolver;
+		apiKey.resolveWithMetadata = ctx =>
+			ctx.error === undefined
+				? { apiKey: "shared-key", apiKeyRequestProfile: "anthropic-console" }
+				: { apiKey: "shared-key" };
+
+		const stream = streamSimple(model(), context, { apiKey });
 		for await (const _event of stream) {
 			// drain
 		}
 
 		expect((await stream.result()).content).toEqual([{ type: "text", text: "ok" }]);
-		expect(keys).toEqual(["old-key", "refresh-key", "switch-key"]);
+		expect(attempts).toEqual([
+			{ apiKey: "shared-key", apiKeyRequestProfile: "anthropic-console" },
+			{ apiKey: "shared-key", apiKeyRequestProfile: undefined },
+		]);
+	});
+
+	it("keeps metadata isolated across concurrent rich resolutions", async () => {
+		const attempts: Array<{ prompt: string; apiKeyRequestProfile: unknown }> = [];
+		registerCustomApi(
+			API,
+			(_model: Model<Api>, attemptContext: Context, options?: SimpleStreamOptions) => {
+				const firstMessage = attemptContext.messages[0];
+				attempts.push({
+					prompt:
+						firstMessage?.role === "user" && typeof firstMessage.content === "string" ? firstMessage.content : "",
+					apiKeyRequestProfile: options?.apiKeyRequestProfile,
+				});
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => ok(stream));
+				return stream;
+			},
+			SOURCE_ID,
+		);
+
+		const firstStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		let resolutionCount = 0;
+		const apiKey = (() => {
+			throw new Error("the key-only compatibility path must not run");
+		}) as ApiKeyResolver;
+		apiKey.resolveWithMetadata = async () => {
+			resolutionCount += 1;
+			if (resolutionCount === 1) {
+				firstStarted.resolve();
+				await releaseFirst.promise;
+				return { apiKey: "shared-key", apiKeyRequestProfile: "anthropic-console" };
+			}
+			return { apiKey: "shared-key" };
+		};
+
+		const firstContext: Context = {
+			...context,
+			messages: [{ role: "user", content: "first", timestamp: 1 }],
+		};
+		const secondContext: Context = {
+			...context,
+			messages: [{ role: "user", content: "second", timestamp: 1 }],
+		};
+		const firstStream = streamSimple(model(), firstContext, { apiKey });
+		const drainFirst = (async () => {
+			for await (const _event of firstStream) {
+				// drain
+			}
+		})();
+		await firstStarted.promise;
+		const secondStream = streamSimple(model(), secondContext, { apiKey });
+		for await (const _event of secondStream) {
+			// drain
+		}
+		releaseFirst.resolve();
+		await drainFirst;
+
+		expect(attempts.sort((left, right) => left.prompt.localeCompare(right.prompt))).toEqual([
+			{ prompt: "first", apiKeyRequestProfile: "anthropic-console" },
+			{ prompt: "second", apiKeyRequestProfile: undefined },
+		]);
 	});
 
 	it("skips the refresh-same step when the resolver returns an unchanged key", async () => {

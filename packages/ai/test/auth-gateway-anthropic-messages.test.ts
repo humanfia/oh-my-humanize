@@ -1,7 +1,14 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
+import { AuthStorage } from "@oh-my-pi/pi-ai/auth-storage";
+import { claudeCodeSystemInstruction } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { encodeResponse, encodeStream, parseRequest } from "@oh-my-pi/pi-ai/providers/anthropic-messages-server";
 import type { AssistantMessage, AssistantMessageEvent, ToolResultMessage } from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 function emptyUsage(): AssistantMessage["usage"] {
 	return {
@@ -503,5 +510,154 @@ describe("anthropic-messages encodeStream", () => {
 		expect(sse.map(e => e.event)).toEqual(["message_start", "message_delta", "message_stop"]);
 		const delta = sse[1]!.data as { delta: { stop_reason: string } };
 		expect(delta.delta.stop_reason).toBe("end_turn");
+	});
+});
+
+describe("auth-gateway Anthropic credential profiles", () => {
+	it("binds each atomic key/profile resolution to its matching retry attempt", async () => {
+		const model = buildModel({
+			id: "claude-sonnet-4-5",
+			name: "Claude Sonnet 4.5",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 8_192,
+		});
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-anthropic-profile-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
+		const resolveSpy = spyOn(storage, "resolveApiKey")
+			.mockResolvedValueOnce({ apiKey: "shared-console-key", apiKeyRequestProfile: "anthropic-console" })
+			.mockResolvedValueOnce({ apiKey: "shared-console-key" });
+
+		interface CapturedRequest {
+			url: string;
+			headers: Headers;
+			body: { system?: Array<{ type?: string; text?: string; cache_control?: unknown }> };
+		}
+		const upstreamRequests: CapturedRequest[] = [];
+		const originalFetch = globalThis.fetch;
+		const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (
+			input: string | URL | Request,
+			init?: RequestInit,
+		): Promise<Response> => {
+			const url = input instanceof Request ? input.url : input.toString();
+			if (url !== "https://api.anthropic.com/v1/messages") return originalFetch(input, init);
+
+			const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+			upstreamRequests.push({
+				url,
+				headers: new Headers(request.headers),
+				body: JSON.parse(await request.text()) as CapturedRequest["body"],
+			});
+			if (upstreamRequests.length === 1) {
+				return new Response(
+					JSON.stringify({
+						type: "error",
+						error: { type: "authentication_error", message: "invalid x-api-key" },
+					}),
+					{
+						status: 401,
+						headers: { "content-type": "application/json", "request-id": "req_profile_rejected" },
+					},
+				);
+			}
+
+			const events = [
+				{
+					type: "message_start",
+					message: {
+						id: "msg_profile_retry",
+						type: "message",
+						role: "assistant",
+						model: model.id,
+						content: [],
+						stop_reason: null,
+						stop_sequence: null,
+						usage: { input_tokens: 4, output_tokens: 0 },
+					},
+				},
+				{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+				{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+				{ type: "content_block_stop", index: 0 },
+				{
+					type: "message_delta",
+					delta: { stop_reason: "end_turn", stop_sequence: null },
+					usage: { output_tokens: 1 },
+				},
+				{ type: "message_stop" },
+			];
+			const stream = events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
+			return new Response(stream, {
+				status: 200,
+				headers: { "content-type": "text/event-stream", "request-id": "req_profile_retry" },
+			});
+		}) as typeof globalThis.fetch);
+
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			resolveModel: () => model,
+			version: "test",
+		});
+		try {
+			const response = await fetch(`${handle.url}/v1/messages`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				body: JSON.stringify({
+					model: model.id,
+					max_tokens: 128,
+					stream: false,
+					system: [{ type: "text", text: "Stay concise." }],
+					messages: [{ role: "user", content: "Hello" }],
+				}),
+			});
+			const body = (await response.json()) as { content?: Array<{ type?: string; text?: string }> };
+
+			expect(response.status).toBe(200);
+			expect(body.content).toEqual([{ type: "text", text: "ok" }]);
+			expect(upstreamRequests).toHaveLength(2);
+			expect(
+				upstreamRequests.map(request => ({
+					url: request.url,
+					apiKey: request.headers.get("x-api-key"),
+					authorization: request.headers.get("authorization"),
+				})),
+			).toEqual([
+				{
+					url: "https://api.anthropic.com/v1/messages",
+					apiKey: "shared-console-key",
+					authorization: null,
+				},
+				{
+					url: "https://api.anthropic.com/v1/messages",
+					apiKey: "shared-console-key",
+					authorization: null,
+				},
+			]);
+
+			const firstSystem = upstreamRequests[0]!.body.system ?? [];
+			expect(firstSystem).toHaveLength(3);
+			expect(firstSystem[0]?.text).toStartWith("x-anthropic-billing-header:");
+			expect(firstSystem[1]).toEqual({ type: "text", text: claudeCodeSystemInstruction });
+			expect(firstSystem[2]).toEqual({
+				type: "text",
+				text: "Stay concise.",
+				cache_control: { type: "ephemeral" },
+			});
+			expect(upstreamRequests[1]!.body.system).toEqual([
+				{ type: "text", text: "Stay concise.", cache_control: { type: "ephemeral" } },
+			]);
+		} finally {
+			fetchSpy.mockRestore();
+			resolveSpy.mockRestore();
+			await handle.close();
+			storage.close();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 });

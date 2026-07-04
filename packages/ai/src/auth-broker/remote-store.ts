@@ -9,6 +9,7 @@
  */
 import { scheduler } from "node:timers/promises";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { ApiKeyRequestProfile } from "../auth-retry";
 import {
 	type AuthCredential,
 	type AuthCredentialSnapshotEntry,
@@ -37,6 +38,44 @@ const MAX_WAIT_MS = 5_000;
 const BACKGROUND_WAIT_MS = 30_000;
 const BACKGROUND_BACKOFF_INITIAL_MS = 500;
 const BACKGROUND_BACKOFF_MAX_MS = 30_000;
+
+function rejectLegacyV1Profile(_profile: ApiKeyRequestProfile): never {
+	throw new AIError.AuthBrokerError(
+		"Auth broker protocol v1 does not support profiled API keys. Log in on the broker host or upgrade the broker protocol before using this credential.",
+	);
+}
+
+function assertLegacyV1CredentialSupported(credential: AuthCredential): void {
+	if (credential.type !== "api_key" || credential.apiKeyRequestProfile === undefined) return;
+	rejectLegacyV1Profile(credential.apiKeyRequestProfile);
+}
+
+function matchesUploadedCredential(
+	provider: string,
+	entry: AuthCredentialSnapshotEntry,
+	credential: AuthCredential,
+): boolean {
+	const stored = entry.credential;
+	if (entry.provider !== provider || stored.type !== credential.type) return false;
+	if (credential.type === "api_key") {
+		return (
+			stored.type === "api_key" &&
+			stored.key === credential.key &&
+			stored.apiKeyRequestProfile === credential.apiKeyRequestProfile
+		);
+	}
+	return (
+		stored.type === "oauth" &&
+		stored.refresh === REMOTE_REFRESH_SENTINEL &&
+		stored.access === credential.access &&
+		stored.expires === credential.expires &&
+		stored.enterpriseUrl === credential.enterpriseUrl &&
+		stored.projectId === credential.projectId &&
+		stored.email === credential.email &&
+		stored.accountId === credential.accountId &&
+		stored.apiEndpoint === credential.apiEndpoint
+	);
+}
 
 function emptySnapshot(): SnapshotResponse {
 	return {
@@ -369,6 +408,10 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#maybeRefreshSnapshot("suspect credential refresh");
 	}
 
+	preflightApiKeyRequestProfile(profile: ApiKeyRequestProfile): never {
+		return rejectLegacyV1Profile(profile);
+	}
+
 	replaceAuthCredentialsForProvider(_provider: string, _credentials: AuthCredential[]): StoredAuthCredential[] {
 		throw new AIError.AuthBrokerError(
 			"RemoteAuthCredentialStore is read-only on the client. Use `omp auth-broker login <provider>` to mutate credentials.",
@@ -395,6 +438,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	 * any concurrent peer (refresh, generation bump) stays in sync.
 	 */
 	async upsertAuthCredentialRemote(provider: string, credential: AuthCredential): Promise<StoredAuthCredential[]> {
+		assertLegacyV1CredentialSupported(credential);
 		const { entries } = await this.#client.uploadCredential(provider, credential);
 		this.#applyProviderEntries(provider, entries);
 		this.#maybeRefreshSnapshot("upload");
@@ -402,18 +446,45 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	}
 
 	/**
-	 * Replace-all semantics: disable every active credential for the provider,
-	 * then upload each of the new credentials. Used by API-key login so a new
-	 * key clobbers any previously stored key for the same provider.
+	 * Replace-all semantics for zero or one credential, implemented over the
+	 * legacy broker's upsert and disable operations. Multiple credentials are
+	 * rejected because protocol v1 cannot replace them atomically. Upload
+	 * responses identify IDs reused by same-credential upserts; those IDs must
+	 * survive the cleanup pass alongside newly inserted rows.
 	 */
 	async replaceAuthCredentialsRemote(
 		provider: string,
 		credentials: AuthCredential[],
 	): Promise<StoredAuthCredential[]> {
+		if (credentials.length > 1) {
+			throw new AIError.AuthBrokerError(
+				"Auth broker protocol v1 does not support atomic replacement with multiple credentials. Log in on the broker host or upgrade the broker protocol before replacing multiple credentials.",
+			);
+		}
+		for (const credential of credentials) assertLegacyV1CredentialSupported(credential);
 		const existing = this.listAuthCredentials(provider);
+		const uploadedIds = new Set<number>();
+		let latestEntries: AuthCredentialSnapshotEntry[] = [];
+
+		for (const credential of credentials) {
+			const { entries } = await this.#client.uploadCredential(provider, credential);
+			const matches = entries.filter(entry => matchesUploadedCredential(provider, entry, credential));
+			if (matches.length === 0) {
+				throw new AIError.AuthBrokerError(
+					`Auth broker upload response did not contain the uploaded credential for provider ${provider}`,
+				);
+			}
+			for (const entry of matches) uploadedIds.add(entry.id);
+			latestEntries = entries;
+		}
+
+		const finalIds = new Set(latestEntries.map(entry => entry.id));
+		const disabledIds = new Set<number>();
 		for (const entry of existing) {
+			if ((credentials.length > 0 && !finalIds.has(entry.id)) || uploadedIds.has(entry.id)) continue;
 			try {
 				await this.#client.disableCredential(entry.id, "replaced by newer credential");
+				disabledIds.add(entry.id);
 			} catch (error) {
 				logger.warn("auth-broker disable during replace failed", {
 					provider,
@@ -422,13 +493,11 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 				});
 			}
 		}
-		// Snapshot reflects the disables before we add the new rows so a concurrent
-		// reader cannot momentarily see old + new together for the same provider.
-		this.#removeProviderEntries(provider);
-		for (const credential of credentials) {
-			const { entries } = await this.#client.uploadCredential(provider, credential);
-			this.#applyProviderEntries(provider, entries);
-		}
+
+		this.#applyProviderEntries(
+			provider,
+			latestEntries.filter(entry => !disabledIds.has(entry.id)),
+		);
 		this.#maybeRefreshSnapshot("replace");
 		return this.listAuthCredentials(provider);
 	}

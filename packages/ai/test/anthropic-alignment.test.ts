@@ -75,6 +75,8 @@ function createAbortedSignal(): AbortSignal {
 }
 
 type CaptureAnthropicOptions = {
+	apiKey?: string;
+	apiKeyRequestProfile?: "anthropic-console";
 	isOAuth?: boolean;
 	metadata?: { user_id?: string; account_uuid?: string; accountId?: string; account_id?: string };
 	thinkingEnabled?: boolean;
@@ -96,8 +98,9 @@ function captureAnthropicPayload(
 ): Promise<unknown> {
 	const { promise, resolve } = Promise.withResolvers<unknown>();
 	streamAnthropic(model, context, {
-		apiKey: "sk-ant-oat-test",
+		apiKey: options?.apiKey ?? "sk-ant-oat-test",
 		isOAuth: options?.isOAuth ?? true,
+		apiKeyRequestProfile: options?.apiKeyRequestProfile,
 		signal: createAbortedSignal(),
 		metadata: options?.metadata,
 		thinkingEnabled: options?.thinkingEnabled,
@@ -152,6 +155,48 @@ function expectClaudeMetadataUserId(userId: string | undefined, expectedSessionI
 			expect(parsed.session_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 		}
 	}
+}
+
+type CapturedAnthropicWireRequest = {
+	body: string;
+	payload: {
+		model?: string;
+		system?: Array<{ type?: string; text?: string; cache_control?: unknown }>;
+	};
+};
+
+async function captureAnthropicWireRequest(
+	model: Model<"anthropic-messages">,
+	context: Context,
+	options: {
+		apiKey: string;
+		apiKeyRequestProfile?: "anthropic-console";
+		isOAuth?: boolean;
+		requestModelId?: string;
+	},
+): Promise<CapturedAnthropicWireRequest> {
+	const controller = new AbortController();
+	const { promise, resolve } = Promise.withResolvers<CapturedAnthropicWireRequest>();
+	const fakeFetch = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+		const rawBody = init?.body;
+		const body = typeof rawBody === "string" ? rawBody : new TextDecoder().decode(rawBody as Uint8Array);
+		resolve({ body, payload: JSON.parse(body) as CapturedAnthropicWireRequest["payload"] });
+		controller.abort();
+		return new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+		});
+	};
+
+	streamAnthropic(model, context, { ...options, signal: controller.signal, fetch: fakeFetch });
+	return promise;
+}
+
+function calculateAnthropicCch(wireBody: string): string {
+	const bodyWithPlaceholder = wireBody.replace(/cch=[0-9a-f]{5}/, "cch=00000");
+	return (Bun.hash.xxHash64(new TextEncoder().encode(bodyWithPlaceholder), 0x4d659218e32a3268n) & 0xfffffn)
+		.toString(16)
+		.padStart(5, "0");
 }
 
 describe("Anthropic request fingerprint alignment", () => {
@@ -705,6 +750,267 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(bare["anthropic-beta"]).toBeUndefined();
 	});
 
+	it("keeps the Console fingerprint additive to official API-key wire behavior instead of enabling OAuth behavior", async () => {
+		const consoleModel = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
+			id: "claude-opus-4-8",
+			name: "Claude Opus 4.8",
+			maxTokens: 128_000,
+		});
+		const tools: Tool[] = [
+			{
+				name: "bash",
+				description: "run commands",
+				parameters: {
+					type: "object",
+					properties: { command: { type: "string" } },
+					required: ["command"],
+				} as TJsonSchema,
+			},
+		];
+		const controller = new AbortController();
+		const { promise, resolve } = Promise.withResolvers<{
+			url: string;
+			headers: Headers;
+			body: string;
+		}>();
+		const fakeFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			const rawBody = init?.body;
+			const body = typeof rawBody === "string" ? rawBody : new TextDecoder().decode(rawBody as Uint8Array);
+			resolve({ url: String(input), headers: new Headers(init?.headers), body });
+			controller.abort();
+			return new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		};
+
+		streamAnthropic(
+			consoleModel,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "Hi from the Console profile", timestamp: Date.now() }],
+				tools,
+			},
+			{
+				apiKey: "shared-console-key",
+				apiKeyRequestProfile: "anthropic-console",
+				isOAuth: false,
+				signal: controller.signal,
+				fetch: fakeFetch,
+			},
+		);
+
+		const request = await promise;
+		const payload = JSON.parse(request.body) as {
+			system?: Array<{ type?: string; text?: string; cache_control?: unknown }>;
+			tools?: Array<{ name?: string }>;
+			metadata?: unknown;
+			max_tokens?: number;
+		};
+		const system = payload.system ?? [];
+		const cch = system[0]?.text?.match(/cch=([0-9a-f]{5});/)?.[1];
+
+		expect(request.url).toBe("https://api.anthropic.com/v1/messages");
+		expect(request.headers.get("x-api-key")).toBe("shared-console-key");
+		expect(request.headers.get("authorization")).toBeNull();
+		expect(request.headers.get("x-client-request-id")).toBeNull();
+		expect(request.headers.get("x-claude-code-session-id")).toBeNull();
+		expect(request.headers.get("anthropic-beta") ?? "").not.toMatch(
+			/oauth-|claude-code|prompt-caching-scope|advanced-tool-use|extended-cache-ttl/,
+		);
+		expect(system).toHaveLength(3);
+		expect(system[0]?.text).toStartWith("x-anthropic-billing-header:");
+		expect(system[0]?.cache_control).toBeUndefined();
+		expect(system[1]).toEqual({ type: "text", text: claudeCodeSystemInstruction });
+		expect(system[2]).toEqual({
+			type: "text",
+			text: "Stay concise.",
+			cache_control: { type: "ephemeral" },
+		});
+		expect(cch).toMatch(/^[0-9a-f]{5}$/);
+		const bodyWithPlaceholder = request.body.replace(/cch=[0-9a-f]{5}/, "cch=00000");
+		const expectedCch = (
+			Bun.hash.xxHash64(new TextEncoder().encode(bodyWithPlaceholder), 0x4d659218e32a3268n) & 0xfffffn
+		)
+			.toString(16)
+			.padStart(5, "0");
+		expect(cch).toBe(expectedCch);
+		expect(payload.metadata).toBeUndefined();
+		expect(payload.tools?.[0]?.name).toBe("bash");
+		expect(payload.max_tokens).toBe(128_000);
+		expect(request.body).not.toContain('"ttl":"1h"');
+		expect(request.body).not.toContain('"scope":"global"');
+	});
+
+	it("keeps OAuth billing and Claude Code instruction for claude-haiku-4-5, unlike Console Haiku", async () => {
+		const wireModelId = "claude-haiku-4-5";
+		const preservedSystemText = "Preserve this OAuth system text: café 你好 🧪";
+		const request = await captureAnthropicWireRequest(
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: wireModelId, name: "Claude Haiku 4.5" }),
+			{
+				systemPrompt: [preservedSystemText],
+				messages: [{ role: "user", content: "Route this OAuth request to Haiku 4.5", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "sk-ant-oat-test",
+				isOAuth: true,
+			},
+		);
+		const system = request.payload.system ?? [];
+		const cchMatches = [...request.body.matchAll(/cch=([0-9a-f]{5});/g)];
+		const embeddedCch = cchMatches[0]?.[1];
+
+		expect(request.payload.model).toBe(wireModelId);
+		expect(system[0]?.text).toStartWith("x-anthropic-billing-header:");
+		expect(system[0]?.cache_control).toBeUndefined();
+		expect(system[1]).toEqual({ type: "text", text: claudeCodeSystemInstruction });
+		expect(system[2]).toEqual({
+			type: "text",
+			text: preservedSystemText,
+			cache_control: { type: "ephemeral", ttl: "1h" },
+		});
+		expect(cchMatches).toHaveLength(1);
+		expect(embeddedCch).toBe(calculateAnthropicCch(request.body));
+	});
+
+	it("uses the wire Haiku model to remove stale Console identity without emitting billing or CCH", async () => {
+		const staleBillingHeader = "  x-anthropic-billing-header: cc_version=0.0.1; cc_entrypoint=cli; cch=ABCDE;";
+		const preservedSystemText = "Preserve this user system text: café 你好 🧪";
+		const request = await captureAnthropicWireRequest(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: [staleBillingHeader, claudeCodeSystemInstruction, preservedSystemText],
+				messages: [{ role: "user", content: "Route this request to Haiku", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "shared-console-key",
+				apiKeyRequestProfile: "anthropic-console",
+				isOAuth: false,
+				requestModelId: "claude-3-5-haiku-20241022",
+			},
+		);
+		const systemTexts = (request.payload.system ?? []).map(block => block.text);
+
+		expect(request.payload.model).toBe("claude-3-5-haiku-20241022");
+		expect(systemTexts).toEqual([preservedSystemText]);
+		expect(systemTexts.filter(text => text?.trimStart().startsWith("x-anthropic-billing-header:"))).toHaveLength(0);
+		expect(systemTexts.filter(text => text?.trim() === claudeCodeSystemInstruction)).toHaveLength(0);
+		expect(request.body).not.toContain("cch=");
+		expect(request.body).not.toContain("cch=ABCDE");
+	});
+
+	it("uses the wire Sonnet model to emit billing and hashes the final UTF-8 body", async () => {
+		const wireModelId = "claude-sonnet-4-6";
+		const request = await captureAnthropicWireRequest(
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-3-5-haiku", name: "Claude 3.5 Haiku" }),
+			{
+				systemPrompt: ["Keep this UTF-8 system text: café 你好 🧪"],
+				messages: [{ role: "user", content: "UTF-8 wire body: naïve résumé 東京", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "shared-console-key",
+				apiKeyRequestProfile: "anthropic-console",
+				isOAuth: false,
+				requestModelId: wireModelId,
+			},
+		);
+		const systemTexts = (request.payload.system ?? []).map(block => block.text);
+		const cchMatches = [...request.body.matchAll(/cch=([0-9a-f]{5});/g)];
+		const embeddedCch = cchMatches[0]?.[1];
+
+		expect(request.payload.model).toBe(wireModelId);
+		expect(systemTexts.filter(text => text?.startsWith("x-anthropic-billing-header:"))).toHaveLength(1);
+		expect(systemTexts.filter(text => text === claudeCodeSystemInstruction)).toHaveLength(1);
+		expect(cchMatches).toHaveLength(1);
+		expect(embeddedCch).toBe(calculateAnthropicCch(request.body));
+	});
+
+	it("rebuilds stale Console identity blocks once and preserves user-authored system text", async () => {
+		const staleBillingHeader = "  x-anthropic-billing-header: cc_version=0.0.1; cc_entrypoint=cli; cch=ABCDE;";
+		const preservedSystemText = "User-authored system text must survive: déjà vu 你好 🧪";
+		const request = await captureAnthropicWireRequest(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: [staleBillingHeader, claudeCodeSystemInstruction, preservedSystemText],
+				messages: [{ role: "user", content: "Normalize stale Console identity", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "shared-console-key",
+				apiKeyRequestProfile: "anthropic-console",
+				isOAuth: false,
+			},
+		);
+		const systemTexts = (request.payload.system ?? []).map(block => block.text);
+		const billingBlocks = systemTexts.filter(text => text?.startsWith("x-anthropic-billing-header:"));
+		const instructionBlocks = systemTexts.filter(text => text === claudeCodeSystemInstruction);
+		const cchMatches = [...request.body.matchAll(/cch=([0-9a-f]{5});/g)];
+		const embeddedCch = cchMatches[0]?.[1];
+
+		expect(billingBlocks).toHaveLength(1);
+		expect(instructionBlocks).toHaveLength(1);
+		expect(systemTexts).toHaveLength(3);
+		expect(systemTexts[2]).toBe(preservedSystemText);
+		expect(request.body).not.toContain("cch=ABCDE");
+		expect(cchMatches).toHaveLength(1);
+		expect(embeddedCch).toBe(calculateAnthropicCch(request.body));
+	});
+
+	it("ignores the Console profile for the same unprofiled key, Haiku, and non-official endpoints", async () => {
+		const cases: Array<{
+			name: string;
+			model: Model<"anthropic-messages">;
+			apiKeyRequestProfile?: "anthropic-console";
+		}> = [
+			{
+				name: "same official key without profile",
+				model: ANTHROPIC_MODEL,
+			},
+			{
+				name: "official Haiku with profile",
+				model: buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-haiku-4-5", name: "Claude Haiku 4.5" }),
+				apiKeyRequestProfile: "anthropic-console",
+			},
+			{
+				name: "custom endpoint with profile",
+				model: buildModel({
+					...ANTHROPIC_MODEL_SPEC,
+					baseUrl: "https://gateway.example.com/anthropic",
+				}),
+				apiKeyRequestProfile: "anthropic-console",
+			},
+		];
+
+		for (const testCase of cases) {
+			const payload = (await captureAnthropicPayload(
+				testCase.model,
+				{
+					systemPrompt: ["Stay concise."],
+					messages: [{ role: "user", content: "Hi from the same key", timestamp: Date.now() }],
+				},
+				{
+					apiKey: "shared-console-key",
+					apiKeyRequestProfile: testCase.apiKeyRequestProfile,
+					isOAuth: false,
+				},
+			)) as {
+				system?: Array<{ type?: string; text?: string; cache_control?: unknown }>;
+				metadata?: unknown;
+			};
+
+			expect({ name: testCase.name, system: payload.system, metadata: payload.metadata }).toEqual({
+				name: testCase.name,
+				system: [
+					{
+						type: "text",
+						text: "Stay concise.",
+						cache_control: { type: "ephemeral" },
+					},
+				],
+				metadata: undefined,
+			});
+		}
+	});
 	it("skips Claude Code instruction injection for claude-3-5-haiku models", async () => {
 		const payload = (await captureAnthropicPayload(
 			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-3-5-haiku", name: "Claude 3.5 Haiku" }),

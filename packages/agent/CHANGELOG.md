@@ -6,6 +6,11 @@
 
 - Added terminal tool results so final-result tools can end an agent loop cleanly
   without synthesizing an aborted assistant message.
+
+### Fixed
+
+- Fixed pre-resolved API-key requests preserving credential-bound request metadata when entering the streaming retry pipeline.
+
 ## [16.3.3] - 2026-07-02
 
 ### Changed

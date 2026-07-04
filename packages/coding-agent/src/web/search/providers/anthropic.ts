@@ -8,12 +8,14 @@ import {
 	type AnthropicAuthConfig,
 	type AnthropicSystemBlock,
 	type ApiKey,
+	type ApiKeyRequestProfile,
 	type AuthStorage,
 	buildAnthropicAuthConfig,
 	buildAnthropicSearchHeaders,
 	buildAnthropicSystemBlocks,
 	buildAnthropicUrl,
 	type FetchImpl,
+	normalizeAnthropicApiKeyRequestProfile,
 	resolveAnthropicMetadataUserId,
 	stripClaudeToolPrefix,
 	withAuth,
@@ -64,16 +66,20 @@ function getModel(): string {
 function buildSystemBlocks(
 	auth: AnthropicAuthConfig,
 	model: string,
+	apiKeyRequestProfile: ApiKeyRequestProfile | undefined,
+	firstUserMessageText: string,
 	systemPrompt?: string,
 ): AnthropicSystemBlock[] | undefined {
-	// Match the streaming path: the CC billing header + system instruction are
-	// an OAuth fingerprint and must not be claimed on API-key requests.
-	const includeClaudeCode = auth.isOAuth && !model.startsWith("claude-3-5-haiku");
+	// Preserve OAuth shaping, and apply the same billing-block profile to
+	// eligible first-party Console API keys selected by the atomic resolver.
+	const includeClaudeCode =
+		(auth.isOAuth && !model.startsWith("claude-3-5-haiku")) || apiKeyRequestProfile === "anthropic-console";
 	const extraInstructions = auth.isOAuth ? ["You are a helpful AI assistant with web search capabilities."] : [];
 
 	return buildAnthropicSystemBlocks(systemPrompt ? [systemPrompt] : undefined, {
 		includeClaudeCodeInstruction: includeClaudeCode,
 		extraInstructions,
+		firstUserMessageText: apiKeyRequestProfile === "anthropic-console" ? firstUserMessageText : undefined,
 		cacheControl: { type: "ephemeral" },
 	});
 }
@@ -90,6 +96,7 @@ function buildSystemBlocks(
  */
 async function callSearch(
 	auth: AnthropicAuthConfig,
+	apiKeyRequestProfile: ApiKeyRequestProfile | undefined,
 	model: string,
 	query: string,
 	metadataUserId?: string,
@@ -102,7 +109,7 @@ async function callSearch(
 	const url = buildAnthropicUrl(auth);
 	const headers = buildAnthropicSearchHeaders(auth);
 
-	const systemBlocks = buildSystemBlocks(auth, model, systemPrompt);
+	const systemBlocks = buildSystemBlocks(auth, model, apiKeyRequestProfile, query, systemPrompt);
 
 	const body: Record<string, unknown> = {
 		model,
@@ -128,9 +135,9 @@ async function callSearch(
 		body.system = systemBlocks;
 	}
 
-	// OAuth requests inject the CC billing header (buildSystemBlocks); patch its
-	// cch attestation like the streaming path instead of shipping `cch=00000`.
-	const doFetch = auth.isOAuth ? wrapFetchForCch(fetchImpl) : fetchImpl;
+	// OAuth and normalized Console-profile requests inject the CC billing
+	// header; patch its cch attestation instead of shipping `cch=00000`.
+	const doFetch = auth.isOAuth || apiKeyRequestProfile ? wrapFetchForCch(fetchImpl) : fetchImpl;
 	const response = await doFetch(url, {
 		method: "POST",
 		headers,
@@ -285,7 +292,7 @@ export async function searchAnthropic(
 		"authStorage" in params ? params.authStorage.getOAuthAccountId("anthropic", params.sessionId) : undefined;
 	const response = await withAuth(
 		keyOrResolver,
-		key => {
+		(key, resolution) => {
 			const auth = buildAnthropicAuthConfig(key, searchBaseUrl);
 			// Mirror the main Messages path: OAuth requests need a Claude-Code-shaped
 			// metadata.user_id (`{session_id, account_uuid?, device_id}`) so the
@@ -299,8 +306,15 @@ export async function searchAnthropic(
 				callerSessionId,
 				accountId,
 			);
+			const apiKeyRequestProfile = normalizeAnthropicApiKeyRequestProfile(resolution.apiKeyRequestProfile, {
+				isOAuthToken: auth.isOAuth,
+				provider: "anthropic",
+				baseUrl: auth.baseUrl,
+				modelId: model,
+			});
 			return callSearch(
 				auth,
+				apiKeyRequestProfile,
 				model,
 				params.query,
 				metadataUserId,
