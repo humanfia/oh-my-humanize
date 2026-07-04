@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { isEnoent, TempDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import {
+	WORKFLOW_MODEL_REQUEST_ENV,
 	WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV,
 	WORKFLOW_SUBAGENT_RETRY_BASE_DELAY_MS_ENV,
 	WORKFLOW_SUBAGENT_RETRY_MAX_DELAY_MS_ENV,
@@ -41,6 +42,45 @@ describe("workflow CLI", () => {
 		expect(env.PYTEST_ADDOPTS).toBe("-q -p no:cacheprovider -p no:benchmark");
 		expect(env.RUFF_CACHE_DIR).toBe("/run/tmp/ruff-cache");
 		expect(env.PATH).toBe("/bin");
+	});
+
+	it("passes portable model requests across the headless process boundary without a scalar model flag", async () => {
+		using tempDir = TempDir.createSync("@omp-workflow-cli-agent-model-request-");
+		const root = tempDir.path();
+		const modelRequest = {
+			version: 1 as const,
+			nodeId: "reviewKernel",
+			patterns: ["anthropic/claude-sonnet-4-5:high", "openai/gpt-5.5:medium"],
+			unavailablePolicy: "fallback-to-parent" as const,
+		};
+		let launchedArgs: string[] = [];
+		let launchedEnv: Record<string, string | undefined> | undefined;
+
+		await runHeadlessAgentTask(
+			root,
+			{
+				activationId: "activation-1",
+				nodeId: "reviewKernel",
+				agent: "reviewer",
+				modelRequest,
+				task: {
+					id: "reviewKernel",
+					description: "review kernel",
+					role: "reviewer",
+					assignment: "review the candidate kernel",
+				},
+			},
+			{
+				runProcess: async (args, options) => {
+					launchedArgs = args;
+					launchedEnv = options.env;
+					return { exitCode: 0, stdout: "review complete", stderr: "" };
+				},
+			},
+		);
+
+		expect(launchedArgs).not.toContain("--model");
+		expect(launchedEnv?.[WORKFLOW_MODEL_REQUEST_ENV]).toBe(JSON.stringify(modelRequest));
 	});
 
 	it("prints ambiguous flow lookup errors without a source stack trace", async () => {

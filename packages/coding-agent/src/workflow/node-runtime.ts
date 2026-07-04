@@ -1,4 +1,5 @@
 import type { WorkflowModelContext, WorkflowNode, WorkflowScriptLanguage } from "./definition";
+import type { WorkflowPortableModelRequest } from "./model-resolution";
 import type { WorkflowActivation } from "./scheduler";
 import type { WorkflowActivationOutput, WorkflowActivationRetryHistoryEntry } from "./state";
 
@@ -13,6 +14,7 @@ export interface WorkflowAgentNodeInput extends WorkflowNodeRuntimeInput {
 	prompt?: string;
 	model?: WorkflowModelContext;
 	modelOverride?: string;
+	modelRequest?: WorkflowPortableModelRequest;
 }
 
 export interface WorkflowScriptNodeInput extends WorkflowNodeRuntimeInput {
@@ -34,6 +36,7 @@ export interface WorkflowReviewNodeInput extends WorkflowNodeRuntimeInput {
 	prompt?: string;
 	model?: WorkflowModelContext;
 	modelOverride?: string;
+	modelRequest?: WorkflowPortableModelRequest;
 	gates?: string[];
 	fallbackVerdict?: string;
 }
@@ -71,6 +74,7 @@ export interface WorkflowScriptResourceContext {
 
 export interface WorkflowNodeRuntimeOptions {
 	modelOverride?: string;
+	modelRequest?: WorkflowPortableModelRequest;
 	signal?: AbortSignal;
 	context?: WorkflowNodeExecutionContext;
 	resourceDir?: string;
@@ -140,6 +144,9 @@ async function executeAgentNode(
 	};
 	if (options.modelOverride !== undefined) {
 		input.modelOverride = options.modelOverride;
+	}
+	if (options.modelRequest !== undefined) {
+		input.modelRequest = options.modelRequest;
 	}
 	if (options.signal !== undefined) {
 		input.signal = options.signal;
@@ -247,6 +254,9 @@ async function executeReviewNode(
 	}
 	if (options.modelOverride !== undefined) {
 		input.modelOverride = options.modelOverride;
+	}
+	if (options.modelRequest !== undefined) {
+		input.modelRequest = options.modelRequest;
 	}
 	if (options.signal !== undefined) {
 		input.signal = options.signal;

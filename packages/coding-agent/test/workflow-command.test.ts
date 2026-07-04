@@ -7,6 +7,8 @@ import {
 } from "../src/cli/workflow-cli";
 import Workflow from "../src/commands/workflow";
 import {
+	parseWorkflowModelRequest,
+	WORKFLOW_MODEL_REQUEST_ENV,
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV,
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV,
 } from "../src/workflow/model-env";
@@ -171,5 +173,20 @@ describe("resolveWorkflowCommandArgs", () => {
 		expect(env.PATH).toBe("/bin");
 		expect(env[WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV]).toBe("rust-cat/gpt-5.5");
 		expect(env[WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV]).toBe("false");
+	});
+
+	test("round-trips portable model requests through the headless child environment", () => {
+		const modelRequest = {
+			version: 1 as const,
+			nodeId: "reviewKernel",
+			patterns: ["anthropic/claude-sonnet-4-5:high", "openai/gpt-5.5:medium"],
+			unavailablePolicy: "fallback-to-parent" as const,
+		};
+
+		const env = buildHeadlessAgentTaskEnv({ PATH: "/bin" }, undefined, undefined, modelRequest);
+
+		expect(parseWorkflowModelRequest(env[WORKFLOW_MODEL_REQUEST_ENV])).toEqual(modelRequest);
+		expect(env[WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV]).toBeUndefined();
+		expect(env[WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV]).toBeUndefined();
 	});
 });

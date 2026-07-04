@@ -690,7 +690,7 @@ edges: []
 });
 
 describe("runWorkflow headless model dispatch", () => {
-	it("forwards the raw role pattern verbatim when no model registry is provided", async () => {
+	it("forwards a role model as a portable request without a host-side override", async () => {
 		const host = new MemoryWorkflowHost();
 		const definition = parseWorkflowDefinition(`
 name: headless-role-model
@@ -709,10 +709,10 @@ nodes:
 edges: []
 `);
 		const freeze = freezeForDefinition(definition);
-		const overrides: (string | undefined)[] = [];
+		let receivedDispatch: unknown;
 		const runtimeHost: WorkflowNodeRuntimeHost = {
 			runAgentNode: async input => {
-				overrides.push(input.modelOverride);
+				receivedDispatch = { modelRequest: input.modelRequest, modelOverride: input.modelOverride };
 				return { summary: "built" };
 			},
 		};
@@ -733,7 +733,15 @@ edges: []
 		});
 
 		expect(result.scheduler.activations).toMatchObject([{ nodeId: "build", status: "completed" }]);
-		expect(overrides).toEqual(["anthropic/claude-fable-5:xhigh"]);
+		expect(receivedDispatch).toEqual({
+			modelRequest: {
+				version: 1,
+				nodeId: "build",
+				patterns: ["anthropic/claude-fable-5:xhigh"],
+				unavailablePolicy: "fail",
+			},
+			modelOverride: undefined,
+		});
 	});
 
 	it("fails the activation without invoking the runtime host when a required role is unknown", async () => {
@@ -785,7 +793,7 @@ edges: []
 		expect(hostInvoked).toBe(false);
 	});
 
-	it("omits the override for role-based models under fallback-to-parent so the child default wins", async () => {
+	it("omits both portable request and override for role models under fallback-to-parent", async () => {
 		const host = new MemoryWorkflowHost();
 		const definition = parseWorkflowDefinition(`
 name: headless-role-fallback
@@ -804,10 +812,10 @@ nodes:
 edges: []
 `);
 		const freeze = freezeForDefinition(definition);
-		const overrides: (string | undefined)[] = [];
+		let receivedDispatch: unknown;
 		const runtimeHost: WorkflowNodeRuntimeHost = {
 			runAgentNode: async input => {
-				overrides.push(input.modelOverride);
+				receivedDispatch = { modelRequest: input.modelRequest, modelOverride: input.modelOverride };
 				return { summary: "built" };
 			},
 		};
@@ -828,10 +836,10 @@ edges: []
 		});
 
 		expect(result.scheduler.activations).toMatchObject([{ nodeId: "build", status: "completed" }]);
-		expect(overrides).toEqual([undefined]);
+		expect(receivedDispatch).toEqual({ modelRequest: undefined, modelOverride: undefined });
 	});
 
-	it("forwards a node-level explicit selector verbatim even under fallback-to-parent", async () => {
+	it("forwards an explicit selector and fallback policy as a portable request", async () => {
 		const host = new MemoryWorkflowHost();
 		const definition = parseWorkflowDefinition(`
 name: headless-explicit-selector
@@ -848,10 +856,10 @@ nodes:
 edges: []
 `);
 		const freeze = freezeForDefinition(definition);
-		const overrides: (string | undefined)[] = [];
+		let receivedDispatch: unknown;
 		const runtimeHost: WorkflowNodeRuntimeHost = {
 			runAgentNode: async input => {
-				overrides.push(input.modelOverride);
+				receivedDispatch = { modelRequest: input.modelRequest, modelOverride: input.modelOverride };
 				return { summary: "built" };
 			},
 		};
@@ -872,7 +880,70 @@ edges: []
 		});
 
 		expect(result.scheduler.activations).toMatchObject([{ nodeId: "build", status: "completed" }]);
-		expect(overrides).toEqual(["openai/gpt-5:high"]);
+		expect(receivedDispatch).toEqual({
+			modelRequest: {
+				version: 1,
+				nodeId: "build",
+				patterns: ["openai/gpt-5:high"],
+				unavailablePolicy: "fallback-to-parent",
+			},
+			modelOverride: undefined,
+		});
+	});
+
+	it("preserves the complete candidate order in the portable request", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = parseWorkflowDefinition(`
+name: headless-candidate-models
+version: 1
+models:
+  unavailable: fail
+nodes:
+  build:
+    type: agent
+    agent: task
+    prompt: Build the feature.
+    model:
+      candidates:
+        - missing-provider/missing-model
+        - anthropic/claude-fable-5:xhigh
+        - openai/gpt-5:high
+edges: []
+`);
+		const freeze = freezeForDefinition(definition);
+		let receivedDispatch: unknown;
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async input => {
+				receivedDispatch = { modelRequest: input.modelRequest, modelOverride: input.modelOverride };
+				return { summary: "built" };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "build",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		expect(result.scheduler.activations).toMatchObject([{ nodeId: "build", status: "completed" }]);
+		expect(receivedDispatch).toEqual({
+			modelRequest: {
+				version: 1,
+				nodeId: "build",
+				patterns: ["missing-provider/missing-model", "anthropic/claude-fable-5:xhigh", "openai/gpt-5:high"],
+				unavailablePolicy: "fail",
+			},
+			modelOverride: undefined,
+		});
 	});
 });
 

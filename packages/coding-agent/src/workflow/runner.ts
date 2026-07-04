@@ -32,6 +32,7 @@ import {
 	resolvePortableWorkflowNodeModel,
 	resolveWorkflowNodeModel,
 	type WorkflowModelResolutionAudit,
+	type WorkflowPortableModelRequest,
 } from "./model-resolution";
 import {
 	executeWorkflowNode,
@@ -474,7 +475,8 @@ async function executeAndPersistActivation(
 		started = true;
 		const promptedNode = resolvedPrompt ? { ...node, prompt: resolvedPrompt.value } : node;
 		const nodeForExecution = await resolveScriptForExecution(options, promptedNode);
-		const modelAudit = nodeRequiresModel(node) ? resolveModelAudit(options, node) : undefined;
+		const modelDispatch = nodeRequiresModel(node) ? resolveModelDispatch(options, node) : undefined;
+		const modelAudit = modelDispatch?.audit;
 		if (modelAudit?.error && nodeRequiresModel(node)) {
 			throw new WorkflowRunnerError(modelAudit.error);
 		}
@@ -488,6 +490,7 @@ async function executeAndPersistActivation(
 			rawOutput = await awaitWorkflowNodeExecution(
 				executeWorkflowNode(nodeForExecution, activation, options.runtimeHost, {
 					modelOverride: modelOverrideFromAudit(modelAudit),
+					modelRequest: modelDispatch?.request,
 					signal: runtimeSignal,
 					context: {
 						state: context.state,
@@ -871,19 +874,23 @@ function inputSnapshotFromPrompt(
 	return resolvedPrompt ? { prompt: resolvedPrompt } : undefined;
 }
 
-function resolveModelAudit(
-	options: WorkflowRunnerOptions,
-	node: WorkflowNode,
-): WorkflowModelResolutionAudit | undefined {
+interface WorkflowNodeModelDispatch {
+	audit: WorkflowModelResolutionAudit;
+	request?: WorkflowPortableModelRequest;
+}
+
+function resolveModelDispatch(options: WorkflowRunnerOptions, node: WorkflowNode): WorkflowNodeModelDispatch {
 	const modelResolution = options.modelResolution;
 	if (!modelResolution) return resolvePortableWorkflowNodeModel(options.definition, node);
-	return resolveWorkflowNodeModel(options.definition, node, {
-		availableModels: modelResolution.availableModels,
-		settings: modelResolution.settings,
-		matchPreferences: modelResolution.matchPreferences,
-		parentActiveModelPattern: modelResolution.parentActiveModelPattern,
-		agentModel: resolveAgentModelPattern(modelResolution, node),
-	}).audit;
+	return {
+		audit: resolveWorkflowNodeModel(options.definition, node, {
+			availableModels: modelResolution.availableModels,
+			settings: modelResolution.settings,
+			matchPreferences: modelResolution.matchPreferences,
+			parentActiveModelPattern: modelResolution.parentActiveModelPattern,
+			agentModel: resolveAgentModelPattern(modelResolution, node),
+		}).audit,
+	};
 }
 
 function resolveAgentModelPattern(

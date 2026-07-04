@@ -49,6 +49,27 @@ export interface WorkflowModelResolutionResult {
 	audit: WorkflowModelResolutionAudit;
 }
 
+export interface WorkflowPortableModelRequest {
+	version: 1;
+	nodeId: string;
+	patterns: string[];
+	unavailablePolicy: WorkflowModelUnavailablePolicy;
+}
+
+export interface WorkflowPortableNodeModelResolution {
+	audit: WorkflowModelResolutionAudit;
+	request?: WorkflowPortableModelRequest;
+}
+
+export interface WorkflowPortableModelRequestResult {
+	model?: Model<Api>;
+	thinkingLevel?: ThinkingLevel;
+	explicitThinkingLevel: boolean;
+	resolvedPattern?: string;
+	warning?: string;
+	error?: string;
+}
+
 interface WorkflowModelRequest {
 	source: Exclude<WorkflowModelResolutionSource, "parent-fallback" | "none">;
 	role?: string;
@@ -162,35 +183,73 @@ export function resolveWorkflowNodeModel(
 }
 
 /**
- * Resolve only the portable model selection embedded in a workflow definition.
- *
- * Headless workflow execution has no live model registry to validate selectors
- * against, so the selected raw pattern (including any `:thinkingLevel` suffix)
- * is preserved verbatim for the child agent process to resolve with its own
- * registry and authentication context. Selection precedence and
- * `models.unavailable` semantics mirror `resolveWorkflowNodeModel`, with the
- * child process default model standing in for the parent session model.
+ * Preserve the model selection embedded in a workflow until a process with a
+ * live model registry can resolve it. Headless workflow execution sends this
+ * request to the child agent process instead of pretending the first raw
+ * pattern is already a resolved model.
  */
 export function resolvePortableWorkflowNodeModel(
 	definition: WorkflowDefinition,
 	node: WorkflowNode,
-): WorkflowModelResolutionAudit {
+): WorkflowPortableNodeModelResolution {
 	const request = selectModelRequest(definition, node, { availableModels: [] });
 	const unavailablePolicy = resolveUnavailablePolicy(definition, node, request?.modelContext);
 	const audit = createAudit(node.id, request, unavailablePolicy);
-	if (!request) return audit;
+	if (!request) return { audit };
 	const parentOverrideReason = portableParentOverrideReason(request, unavailablePolicy);
 	if (parentOverrideReason !== undefined) {
-		return { ...audit, source: "parent-fallback", fallbackUsed: true, fallbackReason: parentOverrideReason };
+		return {
+			audit: { ...audit, source: "parent-fallback", fallbackUsed: true, fallbackReason: parentOverrideReason },
+		};
 	}
-	const pattern = request.patterns[0];
-	if (pattern !== undefined) {
-		return { ...audit, requestedPattern: pattern, resolvedModel: pattern };
+	if (request.patterns.length > 0) {
+		return {
+			audit,
+			request: {
+				version: 1,
+				nodeId: node.id,
+				patterns: [...request.patterns],
+				unavailablePolicy,
+			},
+		};
 	}
 	if (unavailablePolicy === "fallback-to-parent") {
-		return { ...audit, source: "parent-fallback", fallbackUsed: true, fallbackReason: "requested model unavailable" };
+		return {
+			audit: {
+				...audit,
+				source: "parent-fallback",
+				fallbackUsed: true,
+				fallbackReason: "requested model unavailable",
+			},
+		};
 	}
-	return { ...audit, error: `workflow model for node "${node.id}" could not resolve requested model` };
+	return {
+		audit: { ...audit, error: `workflow model for node "${node.id}" could not resolve requested model` },
+	};
+}
+
+/** Resolve a portable request against the child process registry and settings. */
+export function resolvePortableWorkflowModelRequest(
+	request: WorkflowPortableModelRequest,
+	options: Pick<WorkflowModelResolutionOptions, "availableModels" | "settings" | "matchPreferences">,
+): WorkflowPortableModelRequestResult {
+	const resolved = resolveFirstPattern(request.patterns, options);
+	if (resolved) {
+		return {
+			model: resolved.model,
+			thinkingLevel: resolved.thinkingLevel,
+			explicitThinkingLevel: resolved.explicitThinkingLevel,
+			resolvedPattern: resolved.pattern,
+			warning: resolved.warning,
+		};
+	}
+	if (request.unavailablePolicy === "fallback-to-parent") {
+		return { explicitThinkingLevel: false };
+	}
+	return {
+		explicitThinkingLevel: false,
+		error: `workflow model for node "${request.nodeId}" could not resolve requested model`,
+	};
 }
 
 function selectModelRequest(
