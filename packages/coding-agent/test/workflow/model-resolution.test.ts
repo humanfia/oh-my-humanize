@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { type Api, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Settings } from "../../src/config/settings";
 import { parseWorkflowDefinition } from "../../src/workflow/definition";
-import { resolveWorkflowNodeModel } from "../../src/workflow/model-resolution";
+import {
+	resolvePortableWorkflowModelRequest,
+	resolvePortableWorkflowNodeModel,
+	resolveWorkflowNodeModel,
+} from "../../src/workflow/model-resolution";
 
 const anthropicModel = createModel({
 	provider: "anthropic",
@@ -277,5 +282,140 @@ edges: []
 		expect(result.audit.source).toBe("workflow-default");
 		expect(result.audit.requestedRole).toBe("builder");
 		expect(result.audit.thinkingLevel).toBe(Effort.Medium);
+	});
+
+	describe("portable child model resolution", () => {
+		it("preserves candidate order and resolves the first candidate available to the child", () => {
+			const definition = workflow(`
+name: portable-candidate-demo
+version: 1
+nodes:
+  build:
+    type: agent
+    model:
+      candidates:
+        - missing-provider/missing-model
+        - openai/gpt-4o
+      unavailable: fail
+edges: []
+`);
+
+			const portable = resolvePortableWorkflowNodeModel(definition, definition.nodes[0]!);
+
+			expect(portable.request).toEqual({
+				version: 1,
+				nodeId: "build",
+				patterns: ["missing-provider/missing-model", "openai/gpt-4o"],
+				unavailablePolicy: "fail",
+			});
+			if (!portable.request) throw new Error("Expected a portable model request");
+
+			const resolved = resolvePortableWorkflowModelRequest(portable.request, {
+				availableModels,
+				settings: Settings.isolated(),
+			});
+
+			expect(resolved.model?.provider).toBe("openai");
+			expect(resolved.model?.id).toBe("gpt-4o");
+			expect(resolved.resolvedPattern).toBe("openai/gpt-4o");
+		});
+
+		it("expands a portable pi role from child settings without dropping explicit thinking effort", () => {
+			const definition = workflow(`
+name: portable-role-demo
+version: 1
+nodes:
+  review:
+    type: review
+    model:
+      selector: pi/slow:high
+      unavailable: fail
+edges: []
+`);
+			const settings = Settings.isolated();
+			settings.setModelRole("slow", "anthropic/claude-sonnet-4-5");
+
+			const portable = resolvePortableWorkflowNodeModel(definition, definition.nodes[0]!);
+
+			expect(portable.request).toEqual({
+				version: 1,
+				nodeId: "review",
+				patterns: ["pi/slow:high"],
+				unavailablePolicy: "fail",
+			});
+			if (!portable.request) throw new Error("Expected a portable model request");
+
+			const resolved = resolvePortableWorkflowModelRequest(portable.request, { availableModels, settings });
+
+			expect(resolved.model?.provider).toBe("anthropic");
+			expect(resolved.model?.id).toBe("claude-sonnet-4-5");
+			expect(resolved.thinkingLevel).toBe(Effort.High);
+			expect(resolved.explicitThinkingLevel).toBe(true);
+		});
+
+		it("leaves an unavailable explicit selector to the parent when the portable policy allows fallback", () => {
+			const definition = workflow(`
+name: portable-fallback-demo
+version: 1
+nodes:
+  build:
+    type: agent
+    model:
+      selector: missing-provider/missing-model
+      unavailable: fallback-to-parent
+edges: []
+`);
+
+			const portable = resolvePortableWorkflowNodeModel(definition, definition.nodes[0]!);
+
+			expect(portable.request).toEqual({
+				version: 1,
+				nodeId: "build",
+				patterns: ["missing-provider/missing-model"],
+				unavailablePolicy: "fallback-to-parent",
+			});
+			if (!portable.request) throw new Error("Expected a portable model request");
+
+			const resolved = resolvePortableWorkflowModelRequest(portable.request, {
+				availableModels,
+				settings: Settings.isolated(),
+			});
+
+			expect(resolved).toEqual({ explicitThinkingLevel: false });
+		});
+
+		it("returns a node-scoped error for the same unavailable selector when the portable policy is fail", () => {
+			const definition = workflow(`
+name: portable-fail-demo
+version: 1
+nodes:
+  build:
+    type: agent
+    model:
+      selector: missing-provider/missing-model
+      unavailable: fail
+edges: []
+`);
+
+			const portable = resolvePortableWorkflowNodeModel(definition, definition.nodes[0]!);
+
+			expect(portable.request).toEqual({
+				version: 1,
+				nodeId: "build",
+				patterns: ["missing-provider/missing-model"],
+				unavailablePolicy: "fail",
+			});
+			if (!portable.request) throw new Error("Expected a portable model request");
+
+			const resolved = resolvePortableWorkflowModelRequest(portable.request, {
+				availableModels,
+				settings: Settings.isolated(),
+			});
+
+			expect(resolved).toEqual({
+				explicitThinkingLevel: false,
+				error: 'workflow model for node "build" could not resolve requested model',
+			});
+		});
 	});
 });

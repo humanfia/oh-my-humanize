@@ -9,6 +9,7 @@ import workflowReviewNodeAdapterPrompt from "../prompts/system/workflow-review-n
 import { workflowAgentTaskIdForNode } from "./agent-task-id";
 import type { WorkflowNode, WorkflowScriptLanguage } from "./definition";
 import { formatWorkflowAgentWorkItemLabel } from "./display";
+import type { WorkflowPortableModelRequest } from "./model-resolution";
 import type { WorkflowNodeRuntimeHost, WorkflowReviewNodeOutput, WorkflowScriptContext } from "./node-runtime";
 import { WorkflowNodeRuntimeError } from "./node-runtime";
 import { resolveWorkflowAgentTaskTimeoutMs } from "./node-timeout-policy";
@@ -61,6 +62,7 @@ export interface WorkflowAgentTaskRequest {
 	nodeId: string;
 	modelOverride?: string;
 	modelOverrideAuthFallback?: boolean;
+	modelRequest?: WorkflowPortableModelRequest;
 	timeoutMs?: number;
 	isolated?: boolean;
 	apply?: boolean;
@@ -204,6 +206,9 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				request.modelOverride = input.modelOverride;
 				request.modelOverrideAuthFallback = false;
 			}
+			if (input.modelRequest !== undefined) {
+				request.modelRequest = input.modelRequest;
+			}
 			request.timeoutMs = resolveWorkflowAgentTaskTimeoutMs(input.node.timeoutMs);
 			if (input.signal !== undefined) {
 				request.signal = input.signal;
@@ -299,6 +304,9 @@ export function createSessionWorkflowRuntimeHost(options: WorkflowSessionRuntime
 				if (input.modelOverride !== undefined) {
 					request.modelOverride = input.modelOverride;
 					request.modelOverrideAuthFallback = false;
+				}
+				if (input.modelRequest !== undefined) {
+					request.modelRequest = input.modelRequest;
 				}
 				request.timeoutMs = resolveWorkflowAgentTaskTimeoutMs(input.node.timeoutMs);
 				if (input.signal !== undefined) {
