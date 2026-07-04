@@ -28,7 +28,11 @@ import {
 	workflowLifecycleStoreEntries,
 } from "./lifecycle";
 import { diagnoseWorkflowLiveness } from "./liveness";
-import { resolveWorkflowNodeModel, type WorkflowModelResolutionAudit } from "./model-resolution";
+import {
+	resolvePortableWorkflowNodeModel,
+	resolveWorkflowNodeModel,
+	type WorkflowModelResolutionAudit,
+} from "./model-resolution";
 import {
 	executeWorkflowNode,
 	WorkflowNodeAbortedError,
@@ -872,7 +876,7 @@ function resolveModelAudit(
 	node: WorkflowNode,
 ): WorkflowModelResolutionAudit | undefined {
 	const modelResolution = options.modelResolution;
-	if (!modelResolution) return undefined;
+	if (!modelResolution) return resolvePortableWorkflowNodeModel(options.definition, node);
 	return resolveWorkflowNodeModel(options.definition, node, {
 		availableModels: modelResolution.availableModels,
 		settings: modelResolution.settings,

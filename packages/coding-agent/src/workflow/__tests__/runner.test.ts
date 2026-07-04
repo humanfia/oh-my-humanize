@@ -689,6 +689,193 @@ edges: []
 	});
 });
 
+describe("runWorkflow headless model dispatch", () => {
+	it("forwards the raw role pattern verbatim when no model registry is provided", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = parseWorkflowDefinition(`
+name: headless-role-model
+version: 1
+models:
+  roles:
+    builder: anthropic/claude-fable-5:xhigh
+  unavailable: fail
+nodes:
+  build:
+    type: agent
+    agent: task
+    prompt: Build the feature.
+    model:
+      role: builder
+edges: []
+`);
+		const freeze = freezeForDefinition(definition);
+		const overrides: (string | undefined)[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async input => {
+				overrides.push(input.modelOverride);
+				return { summary: "built" };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "build",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		expect(result.scheduler.activations).toMatchObject([{ nodeId: "build", status: "completed" }]);
+		expect(overrides).toEqual(["anthropic/claude-fable-5:xhigh"]);
+	});
+
+	it("fails the activation without invoking the runtime host when a required role is unknown", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = parseWorkflowDefinition(`
+name: headless-missing-role
+version: 1
+models:
+  unavailable: fail
+nodes:
+  build:
+    type: agent
+    agent: task
+    prompt: Build the feature.
+    model:
+      role: builder
+edges: []
+`);
+		const freeze = freezeForDefinition(definition);
+		let hostInvoked = false;
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async () => {
+				hostInvoked = true;
+				return { summary: "should not run" };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "build",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		expect(result.scheduler.activations.map(activation => [activation.nodeId, activation.status])).toEqual([
+			["build", "failed"],
+		]);
+		expect(result.scheduler.activations[0]?.error).toContain(
+			'workflow model for node "build" could not resolve requested model',
+		);
+		expect(hostInvoked).toBe(false);
+	});
+
+	it("omits the override for role-based models under fallback-to-parent so the child default wins", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = parseWorkflowDefinition(`
+name: headless-role-fallback
+version: 1
+models:
+  roles:
+    builder: anthropic/claude-fable-5:xhigh
+  unavailable: fallback-to-parent
+nodes:
+  build:
+    type: agent
+    agent: task
+    prompt: Build the feature.
+    model:
+      role: builder
+edges: []
+`);
+		const freeze = freezeForDefinition(definition);
+		const overrides: (string | undefined)[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async input => {
+				overrides.push(input.modelOverride);
+				return { summary: "built" };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "build",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		expect(result.scheduler.activations).toMatchObject([{ nodeId: "build", status: "completed" }]);
+		expect(overrides).toEqual([undefined]);
+	});
+
+	it("forwards a node-level explicit selector verbatim even under fallback-to-parent", async () => {
+		const host = new MemoryWorkflowHost();
+		const definition = parseWorkflowDefinition(`
+name: headless-explicit-selector
+version: 1
+models:
+  unavailable: fallback-to-parent
+nodes:
+  build:
+    type: agent
+    agent: task
+    prompt: Build the feature.
+    model:
+      selector: openai/gpt-5:high
+edges: []
+`);
+		const freeze = freezeForDefinition(definition);
+		const overrides: (string | undefined)[] = [];
+		const runtimeHost: WorkflowNodeRuntimeHost = {
+			runAgentNode: async input => {
+				overrides.push(input.modelOverride);
+				return { summary: "built" };
+			},
+		};
+
+		const result = await runWorkflow({
+			host,
+			definition,
+			runId: "run-1",
+			graphRevisionId: "graph-1",
+			startNodeId: "build",
+			runtimeHost,
+			lifecycle: {
+				familyId: "family-1",
+				attemptId: "attempt-1",
+				freeze,
+				runtimeBindingSnapshot: bindingSnapshot("attempt-1:binding-1"),
+			},
+		});
+
+		expect(result.scheduler.activations).toMatchObject([{ nodeId: "build", status: "completed" }]);
+		expect(overrides).toEqual(["openai/gpt-5:high"]);
+	});
+});
+
 class MemoryWorkflowHost {
 	#entries: WorkflowLifecycleBranchEntry[] = [];
 

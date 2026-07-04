@@ -161,6 +161,38 @@ export function resolveWorkflowNodeModel(
 	};
 }
 
+/**
+ * Resolve only the portable model selection embedded in a workflow definition.
+ *
+ * Headless workflow execution has no live model registry to validate selectors
+ * against, so the selected raw pattern (including any `:thinkingLevel` suffix)
+ * is preserved verbatim for the child agent process to resolve with its own
+ * registry and authentication context. Selection precedence and
+ * `models.unavailable` semantics mirror `resolveWorkflowNodeModel`, with the
+ * child process default model standing in for the parent session model.
+ */
+export function resolvePortableWorkflowNodeModel(
+	definition: WorkflowDefinition,
+	node: WorkflowNode,
+): WorkflowModelResolutionAudit {
+	const request = selectModelRequest(definition, node, { availableModels: [] });
+	const unavailablePolicy = resolveUnavailablePolicy(definition, node, request?.modelContext);
+	const audit = createAudit(node.id, request, unavailablePolicy);
+	if (!request) return audit;
+	const parentOverrideReason = portableParentOverrideReason(request, unavailablePolicy);
+	if (parentOverrideReason !== undefined) {
+		return { ...audit, source: "parent-fallback", fallbackUsed: true, fallbackReason: parentOverrideReason };
+	}
+	const pattern = request.patterns[0];
+	if (pattern !== undefined) {
+		return { ...audit, requestedPattern: pattern, resolvedModel: pattern };
+	}
+	if (unavailablePolicy === "fallback-to-parent") {
+		return { ...audit, source: "parent-fallback", fallbackUsed: true, fallbackReason: "requested model unavailable" };
+	}
+	return { ...audit, error: `workflow model for node "${node.id}" could not resolve requested model` };
+}
+
 function selectModelRequest(
 	definition: WorkflowDefinition,
 	node: WorkflowNode,
