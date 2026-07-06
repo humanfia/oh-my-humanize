@@ -4,6 +4,7 @@ import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
 	CODEX_BASE_URL,
 	getCodexAccountId,
+	getCodexComputeResidency,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
@@ -3055,6 +3056,16 @@ function createCodexHeaders(
 	headers.delete("x-api-key");
 	headers.set("Authorization", `Bearer ${accessToken}`);
 	headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+	// Pin edge routing to the workspace's compute-residency pool. Without this,
+	// requests are geo-routed by client IP and workspaces with a residency claim
+	// (e.g. "us") get 401 "Workspace is not authorized in this region." from
+	// non-matching regions — on both SSE requests and websocket upgrades.
+	const residency = getCodexComputeResidency(accessToken);
+	if (residency) {
+		headers.set(OPENAI_HEADERS.RESIDENCY, residency);
+	} else {
+		headers.delete(OPENAI_HEADERS.RESIDENCY);
+	}
 	const betaHeader =
 		transport === "websocket"
 			? OPENAI_HEADER_VALUES.BETA_RESPONSES_WEBSOCKETS_V2

@@ -10,6 +10,7 @@
 
 - Fixed Anthropic Console API-key requests for non-Haiku Claude models by preserving the Console login profile through credential storage and retries, then applying Claude billing attestation only on the official Anthropic transport without changing regular API-key, OAuth, Haiku, or custom-gateway requests.
 - Prevented auth-broker v1 from destructively replacing or exposing profiled API-key credentials; unsupported remote writes now fail before any credential mutation.
+- Fixed OpenAI Codex requests failing with 401 "Workspace is not authorized in this region." for workspaces pinned to a compute residency (e.g. ChatGPT Business/Enterprise with US residency) when running from another region: both SSE requests and websocket upgrades now send `x-openai-internal-codex-residency` derived from the access token's `chatgpt_compute_residency` claim, mirroring codex-rs.
 
 ## [16.3.4] - 2026-07-03
 

@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `getCodexComputeResidency` and the `x-openai-internal-codex-residency` header constant to the Codex wire module for compute-residency edge routing.
+
 ### Changed
 
 - Changed package metadata links and description from the old Oh My Pi branding to OMH.
+
 ## [16.3.4] - 2026-07-03
 
 ### Added
