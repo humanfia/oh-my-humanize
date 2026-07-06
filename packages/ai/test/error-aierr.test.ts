@@ -64,6 +64,15 @@ describe("AIError.classify — structural provider errors", () => {
 		expect(AIError.retriable(id)).toBe(true);
 	});
 
+	it("classifies provider streams closed before terminal events as transient", () => {
+		const id = AIError.classifyMessage({
+			errorMessage:
+				"OpenAI responses stream closed before a terminal response event was received request-context: provider=acme api=openai-responses model=acme-model",
+		});
+		expect(AIError.is(id, AIError.Flag.Transient)).toBe(true);
+		expect(AIError.retriable(id)).toBe(true);
+	});
+
 	it("does not mark a terminal output provider error as transient", () => {
 		const err = new AIError.ProviderResponseError("upstream error", { provider: "google", kind: "output" });
 		expect(AIError.retriable(AIError.classify(err))).toBe(false);

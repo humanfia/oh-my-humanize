@@ -113,6 +113,7 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 		disableStrictTools: false,
 		disableAdaptiveThinking: false,
 		supportsEagerToolInputStreaming: !isCopilot,
+		supportsPromptCaching: true,
 		// Long cache retention is only sent to the official API by default;
 		// proxies opt in explicitly via `compat.supportsLongCacheRetention: true`.
 		supportsLongCacheRetention: official,
@@ -145,6 +146,7 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 		// are excluded automatically because they can be recognised by provider
 		// id or baseUrl marker.
 		replayUnsignedThinking: !signingEndpoint && (Boolean(spec.reasoning) || modelMatchesHost(spec, "deepseekFamily")),
+		disableNativeThinkingReplay: false,
 		escapeBuiltinToolNames: modelMatchesHost(spec, "umans"),
 	};
 	applyCompatOverrides(compat, spec.compat);
