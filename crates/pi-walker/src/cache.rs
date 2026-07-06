@@ -100,7 +100,7 @@ pub fn walk_workers() -> usize {
 }
 
 /// Run parallel traversal-adjacent work on the centralized walker pool.
-fn with_walk_pool<R>(operation: impl FnOnce() -> R + Send) -> R
+pub fn with_walk_pool<R>(operation: impl FnOnce() -> R + Send) -> R
 where
 	R: Send,
 {
@@ -128,12 +128,30 @@ where
 	E: Send,
 {
 	if !should_parallelize(items.len()) {
-		for item in items {
-			operation(item)?;
-		}
-		return Ok(());
+		return items.iter().try_for_each(operation);
 	}
 	with_walk_pool(|| items.par_iter().try_for_each(operation))
+}
+
+/// Run traversal-adjacent work with per-worker state on the centralized walker
+/// pool.
+pub fn parallel_for_each_init<T, S, E>(
+	items: &[T],
+	init: impl Fn() -> S + Send + Sync,
+	operation: impl Fn(&mut S, &T) -> std::result::Result<(), E> + Send + Sync,
+) -> std::result::Result<(), E>
+where
+	T: Sync,
+	S: Send,
+	E: Send,
+{
+	if !should_parallelize(items.len()) {
+		let mut state = init();
+		return items
+			.iter()
+			.try_for_each(|item| operation(&mut state, item));
+	}
+	with_walk_pool(|| items.par_iter().try_for_each_init(init, operation))
 }
 
 fn evict_oldest() {

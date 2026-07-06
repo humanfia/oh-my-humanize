@@ -25,7 +25,6 @@ import { getSixelLineMask } from "../utils/sixel";
 import { workflowScriptEnvironment } from "../workflow/script-runtime-env";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
-import { applyBashFixups } from "./bash-command-fixup";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
@@ -152,10 +151,12 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 	}
 }
 
+const BASH_TIMEOUT_DESCRIPTION = `timeout in seconds; clamped to ${TOOL_TIMEOUTS.bash.min}-${TOOL_TIMEOUTS.bash.max}`;
+
 const bashSchemaBase = type({
 	command: type("string").describe("command to execute"),
 	"env?": type({ "[string]": "string" }).describe("extra env vars"),
-	"timeout?": type("number").describe("timeout in seconds"),
+	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": type("string").describe("working directory"),
 	"pty?": type("boolean").describe("run in pty mode"),
 });
@@ -163,7 +164,7 @@ const bashSchemaBase = type({
 const bashSchemaWithAsync = type({
 	command: "string",
 	"env?": { "[string]": "string" },
-	"timeout?": "number",
+	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
 	"pty?": "boolean",
 	"async?": type("boolean").describe("run in background"),
@@ -704,16 +705,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	): Promise<AgentToolResult<BashToolDetails>> {
 		let command = rawCommand;
 		const env = normalizeBashEnv(rawEnv);
-
-		// Apply conservative bash fixups (strip trailing `| head|tail` and redundant
-		// `2>&1`). The helper is single-line only and refuses anything that could
-		// change semantics.
-		if (this.session.settings.get("bash.stripTrailingHeadTail")) {
-			const fixup = applyBashFixups(command);
-			if (fixup.stripped.length > 0) {
-				command = fixup.command;
-			}
-		}
 
 		// Extract leading `cd <path> && ...` into cwd when the model ignores the cwd parameter.
 		// Constrained to a single line so a `&&` that sits on a later line of a multiline
@@ -1432,10 +1423,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		},
 		mergeCallAndResult: true,
 		inline: true,
-		// Collapsed pending preview caps the command to a viewport-sized tail
-		// window that shifts while args stream. Expanded output is top-anchored
-		// enough for the transcript to commit its settled prefix.
-		provisionalPendingPreview: "collapsed",
 	};
 }
 

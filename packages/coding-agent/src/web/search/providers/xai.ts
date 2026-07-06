@@ -1,4 +1,5 @@
-import { type ApiKey, type AuthStorage, withAuth } from "@oh-my-pi/pi-ai";
+import { type ApiKey, type ApiKeyResolver, type AuthStorage, withAuth } from "@oh-my-pi/pi-ai";
+import { $env } from "@oh-my-pi/pi-utils";
 import type { SearchCitation, SearchResponse, SearchSource, SearchUsage } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
 import { clampNumResults } from "../utils";
@@ -10,32 +11,6 @@ const XAI_RESPONSES_URL = "https://api.x.ai/v1/responses";
 const XAI_WEB_SEARCH_MODEL = "grok-4.3";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 30;
-const RECENCY_DAYS: Record<NonNullable<SearchParams["recency"]>, number> = {
-	day: 1,
-	week: 7,
-	month: 30,
-	year: 365,
-};
-
-function formatUtcDate(date: Date): string {
-	return date.toISOString().slice(0, 10);
-}
-
-function buildRecencyDateBounds(
-	recency: NonNullable<SearchParams["recency"]>,
-	now = new Date(),
-): {
-	from_date: string;
-	to_date: string;
-} {
-	const toDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-	const fromDate = new Date(toDate);
-	fromDate.setUTCDate(fromDate.getUTCDate() - RECENCY_DAYS[recency]);
-	return {
-		from_date: formatUtcDate(fromDate),
-		to_date: formatUtcDate(toDate),
-	};
-}
 
 interface XAIUrlCitationAnnotation {
 	type?: string;
@@ -85,22 +60,6 @@ function buildRequestBody(params: SearchParams): Record<string, unknown> {
 		],
 		tools: [{ type: "web_search" }],
 	};
-
-	const requestedSearchResults = params.numSearchResults ?? params.limit;
-	const searchParameters: Record<string, unknown> = {};
-	if (requestedSearchResults !== undefined) {
-		searchParameters.max_search_results = clampNumResults(
-			requestedSearchResults,
-			DEFAULT_NUM_RESULTS,
-			MAX_NUM_RESULTS,
-		);
-	}
-	if (params.recency) {
-		Object.assign(searchParameters, buildRecencyDateBounds(params.recency));
-	}
-	if (Object.keys(searchParameters).length > 0) {
-		body.search_parameters = searchParameters;
-	}
 
 	if (params.maxOutputTokens !== undefined) {
 		body.max_output_tokens = params.maxOutputTokens;
@@ -263,11 +222,48 @@ function parseResponse(response: XAIResponsesResponse, resultCap: number): Searc
 	};
 }
 
-/** Execute xAI Responses API web search. */
-export async function searchXAI(params: SearchParams): Promise<SearchResponse> {
-	const keyOrResolver: ApiKey = params.authStorage.resolver("xai", {
+/**
+ * Prefer `xai-oauth` only when its resolver cannot be shadowed by the shared
+ * `XAI_API_KEY` fallback before reaching a lower-priority dedicated source.
+ */
+function shouldPreferXAIOAuth(authStorage: AuthStorage): boolean {
+	if ($env.XAI_OAUTH_TOKEN) return true;
+
+	const origin = authStorage.getCredentialOrigin("xai-oauth");
+	if (!origin || origin.kind === "env") return false;
+	if ((origin.kind === "api_key" || origin.kind === "fallback") && $env.XAI_API_KEY) return false;
+	return true;
+}
+
+function resolveXAIWebSearchApiKey(params: SearchParams): ApiKeyResolver {
+	const xaiResolver = params.authStorage.resolver("xai", {
 		sessionId: params.sessionId,
 	});
+	const xaiOAuthOrigin = params.authStorage.getCredentialOrigin("xai-oauth");
+	if (!shouldPreferXAIOAuth(params.authStorage)) {
+		return xaiResolver;
+	}
+
+	const xaiOAuthResolver = params.authStorage.resolver("xai-oauth", {
+		sessionId: params.sessionId,
+	});
+	return async ctx => {
+		const xaiOAuthKey = await xaiOAuthResolver(ctx);
+		if (xaiOAuthKey) {
+			const borrowedSharedEnvKey =
+				xaiOAuthOrigin?.kind === "oauth" &&
+				Boolean($env.XAI_API_KEY) &&
+				xaiOAuthKey === $env.XAI_API_KEY &&
+				xaiOAuthKey !== $env.XAI_OAUTH_TOKEN;
+			if (!borrowedSharedEnvKey) return xaiOAuthKey;
+		}
+		return xaiResolver(ctx);
+	};
+}
+
+/** Execute xAI Responses API web search. */
+export async function searchXAI(params: SearchParams): Promise<SearchResponse> {
+	const keyOrResolver: ApiKey = resolveXAIWebSearchApiKey(params);
 
 	const resultCap = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const response = await withAuth(keyOrResolver, (key: string) => callXAIResponses(key, params), {
@@ -283,7 +279,7 @@ export class XAIProvider extends SearchProvider {
 	readonly label = "xAI";
 
 	isAvailable(authStorage: AuthStorage): boolean {
-		return authStorage.hasAuth("xai");
+		return shouldPreferXAIOAuth(authStorage) || authStorage.hasAuth("xai");
 	}
 
 	search(params: SearchParams): Promise<SearchResponse> {

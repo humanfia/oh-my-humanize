@@ -1117,11 +1117,19 @@ export class SelectorController {
 		const useManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(providerId);
 		try {
 			await this.ctx.session.modelRegistry.authStorage.login(providerId as OAuthProvider, {
-				onAuth: (info: { url: string; instructions?: string }) => {
+				onAuth: (info: { url: string; launchUrl?: string; instructions?: string }) => {
 					const block = new TranscriptBlock();
+					// Full URL first: works from any machine, including SSH boxes
+					// where the OMP-hosted `launchUrl` would resolve against the
+					// user's local browser and fail.
 					block.addChild(new Text(theme.fg("dim", info.url), 1, 0));
 					const hyperlink = `\x1b]8;;${info.url}\x07Click here to login\x1b]8;;\x07`;
 					block.addChild(new Text(theme.fg("accent", hyperlink), 1, 0));
+					if (info.launchUrl && info.launchUrl !== info.url) {
+						block.addChild(
+							new Text(theme.fg("dim", `Local shortcut (this machine only): ${info.launchUrl}`), 1, 0),
+						);
+					}
 					if (info.instructions) {
 						block.addChild(new Spacer(1));
 						block.addChild(new Text(theme.fg("warning", info.instructions), 1, 0));
@@ -1418,18 +1426,27 @@ export class SelectorController {
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
 		});
 
-		// The double-← gesture passes requireContent so it stays inert when there
-		// are no subagents to show; the explicit hub/observe keys still open the
-		// empty roster. The freshly built hub already ran the persisted-subagent
-		// scan, so its row count is the authoritative "is there anything to show".
+		const showReadyHub = () => {
+			// The double-← gesture passes requireContent so it stays inert when
+			// neither live nor persisted subagents are available. Persisted rows now
+			// load asynchronously, so defer the gate until that scan has refreshed the
+			// hub instead of treating the initial empty table as authoritative.
+			if (options?.requireContent && hub.isEmpty) {
+				hub.dispose();
+				return;
+			}
+
+			this.ctx.editorContainer.clear();
+			this.ctx.editorContainer.addChild(hub);
+			this.ctx.ui.setFocus(hub);
+			this.ctx.ui.requestRender();
+		};
+
 		if (options?.requireContent && hub.isEmpty) {
-			hub.dispose();
+			void hub.persistedSubagentsReady.then(showReadyHub);
 			return;
 		}
 
-		this.ctx.editorContainer.clear();
-		this.ctx.editorContainer.addChild(hub);
-		this.ctx.ui.setFocus(hub);
-		this.ctx.ui.requestRender();
+		showReadyHub();
 	}
 }

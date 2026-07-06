@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [16.3.10] - 2026-07-06
+
+### Added
+
+- Added `postmortem.markExpectedCleanupError()` / `postmortem.isExpectedCleanupError()` to tag errors thrown by routine resource teardown; the global `uncaughtException`/`unhandledRejection` handlers downgrade marked errors (walking the `cause` chain) to warnings instead of exiting the process.
+
+### Fixed
+
+- Bounded postmortem cleanup with a 10s deadline so a hanging cleanup callback can no longer wedge the process indefinitely after a fatal error or signal; the process now always reaches `process.exit`.
+
+## [16.3.7] - 2026-07-05
+
+### Added
+
+- Added `classifyJsonPrefix`, a strict RFC 8259 streaming-buffer classifier (`"complete" | "prefix" | "invalid"`). Providers use it to disambiguate identifierless streaming tool-call deltas: a `{`-prefixed chunk only advances to a sibling call when the current argument buffer cannot absorb it.
+
 ## [16.3.1] - 2026-07-02
 
 ### Fixed

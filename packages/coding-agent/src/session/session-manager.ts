@@ -24,6 +24,7 @@ import {
 	type CustomMessage,
 	type FileMentionMessage,
 	type HookMessage,
+	normalizeCustomMessagePayload,
 	type PythonExecutionMessage,
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
@@ -74,6 +75,7 @@ import {
 import { type SessionTitleUpdate, serializeTitleSlot } from "./session-title-slot";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
+const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
 const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
 
@@ -115,7 +117,18 @@ function resolveBreadcrumbToInteractiveRoot(sessionFile: string): string {
 }
 
 function emptyUsageStatistics(): UsageStatistics {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0 };
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		orchestrationInput: 0,
+		orchestrationOutput: 0,
+		orchestrationCacheRead: 0,
+		premiumRequests: 0,
+		cost: 0,
+	};
 }
 
 function taskUsageFrom(details: unknown): Usage | undefined {
@@ -138,12 +151,35 @@ function addUsage(target: UsageStatistics, usage: Usage | undefined): void {
 	target.output += usage.output;
 	target.cacheRead += usage.cacheRead;
 	target.cacheWrite += usage.cacheWrite;
+	target.totalTokens += usage.totalTokens;
+	target.orchestrationInput += usage.orchestration?.input ?? 0;
+	target.orchestrationOutput += usage.orchestration?.output ?? 0;
+	target.orchestrationCacheRead += usage.orchestration?.cacheRead ?? 0;
 	target.premiumRequests += usage.premiumRequests ?? 0;
 	target.cost += usage.cost.total;
 }
 
 function isAssistantEntry(entry: SessionEntry): boolean {
 	return entry.type === "message" && entry.message.role === "assistant";
+}
+
+function isDraftOnlyMetadataEntry(entry: SessionEntry): boolean {
+	// Startup-recorded selector state that does not survive as user intent
+	// once the draft is cleared. `mode_change` covers the `plan.defaultOnStartup`
+	// path (interactive-mode.ts enters plan mode before draft restoration) and
+	// `/plan` toggles that leave the session otherwise empty; entries carrying
+	// real conversation state — messages, compactions, branch summaries,
+	// custom/custom_message, session_init, labels, title/tool selection — never
+	// reach this branch and always keep the file resumable.
+	switch (entry.type) {
+		case "model_change":
+		case "thinking_level_change":
+		case "service_tier_change":
+		case "mode_change":
+			return true;
+		default:
+			return false;
+	}
 }
 
 function orderedByTimestamp(a: SessionTreeNode, b: SessionTreeNode): number {
@@ -318,6 +354,7 @@ interface SessionManagerStateSnapshot {
 	hasTitleSlot: boolean;
 	onDisk: boolean;
 	needsRewrite: boolean;
+	draftOnlySessionCleanupArmed: boolean;
 	header: SessionHeader;
 	entries: SessionEntry[];
 }
@@ -364,6 +401,12 @@ export class SessionManager {
 	#rewriteRequired = false;
 	/** Lazy gate crossed (ensureOnDisk / loaded file): every entry must persist from now on. */
 	#forceFileCreation = false;
+	/**
+	 * Armed only when this manager observed a draft sidecar lifecycle that
+	 * materialized an otherwise metadata-only session file. Explicit
+	 * ensureOnDisk() callers (ACP session/new, handoff) must survive close().
+	 */
+	#draftOnlySessionCleanupArmed = false;
 
 	/**
 	 * Collab replication tap: invoked for every appended entry with the
@@ -749,6 +792,7 @@ export class SessionManager {
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
 		this.#forceFileCreation = false;
+		this.#draftOnlySessionCleanupArmed = false;
 		this.#turnBudgetTotal = null;
 		this.#turnBudgetHard = false;
 		this.#turnOutputBaseline = 0;
@@ -799,6 +843,32 @@ export class SessionManager {
 	#draftPath(): string | null {
 		const artifactsDir = this.getArtifactsDir();
 		return artifactsDir ? path.join(artifactsDir, "draft.txt") : null;
+	}
+
+	#draftOnlySessionMarkerPath(): string | null {
+		const artifactsDir = this.getArtifactsDir();
+		return artifactsDir ? path.join(artifactsDir, DRAFT_ONLY_SESSION_MARKER) : null;
+	}
+
+	#hasDraftOnlySessionMarker(): boolean {
+		const markerPath = this.#draftOnlySessionMarkerPath();
+		return markerPath !== null && this.#storage.existsSync(markerPath);
+	}
+
+	async #writeDraftOnlySessionMarker(): Promise<void> {
+		const markerPath = this.#draftOnlySessionMarkerPath();
+		if (!markerPath) return;
+		await this.#storage.writeText(markerPath, "");
+	}
+
+	async #clearDraftOnlySessionMarker(): Promise<void> {
+		const markerPath = this.#draftOnlySessionMarkerPath();
+		if (!markerPath) return;
+		try {
+			await this.#storage.unlink(markerPath);
+		} catch (err) {
+			if (!isEnoent(err)) throw err;
+		}
 	}
 
 	#artifactManagerForSession(): ArtifactManager | null {
@@ -857,6 +927,7 @@ export class SessionManager {
 			sessionFile: this.#sessionFile,
 			onDisk: this.#fileIsCurrent,
 			needsRewrite: this.#rewriteRequired,
+			draftOnlySessionCleanupArmed: this.#draftOnlySessionCleanupArmed,
 			// Snapshot header + entries by reference: switch/reload replaces the
 			// active header/array wholesale, so rollback needs no deep clone.
 			header: this.#header,
@@ -875,6 +946,7 @@ export class SessionManager {
 		this.#fileIsCurrent = snapshot.onDisk;
 		this.#rewriteRequired = snapshot.needsRewrite;
 		this.#forceFileCreation = snapshot.onDisk;
+		this.#draftOnlySessionCleanupArmed = snapshot.draftOnlySessionCleanupArmed;
 		this.#applyEntries(snapshot.header, [...snapshot.entries]);
 		this.#sessionName = snapshot.sessionName;
 		this.#titleSource = snapshot.titleSource;
@@ -891,6 +963,7 @@ export class SessionManager {
 	async setSessionFile(sessionFile: string): Promise<void> {
 		await this.#drainAndCloseWriter();
 		this.#clearDiskError();
+		this.#draftOnlySessionCleanupArmed = false;
 
 		const resolvedSessionFile = path.resolve(sessionFile);
 		this.#sessionFile = resolvedSessionFile;
@@ -986,6 +1059,7 @@ export class SessionManager {
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
 		this.#forceFileCreation = true;
+		this.#draftOnlySessionCleanupArmed = false;
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
@@ -1136,6 +1210,38 @@ export class SessionManager {
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
+	/**
+	 * Drop only session files that this manager saw materialized for a draft and
+	 * that still contain no durable conversation or extension state. Explicit
+	 * ensureOnDisk() records (ACP session/new, handoff) stay resumable.
+	 */
+	async #dropIfEmptyAndNoDraft(): Promise<void> {
+		if (!this.#draftOnlySessionCleanupArmed) return;
+		const sessionFile = this.#sessionFile;
+		if (!sessionFile || !this.#storage.existsSync(sessionFile)) {
+			this.#draftOnlySessionCleanupArmed = false;
+			return;
+		}
+		const draftPath = this.#draftPath();
+		if (draftPath && this.#storage.existsSync(draftPath)) return;
+		if (!this.#entries.every(isDraftOnlyMetadataEntry)) {
+			await this.#clearDraftOnlySessionMarker();
+			this.#draftOnlySessionCleanupArmed = false;
+			return;
+		}
+		try {
+			await this.#storage.deleteSessionWithArtifacts(sessionFile);
+			this.#fileIsCurrent = false;
+			this.#forceFileCreation = false;
+			this.#hasTitleSlot = false;
+			this.#draftOnlySessionCleanupArmed = false;
+		} catch (err) {
+			if (!isEnoent(err)) {
+				logger.warn("Failed to drop empty session on close", { sessionFile, error: String(err) });
+			}
+		}
+	}
+
 	/** Flush, then close the append writer. */
 	async close(): Promise<void> {
 		if (!this.#persist) return;
@@ -1145,6 +1251,7 @@ export class SessionManager {
 			if (hadWriter || (this.#sessionFile && this.#storage.existsSync(this.#sessionFile)))
 				this.#fileIsCurrent = true;
 		});
+		await this.#dropIfEmptyAndNoDraft();
 		// Wait for any queued backing writes (IndexedSessionStorage per-path
 		// tail) to become durable so a graceful shutdown does not exit while
 		// a fire-and-forget publish is still on the wire.
@@ -1237,8 +1344,17 @@ export class SessionManager {
 			return;
 		}
 
+		const sessionFile = this.#sessionFile;
+		const draftWillMaterializeMetadataOnlyFile =
+			sessionFile !== undefined &&
+			!this.#storage.existsSync(sessionFile) &&
+			this.#entries.every(isDraftOnlyMetadataEntry);
 		// Force the header onto disk so resume can find the file this draft attaches to.
 		await this.ensureOnDisk();
+		if (draftWillMaterializeMetadataOnlyFile) {
+			await this.#writeDraftOnlySessionMarker();
+			this.#draftOnlySessionCleanupArmed = true;
+		}
 		await this.#storage.writeText(draftPath, text);
 	}
 
@@ -1259,6 +1375,8 @@ export class SessionManager {
 		} catch (err) {
 			if (!isEnoent(err)) throw err;
 		}
+		if (this.#entries.every(isDraftOnlyMetadataEntry) && this.#hasDraftOnlySessionMarker())
+			this.#draftOnlySessionCleanupArmed = true;
 
 		return draft;
 	}
@@ -1453,20 +1571,21 @@ export class SessionManager {
 	 * @param attribution Who initiated this message for billing/attribution semantics
 	 */
 	appendCustomMessageEntry<T = unknown>(
-		customType: string,
-		content: string | (TextContent | ImageContent)[],
-		display: boolean,
+		customType: string | undefined,
+		content: string | (TextContent | ImageContent)[] | undefined,
+		display: boolean | undefined,
 		details?: T,
-		attribution: MessageAttribution = "agent",
+		attribution: MessageAttribution | undefined = "agent",
 	): string {
+		const normalized = normalizeCustomMessagePayload<T>({ customType, content, display, details, attribution });
 		const entry: CustomMessageEntry<T> = {
 			type: "custom_message",
-			customType,
-			content,
-			display,
+			customType: normalized.customType,
+			content: normalized.content,
+			display: normalized.display,
 			// Drop AgentSession-internal transient fields before disk persistence.
-			details: stripInternalDetailsFields(details),
-			attribution,
+			details: stripInternalDetailsFields(normalized.details),
+			attribution: normalized.attribution,
 			...this.#freshEntryFields(),
 		};
 		this.#recordEntry(entry);

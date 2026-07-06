@@ -32,6 +32,7 @@ import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { interruptHint } from "../shared";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
+import { assistantUsageIsBilled } from "../utils/transcript-render-helpers";
 import { StreamingRevealController } from "./streaming-reveal";
 import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
@@ -84,6 +85,8 @@ export class EventController {
 	// restored when the banner clears at the next `agent_start` (see
 	// #handleMessageEnd / #handleAgentStart).
 	#pinnedErrorComponent: AssistantMessageComponent | undefined = undefined;
+	#retrySupersededAssistantComponents = new Map<string, AssistantMessageComponent>();
+	#retrySupersededAssistantQueue: AssistantMessageComponent[] = [];
 	#idleCompactionTimer?: NodeJS.Timeout;
 	#idleRecapTimer?: NodeJS.Timeout;
 	// In-flight ephemeral recap turn; aborted by #cancelIdleRecap when any
@@ -131,11 +134,11 @@ export class EventController {
 			getSmoothStreaming: () => this.ctx.settings.get("display.smoothStreaming"),
 			getHideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			getProseOnlyThinking: () => this.ctx.proseOnlyThinking,
-			requestRender: () => this.ctx.ui.requestRender(),
+			requestRender: component => this.ctx.ui.requestComponentRender(component),
 		});
 		this.#toolArgsReveal = new ToolArgsRevealController({
 			getSmoothStreaming: () => this.ctx.settings.get("display.smoothStreaming"),
-			requestRender: () => this.ctx.ui.requestRender(),
+			requestRender: component => this.ctx.ui.requestComponentRender(component),
 		});
 		this.#handlers = {
 			agent_start: e => this.#handleAgentStart(e),
@@ -325,6 +328,42 @@ export class EventController {
 		this.#terminalProgressActive = false;
 	}
 
+	#trackRetrySupersededAssistantComponent(component: AssistantMessageComponent | undefined): void {
+		if (!component) return;
+		const persistenceKey = component.messagePersistenceKey();
+		if (persistenceKey) this.#retrySupersededAssistantComponents.set(persistenceKey, component);
+		if (!this.#retrySupersededAssistantQueue.includes(component)) {
+			this.#retrySupersededAssistantQueue.push(component);
+		}
+	}
+
+	#takeRetrySupersededAssistantComponent(persistenceKey: string | undefined): AssistantMessageComponent | undefined {
+		if (persistenceKey) {
+			const component = this.#retrySupersededAssistantComponents.get(persistenceKey);
+			if (component) {
+				this.#retrySupersededAssistantComponents.delete(persistenceKey);
+				this.#retrySupersededAssistantQueue = this.#retrySupersededAssistantQueue.filter(
+					item => item !== component,
+				);
+				return component;
+			}
+		}
+		while (this.#retrySupersededAssistantQueue.length > 0) {
+			const component = this.#retrySupersededAssistantQueue.shift();
+			if (!component) continue;
+			const key = component.messagePersistenceKey();
+			if (key && this.#retrySupersededAssistantComponents.get(key) !== component) continue;
+			if (key) this.#retrySupersededAssistantComponents.delete(key);
+			return component;
+		}
+		return undefined;
+	}
+
+	#clearRetrySupersededAssistantComponents(): void {
+		this.#retrySupersededAssistantComponents.clear();
+		this.#retrySupersededAssistantQueue = [];
+	}
+
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
@@ -468,7 +507,7 @@ export class EventController {
 		if (!components) return;
 		let removed = false;
 		for (const component of components) {
-			if (!this.ctx.chatContainer.isWithinLiveRegion(component)) continue;
+			if (!this.ctx.chatContainer.isBlockUncommitted(component)) continue;
 			this.ctx.chatContainer.removeChild(component);
 			removed = true;
 		}
@@ -493,16 +532,20 @@ export class EventController {
 	 * Resolve the pending displaceable poll block before the next block lands.
 	 * A follow-up `job` call displaces it — the stale "waiting on N jobs" frame
 	 * is removed so repeated polls read as one persistent poll — while anything
-	 * else seals it in place as final history. Removal is safe only because a
-	 * displaceable block never finalizes: commits stop at the first live block,
-	 * so none of its rows have entered native scrollback (see
-	 * ToolExecutionComponent.isDisplaceableBlock).
+	 * else seals it in place as final history. Removal is gated on none of the
+	 * block's rows having entered native scrollback: rows already on the tape
+	 * are immutable visual history, so a scrolled-off poll seals instead of
+	 * being retracted.
 	 */
 	#resolveDisplaceablePoll(nextToolName?: string): void {
 		const previous = this.#displaceablePollComponent;
 		if (!previous) return;
 		this.#displaceablePollComponent = undefined;
-		if (nextToolName === "job" && previous.isDisplaceableBlock()) {
+		if (
+			nextToolName === "job" &&
+			previous.isDisplaceableBlock() &&
+			this.ctx.chatContainer.isBlockUncommitted(previous)
+		) {
 			this.ctx.chatContainer.removeChild(previous);
 		}
 		// Sealing stops the waiting-poll spinner and freezes the block (for a
@@ -520,7 +563,9 @@ export class EventController {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#displaceableTodoComponent = undefined;
-			this.ctx.chatContainer.removeChild(previous);
+			if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+				this.ctx.chatContainer.removeChild(previous);
+			}
 			previous.seal();
 			this.ctx.ui.requestRender();
 			return;
@@ -805,7 +850,7 @@ export class EventController {
 			}
 			this.#lastAssistantComponent = this.ctx.streamingComponent;
 			this.#lastAssistantComponent.markTranscriptBlockFinalized();
-			if (settings.get("display.showTokenUsage")) {
+			if (settings.get("display.showTokenUsage") && assistantUsageIsBilled(event.message.usage)) {
 				this.ctx.chatContainer.addChild(
 					createUsageRowBlock(event.message.usage, event.message.duration, event.message.ttft),
 				);
@@ -980,7 +1025,9 @@ export class EventController {
 						const previous = this.#displaceableTodoComponent;
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
 							this.#displaceableTodoComponent = undefined;
-							this.ctx.chatContainer.removeChild(previous);
+							if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+								this.ctx.chatContainer.removeChild(previous);
+							}
 							previous.seal();
 						}
 						this.#displaceableTodoComponent = component;
@@ -1219,6 +1266,7 @@ export class EventController {
 	}
 
 	async #handleAutoRetryStart(event: Extract<AgentSessionEvent, { type: "auto_retry_start" }>): Promise<void> {
+		this.#trackRetrySupersededAssistantComponent(this.#lastAssistantComponent);
 		this.#stopWorkingLoader();
 		this.ctx.statusContainer.clear();
 		if (AIError.is(event.errorId, AIError.Flag.ThinkingLoop)) {
@@ -1246,7 +1294,21 @@ export class EventController {
 			this.ctx.retryLoader = undefined;
 			this.ctx.statusContainer.clear();
 		}
-		if (!event.success) {
+		if (event.success) {
+			let appliedRecovered = false;
+			for (const recovered of event.recoveredErrors ?? []) {
+				const component = this.#takeRetrySupersededAssistantComponent(recovered.persistenceKey);
+				if (!component) continue;
+				component.applyRetryRecovery(recovered.retryRecovery);
+				if (this.#pinnedErrorComponent === component) this.#pinnedErrorComponent = undefined;
+				appliedRecovered = true;
+			}
+			if (appliedRecovered || (event.recoveredErrors?.length ?? 0) > 0) {
+				this.ctx.clearPinnedError();
+			}
+			this.#clearRetrySupersededAssistantComponents();
+		} else {
+			this.#clearRetrySupersededAssistantComponents();
 			this.ctx.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 		}
 		this.#ensureWorkingLoaderWhileStreaming();
@@ -1268,15 +1330,14 @@ export class EventController {
 	async #handleTtsrTriggered(event: Extract<AgentSessionEvent, { type: "ttsr_triggered" }>): Promise<void> {
 		// Consecutive notifications (e.g. per-tool matches from one assistant
 		// message) merge into the previous block instead of stacking. Mutating an
-		// existing block is only safe while it sits inside the live region — a
-		// still-mutating block above it means none of its rows have been committed
-		// to native scrollback yet (commits are prefix-only and stop at the first
-		// live block), so the grown block still repaints.
+		// existing block is only safe while none of its rows have entered native
+		// scrollback — committed rows are immutable visual history and a grown
+		// block would shift them.
 		const previous = this.#lastTtsrNotification;
 		if (
 			previous &&
 			this.ctx.chatContainer.children.at(-1) === previous &&
-			this.ctx.chatContainer.isWithinLiveRegion(previous)
+			this.ctx.chatContainer.isBlockUncommitted(previous)
 		) {
 			previous.addRules(event.rules);
 			this.ctx.ui.requestRender();

@@ -2287,6 +2287,11 @@ export const SETTINGS_SCHEMA = {
 						"8x13 glyphs on an 11x16 cell — extra letter spacing so characters don't merge. Default for Anthropic.",
 				},
 				{
+					value: "silver16-bw",
+					label: "Silver 16, CJK",
+					description: "Embedded Silver TrueType font on a 16px grid for CJK and other non-Latin text.",
+				},
+				{
 					value: "doc-8on16-bw",
 					label: "Doc 8on16, black",
 					description: "Two word-wrapped newspaper columns of 8x13 glyphs on a 16px pitch, black ink.",
@@ -3183,18 +3188,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 	"bashInterceptor.patterns": { type: "array", default: DEFAULT_BASH_INTERCEPTOR_RULES },
-
-	"bash.stripTrailingHeadTail": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "shell",
-			group: "Bash",
-			label: "Strip head/tail Pipes",
-			description:
-				"Silently drop trailing `| head`/`| tail` pipes from single-line bash commands. Output is already truncated automatically.",
-		},
-	},
 
 	// Shell output minimizer
 	"shellMinimizer.enabled": {

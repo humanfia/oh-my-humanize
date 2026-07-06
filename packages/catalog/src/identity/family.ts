@@ -41,9 +41,16 @@ export const isKimiK26ModelId = memo((modelId: string): boolean => {
 	return /(^|\/)kimi-k2(?:\.6|p6)(?:[-:]|$)/i.test(modelId);
 });
 
-/** Claude ids in any namespace form (`claude-*`, `vendor/claude.x`). */
+/**
+ * Claude ids in any namespace form: bare (`claude-*`), path-namespaced
+ * (`anthropic/claude.x`), or dot-prefixed (`us.anthropic.claude-…`,
+ * `global.anthropic.claude-…`, `au.anthropic.claude-…` — Bedrock cross-region
+ * inference profiles). Necessary because {@link parseAnthropicModel} only
+ * classifies kinds enumerated in its regex, so any dotted profile whose kind
+ * (e.g. `haiku`) is not enumerated would otherwise slip past this fallback.
+ */
 export const isClaudeModelId = memo((modelId: string): boolean => {
-	return /(^|\/)claude[-.]/i.test(modelId);
+	return /(^|[/.])claude[-.]/i.test(modelId);
 });
 
 /** `anthropic/`-namespaced ids (aggregator catalogs like OpenRouter). */
@@ -118,9 +125,13 @@ export const isOpenAIGptOssModelId = memo((modelId: string): boolean => {
 	return /(^|\/)gpt-oss[-:]/i.test(modelId);
 });
 
-/** OpenAI model ids (gpt-*, o1-*, o3-*, o4-*, or prefixed with openai/). */
+/** OpenAI model ids (gpt-*, chatgpt-*, o1/o3/o4 SKUs, codex-*, or openai/*). */
 export const isOpenAIModelId = memo((modelId: string): boolean => {
-	return /(^|\/)(gpt|o1|o3|o4)[-.]/i.test(modelId) || modelId.toLowerCase().includes("openai/");
+	return (
+		/(^|\/)(?:gpt|chatgpt|codex)[-.]/i.test(modelId) ||
+		/(^|\/)o[134](?:[-.]|$)/i.test(modelId) ||
+		modelId.toLowerCase().includes("openai/")
+	);
 });
 
 /** OpenAI models at or above the gpt-5.4 wire generation, keyed off the parsed version. */

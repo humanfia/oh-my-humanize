@@ -450,14 +450,15 @@ describe("Mnemopi backend lifecycle", () => {
 		tempDbPath = undefined;
 	});
 
-	it("auto-retain uses the cumulative transcript turn count", async () => {
+	it("auto-retain stores only the not-yet-retained suffix", async () => {
 		const entries = Array.from({ length: 4 }, (_, index) => ({
 			type: "message",
 			message: { role: "user", content: `turn ${index + 1}` },
 		}));
-		const state = registerMnemopiState(makeMnemopiConfig({ retainEveryNTurns: 4 }), {
+		const state = registerMnemopiState(makeMnemopiConfig({ retainEveryNTurns: 2 }), {
 			cwd: "/work/project-alpha",
 		});
+		state.lastRetainedTurn = 2;
 		(state.session.sessionManager as { getEntries: () => unknown[] }).getEntries = () => entries;
 		const retainSpy = vi.spyOn(state, "retainMessages").mockResolvedValue();
 
@@ -465,15 +466,13 @@ describe("Mnemopi backend lifecycle", () => {
 
 		expect(retainSpy).toHaveBeenCalledTimes(1);
 		expect(retainSpy.mock.calls[0][0]).toEqual([
-			{ role: "user", content: "turn 1" },
-			{ role: "user", content: "turn 2" },
 			{ role: "user", content: "turn 3" },
 			{ role: "user", content: "turn 4" },
 		]);
 		expect(state.lastRetainedTurn).toBe(4);
 	});
 
-	it("retains the full transcript but extracts facts from user-authored turns only", async () => {
+	it("retains the full transcript but extracts and embeds clean projections", async () => {
 		const state = registerMnemopiState(makeMnemopiConfig(), { cwd: "/work/project-alpha" });
 		const rememberSpy = vi.spyOn(state, "rememberInScope").mockReturnValue("memory-id");
 
@@ -496,6 +495,11 @@ describe("Mnemopi backend lifecycle", () => {
 		expect(options.extractText).toContain("I always prefer tabs");
 		expect(options.extractText).toContain("I never use semicolons");
 		expect(options.extractText).not.toContain("parser never initializes");
+		expect(options.embedText).toContain("I always prefer tabs");
+		expect(options.embedText).toContain("parser never initializes");
+		expect(options.embedText).toContain("I never use semicolons");
+		expect(options.embedText).not.toContain("[role:");
+		expect(options.embedText).not.toContain(":end]");
 	});
 
 	it("registers subagent aliases from parent Mnemopi state without Hindsight", async () => {

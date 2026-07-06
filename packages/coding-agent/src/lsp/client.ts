@@ -176,6 +176,19 @@ const CLIENT_CAPABILITIES = {
 	},
 };
 
+/** LSP `FileChangeType` values for workspace/didChangeWatchedFiles notifications. */
+export enum FileChangeType {
+	Created = 1,
+	Changed = 2,
+	Deleted = 3,
+}
+
+/** Filesystem change authored by the harness and announced to active LSP clients. */
+export interface WatchedFileChange {
+	filePath: string;
+	type: FileChangeType;
+}
+
 // =============================================================================
 // LSP Message Protocol
 // =============================================================================
@@ -942,6 +955,63 @@ export async function notifySaved(client: LspClient, filePath: string, signal?: 
 		signal,
 	);
 	client.lastActivity = Date.now();
+}
+
+function isPathInsideWorkspace(filePath: string, workspace: string): boolean {
+	const relative = path.relative(workspace, path.resolve(filePath));
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/** Budget for the one-way watched-files notification: a wedged server that
+ *  stops draining stdin must never hang the filesystem mutation that
+ *  triggered it. Failures degrade to a debug log below. */
+const WATCHED_FILES_NOTIFY_TIMEOUT_MS = 2_000;
+
+/**
+ * Announce harness-authored filesystem changes to active LSP clients for `cwd`.
+ *
+ * This covers sibling files that are not open text documents, such as generated
+ * CSS modules or type files that another edited document imports immediately.
+ *
+ * The underlying stdin flush is self-bounded by
+ * {@link WATCHED_FILES_NOTIFY_TIMEOUT_MS}; only an abort of the caller's
+ * `signal` rejects.
+ */
+export async function notifyWorkspaceWatchedFiles(
+	cwd: string,
+	changes: readonly WatchedFileChange[],
+	signal?: AbortSignal,
+): Promise<void> {
+	throwIfAborted(signal);
+	if (changes.length === 0) return;
+
+	const workspace = path.resolve(cwd);
+	const activeClients = Array.from(clients.values()).filter(
+		client => client.status === "ready" && path.resolve(client.cwd) === workspace,
+	);
+	if (activeClients.length === 0) return;
+
+	const timeoutSignal = AbortSignal.timeout(WATCHED_FILES_NOTIFY_TIMEOUT_MS);
+	const sendSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+	const results = await Promise.allSettled(
+		activeClients.map(async client => {
+			const clientChanges = changes
+				.filter(change => isPathInsideWorkspace(change.filePath, workspace))
+				.map(change => {
+					const uri = fileToUri(change.filePath);
+					client.diagnostics.delete(uri);
+					return { uri, type: change.type };
+				});
+			if (clientChanges.length === 0) return;
+			await sendNotification(client, "workspace/didChangeWatchedFiles", { changes: clientChanges }, sendSignal);
+		}),
+	);
+	throwIfAborted(signal);
+	for (const result of results) {
+		if (result.status === "rejected") {
+			logger.debug("LSP watched-files notification failed", { cwd, error: String(result.reason) });
+		}
+	}
 }
 
 /**

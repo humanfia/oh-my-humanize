@@ -104,7 +104,7 @@ export interface IsolatedRunOptions {
 	agentId: string;
 	/** Merge mode driving how changes are captured ("branch" commits, "patch" diffs). */
 	mergeMode: "patch" | "branch";
-	/** Output dir for `${agentId}.patch` artifacts (patch mode). */
+	/** Output dir for `${agentId}.patch` artifacts (patch mode and branch-mode commit failures). */
 	artifactsDir: string;
 	/** Optional path contract for patch-mode captured changes. */
 	capture?: PatchPathCapture;
@@ -146,12 +146,29 @@ export interface IsolatedWorktreeRunOptions<Result extends IsolatedWorktreeResul
 	run: (isolationDir: string) => Promise<Result>;
 }
 
+async function writeIsolationPatch(
+	isolationDir: string,
+	baseline: WorktreeBaseline,
+	artifactsDir: string,
+	agentId: string,
+	capture?: PatchPathCapture,
+): Promise<{ patchPath: string; nestedPatches: NestedRepoPatch[] }> {
+	const delta =
+		capture === undefined
+			? await captureDeltaPatch(isolationDir, baseline)
+			: await captureDeltaPatch(isolationDir, baseline, capture);
+	const patchPath = path.join(artifactsDir, `${agentId}.patch`);
+	await Bun.write(patchPath, delta.rootPatch);
+	return { patchPath, nestedPatches: delta.nestedPatches };
+}
+
 /**
  * Run a subagent inside an isolation worktree and capture its changes.
  *
  * Branch mode: on success, commits the diff onto `omp/task/${agentId}` and
  * returns `branchName` + `nestedPatches`. On commit failure the branch is
- * deleted and `result.error` carries the merge-failure message.
+ * deleted, the still-live isolation diff is written to `${artifactsDir}/${agentId}.patch`,
+ * and `result.error` carries the merge-failure message.
  *
  * Patch mode: on success, writes `${artifactsDir}/${agentId}.patch` and
  * returns `patchPath` + `nestedPatches`.
@@ -226,18 +243,39 @@ export async function runIsolatedWorktree<Result extends IsolatedWorktreeResult>
 				const branchName = `omp/task/${opts.agentId}`;
 				await git.branch.tryDelete(opts.context.repoRoot, branchName);
 				const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-				return { ...result, error: `Merge failed: ${msg}` };
+				try {
+					const patchResult = await writeIsolationPatch(
+						isolationDir,
+						taskBaseline,
+						opts.artifactsDir,
+						opts.agentId,
+						opts.capture,
+					);
+					return {
+						...result,
+						patchPath: patchResult.patchPath,
+						nestedPatches: patchResult.nestedPatches,
+						error: `Merge failed: ${msg}`,
+					};
+				} catch (patchErr) {
+					const patchMsg = patchErr instanceof Error ? patchErr.message : String(patchErr);
+					return { ...result, error: `Merge failed: ${msg}; patch capture failed: ${patchMsg}` };
+				}
 			}
 		}
 		if (result.exitCode === 0) {
 			try {
-				const delta = await captureDeltaPatch(isolationDir, taskBaseline, opts.capture);
-				const patchPath = path.join(opts.artifactsDir, `${opts.agentId}.patch`);
-				await Bun.write(patchPath, delta.rootPatch);
+				const patchResult = await writeIsolationPatch(
+					isolationDir,
+					taskBaseline,
+					opts.artifactsDir,
+					opts.agentId,
+					opts.capture,
+				);
 				return {
 					...result,
-					patchPath,
-					nestedPatches: delta.nestedPatches,
+					patchPath: patchResult.patchPath,
+					nestedPatches: patchResult.nestedPatches,
 				};
 			} catch (patchErr) {
 				const msg = patchErr instanceof Error ? patchErr.message : String(patchErr);
@@ -423,8 +461,9 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 	try {
 		if (mergeMode === "branch") {
 			if (!result.branchName && result.exitCode === 0 && !result.aborted && result.error) {
+				const patchList = result.patchPath ? `\nPatch artifact:\n- ${result.patchPath}` : "";
 				return {
-					summary: `\n\n<system-notification>Branch merge failed before a task branch could be created: ${result.error}\nTask outputs are preserved but changes were not applied.</system-notification>`,
+					summary: `\n\n<system-notification>Branch merge failed before a task branch could be created: ${result.error}\nTask outputs are preserved but changes were not applied.${patchList}</system-notification>`,
 					changesApplied: false,
 					hadAnyChanges: false,
 					mergedBranchForNestedPatches: false,

@@ -914,7 +914,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
 			// artifacts such as local:// plans are owned by OMP, not the editor.
-			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent)) {
+			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent, signal)) {
 				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
 				const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
@@ -972,9 +972,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 // =============================================================================
 
 interface WriteRenderArgs {
-	path?: string;
-	file_path?: string;
-	content?: string;
+	path?: unknown;
+	file_path?: unknown;
+	content?: unknown;
 }
 
 const WRITE_PREVIEW_LINES = 6;
@@ -990,8 +990,14 @@ function formatLineCountSuffix(lineCount: number, uiTheme: Theme): string {
 	return uiTheme.fg("dim", ` · ${lineCount} line${lineCount === 1 ? "" : "s"}`);
 }
 
-function normalizeDisplayText(text: string): string {
-	return text.replace(/\r/g, "");
+function normalizeDisplayText(text: unknown): string {
+	let displayText = "";
+	if (typeof text === "string") {
+		displayText = text;
+	} else if (text !== undefined && text !== null) {
+		displayText = String(text);
+	}
+	return displayText.replace(/\r/g, "");
 }
 
 /**
@@ -1082,9 +1088,10 @@ function renderContentPreview(
 
 export const writeToolRenderer = {
 	renderCall(args: WriteRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
-		const rawPath = args.file_path || args.path || "";
+		const rawPath =
+			typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : "";
 		const filePath = shortenPath(rawPath);
-		const lang = getLanguageFromPath(rawPath) ?? "text";
+		const lang = rawPath ? (getLanguageFromPath(rawPath) ?? "text") : "text";
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
 		const pathDisplay = filePath ? uiTheme.fg("accent", filePath) : uiTheme.fg("toolOutput", "…");
 		// No status icon on the head row: it's the head of the framed block, and
@@ -1098,11 +1105,12 @@ export const writeToolRenderer = {
 			},
 			uiTheme,
 		);
+		const content = normalizeDisplayText(args.content);
 		const streamingCache = createRenderedStringCache();
 		return framedBlock(uiTheme, width => {
-			const body = args.content
+			const body = content
 				? formatStreamingContent(
-						args.content,
+						content,
 						Boolean(options?.expanded),
 						lang,
 						uiTheme,
@@ -1128,10 +1136,11 @@ export const writeToolRenderer = {
 		uiTheme: Theme,
 		args?: WriteRenderArgs,
 	): Component {
-		const rawPath = args?.file_path || args?.path || "";
+		const rawPath =
+			typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
 		const filePath = shortenPath(rawPath);
-		const fileContent = args?.content || "";
-		const lang = getLanguageFromPath(rawPath);
+		const fileContent = normalizeDisplayText(args?.content);
+		const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
 		// The header shows the cwd-relative path but links to the absolute path the
 		// write resolved to (args.path may be relative, which would yield a broken

@@ -6,6 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
 	type Agent,
+	AgentBusyError,
 	type AgentMessage,
 	type AgentToolResult,
 	EventLoopKeepalive,
@@ -162,8 +163,11 @@ import {
 } from "./loop-limit";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { countRunningSubagentBadgeAgents, getRunningSubagentBadgeRegistry } from "./running-subagent-badge";
-import type { ObservableSession } from "./session-observer-registry";
-import { SessionObserverRegistry } from "./session-observer-registry";
+import {
+	type ObservableSession,
+	type SessionObserverChangeKind,
+	SessionObserverRegistry,
+} from "./session-observer-registry";
 import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
@@ -207,29 +211,37 @@ interface WorkingMessageAccentCacheKey {
 	sessionAccentEnabled: boolean;
 }
 
+/**
+ * Intern the shimmer palettes for each `WorkingMessageAccent` so `compile()`
+ * inside `shimmerSegments` sees a stable palette object between animation
+ * ticks. Allocating fresh palette literals every frame guaranteed a cache miss
+ * on the Symbol-keyed compiled-ANSI slot and forced `resolveTierAnsi` to walk
+ * every tier open/close for the ~30fps loader redraw (issue #4377).
+ */
+const workingMessagePaletteCache = new WeakMap<WorkingMessageAccent, { main: ShimmerPalette; hint: ShimmerPalette }>();
+
+function workingMessagePalettes(accent: WorkingMessageAccent): { main: ShimmerPalette; hint: ShimmerPalette } {
+	let entry = workingMessagePaletteCache.get(accent);
+	if (!entry) {
+		entry = {
+			main: { low: "dim", mid: { ansi: accent.main }, high: { ansi: accent.main }, bold: true },
+			hint: { low: "dim", mid: { ansi: accent.dim }, high: { ansi: accent.dim } },
+		};
+		workingMessagePaletteCache.set(accent, entry);
+	}
+	return entry;
+}
+
 function renderWorkingMessage(message: string, accent?: WorkingMessageAccent): string {
-	const palette = accent
-		? ({
-				low: "dim",
-				mid: { ansi: accent.main },
-				high: { ansi: accent.main },
-				bold: true,
-			} satisfies ShimmerPalette)
-		: undefined;
+	const palettes = accent ? workingMessagePalettes(accent) : undefined;
+	const palette = palettes?.main;
 	const hint = interruptHint();
 	if (!message.endsWith(hint)) return shimmerText(message, theme, palette);
 	const header = message.slice(0, -hint.length);
-	const hintPalette = accent
-		? ({
-				low: "dim",
-				mid: { ansi: accent.dim },
-				high: { ansi: accent.dim },
-			} satisfies ShimmerPalette)
-		: HINT_SHIMMER_PALETTE;
 	return shimmerSegments(
 		[
 			{ text: header, palette },
-			{ text: hint, palette: hintPalette },
+			{ text: hint, palette: palettes?.hint ?? HINT_SHIMMER_PALETTE },
 		],
 		theme,
 	);
@@ -348,9 +360,12 @@ function disposeWorkflowMonitorComponent(component: Component | undefined): void
  *  before it auto-clears, mirroring the todo HUD's auto-clear timer. */
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
+const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
+const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
+
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * one tree row per running agent in the same `Id: description` shape the
+ * a bounded set of running-agent rows in the same `Id: description` shape the
  * inline task rows use (muted task preview when no description was given).
  * Layout mirrors the Todos HUD exactly: unindented header, then
  * `renderTreeList` rows (dim connectors) shifted right by one space.
@@ -366,9 +381,11 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 	if (running.length === 0) return [];
 
 	const dot = theme.styledSymbol("status.done", "accent");
+	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
+	const hiddenCount = running.length - visible.length;
 	const rows = renderTreeList(
 		{
-			items: running,
+			items: visible,
 			expanded: true,
 			renderItem: session => {
 				const displayId = formatTaskId(session.id);
@@ -390,6 +407,9 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 		},
 		theme,
 	);
+	if (hiddenCount > 0) {
+		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
+	}
 	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
 }
 
@@ -599,6 +619,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#observerRegistry: SessionObserverRegistry;
 	#eventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
+	#observerUiSyncTimer?: NodeJS.Timeout;
+	#observerUiSyncNeedsTodoReconcile = false;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentRegistry;
 	#mcpStatusOrder: string[] = [];
@@ -654,7 +676,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// gating the setting against the terminal's static capability.
 		setTerminalTextSizing(settings.get("tui.textSizing") && terminalSupportsTextSizing(TERMINAL.id));
 		this.chatContainer = new TranscriptContainer();
-		this.pendingMessagesContainer = new Container();
+		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.statusContainer = new AnchoredLiveContainer();
 		this.workflowMonitorContainer = new WorkflowMonitorContainer();
 		this.todoReminderContainer = new AnchoredLiveContainer();
@@ -935,17 +957,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 		this.syncRunningSubagentBadge();
-		this.#observerRegistry.onChange(() => {
-			this.syncRunningSubagentBadge();
-			// Auto-checkmark todos whose matching subagent just succeeded, then
-			// re-render so the running override (the static "live" glyph when a
-			// subagent is doing the work for a still-pending todo) updates as
-			// subagents start, finish, or fail.
-			this.#reconcileTodosWithSubagents();
-			this.#syncTodoAutoClearTimer();
-			this.#renderTodoList();
-			this.#renderSubagentList();
-			this.ui.requestRender();
+		this.#observerRegistry.onChange(kind => {
+			this.#scheduleObserverUiSync(kind);
 		});
 
 		// Load initial todos
@@ -957,6 +970,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		pushTerminalTitle();
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.updateEditorBorderColor();
+		// Single side-effect point for title changes: every setSessionName caller
+		// (first-input titling, /rename, extension renames, plan seeding, replan
+		// refresh) gets the terminal title + accent updates from here. Registered
+		// before initHooksAndCustomTools/#reconcileModeFromSession/#enterPlanMode —
+		// all of which can reach setSessionName during init.
+		this.#eventBusUnsubscribers.push(
+			this.sessionManager.onSessionNameChanged(() => {
+				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				this.#handleSessionAccentInputsChanged();
+			}),
+		);
 		this.#syncEditorMaxHeight();
 		this.isInitialized = true;
 		this.ui.requestRender(true);
@@ -1012,9 +1036,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(
 			this.session.subscribe(event => {
 				void this.#handleGoalSessionEvent(event);
-			}),
-			this.sessionManager.onSessionNameChanged(() => {
-				this.#handleSessionAccentInputsChanged();
 			}),
 			onStatusLineSessionAccentChanged(() => {
 				this.#syncStatusLineSettings();
@@ -1531,19 +1552,18 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
-	syncRunningSubagentBadge(): void {
+	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): void {
 		const registry = getRunningSubagentBadgeRegistry(this.collabGuest);
 		if (this.#agentRegistrySubscriptionTarget !== registry) {
 			this.#agentRegistryUnsubscribe?.();
 			this.#agentRegistrySubscriptionTarget = registry;
 			this.#agentRegistryUnsubscribe = registry.onChange(() => {
 				this.syncRunningSubagentBadge();
-				this.ui.requestRender();
 			});
 		}
 		const count = countRunningSubagentBadgeAgents(registry);
 		this.statusLine.setSubagentCount(count);
-		this.ui.requestRender();
+		if (options.requestRender !== false) this.ui.requestRender();
 	}
 
 	rebuildChatFromMessages(): void {
@@ -1762,6 +1782,38 @@ export class InteractiveMode implements InteractiveModeContext {
 			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
 		);
 		return active ?? nonEmpty[nonEmpty.length - 1];
+	}
+
+	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
+		if (kind !== "progress") {
+			this.#observerUiSyncNeedsTodoReconcile = true;
+		}
+		if (this.#observerUiSyncTimer) return;
+		this.#observerUiSyncTimer = setTimeout(() => {
+			this.#observerUiSyncTimer = undefined;
+			this.#flushObserverUiSync();
+		}, SUBAGENT_OBSERVER_UI_COALESCE_MS);
+		this.#observerUiSyncTimer.unref?.();
+	}
+
+	#flushObserverUiSync(): void {
+		this.syncRunningSubagentBadge({ requestRender: false });
+		if (this.#observerUiSyncNeedsTodoReconcile) {
+			this.#observerUiSyncNeedsTodoReconcile = false;
+			this.#reconcileTodosWithSubagents();
+		}
+		this.#syncTodoAutoClearTimer();
+		this.#renderTodoList();
+		this.#renderSubagentList();
+		this.ui.requestRender();
+	}
+
+	#cancelObserverUiSyncTimer(): void {
+		if (this.#observerUiSyncTimer) {
+			clearTimeout(this.#observerUiSyncTimer);
+			this.#observerUiSyncTimer = undefined;
+		}
+		this.#observerUiSyncNeedsTodoReconcile = false;
 	}
 
 	#renderTodoList(): void {
@@ -2633,8 +2685,16 @@ export class InteractiveMode implements InteractiveModeContext {
 				// the try/finally is idempotent and kept for the !compactBeforeExecute
 				// branch.
 				this.session.setPlanReferencePath(options.planFilePath);
-				compactOutcome = await this.handleCompactCommand(compactionPrompt, undefined, outcome =>
-					this.#applyDeferredPlanModelTransition(outcome, options.executionModel),
+				// Ride the plan-mode distillation prompt through as `internalGuidance`
+				// so it reaches native summarization without leaking into the public
+				// `customInstructions` channel on `session_before_compact` — extensions
+				// there treat that field as user focus and would query-bias the
+				// summary toward the plan boilerplate (issue #4359).
+				compactOutcome = await this.handleCompactCommand(
+					undefined,
+					undefined,
+					outcome => this.#applyDeferredPlanModelTransition(outcome, options.executionModel),
+					compactionPrompt,
 				);
 			}
 		} finally {
@@ -2685,11 +2745,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// when the user has already chosen a name (preserveContext paths).
 		const seededName = humanizePlanTitle(options.title);
 		if (seededName && !this.sessionManager.getSessionName()) {
-			const applied = await this.sessionManager.setSessionName(seededName, "auto");
-			if (applied) {
-				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
-				this.updateEditorBorderColor();
-			}
+			await this.sessionManager.setSessionName(seededName, "auto");
 		}
 
 		// markPlanReferenceSent fires only on the dispatch path so the synthetic
@@ -2699,16 +2755,24 @@ export class InteractiveMode implements InteractiveModeContext {
 			planFilePath: options.planFilePath,
 			contextPreserved: options.preserveContext === true,
 		});
-		// The executor's first turn must start on an idle session. The agent may still
-		// be streaming the post-`resolve` continuation (Agent.#emit is fire-and-forget)
-		// or a turn kicked off by the compaction/clear above; prompt() would then throw
-		// AgentBusyError ("Failed to finalize approved plan"). Abort the now-irrelevant
-		// in-flight turn first — abort() bumps the prompt generation and cancels pending
-		// continuations, so nothing re-streams in the synchronous gap before prompt().
+		// A user turn queued during compaction was already fired by
+		// `flushCompactionQueue` before we returned from `handleCompactCommand`; the
+		// old abort-then-prompt path would have discarded that operator turn AND
+		// still surfaced `AgentBusyError` when the queued turn kicked off in the
+		// synchronous gap. Preserve the in-flight work and queue the hidden
+		// execution directive behind it as a synthetic follow-up. If `isStreaming`
+		// flips true between the check and dispatch (the same fire-and-forget race
+		// noted below), catch `AgentBusyError` and fall back to the same queue.
 		if (this.session.isStreaming) {
-			await this.#abortPlanApprovalTurnSilently();
+			await this.session.followUp(planModePrompt, undefined, { synthetic: true });
+			return;
 		}
-		await this.session.prompt(planModePrompt, { synthetic: true });
+		try {
+			await this.session.prompt(planModePrompt, { synthetic: true });
+		} catch (error) {
+			if (!(error instanceof AgentBusyError)) throw error;
+			await this.session.followUp(planModePrompt, undefined, { synthetic: true });
+		}
 	}
 	async #abortPlanApprovalTurnSilently(): Promise<void> {
 		this.session.markPlanInternalAbortPending();
@@ -3304,6 +3368,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#cleanupMicAnimation();
 		this.#cancelTodoAutoClearTimer();
+		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
 			this.#sttController.dispose();
@@ -3982,8 +4047,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		internalGuidance?: string,
 	): Promise<CompactionOutcome> {
-		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush);
+		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush, internalGuidance);
 	}
 
 	handleHandoffCommand(customInstructions?: string): Promise<void> {

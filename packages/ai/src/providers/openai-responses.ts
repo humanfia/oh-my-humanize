@@ -20,7 +20,7 @@ import {
 	createOpenAIResponsesHistoryPayload,
 	normalizeSystemPrompts,
 	resolveCacheRetention,
-	sanitizeOpenAIResponsesHistoryItemsForReplay,
+	sanitizeOpenAIResponsesAssistantHistoryItemsForReplay,
 } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
@@ -487,9 +487,9 @@ const streamOpenAIResponsesOnce = (
 								body: requestParams,
 								signal: requestSignal,
 								fetch: options?.fetch,
-								// With a first-event watchdog armed, transport retries must
-								// not silently extend the caller's deadline.
-								maxAttempts: requestTimeoutMs !== undefined ? 1 : undefined,
+								// Transient 408/429/5xx get Retry-After-aware transport
+								// retries; the first-event watchdog aborts `requestSignal`,
+								// so retries cannot extend the caller's deadline.
 								onSseEvent: rawSseObserver,
 							});
 							// Disarm the first-event watchdog as soon as headers arrive — a slow
@@ -687,22 +687,33 @@ const streamOpenAIResponsesOnce = (
 			}
 
 			output.providerPayload = createOpenAIResponsesHistoryPayload(model.provider, nativeOutputItems);
-			if (providerSessionState) providerSessionState.nativeHistoryReplayWarmed = true;
-			if (chainState) {
-				chainState.lastParams = structuredCloneJSON(activeParams);
-				if (output.responseId) {
-					chainState.lastResponseId = output.responseId;
-					chainState.lastResponseItems = sanitizeOpenAIResponsesHistoryItemsForReplay(
-						structuredCloneJSON(nativeOutputItems),
-					);
-					chainState.canAppend = true;
-					// Only a successful CHAINED completion clears the stale counter — a
-					// full-context success must not mask categorical rejection.
-					if (sentPreviousResponseId) chainState.staleFailures = 0;
-				} else {
-					// Without a response id the append baseline cannot be trusted.
-					chainState.canAppend = false;
+			const replayableResponseItems = sanitizeOpenAIResponsesAssistantHistoryItemsForReplay(
+				structuredCloneJSON(nativeOutputItems),
+			);
+			if (replayableResponseItems) {
+				if (providerSessionState) providerSessionState.nativeHistoryReplayWarmed = true;
+				if (chainState) {
+					chainState.lastParams = structuredCloneJSON(activeParams);
+					if (output.responseId) {
+						chainState.lastResponseId = output.responseId;
+						chainState.lastResponseItems = replayableResponseItems;
+						chainState.canAppend = true;
+						// Only a successful CHAINED completion clears the stale counter — a
+						// full-context success must not mask categorical rejection.
+						if (sentPreviousResponseId) chainState.staleFailures = 0;
+					} else {
+						// Without a response id the append baseline cannot be trusted.
+						chainState.canAppend = false;
+					}
 				}
+			} else if (chainState) {
+				// Hidden-empty / fully sanitized successes cannot be used as an append
+				// baseline, but `lastParams` still records the successful wire controls
+				// without re-enabling `previous_response_id` chaining.
+				chainState.canAppend = false;
+				chainState.lastParams = structuredCloneJSON(activeParams);
+				chainState.lastResponseId = undefined;
+				chainState.lastResponseItems = undefined;
 			}
 
 			output.duration = performance.now() - startTime;
@@ -854,7 +865,7 @@ export function buildParams(
 	if (context.tools) {
 		const disableStrictTools =
 			disableStrictToolsOverride || isStrictToolsDisabledForScope(providerSessionState, strictToolsScope);
-		const strictMode = !disableStrictTools && model.compat.supportsStrictMode;
+		const strictMode = !disableStrictTools && model.compat.supportsStrictMode !== false;
 		params.tools = convertTools(context.tools, strictMode, model);
 		strictToolsApplied = params.tools.some(t => (t as { strict?: boolean }).strict === true);
 		if (options?.toolChoice) {
@@ -987,7 +998,19 @@ export function convertTools(
 			name: tool.name,
 			description: tool.description || "",
 			parameters,
-			...(effectiveStrict && { strict: true }),
+			// `strict: false` and an omitted `strict` are NOT equivalent for every
+			// OpenAI-compat backend — some over-fill optional args when the flag is
+			// absent (#4336). Preserve the author's explicit `false` unless the
+			// provider is explicitly known not to understand the field
+			// (`supportsStrictMode: false`) or the strict-schema fallback is
+			// active — both paths rely on a uniformly absent wire flag. Mirrors the
+			// `supportsStrictMode !== false` gate used by openai-completions
+			// (#4527).
+			...(effectiveStrict
+				? { strict: true }
+				: !NO_STRICT && strictMode && tool.strict === false
+					? { strict: false }
+					: {}),
 		} as OpenAITool);
 	}
 	return out;

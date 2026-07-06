@@ -164,6 +164,65 @@ describe("advisor", () => {
 			expect(md).toContain("[irc]");
 			expect(md).not.toContain("<primary-context");
 		});
+
+		it("omits hidden non-primary custom messages while keeping visible custom messages", () => {
+			const hiddenPrelude = {
+				role: "custom",
+				customType: "eager-todo-prelude",
+				content: "<system-reminder>Task delegation is enabled",
+				display: false,
+				timestamp: 1,
+			} as AgentMessage;
+			const hiddenHookMessage = {
+				role: "hookMessage",
+				customType: "hidden-hook-reminder",
+				content: "Hidden hook reminder should never reach advisor history",
+				display: false,
+				timestamp: 2,
+			} as AgentMessage;
+			const visibleCustom = {
+				role: "custom",
+				customType: "visible-status",
+				content: "Visible custom update",
+				display: true,
+				timestamp: 3,
+			} as AgentMessage;
+
+			const md = formatSessionHistoryMarkdown([hiddenPrelude, hiddenHookMessage, visibleCustom], {
+				expandPrimaryContext: true,
+			});
+
+			expect(md).toContain("[visible-status] Visible custom update");
+			expect(md).not.toContain("eager-todo-prelude");
+			expect(md).not.toContain("system-reminder");
+			expect(md).not.toContain("Task delegation");
+			expect(md).not.toContain("hidden-hook-reminder");
+			expect(md).not.toContain("Hidden hook reminder");
+		});
+
+		it("keeps hidden image descriptions because they are the text transcript for attached images", () => {
+			const imageDescription = {
+				role: "custom",
+				customType: "image-attachment-description",
+				content: [{ type: "text", text: '<image path="local://session/cat.png">cat on a keyboard</image>' }],
+				display: false,
+				timestamp: 1,
+			} as AgentMessage;
+			const hiddenPrelude = {
+				role: "custom",
+				customType: "eager-todo-prelude",
+				content: "<system-reminder>Task delegation is enabled",
+				display: false,
+				timestamp: 2,
+			} as AgentMessage;
+
+			const md = formatSessionHistoryMarkdown([imageDescription, hiddenPrelude], { expandPrimaryContext: true });
+
+			expect(md).toContain("[image-attachment-description]");
+			expect(md).toContain("cat on a keyboard");
+			expect(md).not.toContain("eager-todo-prelude");
+			expect(md).not.toContain("Task delegation");
+		});
 	});
 
 	describe("formatSessionHistoryMarkdown expandEditDiffs", () => {

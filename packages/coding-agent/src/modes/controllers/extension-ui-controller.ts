@@ -24,7 +24,7 @@ import { HookInputComponent } from "../../modes/components/hook-input";
 import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/components/hook-selector";
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
-import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import { normalizeCustomMessagePayload, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { setSessionTerminalTitle, setTerminalTitle } from "../../utils/title-generator";
 
 const MAX_WIDGET_LINES = 10;
@@ -76,9 +76,13 @@ export class ExtensionUiController {
 			setWidget: (key, content, options) => this.setHookWidget(key, content, options),
 			setTitle: title => setTerminalTitle(title),
 			custom: (factory, options) => this.showHookCustom(factory, options),
-			setEditorText: text => this.ctx.editor.setText(text),
+			setEditorText: text => {
+				this.ctx.editor.setText(text);
+				this.ctx.ui.requestRender();
+			},
 			pasteToEditor: text => {
 				this.ctx.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
+				this.ctx.ui.requestRender();
 			},
 			getEditorText: () => this.ctx.editor.getText(),
 			editor: (title, prefill, dialogOptions, editorOptions) =>
@@ -111,9 +115,10 @@ export class ExtensionUiController {
 		const actions: ExtensionActions = {
 			sendMessage: (message, options) => {
 				const wasStreaming = this.ctx.session.isStreaming;
+				const normalized = normalizeCustomMessagePayload(message);
 				this.ctx.session
-					.sendCustomMessage(message, options)
-					.then(() => this.#applyCustomMessageDisplay(wasStreaming, message.display))
+					.sendCustomMessage(normalized, options)
+					.then(() => this.#applyCustomMessageDisplay(wasStreaming, normalized.display))
 					.catch((err: unknown) => {
 						this.ctx.showError(
 							`Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -347,9 +352,10 @@ export class ExtensionUiController {
 		const actions: ExtensionActions = {
 			sendMessage: (message, options) => {
 				const wasStreaming = this.ctx.session.isStreaming;
+				const normalized = normalizeCustomMessagePayload(message);
 				this.ctx.session
-					.sendCustomMessage(message, options)
-					.then(() => this.#applyCustomMessageDisplay(wasStreaming, message.display))
+					.sendCustomMessage(normalized, options)
+					.then(() => this.#applyCustomMessageDisplay(wasStreaming, normalized.display))
 					.catch((err: unknown) => {
 						const errorText = `Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`;
 						this.ctx.showError(errorText);
@@ -890,7 +896,6 @@ export class ExtensionUiController {
 
 	async #updateSessionName(name: string): Promise<void> {
 		await this.ctx.sessionManager.setSessionName(name, "user");
-		setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 	}
 
 	#sendExtensionUserMessage: SendUserMessageHandler = (content, options) => {

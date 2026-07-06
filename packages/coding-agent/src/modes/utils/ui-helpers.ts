@@ -51,11 +51,12 @@ import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillComman
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
+	assistantUsageIsBilled,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
 	buildIrcMessageCard,
 	normalizeToolArgs,
-	resolveAssistantErrorMessage,
+	resolveAssistantErrorPresentation,
 } from "./transcript-render-helpers";
 
 type TextBlock = { type: "text"; text: string };
@@ -318,7 +319,11 @@ export class UiHelpers {
 			const previous = waitingPoll;
 			if (!previous) return;
 			waitingPoll = null;
-			if (nextToolName === "job" && previous.isDisplaceableBlock()) {
+			if (
+				nextToolName === "job" &&
+				previous.isDisplaceableBlock() &&
+				this.ctx.chatContainer.isBlockUncommitted(previous)
+			) {
 				this.ctx.chatContainer.removeChild(previous);
 			}
 			// Sealing freezes the block and stops the waiting-poll spinner that
@@ -335,7 +340,9 @@ export class UiHelpers {
 			}
 			if (previous.canBeDisplacedBy(nextToolName)) {
 				todoSnapshot = null;
-				this.ctx.chatContainer.removeChild(previous);
+				if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+					this.ctx.chatContainer.removeChild(previous);
+				}
 				previous.seal();
 				return;
 			}
@@ -373,10 +380,9 @@ export class UiHelpers {
 					readGroup?.seal();
 					readGroup = null;
 				}
-				const { hasErrorStop, errorMessage } = resolveAssistantErrorMessage(
-					message,
-					this.ctx.viewSession.retryAttempt,
-				);
+				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
+				const hasErrorStop = errorPresentation.kind === "full";
+				const errorMessage = hasErrorStop ? errorPresentation.text : null;
 
 				// Render tool call components
 				for (const content of message.content) {
@@ -459,7 +465,10 @@ export class UiHelpers {
 						this.ctx.pendingTools.set(content.id, component);
 					}
 				}
-				pendingUsage = this.ctx.settings.get("display.showTokenUsage") ? message.usage : undefined;
+				pendingUsage =
+					this.ctx.settings.get("display.showTokenUsage") && assistantUsageIsBilled(message.usage)
+						? message.usage
+						: undefined;
 				pendingUsageDuration = message.duration;
 				pendingUsageTtft = message.ttft;
 			} else if (message.role === "toolResult") {

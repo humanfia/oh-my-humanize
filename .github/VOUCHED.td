@@ -37,6 +37,7 @@ cexll
 chan1103
 chuaaron
 ckumar1
+cyjaysong
 daandden
 daaximus
 danzaio
@@ -44,6 +45,7 @@ darkphilosophy
 deprecatedluke
 djdembeck
 dmarsh-gusto
+dylanbohlender
 elikoga
 enieuwy
 fettpl
@@ -58,9 +60,11 @@ haosenwang1018
 heyitsgilbert
 hezhiyang2000
 hpost
+iacore
 igasmi
 infernix
 inprealpha
+insodimension
 itertea
 jagravnaik
 jasonw22
@@ -82,13 +86,16 @@ lyc-aon
 m3ridian-zero
 makomakogo
 masonc15
+mathews-tom
 mattwilkinsonn
 maximhar
 maxvisionai
 metaphorics
 mikeei
 mokto
+moutazhaq
 mouyase
+mq1n
 muness
 nnk97
 nszceta
@@ -116,8 +123,10 @@ slact
 smileynet
 sundbp
 superhedge22
+tbui17
 tc97222
 tdiant
+tjboudreaux
 tsagi2045
 turbomolli
 usr-bin-roygbiv
@@ -127,6 +136,7 @@ voiys
 watzon
 wodenjay
 wolfiesch
+xaviergmail
 zakhar-kogan
 zamorakpds
 korri123

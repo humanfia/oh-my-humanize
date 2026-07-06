@@ -5,6 +5,37 @@
 ### Changed
 
 - Changed package metadata links and description from the old Oh My Pi branding to OMH.
+## [16.3.11] - 2026-07-06
+
+### Added
+
+- Added Claude Haiku 4.5 (JP) model support
+- Added tencent/hy3 model support via ZenMux
+
+### Changed
+
+- Updated naming format for various synthetic models to include provider prefix
+- Adjusted context window limit for MiniMax-M3 model
+- Updated pricing for select models
+
+## [16.3.10] - 2026-07-06
+
+### Fixed
+
+- Fixed LiteLLM rich discovery to ignore unusable sentinel placeholders and continue to `/v2/model/info` for real models. ([#4655](https://github.com/can1357/oh-my-pi/issues/4655))
+
+## [16.3.9] - 2026-07-06
+
+### Fixed
+
+- Fixed compatibility with OpenCode Go DeepSeek V4 models by sending max_tokens instead of max_completion_tokens to match the provider's API requirements.
+
+## [16.3.7] - 2026-07-05
+
+### Fixed
+
+- Fixed usage cost calculation to correctly account for provider orchestration token sidecars without misclassifying them as standard input, output, or cache tokens.
+
 ## [16.3.4] - 2026-07-03
 
 ### Added

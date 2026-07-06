@@ -118,7 +118,119 @@ describe("CombinedAutocompleteProvider", () => {
 			expect(result?.prefix).toBe("/tmp");
 			expect(result?.items.map(item => item.value)).toContain("/tmp/");
 		});
+
+		it("treats @ file-reference tokens as literal text inside slash command arguments without completions", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-rename-args-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "copy-target.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "rename", description: "Rename current session", allowArgs: true }],
+					baseDir,
+				);
+				const line = "/rename repro @";
+				const result = await provider.getSuggestions([line], 0, line.length);
+
+				expect(result).toBeNull();
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+
+		it("returns @ file-reference completions for matched slash commands that reject arguments", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-settings-args-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "copy-target.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "settings", description: "Open settings", allowArgs: false }],
+					baseDir,
+				);
+				const line = "/settings @";
+				const result = await provider.getSuggestions([line], 0, line.length);
+
+				expect(result?.prefix).toBe("@");
+				expect(result?.items.map(item => item.value)).toContain("@copy-target.ts");
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+
+		it("returns slash command argument completions instead of @ file references when the command defines them", async () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-rename-args-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "copy-target.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider(
+					[
+						{
+							name: "rename",
+							description: "Rename current session",
+							allowArgs: true,
+							getArgumentCompletions: argumentPrefix =>
+								argumentPrefix === "repro @"
+									? [{ value: "repro @literal", label: "Keep @ in the title" }]
+									: null,
+						},
+					],
+					baseDir,
+				);
+				const line = "/rename repro @";
+				const result = await provider.getSuggestions([line], 0, line.length);
+
+				expect(result).toEqual({
+					prefix: "repro @",
+					items: [{ value: "repro @literal", label: "Keep @ in the title" }],
+				});
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
 	});
+
+	describe("absolute path completion", () => {
+		let baseDir: string;
+
+		beforeEach(() => {
+			baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-absolute-"));
+			fs.writeFileSync(path.join(baseDir, "alpha.ts"), "export {};\n");
+		});
+
+		afterEach(() => {
+			fs.rmSync(baseDir, { recursive: true, force: true });
+		});
+
+		it("falls through from an unmatched leading slash command token to file suggestions", async () => {
+			const provider = new CombinedAutocompleteProvider([{ name: "model", description: "Switch model" }], baseDir);
+			const normalizedBaseDir = baseDir.replace(/\\/g, "/");
+			const prefix = `${normalizedBaseDir}/al`;
+
+			const result = await provider.getSuggestions([prefix], 0, prefix.length);
+
+			expect(result?.prefix).toBe(prefix);
+			expect(result?.items.map(item => item.value)).toContain(`${normalizedBaseDir}/alpha.ts`);
+		});
+
+		it("falls through to file suggestions when an absolute path has leading whitespace", async () => {
+			const provider = new CombinedAutocompleteProvider([{ name: "model", description: "Switch model" }], baseDir);
+			const normalizedBaseDir = baseDir.replace(/\\/g, "/");
+			const prefix = `${normalizedBaseDir}/al`;
+			const line = `  ${prefix}`;
+
+			const result = await provider.getSuggestions([line], 0, line.length);
+
+			expect(result?.prefix).toBe(prefix);
+			expect(result?.items.map(item => item.value)).toContain(`${normalizedBaseDir}/alpha.ts`);
+		});
+
+		it("keeps slash command matches ahead of file suggestions", async () => {
+			const provider = new CombinedAutocompleteProvider([{ name: "model", description: "Switch model" }], baseDir);
+			const line = "/mod";
+
+			const result = await provider.getSuggestions([line], 0, line.length);
+
+			expect(result?.prefix).toBe(line);
+			expect(result?.items.map(item => item.value)).toEqual(["model"]);
+		});
+	});
+
 	describe("applyCompletion", () => {
 		it("replaces the live slash command prefix when rendered suggestions are stale", () => {
 			const provider = new CombinedAutocompleteProvider([], "/tmp");
@@ -154,6 +266,47 @@ describe("CombinedAutocompleteProvider", () => {
 
 			expect(result.lines[0]).toBe("  /skill ");
 			expect(result.cursorCol).toBe("  /skill ".length);
+		});
+
+		it("applies a leading-slash path completion without slash-command insertion", () => {
+			const provider = new CombinedAutocompleteProvider([], "/tmp");
+			const result = provider.applyCompletion(["/tm"], 0, 3, { value: "/tmp/", label: "tmp/" }, "/tm");
+
+			expect(result.lines[0]).toBe("/tmp/");
+			expect(result.cursorCol).toBe("/tmp/".length);
+		});
+
+		it("applies an absolute deep path by replacing only the active token", () => {
+			const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "autocomplete-absolute-apply-"));
+			try {
+				fs.writeFileSync(path.join(baseDir, "alpha.ts"), "export {};\n");
+				const provider = new CombinedAutocompleteProvider([], baseDir);
+				const normalizedBaseDir = baseDir.replace(/\\/g, "/");
+				const prefix = `${normalizedBaseDir}/al`;
+				const completedPath = `${normalizedBaseDir}/alpha.ts`;
+				const line = `open ${prefix}`;
+
+				const result = provider.applyCompletion(
+					[line],
+					0,
+					line.length,
+					{ value: completedPath, label: "alpha.ts" },
+					prefix,
+				);
+
+				expect(result.lines[0]).toBe(`open ${completedPath}`);
+				expect(result.cursorCol).toBe(`open ${completedPath}`.length);
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
+		});
+
+		it("applies a quoted absolute path completion without slash-command insertion", () => {
+			const provider = new CombinedAutocompleteProvider([], "/tmp");
+			const result = provider.applyCompletion(["/tm"], 0, 3, { value: '"/tmp/"', label: "tmp/" }, "/tm");
+
+			expect(result.lines[0]).toBe('"/tmp/"');
+			expect(result.cursorCol).toBe('"/tmp/"'.length);
 		});
 
 		it("inserts the skill token at the cursor when applying a mid-prompt skill completion", () => {

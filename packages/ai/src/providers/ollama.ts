@@ -16,6 +16,7 @@ import type {
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
 import { clearStreamingPartialJson, kStreamingPartialJson } from "../utils/block-symbols";
+import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { CapturedHttpErrorResponse, RawHttpRequestDump } from "../utils/http-inspector";
 import {
@@ -23,7 +24,7 @@ import {
 	getOpenAIStreamFirstEventTimeoutMs,
 	getOpenAIStreamIdleTimeoutMs,
 } from "../utils/idle-iterator";
-import { toolWireSchema } from "../utils/schema/wire";
+import { sanitizeSchemaForOllama, toolWireSchema } from "../utils/schema";
 import {
 	getStreamMarkupHealingPattern,
 	type HealedToolCall,
@@ -280,7 +281,7 @@ function convertTools(tools: Tool[] | undefined): OllamaFunctionTool[] | undefin
 		function: {
 			name: tool.name,
 			description: tool.description,
-			parameters: toolWireSchema(tool),
+			parameters: sanitizeSchemaForOllama(toolWireSchema(tool)),
 		},
 	}));
 }
@@ -449,10 +450,10 @@ function hasVisibleAssistantContent(output: AssistantMessage): boolean {
 
 const OLLAMA_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
 
-export const streamOllama: StreamFunction<"ollama-chat"> = (
+const streamOllamaOnce = (
 	model: Model<"ollama-chat">,
 	context: Context,
-	options: OllamaChatOptions,
+	options: OllamaChatOptions = {},
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
 	void (async () => {
@@ -771,3 +772,7 @@ export const streamOllama: StreamFunction<"ollama-chat"> = (
 	})();
 	return stream;
 };
+
+/** Retry EOS-only Ollama completions before the agent loop sees an empty stop. */
+export const streamOllama: StreamFunction<"ollama-chat"> = (model, context, options) =>
+	withEmptyCompletionRetry(model, context, options, streamOllamaOnce);

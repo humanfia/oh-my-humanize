@@ -125,6 +125,12 @@ describe("isUsageLimit", () => {
 		expect(isUsageLimit("quota_reached")).toBe(true);
 	});
 
+	it("detects subscription quota insufficient phrasing as usage limit", () => {
+		expect(isUsageLimit("403 订阅额度不足或未配置订阅: subscription quota insufficient, need=14447")).toBe(true);
+		expect(isUsageLimit("quota insufficient")).toBe(true);
+		expect(isUsageLimit("额度耗尽")).toBe(true);
+	});
+
 	it("detects OpenAI quota payload codes as credential-rotatable usage limits", () => {
 		for (const message of ["insufficient_quota", "usage_limit_exceeded", "usage_limit_reached"]) {
 			expect(isUsageLimit(message)).toBe(true);
@@ -173,6 +179,9 @@ describe("isUsageLimitOutcome", () => {
 	it("rotates on usage-limit message regardless of status", () => {
 		expect(isUsageLimitOutcome(undefined, "usage_limit_reached")).toBe(true);
 		expect(isUsageLimitOutcome(500, "insufficient_quota")).toBe(true);
+		expect(
+			isUsageLimitOutcome(403, "403 订阅额度不足或未配置订阅: subscription quota insufficient, need=14447"),
+		).toBe(true);
 	});
 
 	it("does not rotate on auth/invalid-request statuses with unrelated bodies", () => {

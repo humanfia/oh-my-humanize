@@ -1,8 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { APP_NAME } from "@oh-my-pi/pi-utils/dirs";
+import { buildSystemPrompt } from "./system-prompt";
 
 interface ProbeRunResult {
 	elapsedMs: number;
@@ -148,4 +149,36 @@ describe.skipIf(process.platform !== "linux")("system prompt GPU probe", () => {
 		expect(result.cached).toEqual({ gpu: "02.0 VGA compatible controller: NVIDIA TestGPU" });
 		expect(result.elapsedMs).toBeLessThan(2000);
 	}, 15_000);
+});
+
+describe.skipIf(process.platform !== "linux")("system prompt CPU model", () => {
+	it("does not call os.cpus while building the workstation block", async () => {
+		const cpus = spyOn(os, "cpus").mockImplementation(() => [
+			{
+				model: "Synthetic Slow CPU",
+				speed: 0,
+				times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
+			},
+		]);
+		try {
+			await buildSystemPrompt({
+				resolvedCustomPrompt: "Base prompt",
+				contextFiles: [],
+				skills: [],
+				rules: [],
+				workspaceTree: {
+					rootPath: import.meta.dir,
+					rendered: "",
+					truncated: false,
+					totalLines: 0,
+					agentsMdFiles: [],
+				},
+				activeRepoContext: null,
+			});
+
+			expect(cpus).not.toHaveBeenCalled();
+		} finally {
+			cpus.mockRestore();
+		}
+	});
 });

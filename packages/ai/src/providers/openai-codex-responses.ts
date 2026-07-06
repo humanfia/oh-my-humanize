@@ -37,12 +37,15 @@ import type {
 	Tool,
 	ToolCall,
 	ToolChoice,
+	Usage,
 } from "../types";
 import {
 	createOpenAIResponsesHistoryPayload,
 	getOpenAIResponsesHistoryItems,
 	getOpenAIResponsesHistoryPayload,
 	normalizeSystemPrompts,
+	sanitizeOpenAIResponsesAssistantFallbackItemsForReplay,
+	sanitizeOpenAIResponsesAssistantHistoryItemsForReplay,
 } from "../utils";
 import { clearStreamingPartialJson, kStreamingLastParseLen, kStreamingPartialJson } from "../utils/block-symbols";
 import { AssistantMessageEventStream } from "../utils/event-stream";
@@ -244,10 +247,66 @@ type CodexOutputBlock =
 	| TextContent
 	| (ToolCall & { [kStreamingPartialJson]: string; [kStreamingLastParseLen]?: number });
 
+interface CodexResponseUsage {
+	input_tokens?: number;
+	output_tokens?: number;
+	total_tokens?: number;
+	prompt_cache_hit_tokens?: number;
+	input_tokens_details?: {
+		cached_tokens?: number;
+		cache_write_tokens?: number;
+		orchestration_input_tokens?: number;
+		orchestration_input_cached_tokens?: number;
+	};
+	output_tokens_details?: {
+		reasoning_tokens?: number;
+		orchestration_output_tokens?: number;
+	};
+}
+
+/** Shape of the Codex request sent on the latest provider turn. */
+export interface OpenAICodexTurnRequestDiagnostics {
+	transport: "sse" | "websocket";
+	previousResponseIdPresent: boolean;
+	inputItemCount: number;
+	inputItemTypes: string[];
+	firstInputItemType?: string;
+	inputJsonBytes: number;
+	promptCacheKey?: string;
+	toolsHash?: string;
+	optionsHash: string;
+	canAppendBeforeRequest: boolean;
+}
+
+/** Raw provider usage plus the normalized buckets OMP displays for the latest Codex turn. */
+export interface OpenAICodexTurnUsageDiagnostics {
+	rawInputTokens: number;
+	rawCachedTokens: number;
+	rawUncachedTokens: number;
+	rawOutputTokens: number;
+	rawTotalTokens?: number;
+	rawOrchestrationInputTokens?: number;
+	rawOrchestrationCachedTokens?: number;
+	rawOrchestrationOutputTokens?: number;
+	displayedInputTokens: number;
+	displayedOutputTokens: number;
+	displayedCacheReadTokens: number;
+	displayedCacheWriteTokens: number;
+	displayedTotalTokens: number;
+	displayedOrchestrationInputTokens: number;
+	displayedOrchestrationCacheReadTokens: number;
+	displayedOrchestrationOutputTokens: number;
+}
+
+/** Latest Codex turn request/usage diagnostics exposed to debug UIs and tests. */
+export interface OpenAICodexTurnDiagnostics {
+	request: OpenAICodexTurnRequestDiagnostics;
+	usage?: OpenAICodexTurnUsageDiagnostics;
+}
+
 /**
- * Per-session request-shape counters. Despite the name, these cover both
- * transports: once stateful SSE chaining is enabled, SSE requests are counted
- * too (the shared chained-request builder records every request it shapes).
+ * Per-session request-shape counters and latest turn diagnostics. Despite the
+ * name, these cover both transports.
  */
 export interface OpenAICodexWebSocketDebugStats {
 	fullContextRequests: number;
@@ -255,6 +314,7 @@ export interface OpenAICodexWebSocketDebugStats {
 	lastInputItems: number;
 	lastDeltaInputItems?: number;
 	lastPreviousResponseId?: string;
+	lastTurn?: OpenAICodexTurnDiagnostics;
 }
 
 /**
@@ -286,7 +346,7 @@ interface CodexProviderSessionState extends ProviderSessionState {
 
 interface CodexRequestContext {
 	apiKey: string;
-	accountId: string;
+	accountId?: string;
 	baseUrl: string;
 	url: string;
 	requestHeaders: Record<string, string>;
@@ -834,7 +894,7 @@ async function buildCodexRequestContext(
 		throw new AIError.MissingApiKeyError(model.provider);
 	}
 
-	const accountId = getAccountId(apiKey);
+	const accountId = getCodexAccountId(apiKey);
 	const baseUrl = model.baseUrl || CODEX_BASE_URL;
 	const url = resolveCodexResponsesUrl(baseUrl);
 	const promptCacheKey = normalizeOpenAIResponsesPromptCacheKey(options?.promptCacheKey ?? options?.sessionId);
@@ -853,7 +913,7 @@ async function buildCodexRequestContext(
 
 	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
 	const responsesLite = shouldUseCodexResponsesLite(transformedBody, options?.responsesLite);
-	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, baseUrl, responsesLite);
+	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (sessionKey && publicSessionKey) {
 		providerSessionState?.webSocketPublicToPrivate.set(publicSessionKey, sessionKey);
@@ -902,7 +962,7 @@ export async function buildTransformedCodexRequestBody(
 	// `{"detail":"Unsupported parameter: temperature"}` etc., so we drop
 	// everything from `StreamOptions` rather than forwarding any of them.
 	// (#3117 — codex-rs sends none of these either.)
-	applyOpenAIServiceTier(params, options?.serviceTier, model.provider);
+	applyOpenAIServiceTier(params, options?.serviceTier, model);
 	if (context.tools && context.tools.length > 0) {
 		params.tools = convertOpenAICodexResponsesTools(context.tools, model);
 		if (options?.toolChoice) {
@@ -1000,6 +1060,7 @@ async function openCodexWebSocketTransport(
 	requestBodyForState: RequestBody;
 	transport: CodexTransport;
 }> {
+	const canAppendBeforeRequest = websocketState.canAppend === true;
 	const chainedBody = buildCodexChainedRequestBody(requestContext.transformedBody, websocketState);
 	// WebSocket frames cannot carry per-request HTTP headers, so the Responses
 	// Lite marker rides in `client_metadata` on every `response.create`.
@@ -1019,6 +1080,7 @@ async function openCodexWebSocketTransport(
 	if (replacementWebsocketRequest !== undefined) {
 		websocketRequest = replacementWebsocketRequest as typeof websocketRequest;
 	}
+	recordCodexTurnRequestDiagnostics(websocketState, websocketRequest, "websocket", canAppendBeforeRequest);
 	const websocketHeaders = createCodexHeaders(
 		requestContext.requestHeaders,
 		requestContext.accountId,
@@ -1111,12 +1173,13 @@ async function openCodexSseTransport(
 			),
 		);
 	};
+	const canAppendBeforeRequest = state?.canAppend === true;
 	let wireBody = body;
 	const replacementWireBody = await options?.onPayload?.(wireBody, model);
 	if (replacementWireBody !== undefined) {
 		wireBody = replacementWireBody as RequestBody;
 	}
-	recordCodexWebSocketRequestStats(state, wireBody);
+	recordCodexTurnRequestDiagnostics(state, wireBody, "sse", canAppendBeforeRequest);
 	return { eventStream: await open(wireBody), requestBodyForState: structuredCloneJSON(wireBody), transport: "sse" };
 }
 
@@ -1523,27 +1586,19 @@ class CodexStreamProcessor {
 	#handleResponseCompleted(rawEvent: Record<string, unknown>): void {
 		const { runtime, model, output } = this;
 		runtime.sawTerminalEvent = true;
-		const response = (
-			rawEvent as {
-				response?: {
-					id?: string;
-					usage?: {
-						input_tokens?: number;
-						output_tokens?: number;
-						total_tokens?: number;
-						input_tokens_details?: { cached_tokens?: number };
-						output_tokens_details?: { reasoning_tokens?: number };
-					};
-					status?: string;
-					service_tier?: ServiceTier | "default";
-					end_turn?: boolean;
-				};
-			}
-		).response;
+		const rawResponse = rawEvent.response;
+		const response = rawResponse && typeof rawResponse === "object" ? rawResponse : undefined;
+		const responseId = response && "id" in response && typeof response.id === "string" ? response.id : undefined;
+		const usage = response && "usage" in response ? parseCodexResponseUsage(response.usage) : undefined;
+		const serviceTier =
+			response && "service_tier" in response ? parseCodexServiceTier(response.service_tier) : undefined;
+		const status = response && "status" in response ? parseCodexResponseStatus(response.status) : undefined;
+		const endTurn = response && "end_turn" in response ? response.end_turn : undefined;
 
-		populateResponsesUsageFromResponse(output, response?.usage);
-		if (typeof response?.id === "string" && response.id.length > 0) {
-			output.responseId = response.id;
+		populateResponsesUsageFromResponse(output, usage);
+		recordCodexTurnUsageDiagnostics(runtime.websocketState, usage, output.usage);
+		if (responseId) {
+			output.responseId = responseId;
 		}
 
 		const state = runtime.websocketState;
@@ -1555,8 +1610,8 @@ class CodexStreamProcessor {
 				resetCodexWebSocketAppendState(state);
 			} else {
 				state.lastRequest = structuredCloneJSON(runtime.requestBodyForState);
-				if (typeof response?.id === "string" && response.id.length > 0) {
-					state.lastResponseId = response.id;
+				if (responseId) {
+					state.lastResponseId = responseId;
 					state.lastResponseItems = stripInputItemIds(structuredCloneJSON(runtime.nativeOutputItems));
 					state.canAppend = rawEvent.type === "response.done" || rawEvent.type === "response.completed";
 				} else {
@@ -1569,14 +1624,9 @@ class CodexStreamProcessor {
 		finalizePendingResponsesToolCalls(output);
 
 		calculateCost(model, output.usage);
-		applyCodexServiceTierPricing(
-			model,
-			output.usage,
-			response?.service_tier,
-			runtime.requestBodyForState.service_tier,
-		);
-		output.stopReason = mapOpenAIResponsesStopReason(response?.status as ResponseStatus | undefined);
-		promoteResponsesToolUseStopReason(output, response?.end_turn);
+		applyCodexServiceTierPricing(model, output.usage, serviceTier, runtime.requestBodyForState.service_tier);
+		output.stopReason = mapOpenAIResponsesStopReason(status);
+		promoteResponsesToolUseStopReason(output, endTurn === true ? true : endTurn === false ? false : undefined);
 	}
 
 	async #recoverStreamError(error: unknown): Promise<boolean> {
@@ -2055,14 +2105,14 @@ export async function prewarmOpenAICodexResponses(
 ): Promise<void> {
 	const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
 	if (!apiKey) return;
-	const accountId = getAccountId(apiKey);
+	const accountId = getCodexAccountId(apiKey);
 	const baseUrl = model.baseUrl || CODEX_BASE_URL;
 	const url = resolveCodexResponsesUrl(baseUrl);
 	const transportSessionId = normalizeOpenAIResponsesPromptCacheKey(options?.sessionId);
 	const promptCacheKey = transportSessionId;
 	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
 	const responsesLite = options?.responsesLite === true;
-	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, baseUrl, responsesLite);
+	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (publicSessionKey && sessionKey) {
 		providerSessionState?.webSocketPublicToPrivate.set(publicSessionKey, sessionKey);
@@ -2095,15 +2145,17 @@ export async function prewarmOpenAICodexResponses(
 function getCodexWebSocketSessionKey(
 	normalizedSessionId: string | undefined,
 	model: Model<"openai-codex-responses">,
-	accountId: string,
+	accountId: string | undefined,
+	apiKey: string,
 	baseUrl: string,
 	responsesLite: boolean,
 ): string | undefined {
 	if (!normalizedSessionId) return undefined;
+	const credentialKey = accountId ? `account:${accountId}` : `token:${Bun.hash(apiKey).toString(36)}`;
 	// Responses Lite is connection-scoped on the WebSocket upgrade, so lite and
 	// non-lite turns must never share a pooled socket or append state.
 	const liteSuffix = responsesLite ? ":lite" : "";
-	return `${accountId}:${baseUrl}:${model.id}:${normalizedSessionId}${liteSuffix}`;
+	return `${credentialKey}:${baseUrl}:${model.id}:${normalizedSessionId}${liteSuffix}`;
 }
 
 function getCodexWebSocketSessionState(
@@ -2259,22 +2311,230 @@ function stripInputItemIds(items: Array<Record<string, unknown>>): InputItem[] {
 	});
 }
 
-function recordCodexWebSocketRequestStats(
+const codexDiagnosticsTextEncoder = new TextEncoder();
+
+function jsonByteLength(value: unknown): number {
+	const json = JSON.stringify(value);
+	return codexDiagnosticsTextEncoder.encode(json === undefined ? "undefined" : json).byteLength;
+}
+
+function hashJson(value: unknown): string {
+	const json = JSON.stringify(value);
+	return String(Bun.hash(json === undefined ? "undefined" : json));
+}
+
+function parseCodexServiceTier(value: unknown): ServiceTier | undefined {
+	switch (value) {
+		case "auto":
+		case "default":
+		case "flex":
+		case "scale":
+		case "priority":
+			return value;
+		default:
+			return undefined;
+	}
+}
+
+function parseCodexResponseStatus(value: unknown): ResponseStatus | undefined {
+	switch (value) {
+		case "completed":
+		case "failed":
+		case "in_progress":
+		case "cancelled":
+		case "queued":
+		case "incomplete":
+			return value;
+		default:
+			return undefined;
+	}
+}
+
+function parseCodexResponseUsage(value: unknown): CodexResponseUsage | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const usage: CodexResponseUsage = {};
+	let hasUsage = false;
+	if ("input_tokens" in value && typeof value.input_tokens === "number") {
+		usage.input_tokens = value.input_tokens;
+		hasUsage = true;
+	}
+	if ("output_tokens" in value && typeof value.output_tokens === "number") {
+		usage.output_tokens = value.output_tokens;
+		hasUsage = true;
+	}
+	if ("total_tokens" in value && typeof value.total_tokens === "number") {
+		usage.total_tokens = value.total_tokens;
+		hasUsage = true;
+	}
+	if ("prompt_cache_hit_tokens" in value && typeof value.prompt_cache_hit_tokens === "number") {
+		usage.prompt_cache_hit_tokens = value.prompt_cache_hit_tokens;
+		hasUsage = true;
+	}
+	if (
+		"input_tokens_details" in value &&
+		value.input_tokens_details &&
+		typeof value.input_tokens_details === "object"
+	) {
+		const details = value.input_tokens_details;
+		const parsedDetails: NonNullable<CodexResponseUsage["input_tokens_details"]> = {};
+		let hasDetails = false;
+		if ("cached_tokens" in details && typeof details.cached_tokens === "number") {
+			parsedDetails.cached_tokens = details.cached_tokens;
+			hasDetails = true;
+		}
+		if ("cache_write_tokens" in details && typeof details.cache_write_tokens === "number") {
+			parsedDetails.cache_write_tokens = details.cache_write_tokens;
+			hasDetails = true;
+		}
+		if ("orchestration_input_tokens" in details && typeof details.orchestration_input_tokens === "number") {
+			parsedDetails.orchestration_input_tokens = details.orchestration_input_tokens;
+			hasDetails = true;
+		}
+		if (
+			"orchestration_input_cached_tokens" in details &&
+			typeof details.orchestration_input_cached_tokens === "number"
+		) {
+			parsedDetails.orchestration_input_cached_tokens = details.orchestration_input_cached_tokens;
+			hasDetails = true;
+		}
+		if (hasDetails) {
+			usage.input_tokens_details = parsedDetails;
+			hasUsage = true;
+		}
+	}
+	if (
+		"output_tokens_details" in value &&
+		value.output_tokens_details &&
+		typeof value.output_tokens_details === "object"
+	) {
+		const details = value.output_tokens_details;
+		const parsedDetails: NonNullable<CodexResponseUsage["output_tokens_details"]> = {};
+		let hasDetails = false;
+		if ("reasoning_tokens" in details && typeof details.reasoning_tokens === "number") {
+			parsedDetails.reasoning_tokens = details.reasoning_tokens;
+			hasDetails = true;
+		}
+		if ("orchestration_output_tokens" in details && typeof details.orchestration_output_tokens === "number") {
+			parsedDetails.orchestration_output_tokens = details.orchestration_output_tokens;
+			hasDetails = true;
+		}
+		if (hasDetails) {
+			usage.output_tokens_details = parsedDetails;
+			hasUsage = true;
+		}
+	}
+	return hasUsage ? usage : undefined;
+}
+
+function describeCodexInputItemType(item: unknown): string {
+	if (item && typeof item === "object") {
+		if ("type" in item && typeof item.type === "string") return item.type;
+		if ("role" in item && typeof item.role === "string") return item.role;
+	}
+	return typeof item;
+}
+
+function createCodexOptionsHash(request: Record<string, unknown>): string {
+	const options: Record<string, unknown> = {};
+	for (const key in request) {
+		if (key === "input" || key === "previous_response_id" || key === "type" || key === "client_metadata") {
+			continue;
+		}
+		options[key] = request[key];
+	}
+	return hashJson(options);
+}
+
+function buildCodexTurnRequestDiagnostics(
+	request: Record<string, unknown>,
+	transport: CodexTransport,
+	canAppendBeforeRequest: boolean,
+): OpenAICodexTurnRequestDiagnostics {
+	const input = request.input;
+	const inputItems = Array.isArray(input) ? input : [];
+	const inputItemTypes = inputItems.map(describeCodexInputItemType);
+	const promptCacheKey = typeof request.prompt_cache_key === "string" ? request.prompt_cache_key : undefined;
+	const toolsHash = request.tools === undefined ? undefined : hashJson(request.tools);
+	return {
+		transport,
+		previousResponseIdPresent:
+			typeof request.previous_response_id === "string" && request.previous_response_id.length > 0,
+		inputItemCount: inputItems.length,
+		inputItemTypes,
+		...(inputItemTypes[0] ? { firstInputItemType: inputItemTypes[0] } : {}),
+		inputJsonBytes: jsonByteLength(inputItems),
+		...(promptCacheKey !== undefined ? { promptCacheKey } : {}),
+		...(toolsHash !== undefined ? { toolsHash } : {}),
+		optionsHash: createCodexOptionsHash(request),
+		canAppendBeforeRequest,
+	};
+}
+
+function recordCodexTurnRequestDiagnostics(
 	state: CodexWebSocketSessionState | undefined,
 	request: Record<string, unknown>,
+	transport: CodexTransport,
+	canAppendBeforeRequest: boolean,
 ): void {
 	if (!state) return;
 	const input = request.input;
 	state.stats.lastInputItems = Array.isArray(input) ? input.length : 0;
-	if (typeof request.previous_response_id === "string" && request.previous_response_id.length > 0) {
+	const previousResponseId =
+		typeof request.previous_response_id === "string" ? request.previous_response_id : undefined;
+	if (previousResponseId && previousResponseId.length > 0) {
 		state.stats.deltaRequests += 1;
 		state.stats.lastDeltaInputItems = state.stats.lastInputItems;
-		state.stats.lastPreviousResponseId = request.previous_response_id;
-		return;
+		state.stats.lastPreviousResponseId = previousResponseId;
+	} else {
+		state.stats.fullContextRequests += 1;
+		state.stats.lastDeltaInputItems = undefined;
+		state.stats.lastPreviousResponseId = undefined;
 	}
-	state.stats.fullContextRequests += 1;
-	state.stats.lastDeltaInputItems = undefined;
-	state.stats.lastPreviousResponseId = undefined;
+	state.stats.lastTurn = {
+		request: buildCodexTurnRequestDiagnostics(request, transport, canAppendBeforeRequest),
+	};
+	CODEX_DEBUG && logger.debug("[codex] codex turn request diagnostics", { diagnostics: state.stats.lastTurn.request });
+}
+
+function recordCodexTurnUsageDiagnostics(
+	state: CodexWebSocketSessionState | undefined,
+	rawUsage: CodexResponseUsage | undefined,
+	displayedUsage: Usage,
+): void {
+	if (!state?.stats.lastTurn || !rawUsage) return;
+	const details = rawUsage.input_tokens_details;
+	const outputDetails = rawUsage.output_tokens_details;
+	const rawInputTokens = rawUsage.input_tokens ?? 0;
+	const rawCachedTokens = details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
+	const usageDiagnostics: OpenAICodexTurnUsageDiagnostics = {
+		rawInputTokens,
+		rawCachedTokens,
+		rawUncachedTokens: Math.max(0, rawInputTokens - rawCachedTokens),
+		rawOutputTokens: rawUsage.output_tokens ?? 0,
+		...(typeof rawUsage.total_tokens === "number" ? { rawTotalTokens: rawUsage.total_tokens } : {}),
+		...(typeof details?.orchestration_input_tokens === "number"
+			? { rawOrchestrationInputTokens: details.orchestration_input_tokens }
+			: {}),
+		...(typeof details?.orchestration_input_cached_tokens === "number"
+			? { rawOrchestrationCachedTokens: details.orchestration_input_cached_tokens }
+			: {}),
+		...(typeof outputDetails?.orchestration_output_tokens === "number"
+			? { rawOrchestrationOutputTokens: outputDetails.orchestration_output_tokens }
+			: {}),
+		displayedInputTokens: displayedUsage.input,
+		displayedOutputTokens: displayedUsage.output,
+		displayedCacheReadTokens: displayedUsage.cacheRead,
+		displayedCacheWriteTokens: displayedUsage.cacheWrite,
+		displayedTotalTokens: displayedUsage.totalTokens,
+		displayedOrchestrationInputTokens: displayedUsage.orchestration?.input ?? 0,
+		displayedOrchestrationCacheReadTokens: displayedUsage.orchestration?.cacheRead ?? 0,
+		displayedOrchestrationOutputTokens: displayedUsage.orchestration?.output ?? 0,
+	};
+	state.stats.lastTurn = {
+		...state.stats.lastTurn,
+		usage: usageDiagnostics,
+	};
+	CODEX_DEBUG && logger.debug("[codex] codex turn diagnostics", { diagnostics: state.stats.lastTurn });
 }
 
 /**
@@ -2295,9 +2555,7 @@ function buildCodexChainedRequestBody(
 		? buildResponsesDeltaInput(state.lastRequest, state.lastResponseItems, requestBody)
 		: null;
 	if (appendInput && appendInput.length > 0 && state?.lastResponseId) {
-		const body: RequestBody = { ...requestBody, previous_response_id: state.lastResponseId, input: appendInput };
-		recordCodexWebSocketRequestStats(state, body);
-		return body;
+		return { ...requestBody, previous_response_id: state.lastResponseId, input: appendInput };
 	}
 	if (chainable && state) {
 		// Chaining was eligible but the prefix/options check failed: history
@@ -2311,7 +2569,6 @@ function buildCodexChainedRequestBody(
 		state.turnState = undefined;
 		state.modelsEtag = undefined;
 	}
-	recordCodexWebSocketRequestStats(state, requestBody);
 	return requestBody;
 }
 
@@ -2979,7 +3236,7 @@ async function getOrCreateCodexWebSocketConnection(
 async function openCodexSseEventStream(
 	url: string,
 	requestHeaders: Record<string, string> | undefined,
-	accountId: string,
+	accountId: string | undefined,
 	apiKey: string,
 	sessionId: string | undefined,
 	body: RequestBody,
@@ -3044,7 +3301,7 @@ async function openCodexSseEventStream(
 
 function createCodexHeaders(
 	initHeaders: Record<string, string> | undefined,
-	accountId: string,
+	accountId: string | undefined,
 	accessToken: string,
 	sessionId?: string,
 	transport: CodexTransport = "sse",
@@ -3054,7 +3311,7 @@ function createCodexHeaders(
 	const headers = new Headers(initHeaders ?? {});
 	headers.delete("x-api-key");
 	headers.set("Authorization", `Bearer ${accessToken}`);
-	headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+	if (accountId) headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
 	const betaHeader =
 		transport === "websocket"
 			? OPENAI_HEADER_VALUES.BETA_RESPONSES_WEBSOCKETS_V2
@@ -3129,17 +3386,6 @@ function resolveCodexResponsesUrl(baseUrl: string | undefined): string {
 	return `${normalized}/codex/responses`;
 }
 
-function getAccountId(accessToken: string): string {
-	const accountId = getCodexAccountId(accessToken);
-	if (!accountId) {
-		throw new AIError.OAuthError("Failed to extract accountId from token", {
-			kind: "validation",
-			provider: "openai",
-		});
-	}
-	return accountId;
-}
-
 function convertMessages(model: Model<"openai-codex-responses">, context: Context): ResponseInput {
 	const messages: ResponseInput = [];
 
@@ -3200,32 +3446,40 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 				assistantMsg.api === model.api && assistantMsg.model === model.id
 					? getOpenAIResponsesHistoryPayload(assistantMsg.providerPayload, model.provider, assistantMsg.provider)
 					: undefined;
-			const historyItems = providerPayload?.items as Array<ResponseInput[number]> | undefined;
+			const historyItems = providerPayload?.items as Array<Record<string, unknown>> | undefined;
+			let suppressHiddenEmptyFallback = false;
 			if (historyItems) {
-				for (const item of historyItems) {
-					const maybe = item as { type?: string; call_id?: string };
-					if (maybe.type === "custom_tool_call" && typeof maybe.call_id === "string") {
-						customCallIds.add(maybe.call_id);
+				const sanitizedHistoryItems = sanitizeOpenAIResponsesAssistantHistoryItemsForReplay(historyItems);
+				if (sanitizedHistoryItems) {
+					for (const item of sanitizedHistoryItems) {
+						const maybe = item as { type?: string; call_id?: string };
+						if (maybe.type === "custom_tool_call" && typeof maybe.call_id === "string") {
+							customCallIds.add(maybe.call_id);
+						}
 					}
+					if (providerPayload?.dt) {
+						messages.push(...sanitizedHistoryItems);
+					} else {
+						messages.splice(0, messages.length, ...sanitizedHistoryItems);
+						// Keep customCallIds from the pre-splice state since historyItems may re-introduce them.
+					}
+					msgIndex += 1;
+					continue;
 				}
-				if (providerPayload?.dt) {
-					messages.push(...historyItems);
-				} else {
-					messages.splice(0, messages.length, ...historyItems);
-					// Keep customCallIds from the pre-splice state since historyItems may re-introduce them.
-				}
-				msgIndex += 1;
-				continue;
+				suppressHiddenEmptyFallback = true;
 			}
 
-			const outputItems = convertResponsesAssistantMessage(
+			const convertedOutputItems = convertResponsesAssistantMessage(
 				msg as AssistantMessage,
 				model,
 				msgIndex,
 				knownCallIds,
-				true,
+				!suppressHiddenEmptyFallback,
 				customCallIds,
 			);
+			const outputItems = suppressHiddenEmptyFallback
+				? sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(convertedOutputItems)
+				: convertedOutputItems;
 			if (outputItems.length > 0) {
 				messages.push(...outputItems);
 			}
@@ -3311,7 +3565,12 @@ export function convertOpenAICodexResponsesTools(
 			name: tool.name,
 			description: tool.description || "",
 			parameters,
-			...(effectiveStrict && { strict: true }),
+			// See openai-responses.ts::convertTools — explicit `strict: false` is
+			// preserved on the wire because some backends distinguish it from
+			// omitted (#4336). `strict: true` still requires enforcement success,
+			// and the `PI_NO_STRICT` global bypass MUST suppress the flag entirely
+			// so Codex proxies that reject the `strict` key stay silent.
+			...(effectiveStrict ? { strict: true } : !NO_STRICT && tool.strict === false ? { strict: false } : {}),
 		};
 	});
 }

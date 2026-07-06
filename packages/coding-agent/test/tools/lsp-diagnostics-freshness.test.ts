@@ -112,6 +112,98 @@ describe("LSP diagnostics freshness", () => {
 		tempDir.removeSync();
 	});
 
+	it("announces watched-file creates even when no server owns the file type", async () => {
+		const filePath = path.join(tempDir.path(), "probe.module.scss");
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, idleTimeoutMs: undefined });
+		vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([]);
+		const notify = vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+
+		const writethrough = createLspWritethrough(tempDir.path(), {
+			enableFormat: false,
+			enableDiagnostics: false,
+		});
+		const result = await writethrough(filePath, ".section {}\n");
+
+		expect(result).toBeUndefined();
+		expect(await Bun.file(filePath).text()).toBe(".section {}\n");
+		expect(notify).toHaveBeenCalledWith(
+			tempDir.path(),
+			[{ filePath, type: lspClient.FileChangeType.Created }],
+			undefined,
+		);
+	});
+
+	it("does not start an LSP server just to notify existing clients when write-time features are disabled", async () => {
+		const filePath = path.join(tempDir.path(), "plain.ts");
+		const loadConfig = vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, idleTimeoutMs: undefined });
+		const getServers = vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["test-lsp", TEST_SERVER]]);
+		const getOrCreate = vi
+			.spyOn(lspClient, "getOrCreateClient")
+			.mockRejectedValue(new Error("disabled write-time LSP features must not start a server"));
+		const notify = vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+
+		const writethrough = createLspWritethrough(tempDir.path(), {
+			enableFormat: false,
+			enableDiagnostics: false,
+		});
+		const result = await writethrough(filePath, "export const value = 1;\n");
+
+		expect(result).toBeUndefined();
+		expect(await Bun.file(filePath).text()).toBe("export const value = 1;\n");
+		expect(notify).toHaveBeenCalledWith(
+			tempDir.path(),
+			[{ filePath, type: lspClient.FileChangeType.Created }],
+			undefined,
+		);
+		expect(loadConfig).not.toHaveBeenCalled();
+		expect(getServers).not.toHaveBeenCalled();
+		expect(getOrCreate).not.toHaveBeenCalled();
+	});
+
+	it("announces batched sibling writes before syncing the diagnostic target", async () => {
+		const stylesPath = path.join(tempDir.path(), "probe.module.scss");
+		const tsPath = path.join(tempDir.path(), "probe.tsx");
+		const tsUri = fileToUri(tsPath);
+		const client = createClient(tempDir.path(), TEST_SERVER);
+		const events: string[] = [];
+		const notifySignals: Array<AbortSignal | undefined> = [];
+
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, idleTimeoutMs: undefined });
+		vi.spyOn(lspConfig, "getServersForFile").mockImplementation((_config, filePath) =>
+			filePath.endsWith(".module.scss") ? [] : [["test-lsp", TEST_SERVER]],
+		);
+		vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+		vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockImplementation(async (_cwd, changes, notifySignal) => {
+			notifySignals.push(notifySignal);
+			for (const change of changes) {
+				events.push(`watched:${path.basename(change.filePath)}:${change.type}`);
+			}
+		});
+		vi.spyOn(lspClient, "syncContent").mockImplementation(async (mockClient, syncedFilePath) => {
+			events.push(`sync:${path.basename(syncedFilePath)}`);
+			const syncedUri = fileToUri(syncedFilePath);
+			mockClient.openFiles.set(syncedUri, { version: 1, languageId: "typescript" });
+		});
+		vi.spyOn(lspClient, "notifySaved").mockImplementation(async mockClient => {
+			publishDiagnostics(mockClient, tsUri, [], mockClient.openFiles.get(tsUri)?.version ?? null);
+		});
+
+		const writethrough = createLspWritethrough(tempDir.path(), {
+			enableFormat: false,
+			enableDiagnostics: true,
+		});
+		await writethrough(stylesPath, ".section {}\n", undefined, undefined, { id: "batch", flush: false });
+		const result = await writethrough(tsPath, 'import styles from "./probe.module.scss";\n', undefined, undefined, {
+			id: "batch",
+			flush: true,
+		});
+
+		expect(result?.summary).toBe("no issues");
+		expect(events[0]).toBe(`watched:probe.module.scss:${lspClient.FileChangeType.Created}`);
+		expect(notifySignals.some(signal => signal instanceof AbortSignal)).toBe(true);
+		expect(events).toContain("sync:probe.tsx");
+	});
+
 	it("suppresses stale write diagnostics until the matching document version arrives", async () => {
 		const filePath = path.join(tempDir.path(), "example.ts");
 		const uri = fileToUri(filePath);
@@ -258,5 +350,59 @@ describe("LSP diagnostics freshness", () => {
 
 		// The edit still landed on disk regardless of diagnostics timing.
 		expect(await Bun.file(filePath).text()).toBe("export const value: number = 'x';\n");
+	});
+
+	it("suppresses TypeScript project diagnostics for orphan files but keeps syntax errors", async () => {
+		const server: ServerConfig = {
+			...TEST_SERVER,
+			rootMarkers: ["package.json", "tsconfig.json", "jsconfig.json"],
+		};
+		const orphanDir = TempDir.createSync("@omp-lsp-orphan-");
+		try {
+			const filePath = path.join(orphanDir.path(), "scratch.ts");
+			const uri = fileToUri(filePath);
+			const client = createClient(tempDir.path(), server);
+			client.openFiles.set(uri, { version: 1, languageId: "typescript" });
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "typescript-language-server": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["typescript-language-server", server]]);
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			vi.spyOn(lspClient, "syncContent").mockImplementation(async (mockClient, syncedFilePath) => {
+				const syncedUri = fileToUri(syncedFilePath);
+				mockClient.openFiles.set(syncedUri, { version: 1, languageId: "typescript" });
+			});
+			vi.spyOn(lspClient, "notifySaved").mockImplementation(async mockClient => {
+				const moduleDiagnostic = createDiagnostic(
+					"Cannot find module 'bun:sqlite' or its corresponding type declarations.",
+				);
+				moduleDiagnostic.code = 2307;
+				const bunDiagnostic = createDiagnostic(
+					"Cannot find name 'Bun'. Do you need to install type definitions for Bun?",
+				);
+				bunDiagnostic.code = 2867;
+				const syntaxDiagnostic = createDiagnostic("';' expected.");
+				syntaxDiagnostic.code = 1005;
+				mockClient.diagnostics.set(uri, {
+					version: 1,
+					diagnostics: [moduleDiagnostic, bunDiagnostic, syntaxDiagnostic],
+				});
+				mockClient.diagnosticsVersion += 1;
+			});
+
+			const writethrough = createLspWritethrough(tempDir.path(), { enableFormat: false, enableDiagnostics: true });
+			const result = await writethrough(filePath, 'import { Database } from "bun:sqlite";\nawait Bun.sleep(1)\n');
+
+			expect(result).toBeDefined();
+			expect(result?.errored).toBe(true);
+			expect(result?.messages.some(message => message.includes("bun:sqlite"))).toBe(false);
+			expect(result?.messages.some(message => message.includes("Cannot find name 'Bun'"))).toBe(false);
+			expect(result?.messages.some(message => message.includes("';' expected."))).toBe(true);
+			expect(await Bun.file(filePath).text()).toBe('import { Database } from "bun:sqlite";\nawait Bun.sleep(1)\n');
+		} finally {
+			orphanDir.removeSync();
+		}
 	});
 });

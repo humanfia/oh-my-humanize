@@ -31,14 +31,17 @@ import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
-import { ModelRegistry } from "./config/model-registry";
+import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
 import {
+	formatModelSelectorValue,
 	formatModelString,
+	formatModelStringWithRouting,
 	getModelMatchPreferences,
 	parseModelPattern,
 	parseModelString,
 	pickDefaultAvailableModel,
 	resolveAllowedModels,
+	resolveConfiguredModelPatterns,
 	resolveModelRoleValue,
 } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
@@ -396,11 +399,15 @@ export interface CreateAgentSessionOptions {
 
 	/** Model to use. Default: from settings, else first available */
 	model?: Model;
-	/** Raw model pattern string (e.g. from --model CLI flag) to resolve after extensions load.
+	/** Raw model pattern(s) (e.g. from --model CLI flag) to resolve after extensions load.
 	 * Used when model lookup is deferred because extension-provided models aren't registered yet. */
-	modelPattern?: string;
+	modelPattern?: string | string[];
 	/** Runtime API key supplied by the CLI for the selected model provider. Not persisted. */
 	runtimeApiKey?: string;
+	/** Authenticated fallback selector for deferred subagent model patterns. */
+	modelPatternAuthFallback?: string;
+	/** Role name used to install retry fallbacks after deferred subagent patterns resolve. */
+	modelPatternFallbackRole?: string;
 	/** Thinking selector. Default: from settings, else unset */
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
@@ -1009,6 +1016,7 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 					success: event.success,
 					attempt: event.attempt,
 					finalError: event.finalError,
+					recoveredErrors: event.recoveredErrors,
 				},
 				ctx,
 			),
@@ -1261,7 +1269,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const hasThinkingEntry = existingBranch.some(entry => entry.type === "thinking_level_change");
 	const hasServiceTierEntry = existingBranch.some(entry => entry.type === "service_tier_change");
 
-	const hasExplicitModel = options.model !== undefined || options.modelPattern !== undefined;
+	const deferredModelPatterns = Array.isArray(options.modelPattern)
+		? options.modelPattern.map(pattern => pattern.trim()).filter(Boolean)
+		: options.modelPattern?.trim()
+			? [options.modelPattern.trim()]
+			: [];
+	const hasExplicitModel = options.model !== undefined || deferredModelPatterns.length > 0;
 	const modelMatchPreferences = getModelMatchPreferences(settings);
 	const allowedModels = await logger.time("resolveAllowedModels", () =>
 		resolveAllowedModels(modelRegistry, settings, modelMatchPreferences),
@@ -1976,23 +1989,111 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 			}
 		}
-		// Resolve deferred --model pattern now that extension models are registered.
-		if (!model && options.modelPattern) {
+		// Resolve deferred --model/subagent patterns now that extension models are
+		// registered. Expand role aliases (`pi/smol`) and comma chains to concrete
+		// selectors first so deferred resolution accepts everything the immediate
+		// path (resolveModelOverride → resolveModelRoleValue) accepts.
+		if (!model && deferredModelPatterns.length > 0) {
+			const expandedModelPatterns = resolveConfiguredModelPatterns(deferredModelPatterns, settings);
 			const availableModels = modelRegistry.getAll();
 			const matchPreferences = getModelMatchPreferences(settings);
-			const { model: resolved } = parseModelPattern(options.modelPattern, availableModels, matchPreferences);
-			if (resolved) {
-				model = resolved;
+			for (let patternIndex = 0; patternIndex < expandedModelPatterns.length; patternIndex += 1) {
+				const pattern = expandedModelPatterns[patternIndex];
+				const primary = parseModelPattern(pattern, availableModels, matchPreferences);
+				if (!primary.model) continue;
+				let selectedModel = primary.model;
+				let selectedThinkingLevel = primary.thinkingLevel;
+				let selectedExplicitThinkingLevel = primary.explicitThinkingLevel;
+				let authFallbackUsed = false;
+				if (options.modelPatternAuthFallback) {
+					const primaryKey = await modelRegistry.getApiKey(primary.model);
+					if (primaryKey !== kNoAuth && !isAuthenticated(primaryKey)) {
+						const fallback = parseModelPattern(
+							options.modelPatternAuthFallback,
+							availableModels,
+							matchPreferences,
+						);
+						if (fallback.model) {
+							const fallbackKey = await modelRegistry.getApiKey(fallback.model);
+							if (isAuthenticated(fallbackKey)) {
+								selectedModel = fallback.model;
+								selectedThinkingLevel = fallback.thinkingLevel;
+								selectedExplicitThinkingLevel = fallback.explicitThinkingLevel;
+								authFallbackUsed = true;
+							}
+						}
+					}
+				}
+				if (!authFallbackUsed && options.modelPatternFallbackRole) {
+					const primarySelector = formatModelSelectorValue(
+						formatModelStringWithRouting(primary.model),
+						primary.thinkingLevel,
+					);
+					const seenSelectors = new Set<string>([primarySelector]);
+					const fallbackSelectors: string[] = [];
+					for (const fallbackPattern of expandedModelPatterns.slice(patternIndex + 1)) {
+						const fallback = parseModelPattern(fallbackPattern, availableModels, matchPreferences);
+						if (!fallback.model) continue;
+						const fallbackSelector = formatModelSelectorValue(
+							formatModelStringWithRouting(fallback.model),
+							fallback.thinkingLevel,
+						);
+						if (seenSelectors.has(fallbackSelector)) continue;
+						seenSelectors.add(fallbackSelector);
+						fallbackSelectors.push(fallbackSelector);
+					}
+					if (fallbackSelectors.length > 0) {
+						const modelRoles: Record<string, string> = {};
+						const existingRoles = settings.getModelRoles();
+						for (const role in existingRoles) {
+							const selector = existingRoles[role];
+							if (selector) {
+								modelRoles[role] = selector;
+							}
+						}
+						modelRoles[options.modelPatternFallbackRole] = primarySelector;
+						settings.override("modelRoles", modelRoles);
+						const fallbackChains: Record<string, string[]> = {
+							[options.modelPatternFallbackRole]: fallbackSelectors,
+						};
+						const existingFallbackChains = settings.get("retry.fallbackChains");
+						for (const role in existingFallbackChains) {
+							if (role !== options.modelPatternFallbackRole) {
+								fallbackChains[role] = existingFallbackChains[role];
+							}
+						}
+						settings.override("retry.fallbackChains", fallbackChains);
+					}
+				}
+				model = selectedModel;
 				modelFallbackMessage = undefined;
-			} else {
-				modelFallbackMessage = `Model "${options.modelPattern}" not found`;
+				if (selectedExplicitThinkingLevel) {
+					restoredSessionThinkingLevel = selectedThinkingLevel;
+				}
+				thinkingLevel = pickInitialThinkingLevel(selectedModel);
+				autoThinking = thinkingLevel === AUTO_THINKING;
+				effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
+				effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
+					autoThinking
+						? resolveProvisionalAutoLevel(selectedModel)
+						: resolveThinkingLevelForModel(selectedModel, effectiveThinkingLevel),
+				);
+				preconnectModelHost(selectedModel.baseUrl);
+				break;
+			}
+			if (!model) {
+				const requested =
+					deferredModelPatterns.length === 1
+						? `"${deferredModelPatterns[0]}"`
+						: `one of ${deferredModelPatterns.map(pattern => `"${pattern}"`).join(", ")}`;
+				modelFallbackMessage = `Model ${requested} not found`;
 			}
 		}
 
 		// Fall back to first available model with a valid API key, honoring the
 		// path-scoped `enabledModels` allow-list when configured. Skip when the
 		// user explicitly requested a model via --model that wasn't found.
-		if (!model && !options.modelPattern) {
+		if (!model && deferredModelPatterns.length === 0) {
 			// Re-resolve the allowed set: extension factories above may have
 			// registered providers/models that weren't visible at startup.
 			const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
@@ -2052,6 +2153,23 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 		if (options.runtimeApiKey && model) {
 			authStorage.setRuntimeApiKey(model.provider, options.runtimeApiKey);
+		}
+		if (model) {
+			const selectedModel = model;
+			const refreshedModel = await logger.time("refreshInitialModelMetadata", () =>
+				modelRegistry.refreshSelectedModelMetadata(selectedModel),
+			);
+			if (refreshedModel !== selectedModel) {
+				model = refreshedModel;
+				thinkingLevel = pickInitialThinkingLevel(refreshedModel);
+				autoThinking = thinkingLevel === AUTO_THINKING;
+				effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
+				effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
+					autoThinking
+						? resolveProvisionalAutoLevel(refreshedModel)
+						: resolveThinkingLevelForModel(refreshedModel, effectiveThinkingLevel),
+				);
+			}
 		}
 		const runtimeApiKeyProvider = model?.provider;
 

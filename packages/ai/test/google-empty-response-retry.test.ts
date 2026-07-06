@@ -283,4 +283,30 @@ describe("Google empty-response retry (Cloud Code Assist path)", () => {
 			thoughtSignature: "function-call-sig",
 		});
 	});
+
+	it("does not retry if finishReason is SAFETY and bubbles up the error", async () => {
+		let calls = 0;
+		const fetchMock: FetchImpl = async () => {
+			calls += 1;
+			const response = sse({
+				response: {
+					candidates: [{ content: { parts: [] }, finishReason: "SAFETY" }],
+				},
+			});
+			Object.defineProperty(response, "url", { value: "https://example.com/v1internal:streamGenerateContent" });
+			return response;
+		};
+
+		const stream = streamGoogleGeminiCli(cliModel, context, {
+			apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+			fetch: fetchMock,
+		});
+
+		await drain(stream);
+		const result = await stream.result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("Generation failed with finish reason: SAFETY");
+		expect(calls).toBe(1);
+	});
 });

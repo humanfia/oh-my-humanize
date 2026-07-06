@@ -24,6 +24,7 @@ import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { vocalizer } from "../../tts/vocalizer";
 import {
 	copyToClipboard,
 	readImageFromClipboard,
@@ -34,7 +35,7 @@ import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
-import { generateSessionTitle, setSessionTerminalTitle } from "../../utils/title-generator";
+import { generateSessionTitle } from "../../utils/title-generator";
 
 /**
  * Slash commands that may carry secrets in their arguments should never be
@@ -408,6 +409,13 @@ export class InputController {
 				// Esc must not destroy an in-progress draft; it only disarms a previous empty-editor Esc.
 				this.ctx.lastEscapeTime = 0;
 				this.#clearStreamingEscapeArm();
+			} else if (vocalizer.isSpeaking()) {
+				// TTS buffers seconds of PCM past the streaming abort, so an Esc
+				// arriving after the model stopped would otherwise fall through to
+				// the double-Esc gesture while Kokoro reads on. Silence first;
+				// tree/branch stays reachable via a second Esc.
+				vocalizer.clear();
+				this.ctx.lastEscapeTime = 0;
 			} else {
 				// Double-interrupt with empty editor triggers /tree, /branch, or nothing based on setting
 				const action = settings.get("doubleEscapeAction");
@@ -861,16 +869,10 @@ export class InputController {
 				)
 					.then(async title => {
 						// Re-check: a concurrent attempt for an earlier message may have
-						// already named the session. Don't clobber it.
+						// already named the session. Don't clobber it. Terminal title and
+						// accent updates fire from the onSessionNameChanged listener.
 						if (title && !this.ctx.sessionManager.getSessionName()) {
-							const applied = await this.ctx.sessionManager.setSessionName(title, "auto");
-							if (applied) {
-								setSessionTerminalTitle(
-									this.ctx.sessionManager.getSessionName()!,
-									this.ctx.sessionManager.getCwd(),
-								);
-								this.ctx.updateEditorBorderColor();
-							}
+							await this.ctx.sessionManager.setSessionName(title, "auto");
 						}
 					})
 					.catch(err => {

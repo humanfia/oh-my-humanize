@@ -1669,6 +1669,7 @@ function mapOptionsForApi<TApi extends Api>(
 						enabled: true,
 						level: mapEffortToGoogleThinkingLevel(effort),
 					},
+					hideThinkingSummary: options?.hideThinkingSummary,
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				});
 			}
@@ -1679,6 +1680,7 @@ function mapOptionsForApi<TApi extends Api>(
 					enabled: true,
 					budgetTokens: getGoogleBudget(googleModel, effort, options?.thinkingBudgets),
 				},
+				hideThinkingSummary: options?.hideThinkingSummary,
 				toolChoice: mapGoogleToolChoice(options?.toolChoice),
 			});
 		}
@@ -1698,6 +1700,7 @@ function mapOptionsForApi<TApi extends Api>(
 							enabled: true,
 							level: mapEffortToGoogleThinkingLevel(effort),
 						},
+						hideThinkingSummary: options?.hideThinkingSummary,
 						toolChoice,
 						antigravityEndpointMode: options?.antigravityEndpointMode,
 					});
@@ -1720,6 +1723,7 @@ function mapOptionsForApi<TApi extends Api>(
 						maxTokens,
 						requestModelId: resolveWireModelId(model, effort),
 						thinking: { enabled: true, budgetTokens: thinkingBudget },
+						hideThinkingSummary: options?.hideThinkingSummary,
 						toolChoice,
 						antigravityEndpointMode: options?.antigravityEndpointMode,
 					});
@@ -1766,6 +1770,7 @@ function mapOptionsForApi<TApi extends Api>(
 						enabled: true,
 						level: mapEffortToGoogleThinkingLevel(effort),
 					},
+					hideThinkingSummary: options?.hideThinkingSummary,
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				});
 			}
@@ -1777,6 +1782,7 @@ function mapOptionsForApi<TApi extends Api>(
 					enabled: true,
 					budgetTokens: getGoogleBudget(geminiModel, effort, options?.thinkingBudgets),
 				},
+				hideThinkingSummary: options?.hideThinkingSummary,
 				toolChoice: mapGoogleToolChoice(options?.toolChoice),
 			});
 		}

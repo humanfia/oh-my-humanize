@@ -5,7 +5,12 @@ import {
 } from "../discovery/openai-compatible";
 import { Effort } from "../effort";
 import { FIREWORKS_FAST_SUFFIX, toFireworksPublicModelId } from "../fireworks-model-id";
-import { isGlmVisionModelId, isGrokReasoningEffortCapable, isReasoningGlmModelId } from "../identity/family";
+import {
+	isGlmVisionModelId,
+	isGrokReasoningEffortCapable,
+	isKimiModelId,
+	isReasoningGlmModelId,
+} from "../identity/family";
 import type { ModelManagerOptions } from "../model-manager";
 import { getBundledModels } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec, OpenAICompat, Provider, ThinkingConfig } from "../types";
@@ -1718,6 +1723,36 @@ function readWaferRecord(entry: OpenAICompatibleModelRecord): WaferRecord | unde
 	return raw && typeof raw === "object" ? (raw as WaferRecord) : undefined;
 }
 
+type WaferThinkingFormat = "zai" | "qwen";
+
+export function resolveWaferServerlessThinkingFormat(
+	modelId: string,
+	upstreamProvider: unknown,
+): WaferThinkingFormat | undefined {
+	const upstream = typeof upstreamProvider === "string" ? upstreamProvider.trim().toLowerCase() : "";
+	if (upstream) {
+		if (
+			upstream === "zai" ||
+			upstream === "z.ai" ||
+			upstream === "z-ai" ||
+			upstream.includes("zhipu") ||
+			upstream.includes("moonshot") ||
+			upstream.includes("kimi")
+		) {
+			return "zai";
+		}
+		if (upstream.includes("qwen") || upstream.includes("alibaba") || upstream.includes("dashscope")) {
+			return "qwen";
+		}
+		return undefined;
+	}
+
+	// Older Wafer snapshots (and some endpoint responses) do not carry the
+	// upstream-provider hint. Only GLM/Kimi need a sparse override: qwen and
+	// deepseek IDs are resolved safely by `buildOpenAICompat` from the model id.
+	return isReasoningGlmModelId(modelId.toLowerCase()) || isKimiModelId(modelId) ? "zai" : undefined;
+}
+
 function mapWaferModel(
 	providerId: "wafer-serverless",
 	baseUrl: string,
@@ -1766,11 +1801,9 @@ function mapWaferModel(
 		//   - deepseek → `reasoning_effort` (DeepSeek effort map; the model always
 		//     reasons when invoked, replay of `reasoning_content` is required on
 		//     tool-call turns — both handled by `detectOpenAICompat` from the id).
-		// For unknown upstreams we omit `thinkingFormat` and let the per-id
-		// detection in `detectOpenAICompat` pick a safe default.
-		const upstream = typeof wafer?.provider === "string" ? wafer.provider : undefined;
-		const thinkingFormat: "zai" | "qwen" | undefined =
-			upstream === "zai" || upstream === "moonshotai" ? "zai" : upstream === "qwen" ? "qwen" : undefined;
+		// Unknown upstreams stay unset; missing upstreams fall back only for
+		// model families that cannot be inferred safely from Wafer's host.
+		const thinkingFormat = resolveWaferServerlessThinkingFormat(defaults.id, wafer?.provider);
 		return {
 			...base,
 			compat: {
@@ -3004,6 +3037,11 @@ const LITELLM_RICH_ENDPOINTS = ["/model_group/info", "/v2/model/info", "/model/i
 export const OPENAI_COMPAT_DISCOVERY_DEFAULT_CONTEXT_WINDOW = 128_000;
 export const OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_TOKENS = 32_768;
 const UNKNOWN_PROXY_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
+const LITELLM_UNUSABLE_SENTINEL_IDS: Record<string, true> = {
+	"all-team-models": true,
+	"all-proxy-models": true,
+	"no-default-models": true,
+};
 
 export function normalizeLiteLLMManagementBaseUrl(baseUrl: string): string {
 	const trimmed = baseUrl.trim().replace(/\/+$/g, "");
@@ -3109,11 +3147,59 @@ function getSupportedOpenAIParams(entry: LiteLLMRichModelEntry): string[] | unde
 	return value.flatMap(item => (typeof item === "string" ? [item] : []));
 }
 
+function isLiteLLMUnusableSentinelPlaceholder(entry: LiteLLMRichModelEntry): boolean {
+	const modelGroup = toNonEmptyString(entry.model_group);
+	const id = toNonEmptyString(entry.id);
+	if (
+		(modelGroup === undefined || LITELLM_UNUSABLE_SENTINEL_IDS[modelGroup] !== true) &&
+		(id === undefined || LITELLM_UNUSABLE_SENTINEL_IDS[id] !== true)
+	) {
+		return false;
+	}
+	const providers = entry.providers;
+	if (providers !== undefined && (!Array.isArray(providers) || providers.length > 0)) {
+		return false;
+	}
+	const modelName = toNonEmptyString(entry.model_name);
+	if (modelName && LITELLM_UNUSABLE_SENTINEL_IDS[modelName] !== true) {
+		return false;
+	}
+	if (id && LITELLM_UNUSABLE_SENTINEL_IDS[id] !== true) {
+		return false;
+	}
+	const backendModel = toNonEmptyString(getLiteLLMParams(entry)?.model);
+	if (backendModel && LITELLM_UNUSABLE_SENTINEL_IDS[backendModel] !== true) {
+		return false;
+	}
+	if (
+		toPositiveNumber(getLiteLLMMetadataValue(entry, "max_input_tokens"), null) !== null ||
+		toPositiveNumber(getLiteLLMMetadataValue(entry, "max_output_tokens"), null) !== null
+	) {
+		return false;
+	}
+	if (
+		getLiteLLMMetadataValue(entry, "supports_vision") === true ||
+		getLiteLLMMetadataValue(entry, "supports_reasoning") === true ||
+		getLiteLLMMetadataValue(entry, "supports_function_calling") === true ||
+		getLiteLLMMetadataValue(entry, "supports_tools") === true
+	) {
+		return false;
+	}
+	const supportedOpenAIParams = getSupportedOpenAIParams(entry);
+	if (supportedOpenAIParams && supportedOpenAIParams.length > 0) {
+		return false;
+	}
+	return true;
+}
+
 function mapLiteLLMRichEntry<TApi extends Api>(
 	entry: LiteLLMRichModelEntry,
 	options: FetchLiteLLMRichModelsOptions<TApi>,
 	runtimeBaseUrl: string,
 ): ModelSpec<TApi> | null {
+	if (isLiteLLMUnusableSentinelPlaceholder(entry)) {
+		return null;
+	}
 	const id = getLiteLLMRichModelId(entry);
 	if (!id) {
 		return null;
@@ -3253,11 +3339,11 @@ export function litellmModelManagerOptions(
 	const baseUrl = config?.baseUrl ?? Bun.env.LITELLM_BASE_URL ?? "http://localhost:4000/v1";
 	return {
 		providerId: "litellm",
-		// rich-v2 invalidates rows cached before reseller usage-suffix stripping
-		// (stale display names like `MiniMax-M3 (3x usage)`); bump the version
-		// whenever the mappers below change, or warm authoritative caches keep
-		// serving pre-change rows for the full TTL.
-		cacheProviderId: `litellm:rich-v2:${Bun.hash(baseUrl).toString(36)}`,
+		// rich-v3 invalidates rows cached before reseller usage-suffix stripping
+		// and placeholder-only `all-team-models` filtering; bump the version whenever
+		// the mappers below change, or warm authoritative caches keep serving
+		// pre-change rows for the full TTL.
+		cacheProviderId: `litellm:rich-v3:${Bun.hash(baseUrl).toString(36)}`,
 		// litellm is a local-only proxy and is never bundled in models.json (that
 		// would leak the machine's localhost catalog). Prefer the proxy's richer
 		// management metadata, then fall back to /v1/models and enrich bare ids

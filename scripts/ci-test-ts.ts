@@ -103,16 +103,21 @@ const nativeAndIntegrationPackages = [
 // and is outside every CI TS bucket.
 const localOnlyWorkspacePackages = ["packages/mnemopi", "python/robomp/web"];
 
-// Repo-level script tests. CI's `workspace` bucket runs the workflow-guard
-// tests that protect repository automation; a local full run also exercises
-// release-note and install-link coverage. (A `ci-test-ts.test.ts` entry used to
-// sit here but the file never existed — bun silently ignores unmatched filters
-// when at least one other filter matches.)
-const ciRepoScriptTests = ["scripts/ci-concurrency.test.ts", "scripts/vouch-workflow.test.ts"];
+// Repo-level script tests. CI's `workspace` bucket runs repository automation
+// guards; a local full run also exercises release-note and install-link
+// coverage. (A `ci-test-ts.test.ts` entry used to sit here but the file never
+// existed — bun silently ignores unmatched filters when at least one other
+// filter matches.)
+const ciRepoScriptTests = [
+	"scripts/ci-concurrency.test.ts",
+	"scripts/fix-dts-extensions.test.ts",
+	"scripts/vouch-workflow.test.ts",
+];
 
 const repoScriptTests = [
 	"scripts/ci-concurrency.test.ts",
 	"scripts/ci-release-notes.test.ts",
+	"scripts/fix-dts-extensions.test.ts",
 	"scripts/link-omp.test.ts",
 	"scripts/vouch-workflow.test.ts",
 ];

@@ -1720,7 +1720,10 @@ describe("workflow graph view rendering", () => {
 		setThemeInstance(theme);
 		const component = new WorkflowGraphComponent(singleNodeView("running"), { refreshMs: 0 });
 		component.render(80);
-		const liveRegion = component as WorkflowGraphComponent & NativeScrollbackLiveRegion;
+		const liveRegion = component as WorkflowGraphComponent &
+			NativeScrollbackLiveRegion & {
+				getNativeScrollbackCommitSafeEnd?: () => number | undefined;
+			};
 
 		expect(liveRegion.getNativeScrollbackLiveRegionStart()).toBe(0);
 		expect(liveRegion.getNativeScrollbackCommitSafeEnd?.()).toBeUndefined();

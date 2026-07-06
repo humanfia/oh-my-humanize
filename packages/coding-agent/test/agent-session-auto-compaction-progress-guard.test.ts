@@ -82,10 +82,14 @@ describe("AgentSession auto-compaction progress guard", () => {
 			modelRegistry,
 		);
 
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
-		if (!model) {
+		const bundled = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!bundled) {
 			throw new Error("Expected built-in anthropic model to exist");
 		}
+		// Pin the window and output reservation: every usage figure below is tuned
+		// to a 200k/64k threshold, so catalog regeneration must not shift the
+		// headroom math.
+		const model = { ...bundled, contextWindow: 200_000, maxTokens: 64_000 };
 
 		const agent = new Agent({
 			initialState: {
@@ -147,10 +151,10 @@ describe("AgentSession auto-compaction progress guard", () => {
 	}
 
 	/** Build a context-overflow assistant turn (input exceeds the 200k window). */
-	function overflowAssistant() {
+	function overflowAssistant(content = [{ type: "text" as const, text: "" }]) {
 		return {
 			role: "assistant" as const,
-			content: [{ type: "text" as const, text: "" }],
+			content,
 			api: "anthropic-messages" as const,
 			provider: "anthropic" as const,
 			model: "claude-sonnet-4-5",
@@ -166,6 +170,10 @@ describe("AgentSession auto-compaction progress guard", () => {
 			},
 			timestamp: Date.now(),
 		};
+	}
+
+	function contentfulOverflowAssistant() {
+		return overflowAssistant([{ type: "text" as const, text: "prompt is too long" }]);
 	}
 
 	function collectNotices() {
@@ -500,10 +508,10 @@ describe("AgentSession auto-compaction progress guard", () => {
 		);
 	});
 
-	it("keeps the visible overflow error when no recovery path is available", async () => {
-		// When promotion is off and compaction is disabled there is no retry to run;
-		// the persisted assistant error MUST stay on the branch so the user (and the
-		// reloaded transcript) keeps the only explanation of why the turn stopped.
+	it("drops a content-less overflow error when no recovery path is available", async () => {
+		// Content-less provider rejection turns are live UI only: persisting them
+		// writes an empty assistant turn that replays on reload and re-sends the
+		// rejected context.
 		session.settings.set("contextPromotion.enabled", false);
 		session.settings.set("compaction.enabled", false);
 
@@ -518,7 +526,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 
 		expect(promptSpy).not.toHaveBeenCalled();
 		expect(continueSpy).not.toHaveBeenCalled();
-		expect(sessionManager.getBranch()).toContainEqual(
+		expect(sessionManager.getBranch()).not.toContainEqual(
 			expect.objectContaining({
 				type: "message",
 				message: expect.objectContaining({
@@ -545,7 +553,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 			if (event.type === "auto_compaction_end") onCompactionDone();
 		});
 
-		const assistantMsg = overflowAssistant();
+		const assistantMsg = contentfulOverflowAssistant();
 		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
 
@@ -555,6 +563,38 @@ describe("AgentSession auto-compaction progress guard", () => {
 		expect(promptSpy).not.toHaveBeenCalled();
 		expect(continueSpy).not.toHaveBeenCalled();
 		expect(sessionManager.getBranch()).toContainEqual(
+			expect.objectContaining({
+				type: "message",
+				message: expect.objectContaining({
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: assistantMsg.errorMessage,
+				}),
+			}),
+		);
+	});
+
+	it("does not restore a content-less overflow error when compaction skips without committing", async () => {
+		seedPriorTurns();
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([]);
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") onCompactionDone();
+		});
+
+		const assistantMsg = overflowAssistant();
+		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
+
+		await compactionDone;
+		await session.waitForIdle();
+
+		expect(promptSpy).not.toHaveBeenCalled();
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(sessionManager.getBranch()).not.toContainEqual(
 			expect.objectContaining({
 				type: "message",
 				message: expect.objectContaining({
@@ -580,7 +620,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 			if (event.type === "auto_compaction_end") onCompactionDone();
 		});
 
-		const assistantMsg = overflowAssistant();
+		const assistantMsg = contentfulOverflowAssistant();
 		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
 
@@ -638,7 +678,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 			if (event.type === "auto_compaction_end") onCompactionDone();
 		});
 
-		const assistantMsg = overflowAssistant();
+		const assistantMsg = contentfulOverflowAssistant();
 		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
 
