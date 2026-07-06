@@ -11,7 +11,7 @@
  */
 import { logger } from "@oh-my-pi/pi-utils";
 import { type Type, type } from "arktype";
-import type { AuthStorage, StoredCredentialBlock } from "../auth-storage";
+import type { AuthCredential, AuthCredentialSnapshotEntry, AuthStorage, StoredCredentialBlock } from "../auth-storage";
 import { parseBind } from "../utils/parse-bind";
 import { AuthBrokerRefresher, type AuthBrokerRefresherSchedule } from "./refresher";
 import type {
@@ -40,6 +40,7 @@ import {
 	credentialBlockRequestSchema,
 	credentialDisableRequestSchema,
 	credentialUploadRequestSchema,
+	isProfiledApiKeyCredential,
 } from "./wire-schemas";
 
 export interface AuthBrokerServerOptions {
@@ -302,13 +303,39 @@ function buildCredentialBlockGroups(
 	return byCredentialId;
 }
 
+function isLegacyV1VisibleCredentialEntry(entry: { credential: AuthCredential }): boolean {
+	return !isProfiledApiKeyCredential(entry.credential);
+}
+
+function hasLegacyV1VisibleCredentialById(storage: AuthStorage, id: number): boolean {
+	for (const entry of storage.listStoredCredentials()) {
+		if (entry.id !== id) continue;
+		return isLegacyV1VisibleCredentialEntry(entry);
+	}
+	return false;
+}
+
+/** Omit unsupported credentials wholesale; removing only the profile would expose the key with wrong semantics. */
+function projectLegacyV1CredentialEntries<T extends AuthCredentialSnapshotEntry>(entries: T[]): T[] {
+	let projected: T[] | undefined;
+	for (const [index, entry] of entries.entries()) {
+		if (!isLegacyV1VisibleCredentialEntry(entry)) {
+			projected ??= entries.slice(0, index);
+			continue;
+		}
+		projected?.push(entry);
+	}
+	return projected ?? entries;
+}
+
 function buildSnapshot(storage: AuthStorage, refresher: AuthBrokerRefresher | undefined): SnapshotResponse {
 	const serverNowMs = Date.now();
 	const base = storage.exportSnapshot();
 	const { wire, nextSweepAt } = resolveRefresherSchedule(refresher, serverNowMs);
-	const credentialIds = base.credentials.map(entry => entry.id);
+	const visibleCredentials = projectLegacyV1CredentialEntries(base.credentials);
+	const credentialIds = visibleCredentials.map(entry => entry.id);
 	const blocksByCredentialId = buildCredentialBlockGroups(storage.listCredentialBlocks(credentialIds), serverNowMs);
-	const credentials: SnapshotEntry[] = base.credentials.map(entry => {
+	const credentials: SnapshotEntry[] = visibleCredentials.map(entry => {
 		const blocks = blocksByCredentialId.get(entry.id);
 		const rotatesInMs = computeRotatesInMs(entry, wire, nextSweepAt, serverNowMs);
 		return blocks && blocks.length > 0 ? { ...entry, rotatesInMs, blocks } : { ...entry, rotatesInMs };
@@ -610,8 +637,14 @@ export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServer
 				const refreshMatch = req.method === "POST" ? pathname.match(REFRESH_ROUTE) : null;
 				if (refreshMatch) {
 					const id = Number.parseInt(refreshMatch[1], 10);
+					if (!hasLegacyV1VisibleCredentialById(opts.storage, id)) {
+						logger.info("auth-broker refresh miss", { id, peer });
+						return json(404, { error: `No credential with id=${id}` });
+					}
 					try {
-						const entry = await opts.storage.refreshCredentialById(id, req.signal);
+						const refreshedEntry = await opts.storage.refreshCredentialById(id, req.signal);
+						const entry = projectLegacyV1CredentialEntries([refreshedEntry])[0];
+						if (!entry) return json(404, { error: `No credential with id=${id}` });
 						const body: CredentialRefreshResponse = { entry };
 						logger.info("auth-broker credential refreshed", {
 							id,
@@ -630,6 +663,10 @@ export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServer
 				const disableMatch = req.method === "POST" ? pathname.match(DISABLE_ROUTE) : null;
 				if (disableMatch) {
 					const id = Number.parseInt(disableMatch[1], 10);
+					if (!hasLegacyV1VisibleCredentialById(opts.storage, id)) {
+						logger.info("auth-broker disable miss", { id, peer });
+						return json(404, { error: `No credential with id=${id}` });
+					}
 					const parsed = await parseBody(req, credentialDisableRequestSchema, { allowEmpty: true });
 					if (!parsed.ok) return parsed.response;
 					const cause =
@@ -699,8 +736,23 @@ export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServer
 					const parsed = await parseBody(req, credentialUploadRequestSchema);
 					if (!parsed.ok) return parsed.response;
 					const { provider, credential } = parsed.data;
+					if (
+						opts.storage.listStoredCredentials(provider).some(entry => !isLegacyV1VisibleCredentialEntry(entry))
+					) {
+						logger.warn("auth-broker upload rejected for legacy-v1 protected provider", { provider, peer });
+						return json(409, {
+							error: `Provider ${provider} contains credentials unsupported by auth-broker v1`,
+						});
+					}
 					try {
-						const entries = opts.storage.upsertCredential(provider, credential);
+						const result = opts.storage.upsertLegacyV1Credential(provider, credential);
+						if (!result.ok) {
+							logger.warn("auth-broker upload rejected for legacy-v1 protected provider", { provider, peer });
+							return json(409, {
+								error: `Provider ${provider} contains credentials unsupported by auth-broker v1`,
+							});
+						}
+						const entries = projectLegacyV1CredentialEntries(result.entries);
 						const identity =
 							credential.type === "oauth"
 								? (credential.email ?? credential.accountId ?? credential.projectId ?? "(no identity)")

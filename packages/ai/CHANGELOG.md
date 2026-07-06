@@ -59,6 +59,11 @@
 
 - Fixed tool-call validation to strip stray trailing line terminators on schema-matching enum values and on well-known identifier fields (`path`, `paths`, `file`, `file_path`, `url`, `uri`, `title`, `label`) before dispatch, keeping ordinary trailing spaces and content-carrying fields (`content`, `input`, `code`, `command`, etc.) intact ([#4461](https://github.com/can1357/oh-my-pi/issues/4461)).
 
+### Fixed
+
+- Fixed Anthropic Console API-key requests for non-Haiku Claude models by preserving the Console login profile through credential storage and retries, then applying Claude billing attestation only on the official Anthropic transport without changing regular API-key, OAuth, Haiku, or custom-gateway requests.
+- Prevented auth-broker v1 from destructively replacing or exposing profiled API-key credentials; unsupported remote writes now fail before any credential mutation.
+
 ## [16.3.4] - 2026-07-03
 
 ### Added

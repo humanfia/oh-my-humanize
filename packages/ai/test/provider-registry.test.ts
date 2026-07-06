@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
-import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai/registry";
+import { PASTE_CODE_LOGIN_PROVIDERS, PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import {
 	getOAuthProviders,
 	refreshOAuthToken,
@@ -108,6 +108,11 @@ describe("provider registry auth surface", () => {
 		});
 		expect(claudeConsole?.name).toContain("Claude Console");
 		expect(PASTE_CODE_LOGIN_PROVIDERS.has("anthropic-console")).toBe(true);
+
+		const profiledProviders = PROVIDER_REGISTRY.filter(provider => provider.apiKeyRequestProfile !== undefined).map(
+			provider => ({ id: provider.id, apiKeyRequestProfile: provider.apiKeyRequestProfile }),
+		);
+		expect(profiledProviders).toEqual([{ id: "anthropic-console", apiKeyRequestProfile: "anthropic-console" }]);
 	});
 
 	test("paste-code login set is derived from pasteCodeFlow", () => {

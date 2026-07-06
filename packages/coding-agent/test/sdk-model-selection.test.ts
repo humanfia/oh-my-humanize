@@ -120,6 +120,63 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		expect(modelFallbackMessage).toBeUndefined();
 	});
 
+	test("resolves workflow requests after extension providers register and honors explicit workflow thinking", async () => {
+		const { session } = await createAgentSession({
+			...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
+			thinkingLevel: Effort.XHigh,
+			workflowModelRequest: {
+				version: 1,
+				nodeId: "extension-model-node",
+				patterns: ["runtime-provider/runtime-reasoning-model:high"],
+				unavailablePolicy: "fail",
+			},
+		});
+
+		try {
+			expect(session.model?.provider).toBe("runtime-provider");
+			expect(session.model?.id).toBe("runtime-reasoning-model");
+			expect(session.thinkingLevel).toBe(Effort.High);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("preserves the ambient model and thinking when a workflow request falls back to parent", async () => {
+		const { session } = await createAgentSession({
+			...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
+			thinkingLevel: Effort.XHigh,
+			workflowModelRequest: {
+				version: 1,
+				nodeId: "fallback-node",
+				patterns: ["missing-provider/missing-model"],
+				unavailablePolicy: "fallback-to-parent",
+			},
+		});
+
+		try {
+			expect(session.model?.provider).toBe("runtime-provider");
+			expect(session.model?.id).toBe("runtime-reasoning-model");
+			expect(session.thinkingLevel).toBe(Effort.XHigh);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("reports the workflow node when a required workflow model cannot resolve", async () => {
+		await expect(
+			createAgentSession({
+				...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
+				thinkingLevel: Effort.XHigh,
+				workflowModelRequest: {
+					version: 1,
+					nodeId: "required-model-node",
+					patterns: ["missing-provider/missing-model"],
+					unavailablePolicy: "fail",
+				},
+			}),
+		).rejects.toThrow(/required-model-node/);
+	});
+
 	test("applies runtimeApiKey after deferred modelPattern resolves", async () => {
 		const { session } = await createAgentSession({
 			...(await buildSessionOptions("runtime-provider/runtime-model")),

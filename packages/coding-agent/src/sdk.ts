@@ -200,6 +200,7 @@ import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice } from "./utils/tool-choice";
 import { createEvalToolScriptRunner } from "./workflow/eval-tool-runtime";
 import { createAskToolHumanInputRunner } from "./workflow/human-tool-runtime";
+import { resolvePortableWorkflowModelRequest, type WorkflowPortableModelRequest } from "./workflow/model-resolution";
 import { createShellScriptRunner } from "./workflow/shell-script-runtime";
 import { createTaskToolAgentRunner } from "./workflow/task-tool-runtime";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
@@ -383,6 +384,13 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
 	}
 }
 
+export class WorkflowModelResolutionError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "WorkflowModelResolutionError";
+	}
+}
+
 // Types
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: getProjectDir() */
@@ -402,6 +410,8 @@ export interface CreateAgentSessionOptions {
 	/** Raw model pattern(s) (e.g. from --model CLI flag) to resolve after extensions load.
 	 * Used when model lookup is deferred because extension-provided models aren't registered yet. */
 	modelPattern?: string | string[];
+	/** Structured workflow model selection resolved after extension providers register. */
+	workflowModelRequest?: WorkflowPortableModelRequest;
 	/** Runtime API key supplied by the CLI for the selected model provider. Not persisted. */
 	runtimeApiKey?: string;
 	/** Authenticated fallback selector for deferred subagent model patterns. */
@@ -1347,6 +1357,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// model's defaultLevel → global settings default. Run again after extension
 	// role reclaim so the final model's own defaults aren't masked by an earlier
 	// fallback model's.
+	let workflowModelResolved = false;
 	const pickInitialThinkingLevel = (selectedModel: Model | undefined): ConfiguredThinkingLevel | undefined => {
 		let level = options.thinkingLevel;
 		if (level === undefined && hasExistingSession && hasThinkingEntry) {
@@ -1357,7 +1368,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (level === undefined && !hasThinkingEntry && restoredSessionThinkingLevel !== undefined) {
 			level = restoredSessionThinkingLevel;
 		}
-		if (level === undefined && !hasExplicitModel && !hasThinkingEntry && defaultRoleSpec.explicitThinkingLevel) {
+		if (
+			level === undefined &&
+			!hasExplicitModel &&
+			!workflowModelResolved &&
+			!hasThinkingEntry &&
+			defaultRoleSpec.explicitThinkingLevel
+		) {
 			level = defaultRoleSpec.thinkingLevel;
 		}
 		if (level === undefined && selectedModel?.thinking?.defaultLevel !== undefined) {
@@ -2087,6 +2104,43 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						? `"${deferredModelPatterns[0]}"`
 						: `one of ${deferredModelPatterns.map(pattern => `"${pattern}"`).join(", ")}`;
 				modelFallbackMessage = `Model ${requested} not found`;
+			}
+		}
+
+		if (options.workflowModelRequest !== undefined) {
+			const workflowAvailableModels = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
+			const resolvedWorkflowModel = resolvePortableWorkflowModelRequest(options.workflowModelRequest, {
+				availableModels: workflowAvailableModels,
+				settings,
+				matchPreferences: modelMatchPreferences,
+			});
+			if (resolvedWorkflowModel.warning) logger.warn(resolvedWorkflowModel.warning);
+			if (resolvedWorkflowModel.error) throw new WorkflowModelResolutionError(resolvedWorkflowModel.error);
+			if (resolvedWorkflowModel.model) {
+				workflowModelResolved = true;
+				model = resolvedWorkflowModel.model;
+				modelFallbackMessage = undefined;
+				const resolvedModelPattern = `${model.provider}/${model.id}`;
+				settings.overrideModelRoles({ default: resolvedModelPattern });
+				if (resolvedWorkflowModel.explicitThinkingLevel) {
+					if (resolvedWorkflowModel.thinkingLevel === undefined) delete options.thinkingLevel;
+					else options.thinkingLevel = resolvedWorkflowModel.thinkingLevel;
+				}
+				thinkingLevel = pickInitialThinkingLevel(model);
+				autoThinking = thinkingLevel === AUTO_THINKING;
+				effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
+				effectiveThinkingLevel = autoThinking
+					? resolveProvisionalAutoLevel(model)
+					: resolveThinkingLevelForModel(model, effectiveThinkingLevel);
+				preconnectModelHost(model.baseUrl);
+				const nestedModelOverride =
+					resolvedWorkflowModel.explicitThinkingLevel && resolvedWorkflowModel.thinkingLevel !== undefined
+						? `${resolvedModelPattern}:${resolvedWorkflowModel.thinkingLevel}`
+						: resolvedModelPattern;
+				options.defaultSubagentModelOverride = nestedModelOverride;
+				options.defaultSubagentModelOverrideAuthFallback = false;
+				toolSession.defaultSubagentModelOverride = nestedModelOverride;
+				toolSession.defaultSubagentModelOverrideAuthFallback = false;
 			}
 		}
 

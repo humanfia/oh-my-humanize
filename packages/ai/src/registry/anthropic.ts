@@ -35,6 +35,7 @@ export const anthropicConsoleProvider = {
 	id: "anthropic-console",
 	name: "Claude Console account login",
 	login: cb => loginAnthropicConsole(cb),
+	apiKeyRequestProfile: "anthropic-console",
 	storeCredentialsAs: "anthropic",
 	replaceCredentialsOnApiKeyLogin: true,
 	pasteCodeFlow: true,

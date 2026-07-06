@@ -63,6 +63,7 @@ import {
 	createAgentSession,
 	discoverAuthStorage,
 	loadSessionExtensions,
+	WorkflowModelResolutionError,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
@@ -86,6 +87,8 @@ import {
 import { EventBus } from "./utils/event-bus";
 import { withTimeoutSignal } from "./utils/fetch-timeout";
 import {
+	parseWorkflowModelRequest,
+	WORKFLOW_MODEL_REQUEST_ENV,
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV,
 	WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV,
 	WORKFLOW_SUBAGENT_REQUIRE_YIELD_TOOL_ENV,
@@ -815,8 +818,10 @@ async function buildSessionOptions(
 		cwd: parsed.cwd ?? getProjectDir(),
 		autoApprove: parsed.autoApprove ?? false,
 	};
+	const workflowModelRequest = parseWorkflowModelRequest(Bun.env[WORKFLOW_MODEL_REQUEST_ENV]);
+	if (workflowModelRequest !== undefined) options.workflowModelRequest = workflowModelRequest;
 	const workflowSubagentModelOverride = Bun.env[WORKFLOW_SUBAGENT_MODEL_OVERRIDE_ENV]?.trim();
-	if (workflowSubagentModelOverride) {
+	if (workflowModelRequest === undefined && workflowSubagentModelOverride) {
 		options.defaultSubagentModelOverride = workflowSubagentModelOverride;
 		const authFallback = Bun.env[WORKFLOW_SUBAGENT_MODEL_OVERRIDE_AUTH_FALLBACK_ENV];
 		if (authFallback === "false") {
@@ -919,6 +924,7 @@ async function buildSessionOptions(
 	if (parsed.thinking) {
 		options.thinkingLevel = parsed.thinking;
 	} else if (
+		workflowModelRequest === undefined &&
 		scopedModels.length > 0 &&
 		scopedModels[0].explicitThinkingLevel === true &&
 		!parsed.continue &&
@@ -1403,11 +1409,21 @@ export async function runRootCommand(
 			stdoutIsTTY: process.stdout.isTTY,
 		});
 
-		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager } = await createSession({
-			...sessionOptions,
-			eventBus,
-			preloadedExtensions: extensionsResult,
-		});
+		let sessionResult: CreateAgentSessionResult;
+		try {
+			sessionResult = await createSession({
+				...sessionOptions,
+				eventBus,
+				preloadedExtensions: extensionsResult,
+			});
+		} catch (error) {
+			if (error instanceof WorkflowModelResolutionError) {
+				process.stderr.write(`${chalk.red(`Error: ${error.message}`)}\n`);
+				process.exit(1);
+			}
+			throw error;
+		}
+		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager } = sessionResult;
 
 		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
 		// scan, collab mirror, resumed process) has a sessionFile but no in-memory

@@ -16,6 +16,7 @@ import {
 	parseStreamingJsonThrottled,
 	readSseEvents,
 } from "@oh-my-pi/pi-utils";
+import type { ApiKeyRequestProfile } from "../auth-retry";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
@@ -1096,6 +1097,8 @@ export interface AnthropicOptions extends StreamOptions {
 export type AnthropicClientOptionsArgs = {
 	model: Model<"anthropic-messages">;
 	apiKey: string;
+	apiKeyRequestProfile?: ApiKeyRequestProfile;
+	requestModelId?: string;
 	extraBetas?: string[];
 	stream?: boolean;
 	interleavedThinking?: boolean;
@@ -1111,6 +1114,7 @@ export type AnthropicClientOptionsArgs = {
 
 export type AnthropicClientOptionsResult = {
 	isOAuthToken: boolean;
+	apiKeyRequestProfile: ApiKeyRequestProfile | undefined;
 	apiKey: string | null;
 	authToken?: string | null;
 	baseURL?: string;
@@ -1119,6 +1123,11 @@ export type AnthropicClientOptionsResult = {
 	fetch?: FetchImpl;
 	fetchOptions?: AnthropicFetchOptions;
 };
+
+/** Resolve the model id serialized on the Anthropic wire exactly once. */
+export function resolveAnthropicWireModelId(model: Model<"anthropic-messages">, requestModelId?: string): string {
+	return requestModelId ?? model.requestModelId ?? model.id;
+}
 
 const CLAUDE_CODE_TLS_CIPHERS = tls.DEFAULT_CIPHERS;
 
@@ -1748,10 +1757,12 @@ const streamAnthropicOnce = (
 
 			let client: AnthropicMessagesClientLike;
 			let isOAuthToken: boolean;
+			let apiKeyRequestProfile: ApiKeyRequestProfile | undefined;
 
 			if (options?.client) {
 				client = options.client;
 				isOAuthToken = false;
+				apiKeyRequestProfile = undefined;
 			} else {
 				const extraBetas = normalizeExtraBetas(options?.betas);
 				const wantsAnthropicPriority = model.provider === "anthropic" && options?.serviceTier === "priority";
@@ -1835,6 +1846,8 @@ const streamAnthropicOnce = (
 					headers: options?.headers,
 					dynamicHeaders: copilotDynamicHeaders?.headers,
 					isOAuth: options?.isOAuth,
+					apiKeyRequestProfile: options?.apiKeyRequestProfile,
+					requestModelId: options?.requestModelId,
 					hasTools: !!context.tools?.length,
 					thinkingEnabled: options?.thinkingEnabled,
 					thinkingDisplay: options?.thinkingDisplay,
@@ -1843,17 +1856,26 @@ const streamAnthropicOnce = (
 				});
 				client = created.client;
 				isOAuthToken = created.isOAuthToken;
+				apiKeyRequestProfile = created.apiKeyRequestProfile;
 			}
+			const shouldNormalizeConsoleIdentity =
+				!options?.client &&
+				options?.apiKeyRequestProfile === "anthropic-console" &&
+				!isOAuthToken &&
+				model.provider === "anthropic" &&
+				isOfficialAnthropicApiUrl(baseUrl);
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
 				let nextParams = buildParams(
 					model,
 					preparedContext,
 					isOAuthToken,
+					apiKeyRequestProfile,
 					options,
 					disableStrictTools,
 					umansGatewayWebSearchHeader !== undefined,
 					forceDemoteUnsignedThinking,
+					shouldNormalizeConsoleIdentity,
 				);
 				if (disableStrictTools) {
 					dropAnthropicStrictTools(nextParams);
@@ -2578,6 +2600,8 @@ export type AnthropicSystemBlock = {
 };
 type SystemBlockOptions = {
 	includeClaudeCodeInstruction?: boolean;
+	/** Replace pre-shaped Claude Code identity blocks; reserved for the Console API-key profile. */
+	rebuildClaudeCodeIdentity?: boolean;
 	extraInstructions?: string[];
 	/** Text of the first user message — used as fingerprint seed for the billing header. */
 	firstUserMessageText?: string;
@@ -2599,9 +2623,40 @@ export function buildAnthropicSystemBlocks(
 	systemPrompt: readonly string[] | undefined,
 	options: SystemBlockOptions = {},
 ): AnthropicSystemBlock[] | undefined {
-	const { includeClaudeCodeInstruction = false, extraInstructions = [], firstUserMessageText, cacheControl } = options;
+	const {
+		includeClaudeCodeInstruction = false,
+		rebuildClaudeCodeIdentity = false,
+		extraInstructions = [],
+		firstUserMessageText,
+		cacheControl,
+	} = options;
 	const sanitizedPrompts = normalizeSystemPrompts(systemPrompt);
 	const trimmedInstructions = extraInstructions.map(instruction => instruction.trim()).filter(Boolean);
+
+	if (rebuildClaudeCodeIdentity) {
+		const blocks: AnthropicSystemBlock[] = includeClaudeCodeInstruction
+			? [
+					{ type: "text", text: createClaudeBillingHeader(firstUserMessageText ?? "") },
+					{ type: "text", text: claudeCodeSystemInstruction },
+				]
+			: [];
+
+		for (const instruction of trimmedInstructions) {
+			if (!instruction.startsWith(CLAUDE_BILLING_HEADER_PREFIX) && instruction !== claudeCodeSystemInstruction) {
+				blocks.push({ type: "text", text: instruction });
+			}
+		}
+		for (const prompt of sanitizedPrompts) {
+			const normalized = prompt.trim();
+			if (!normalized.startsWith(CLAUDE_BILLING_HEADER_PREFIX) && normalized !== claudeCodeSystemInstruction) {
+				blocks.push({ type: "text", text: prompt });
+			}
+		}
+		applyClaudeCodeSystemCache(blocks, cacheControl);
+
+		return blocks.length > 0 ? blocks : undefined;
+	}
+
 	const hasBillingHeader = sanitizedPrompts.some(prompt => prompt.startsWith(CLAUDE_BILLING_HEADER_PREFIX));
 
 	if (includeClaudeCodeInstruction && !hasBillingHeader) {
@@ -2641,6 +2696,29 @@ export function normalizeExtraBetas(betas?: string[] | string): string[] {
 	return raw.map(beta => beta.trim()).filter(beta => beta.length > 0);
 }
 
+/**
+ * Keep the Console request profile only where Claude-Code request shaping is
+ * valid: first-party Anthropic Messages, API-key auth, Claude non-Haiku models.
+ */
+export function normalizeAnthropicApiKeyRequestProfile(
+	profile: ApiKeyRequestProfile | undefined,
+	options: {
+		isOAuthToken: boolean;
+		provider: string;
+		baseUrl: string | undefined;
+		modelId: string;
+	},
+): ApiKeyRequestProfile | undefined {
+	return profile === "anthropic-console" &&
+		!options.isOAuthToken &&
+		options.provider === "anthropic" &&
+		isOfficialAnthropicApiUrl(options.baseUrl) &&
+		options.modelId.startsWith("claude-") &&
+		!options.modelId.toLowerCase().includes("haiku")
+		? profile
+		: undefined;
+}
+
 export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): AnthropicClientOptionsResult {
 	const {
 		model,
@@ -2654,6 +2732,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		thinkingEnabled = false,
 		thinkingDisplay,
 		isOAuth,
+		apiKeyRequestProfile,
 		claudeCodeSessionId,
 	} = args;
 	const compat = model.compat;
@@ -2669,9 +2748,16 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	// streams before the configured watchdog gets to govern them.
 	const fetchOptions: AnthropicFetchOptions = { ...(tlsFetchOptions ?? {}), timeout: false };
 	const baseFetch = args.fetch ?? fetch;
-	// Only OAuth requests inject the CC billing header; no API-key request can ever
-	// contain it, so there is no need to install the rewriter for those.
-	const cchFetch = oauthToken ? wrapFetchForCch(baseFetch) : baseFetch;
+	// OAuth and the normalized Console API-key profile inject the Claude billing
+	// block, so both need the CCH placeholder patched before the request is sent.
+	const wireModelId = resolveAnthropicWireModelId(model, args.requestModelId);
+	const effectiveApiKeyRequestProfile = normalizeAnthropicApiKeyRequestProfile(apiKeyRequestProfile, {
+		isOAuthToken: oauthToken,
+		provider: model.provider,
+		baseUrl,
+		modelId: wireModelId,
+	});
+	const cchFetch = oauthToken || effectiveApiKeyRequestProfile ? wrapFetchForCch(baseFetch) : baseFetch;
 	if (model.provider === "github-copilot") {
 		const copilotApiKey = parseGitHubCopilotApiKey(apiKey).accessToken;
 		// The GitHub Copilot Anthropic proxy doesn't accept Anthropic beta
@@ -2695,6 +2781,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 
 		return {
 			isOAuthToken: false,
+			apiKeyRequestProfile: effectiveApiKeyRequestProfile,
 			apiKey: null,
 			authToken: copilotApiKey,
 			baseURL: baseUrl,
@@ -2736,6 +2823,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	if (model.provider === "cloudflare-ai-gateway") {
 		return {
 			isOAuthToken: false,
+			apiKeyRequestProfile: effectiveApiKeyRequestProfile,
 			apiKey: null,
 			authToken: null,
 			baseURL: baseUrl,
@@ -2752,6 +2840,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		delete defaultHeaders.Authorization;
 		return {
 			isOAuthToken: false,
+			apiKeyRequestProfile: effectiveApiKeyRequestProfile,
 			apiKey,
 			authToken: null,
 			baseURL: baseUrl,
@@ -2766,6 +2855,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	if (model.provider === "opencode-zen") {
 		return {
 			isOAuthToken: false,
+			apiKeyRequestProfile: effectiveApiKeyRequestProfile,
 			apiKey: null,
 			authToken: null,
 			baseURL: baseUrl,
@@ -2788,6 +2878,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 
 	return {
 		isOAuthToken: oauthToken,
+		apiKeyRequestProfile: effectiveApiKeyRequestProfile,
 		apiKey: oauthToken || shouldSuppressClientApiKey ? null : apiKey,
 		authToken: oauthToken ? apiKey : undefined,
 		baseURL: baseUrl,
@@ -2801,10 +2892,14 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 function createClient(
 	model: Model<"anthropic-messages">,
 	args: AnthropicClientOptionsArgs,
-): { client: AnthropicMessagesClient; isOAuthToken: boolean } {
-	const { isOAuthToken: oauthToken, ...clientOptions } = buildAnthropicClientOptions({ ...args, model });
+): { client: AnthropicMessagesClient; isOAuthToken: boolean; apiKeyRequestProfile: ApiKeyRequestProfile | undefined } {
+	const {
+		isOAuthToken: oauthToken,
+		apiKeyRequestProfile,
+		...clientOptions
+	} = buildAnthropicClientOptions({ ...args, model });
 	const client = new AnthropicMessagesClient(clientOptions);
-	return { client, isOAuthToken: oauthToken };
+	return { client, isOAuthToken: oauthToken, apiKeyRequestProfile };
 }
 
 function disableThinkingIfToolChoiceForced(params: MessageCreateParamsStreaming): void {
@@ -3104,10 +3199,12 @@ function buildParams(
 	model: Model<"anthropic-messages">,
 	context: Context,
 	isOAuthToken: boolean,
+	apiKeyRequestProfile: ApiKeyRequestProfile | undefined,
 	options?: AnthropicOptions,
 	disableStrictTools = false,
 	useUmansGatewayWebSearch = false,
 	forceDemoteUnsignedThinking = false,
+	shouldNormalizeConsoleIdentity = false,
 ): MessageCreateParamsStreaming {
 	// A session-scoped auto-demote (learned from a live signing 400) clones the
 	// resolved compat with `replayUnsignedThinking: false` so every subsequent
@@ -3117,15 +3214,22 @@ function buildParams(
 		forceDemoteUnsignedThinking && model.compat.replayUnsignedThinking
 			? { ...model, compat: { ...model.compat, replayUnsignedThinking: false } }
 			: model;
+	const wireModelId = resolveAnthropicWireModelId(model, options?.requestModelId);
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken);
 
-	// Pre-compute system blocks so they occupy the right slot in the serialized body.
-	const shouldInjectClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");
+	// OAuth keeps the Claude Code logical-model exception; Console shaping follows
+	// the final wire model so routed Haiku requests shed stale identity blocks.
+	const shouldInjectOAuthClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");
+	const shouldInjectConsoleClaudeCodeInstruction =
+		apiKeyRequestProfile === "anthropic-console" && !wireModelId.toLowerCase().includes("haiku");
+	const shouldInjectClaudeCodeInstruction =
+		shouldInjectOAuthClaudeCodeInstruction || shouldInjectConsoleClaudeCodeInstruction;
 	const firstUserMessageText = shouldInjectClaudeCodeInstruction
 		? extractClaudeCodeFirstUserMessageText(context.messages)
 		: "";
 	const systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
+		rebuildClaudeCodeIdentity: shouldNormalizeConsoleIdentity,
 		firstUserMessageText,
 	});
 
@@ -3241,7 +3345,7 @@ function buildParams(
 	// Build params in the canonical field order: model → messages → system → tools →
 	// metadata → max_tokens → thinking → context_management → output_config → stream.
 	const params: MessageCreateParamsStreaming = {
-		model: options?.requestModelId ?? model.requestModelId ?? model.id,
+		model: wireModelId,
 		messages: convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, {
 			serverSideFallbackEnabled: !!options?.fallbacks?.length,
 		}),

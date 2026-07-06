@@ -1,4 +1,4 @@
-import type { OAuthAccess } from "./auth-storage";
+import type { OAuthAccess, ResolvedApiKey } from "./auth-storage";
 import * as AIError from "./error";
 import { isAuthRetryableError } from "./error/auth-classify";
 
@@ -18,6 +18,9 @@ import { isAuthRetryableError } from "./error/auth-classify";
  * The resolver returns the bearer to send, or `undefined` to stop retrying and
  * surface the last error to the caller.
  */
+/** Request behavior profile attached to a specifically resolved API-key credential. */
+export type ApiKeyRequestProfile = "anthropic-console";
+
 export interface ApiKeyResolveContext {
 	/** True on the final retry step — the resolver should rotate to a sibling credential. */
 	lastChance: boolean;
@@ -30,8 +33,17 @@ export interface ApiKeyResolveContext {
 /**
  * Resolves the API key to send for a request, retried through the a/b/c policy
  * described on {@link ApiKeyResolveContext}.
+ *
+ * Calling the resolver remains the compatibility path and returns only bearer
+ * bytes. Resolvers that attach request metadata expose `resolveWithMetadata`,
+ * which returns the key and metadata from one atomic resolution pass.
  */
-export type ApiKeyResolver = (ctx: ApiKeyResolveContext) => Promise<string | undefined> | string | undefined;
+export interface ApiKeyResolver {
+	(ctx: ApiKeyResolveContext): Promise<string | undefined> | string | undefined;
+	resolveWithMetadata?: (
+		ctx: ApiKeyResolveContext,
+	) => Promise<ResolvedApiKey | undefined> | ResolvedApiKey | undefined;
+}
 
 /** A static bearer string, or a {@link ApiKeyResolver} that mints/rotates one. */
 export type ApiKey = string | ApiKeyResolver;
@@ -41,33 +53,71 @@ export function isApiKeyResolver(key: ApiKey | undefined): key is ApiKeyResolver
 	return typeof key === "function";
 }
 
+/** Resolve one resolver call together with metadata from that same call. */
+async function resolveResolverWithMetadata(
+	resolver: ApiKeyResolver,
+	ctx: ApiKeyResolveContext,
+): Promise<ResolvedApiKey | undefined> {
+	if (resolver.resolveWithMetadata) {
+		const resolution = await resolver.resolveWithMetadata(ctx);
+		return resolution?.apiKey ? resolution : undefined;
+	}
+	const apiKey = (await resolver(ctx)) || undefined;
+	return apiKey === undefined ? undefined : { apiKey };
+}
+
+/**
+ * Performs the initial rich resolve of an {@link ApiKey}. Static keys are
+ * represented as metadata-free resolutions.
+ */
+export async function resolveApiKeyOnceWithMetadata(
+	key: ApiKey | undefined,
+	signal?: AbortSignal,
+): Promise<ResolvedApiKey | undefined> {
+	if (key === undefined) return undefined;
+	if (isApiKeyResolver(key)) {
+		return resolveResolverWithMetadata(key, { lastChance: false, error: undefined, signal });
+	}
+	return { apiKey: key };
+}
+
 /**
  * Performs the initial resolve of an {@link ApiKey} (`error: undefined`,
  * `lastChance: false`). Static keys pass through unchanged.
  */
 export async function resolveApiKeyOnce(key: ApiKey | undefined, signal?: AbortSignal): Promise<string | undefined> {
-	if (key === undefined) return undefined;
-	if (isApiKeyResolver(key)) return (await key({ lastChance: false, error: undefined, signal })) || undefined;
-	return key;
+	return (await resolveApiKeyOnceWithMetadata(key, signal))?.apiKey;
 }
 
 /**
- * Wraps a resolver with a bearer that was already selected for this request.
- *
- * Callers that preflight credentials can pass the returned resolver to the
- * auth-retry driver without making the driver know about that preflight: the
- * first initial resolution reuses `seed`, and all later resolutions delegate to
- * `resolver`.
+ * Wraps a resolver with a credential that was already selected for this
+ * request. The rich seed is consumed atomically by either compatibility or
+ * metadata-aware callers; all later resolutions delegate to `resolver`.
  */
-export function seedApiKeyResolver(seed: string | undefined, resolver: ApiKeyResolver): ApiKeyResolver {
-	let seedPending = seed !== undefined;
-	return ctx => {
+export function seedApiKeyResolver(
+	seed: ResolvedApiKey | string | undefined,
+	resolver: ApiKeyResolver,
+): ApiKeyResolver {
+	const seedResolution = typeof seed === "string" ? { apiKey: seed } : seed;
+	let seedPending = seedResolution !== undefined;
+	const resolveWithMetadata = (
+		ctx: ApiKeyResolveContext,
+	): Promise<ResolvedApiKey | undefined> | ResolvedApiKey | undefined => {
 		if (seedPending && ctx.error === undefined) {
 			seedPending = false;
-			return seed;
+			return seedResolution;
 		}
-		return resolver(ctx);
+		return resolveResolverWithMetadata(resolver, ctx);
 	};
+	const seededResolver: ApiKeyResolver = ctx => {
+		const resolution = resolveWithMetadata(ctx);
+		if (resolution !== undefined && "then" in resolution && typeof resolution.then === "function") {
+			return Promise.resolve(resolution).then(resolved => resolved?.apiKey);
+		}
+		return (resolution as ResolvedApiKey | undefined)?.apiKey;
+	};
+	seededResolver.resolveWithMetadata = resolveWithMetadata;
+	return seededResolver;
 }
 
 // Re-exported from the error module (its new home); see error/auth-classify.ts.
@@ -81,18 +131,28 @@ export { isAuthRetryableError };
  */
 export const AUTH_RETRY_STEPS: readonly boolean[] = [false, true];
 
-/** Resolve a single retry step, swallowing resolver failures into `undefined`. */
+/** Resolve one retry step with key metadata, swallowing resolver failures into `undefined`. */
+export async function resolveRetryKeyWithMetadata(
+	resolver: ApiKeyResolver,
+	lastChance: boolean,
+	error: unknown,
+	signal?: AbortSignal,
+): Promise<ResolvedApiKey | undefined> {
+	try {
+		return await resolveResolverWithMetadata(resolver, { lastChance, error, signal });
+	} catch {
+		return undefined;
+	}
+}
+
+/** Compatibility projection of {@link resolveRetryKeyWithMetadata}. */
 export async function resolveRetryKey(
 	resolver: ApiKeyResolver,
 	lastChance: boolean,
 	error: unknown,
 	signal?: AbortSignal,
 ): Promise<string | undefined> {
-	try {
-		return (await resolver({ lastChance, error, signal })) || undefined;
-	} catch {
-		return undefined;
-	}
+	return (await resolveRetryKeyWithMetadata(resolver, lastChance, error, signal))?.apiKey;
 }
 
 /**
@@ -101,17 +161,16 @@ export async function resolveRetryKey(
  * - A static string key (or any non-resolver) → a single `attempt` with no
  *   retry (identical to the legacy static-key path).
  * - A resolver → initial `attempt`, then on a retryable auth error up to two
- *   more attempts (refresh-same, then switch). A step is skipped when the
- *   resolver returns the same key it just tried or `undefined`; non-auth errors
- *   propagate immediately.
+ *   more attempts (refresh-same, then switch). A step is skipped only when its
+ *   key and request profile both match the previous resolution, or it returns
+ *   `undefined`; non-auth errors propagate immediately.
  *
- * Used by non-streaming consumers (image generation, web search, completion
- * helpers). The streaming driver in `stream.ts` implements the same policy with
- * its replay-safe buffering machinery.
+ * The second attempt argument is the atomic resolution that supplied the
+ * first argument. Existing single-argument callbacks remain compatible.
  */
 export async function withAuth<T>(
 	key: ApiKey | undefined,
-	attempt: (key: string) => Promise<T>,
+	attempt: (key: string, resolution: ResolvedApiKey) => Promise<T>,
 	opts?: { isAuthError?: (error: unknown) => boolean; signal?: AbortSignal; missingKeyMessage?: string },
 ): Promise<T> {
 	const isAuthError = opts?.isAuthError ?? isAuthRetryableError;
@@ -119,28 +178,34 @@ export async function withAuth<T>(
 
 	if (!isApiKeyResolver(key)) {
 		if (key === undefined) throw missingKey();
-		return attempt(key);
+		return attempt(key, { apiKey: key });
 	}
 
 	const resolver = key;
 	const signal = opts?.signal;
-	let lastKey = await resolveRetryKey(resolver, false, undefined, signal);
-	if (lastKey === undefined) throw missingKey();
+	let lastResolution = await resolveRetryKeyWithMetadata(resolver, false, undefined, signal);
+	if (lastResolution === undefined) throw missingKey();
 
 	let lastError: unknown;
 	try {
-		return await attempt(lastKey);
+		return await attempt(lastResolution.apiKey, lastResolution);
 	} catch (error) {
 		if (!isAuthError(error)) throw error;
 		lastError = error;
 	}
 
 	for (let i = 0; i < AUTH_RETRY_STEPS.length; i++) {
-		const nextKey = await resolveRetryKey(resolver, AUTH_RETRY_STEPS[i]!, lastError, signal);
-		if (nextKey === undefined || nextKey === lastKey) continue;
-		lastKey = nextKey;
+		const nextResolution = await resolveRetryKeyWithMetadata(resolver, AUTH_RETRY_STEPS[i]!, lastError, signal);
+		if (
+			nextResolution === undefined ||
+			(nextResolution.apiKey === lastResolution.apiKey &&
+				nextResolution.apiKeyRequestProfile === lastResolution.apiKeyRequestProfile)
+		) {
+			continue;
+		}
+		lastResolution = nextResolution;
 		try {
-			return await attempt(nextKey);
+			return await attempt(nextResolution.apiKey, nextResolution);
 		} catch (error) {
 			if (!isAuthError(error)) throw error;
 			lastError = error;

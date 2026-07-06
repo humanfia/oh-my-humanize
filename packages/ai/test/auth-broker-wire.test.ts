@@ -27,10 +27,20 @@ function mintOAuthCredential(suffix: string, expires: number) {
 	};
 }
 
+function mintPeerProfiledCredential() {
+	return {
+		type: "api_key" as const,
+		key: "peer-console-key",
+		apiKeyRequestProfile: "anthropic-console" as const,
+	};
+}
+
 describe("auth-broker wire surface", () => {
 	let tempDir = "";
 	let store: SqliteAuthCredentialStore | undefined;
 	let storage: AuthStorage | undefined;
+	let peerStore: SqliteAuthCredentialStore | undefined;
+	let peerStorage: AuthStorage | undefined;
 	let handle: AuthBrokerServerHandle | undefined;
 	let token = "";
 
@@ -53,9 +63,32 @@ describe("auth-broker wire surface", () => {
 		});
 	});
 
+	async function connectPeerStorage(): Promise<SqliteAuthCredentialStore> {
+		peerStore = await SqliteAuthCredentialStore.open(path.join(tempDir, "agent.db"));
+		peerStorage = new AuthStorage(peerStore);
+		await peerStorage.reload();
+		return peerStore;
+	}
+
+	async function expectPeerProfilePreserved(id: number): Promise<void> {
+		await peerStorage!.reload();
+		const expectedRows = [
+			{
+				id,
+				provider: "anthropic",
+				disabledCause: null,
+				credential: mintPeerProfiledCredential(),
+			},
+		];
+		expect(peerStore!.listAuthCredentials("anthropic")).toEqual(expectedRows);
+		expect(store!.listAuthCredentials("anthropic")).toEqual(expectedRows);
+		expect(peerStorage!.listStoredCredentials("anthropic")).toEqual(expectedRows);
+	}
 	afterEach(async () => {
 		vi.restoreAllMocks();
 		await handle?.close();
+		peerStorage?.close();
+		peerStore?.close();
 		storage?.close();
 		store?.close();
 		await removeWithRetries(tempDir);
@@ -88,6 +121,289 @@ describe("auth-broker wire surface", () => {
 			expect(entry.credential.access).toBe("access-a");
 			// Refresh token is replaced with the wire sentinel — clients never see it.
 			expect(entry.credential.refresh).toBe(REMOTE_REFRESH_SENTINEL);
+		}
+	});
+
+	test("strict v1 upload rejects a profiled API key without changing generation or stored state", async () => {
+		storage!.upsertCredential("strict-profile", { type: "api_key", key: "old-key" });
+		const generationBefore = storage!.getGeneration();
+
+		const response = await fetch(`${handle!.url}/v1/credential`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				provider: "strict-profile",
+				credential: {
+					type: "api_key",
+					key: "console-key",
+					apiKeyRequestProfile: "anthropic-console",
+				},
+			}),
+		});
+
+		expect(response.status).toBe(400);
+		expect(storage!.getGeneration()).toBe(generationBefore);
+		expect(store!.listAuthCredentials("strict-profile").map(entry => entry.credential)).toEqual([
+			{ type: "api_key", key: "old-key" },
+		]);
+		const snapshotResult = await new AuthBrokerClient({ url: handle!.url, token }).fetchSnapshot();
+		if (snapshotResult.status !== 200) throw new Error("expected snapshot");
+		expect(snapshotResult.generation).toBe(generationBefore);
+		expect(
+			snapshotResult.snapshot.credentials
+				.filter(entry => entry.provider === "strict-profile")
+				.map(entry => entry.credential),
+		).toEqual([{ type: "api_key", key: "old-key" }]);
+	});
+
+	test("legacy v1 uploads reject a provider containing a profiled API key before any mutation", async () => {
+		storage!.upsertCredential("anthropic", {
+			type: "api_key",
+			key: "console-key",
+			apiKeyRequestProfile: "anthropic-console",
+		});
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const initialClientResult = await client.fetchSnapshot();
+		if (initialClientResult.status !== 200) throw new Error("expected snapshot");
+		const generationBefore = storage!.getGeneration();
+		const storedRowsBefore = structuredClone(store!.listAuthCredentials("anthropic"));
+		const brokerRowsBefore = structuredClone(storage!.exportSnapshot().credentials);
+		const clientRowsBefore = structuredClone(initialClientResult.snapshot.credentials);
+		expect(initialClientResult.generation).toBe(generationBefore);
+
+		const upsertSpy = vi.spyOn(storage!, "upsertCredential");
+		const attempts = [
+			mintOAuthCredential("legacy-upload", Date.now() + 120_000),
+			{ type: "api_key" as const, key: "console-key" },
+		];
+
+		for (const credential of attempts) {
+			const response = await fetch(`${handle!.url}/v1/credential`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${token}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ provider: "anthropic", credential }),
+			});
+
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({
+				error: "Provider anthropic contains credentials unsupported by auth-broker v1",
+			});
+			expect(upsertSpy).toHaveBeenCalledTimes(0);
+			expect(store!.listAuthCredentials("anthropic")).toEqual(storedRowsBefore);
+			expect(storage!.exportSnapshot().credentials).toEqual(brokerRowsBefore);
+			expect(storage!.getGeneration()).toBe(generationBefore);
+
+			const clientResult = await client.fetchSnapshot();
+			if (clientResult.status !== 200) throw new Error("expected snapshot");
+			expect(clientResult.status).toBe(200);
+			expect(clientResult.generation).toBe(generationBefore);
+			expect(clientResult.snapshot.credentials).toEqual(clientRowsBefore);
+		}
+	});
+
+	test("hidden profiled credential ids return identical 404s without invoking storage mutations", async () => {
+		storage!.upsertCredential("anthropic", {
+			type: "api_key",
+			key: "hidden-console-key",
+			apiKeyRequestProfile: "anthropic-console",
+		});
+		const hiddenRow = store!
+			.listAuthCredentials("anthropic")
+			.find(row => row.credential.type === "api_key" && row.credential.apiKeyRequestProfile !== undefined);
+		if (!hiddenRow) throw new Error("expected profiled credential row");
+
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const initialClientResult = await client.fetchSnapshot();
+		if (initialClientResult.status !== 200) throw new Error("expected snapshot");
+		const generationBefore = storage!.getGeneration();
+		const storedRowsBefore = structuredClone(store!.listAuthCredentials());
+		const brokerRowsBefore = structuredClone(storage!.exportSnapshot().credentials);
+		const clientRowsBefore = structuredClone(initialClientResult.snapshot.credentials);
+		expect(initialClientResult.generation).toBe(generationBefore);
+
+		const refreshSpy = vi.spyOn(storage!, "refreshCredentialById");
+		const disableSpy = vi.spyOn(storage!, "disableCredentialById");
+		const expectedError = { error: `No credential with id=${hiddenRow.id}` };
+		const requests: RequestInit[] = [
+			{ method: "POST", headers: { Authorization: `Bearer ${token}` } },
+			{
+				method: "POST",
+				headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ cause: "must remain hidden" }),
+			},
+		];
+		const suffixes = ["refresh", "disable"];
+
+		for (let index = 0; index < suffixes.length; index += 1) {
+			const response = await fetch(
+				`${handle!.url}/v1/credential/${hiddenRow.id}/${suffixes[index]}`,
+				requests[index],
+			);
+			expect(response.status).toBe(404);
+			expect(await response.json()).toEqual(expectedError);
+			expect(refreshSpy).toHaveBeenCalledTimes(0);
+			expect(disableSpy).toHaveBeenCalledTimes(0);
+			expect(store!.listAuthCredentials()).toEqual(storedRowsBefore);
+			expect(storage!.exportSnapshot().credentials).toEqual(brokerRowsBefore);
+			expect(storage!.getGeneration()).toBe(generationBefore);
+
+			const clientResult = await client.fetchSnapshot();
+			if (clientResult.status !== 200) throw new Error("expected snapshot");
+			expect(clientResult.status).toBe(200);
+			expect(clientResult.generation).toBe(generationBefore);
+			expect(clientResult.snapshot.credentials).toEqual(clientRowsBefore);
+		}
+	});
+
+	test("disable loses a shared-SQLite race to a peer profiled replacement", async () => {
+		const peer = await connectPeerStorage();
+		const cachedRows = store!.listAuthCredentials("anthropic");
+		expect(cachedRows).toHaveLength(1);
+		const id = cachedRows[0].id;
+		const generationBefore = storage!.getGeneration();
+		const brokerRowsBefore = structuredClone(storage!.exportSnapshot().credentials);
+		const originalTryDisable = store!.tryDisableAuthCredentialIfMatches.bind(store!);
+		vi.spyOn(store!, "tryDisableAuthCredentialIfMatches").mockImplementation(
+			(credentialId, expectedData, disabledCause) => {
+				peer.updateAuthCredential(credentialId, mintPeerProfiledCredential());
+				return originalTryDisable(credentialId, expectedData, disabledCause);
+			},
+		);
+
+		const response = await fetch(`${handle!.url}/v1/credential/${id}/disable`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ cause: "stale broker must not disable peer row" }),
+		});
+
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({ error: `No credential with id=${id}` });
+		await expectPeerProfilePreserved(id);
+		expect(storage!.getGeneration()).toBe(generationBefore);
+		expect(storage!.exportSnapshot().credentials).toEqual(brokerRowsBefore);
+	});
+
+	test("refresh loses a shared-SQLite race to a peer profiled replacement", async () => {
+		const peer = await connectPeerStorage();
+		const cachedRows = store!.listAuthCredentials("anthropic");
+		expect(cachedRows).toHaveLength(1);
+		const id = cachedRows[0].id;
+		const generationBefore = storage!.getGeneration();
+		const brokerRowsBefore = structuredClone(storage!.exportSnapshot().credentials);
+		vi.spyOn(oauthUtils, "refreshOAuthToken").mockResolvedValue({
+			access: "stale-broker-refreshed-access",
+			refresh: "stale-broker-refreshed-token",
+			expires: Date.now() + 120_000,
+			accountId: "account-a",
+			email: "a@example.com",
+		});
+		const originalTryUpdate = store!.tryUpdateAuthCredentialIfMatches.bind(store!);
+		vi.spyOn(store!, "tryUpdateAuthCredentialIfMatches").mockImplementation(
+			(credentialId, provider, expectedData, credential) => {
+				peer.updateAuthCredential(credentialId, mintPeerProfiledCredential());
+				return originalTryUpdate(credentialId, provider, expectedData, credential);
+			},
+		);
+
+		const response = await fetch(`${handle!.url}/v1/credential/${id}/refresh`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}` },
+		});
+
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({ error: `No credential with id=${id}` });
+		await expectPeerProfilePreserved(id);
+		expect(storage!.getGeneration()).toBe(generationBefore);
+		expect(storage!.exportSnapshot().credentials).toEqual(brokerRowsBefore);
+	});
+
+	test("legacy upload atomically rejects a peer profiled replacement after its cached guard", async () => {
+		const peer = await connectPeerStorage();
+		const cachedRows = store!.listAuthCredentials("anthropic");
+		expect(cachedRows).toHaveLength(1);
+		const id = cachedRows[0].id;
+		const generationBefore = storage!.getGeneration();
+		const brokerRowsBefore = structuredClone(storage!.exportSnapshot().credentials);
+		const originalGuardedUpsert = store!.upsertAuthCredentialForProviderIfUnprofiled.bind(store!);
+		vi.spyOn(store!, "upsertAuthCredentialForProviderIfUnprofiled").mockImplementation((provider, credential) => {
+			peer.updateAuthCredential(id, mintPeerProfiledCredential());
+			return originalGuardedUpsert(provider, credential);
+		});
+
+		const response = await fetch(`${handle!.url}/v1/credential`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				provider: "anthropic",
+				credential: { type: "api_key", key: "legacy-client-key" },
+			}),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			error: "Provider anthropic contains credentials unsupported by auth-broker v1",
+		});
+		await expectPeerProfilePreserved(id);
+		expect(storage!.getGeneration()).toBe(generationBefore);
+		expect(storage!.exportSnapshot().credentials).toEqual(brokerRowsBefore);
+	});
+
+	test("v1 snapshot and SSE omit profiled rows without hiding supported credentials", async () => {
+		const profiledCredential = {
+			type: "api_key" as const,
+			key: "console-key",
+			apiKeyRequestProfile: "anthropic-console" as const,
+		};
+		storage!.upsertCredential("console-initial", profiledCredential);
+		storage!.upsertCredential("plain-initial", { type: "api_key", key: "plain-key" });
+
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const snapshotResult = await client.fetchSnapshot();
+		if (snapshotResult.status !== 200) throw new Error("expected snapshot");
+		expect(snapshotResult.snapshot.credentials.map(entry => entry.provider).sort()).toEqual([
+			"anthropic",
+			"plain-initial",
+		]);
+		expect(snapshotResult.snapshot.credentials.find(entry => entry.provider === "plain-initial")?.credential).toEqual(
+			{ type: "api_key", key: "plain-key" },
+		);
+		expect(
+			snapshotResult.snapshot.credentials.find(entry => entry.provider === "anthropic")?.credential,
+		).toMatchObject({
+			type: "oauth",
+			access: "access-a",
+			refresh: REMOTE_REFRESH_SENTINEL,
+		});
+
+		const controller = new AbortController();
+		const iter = client.openSnapshotStream({ signal: controller.signal });
+		try {
+			const first = await iter.next();
+			if (first.done || first.value.kind !== "snapshot") throw new Error("expected snapshot frame");
+			expect(first.value.credentials.map(entry => entry.provider).sort()).toEqual(["anthropic", "plain-initial"]);
+
+			storage!.upsertCredential("console-delta", {
+				...profiledCredential,
+				key: "console-delta-key",
+			});
+			storage!.upsertCredential("plain-delta", { type: "api_key", key: "plain-delta-key" });
+
+			const next = await nextMatching(iter, event => event.kind === "entry");
+			if (next.kind !== "entry") throw new Error("expected entry frame");
+			expect(next.entry.provider).toBe("plain-delta");
+			expect(next.entry.credential).toEqual({ type: "api_key", key: "plain-delta-key" });
+		} finally {
+			controller.abort();
+			await iter.return(undefined).catch(() => {});
 		}
 	});
 
@@ -130,7 +446,7 @@ describe("auth-broker wire surface", () => {
 		).toBe(true);
 	});
 
-	test("POST /v1/credential/:id/refresh forces a refresh and persists the new credential", async () => {
+	test("POST /v1/credential/:id/refresh mutates a visible OAuth row and returns its wire projection", async () => {
 		const refreshed = {
 			access: "access-rotated",
 			refresh: "refresh-rotated",
@@ -140,38 +456,89 @@ describe("auth-broker wire surface", () => {
 		};
 		vi.spyOn(oauthUtils, "refreshOAuthToken").mockResolvedValue(refreshed);
 
-		const initialResult = await new AuthBrokerClient({ url: handle!.url, token }).fetchSnapshot();
-		if (initialResult.status !== 200) throw new Error("expected snapshot");
-		const id = initialResult.snapshot.credentials[0].id;
+		const persistedBefore = store!.listAuthCredentials("anthropic");
+		expect(persistedBefore).toHaveLength(1);
+		const id = persistedBefore[0].id;
+		const generationBefore = storage!.getGeneration();
+		const response = await fetch(`${handle!.url}/v1/credential/${id}/refresh`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}` },
+		});
 
-		const client = new AuthBrokerClient({ url: handle!.url, token });
-		const result = await client.refreshCredential(id);
-		expect(result.entry.id).toBe(id);
-		if (result.entry.credential.type === "oauth") {
-			expect(result.entry.credential.access).toBe("access-rotated");
-			expect(result.entry.credential.refresh).toBe(REMOTE_REFRESH_SENTINEL);
-		}
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			entry: {
+				id,
+				provider: "anthropic",
+				credential: { type: "oauth", ...refreshed, refresh: REMOTE_REFRESH_SENTINEL },
+				identityKey: "email:a@example.com",
+			},
+		});
+		expect(store!.listAuthCredentials()).toEqual([
+			{
+				id,
+				provider: "anthropic",
+				disabledCause: null,
+				credential: { type: "oauth", ...refreshed },
+			},
+		]);
+		expect(storage!.getGeneration()).toBeGreaterThan(generationBefore);
 
-		// Underlying SQLite row was updated with the *real* refresh token (no sentinel).
-		const persisted = store!.getOAuth("anthropic");
-		expect(persisted?.access).toBe("access-rotated");
-		expect(persisted?.refresh).toBe("refresh-rotated");
+		const brokerRows = storage!.exportSnapshot().credentials;
+		expect(brokerRows).toEqual([
+			{
+				id,
+				provider: "anthropic",
+				credential: { type: "oauth", ...refreshed, refresh: REMOTE_REFRESH_SENTINEL },
+				identityKey: "email:a@example.com",
+			},
+		]);
+		const clientResult = await new AuthBrokerClient({ url: handle!.url, token }).fetchSnapshot();
+		if (clientResult.status !== 200) throw new Error("expected snapshot");
+		expect(clientResult.status).toBe(200);
+		expect(clientResult.generation).toBe(storage!.getGeneration());
+		expect(clientResult.snapshot.credentials).toEqual(brokerRows.map(entry => ({ ...entry, rotatesInMs: null })));
 	});
 
-	test("POST /v1/credential/:id/disable soft-deletes the credential and surfaces 404 thereafter", async () => {
-		const client = new AuthBrokerClient({ url: handle!.url, token });
-		const initialResult = await client.fetchSnapshot();
-		if (initialResult.status !== 200) throw new Error("expected snapshot");
-		const id = initialResult.snapshot.credentials[0].id;
+	test("POST /v1/credential/:id/disable mutates a visible API-key row and surfaces 404 thereafter", async () => {
+		storage!.upsertCredential("visible-api-key", { type: "api_key", key: "visible-key" });
+		const persistedBefore = structuredClone(store!.listAuthCredentials());
+		const brokerRowsBefore = structuredClone(storage!.exportSnapshot().credentials);
+		const apiKeyRow = persistedBefore.find(row => row.provider === "visible-api-key");
+		if (!apiKeyRow) throw new Error("expected visible API-key row");
+		const generationBefore = storage!.getGeneration();
 
-		const result = await client.disableCredential(id, "revoked by user");
-		expect(result.ok).toBe(true);
+		const response = await fetch(`${handle!.url}/v1/credential/${apiKeyRow.id}/disable`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ cause: "revoked by user" }),
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true });
 
-		const afterResult = await client.fetchSnapshot();
-		if (afterResult.status !== 200) throw new Error("expected snapshot");
-		expect(afterResult.snapshot.credentials).toHaveLength(0);
+		const expectedPersistedRows = persistedBefore.filter(row => row.id !== apiKeyRow.id);
+		const expectedBrokerRows = brokerRowsBefore.filter(row => row.id !== apiKeyRow.id);
+		expect(store!.listAuthCredentials()).toEqual(expectedPersistedRows);
+		expect(storage!.exportSnapshot().credentials).toEqual(expectedBrokerRows);
+		expect(storage!.getGeneration()).toBeGreaterThan(generationBefore);
 
-		await expect(client.refreshCredential(id)).rejects.toThrow();
+		const clientResult = await new AuthBrokerClient({ url: handle!.url, token }).fetchSnapshot();
+		if (clientResult.status !== 200) throw new Error("expected snapshot");
+		expect(clientResult.status).toBe(200);
+		expect(clientResult.generation).toBe(storage!.getGeneration());
+		expect(clientResult.snapshot.credentials).toEqual(
+			expectedBrokerRows.map(entry => ({ ...entry, rotatesInMs: null })),
+		);
+
+		const missingResponse = await fetch(`${handle!.url}/v1/credential/${apiKeyRow.id}/refresh`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}` },
+		});
+		expect(missingResponse.status).toBe(404);
+		expect(await missingResponse.json()).toEqual({ error: `No credential with id=${apiKeyRow.id}` });
+		expect(store!.listAuthCredentials()).toEqual(expectedPersistedRows);
+		expect(storage!.exportSnapshot().credentials).toEqual(expectedBrokerRows);
+		expect(storage!.getGeneration()).toBe(clientResult.generation);
 	});
 
 	test("Unknown route returns 404", async () => {

@@ -362,14 +362,17 @@ FROM model_usage_legacy
 		const results: StoredAuthCredential[] = [];
 		for (const row of rows) {
 			try {
-				const parsed = JSON.parse(row.data);
-				if (!parsed || typeof parsed !== "object") continue;
+				const parsed: unknown = JSON.parse(row.data);
+				if (!isRecord(parsed)) continue;
 
 				let credential: AuthCredential;
-				if (row.credential_type === "api_key" && typeof (parsed as { key?: unknown }).key === "string") {
-					credential = { type: "api_key", key: (parsed as { key: string }).key };
+				if (row.credential_type === "api_key" && typeof parsed.key === "string") {
+					credential =
+						parsed.apiKeyRequestProfile === "anthropic-console"
+							? { type: "api_key", key: parsed.key, apiKeyRequestProfile: parsed.apiKeyRequestProfile }
+							: { type: "api_key", key: parsed.key };
 				} else if (row.credential_type === "oauth") {
-					credential = { type: "oauth", ...(parsed as Record<string, unknown>) } as AuthCredential;
+					credential = { type: "oauth", ...parsed } as AuthCredential;
 				} else {
 					continue;
 				}

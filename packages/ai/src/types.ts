@@ -23,7 +23,7 @@ import { isOpenAIModelId } from "@oh-my-pi/pi-catalog/identity/family";
 import type { Api, FetchImpl, KnownApi, Model, Provider, ThinkingBudgets, Usage } from "@oh-my-pi/pi-catalog/types";
 import type { Type } from "arktype";
 import type { ZodType, z } from "zod/v4";
-import type { ApiKey } from "./auth-retry";
+import type { ApiKey, ApiKeyRequestProfile } from "./auth-retry";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import type { FallbackParam, StopDetails } from "./providers/anthropic-wire";
@@ -345,6 +345,8 @@ export interface StreamOptions {
 	maxTokens?: number;
 	signal?: AbortSignal;
 	apiKey?: string;
+	/** Request behavior profile bound to the resolved API-key credential. */
+	apiKeyRequestProfile?: ApiKeyRequestProfile;
 	cacheRetention?: CacheRetention;
 	/**
 	 * Additional headers to include in provider requests.

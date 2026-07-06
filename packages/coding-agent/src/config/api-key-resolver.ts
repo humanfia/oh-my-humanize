@@ -1,4 +1,4 @@
-import type { Api, ApiKeyResolver, AuthStorage, Model } from "@oh-my-pi/pi-ai";
+import type { Api, ApiKeyResolver, AuthStorage, Model, ResolvedApiKey } from "@oh-my-pi/pi-ai";
 
 /** Model slice accepted by the model-form `resolver(model, sessionId)` overload. */
 export type ApiKeyResolverModel = Pick<Model<Api>, "provider" | "baseUrl" | "id">;
@@ -18,6 +18,11 @@ export interface ApiKeyResolverOptions {
  * can build resolvers without depending on the full class.
  */
 export interface ApiKeyResolverRegistry {
+	resolveApiKeyForProvider?(
+		provider: string,
+		sessionId?: string,
+		options?: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal },
+	): Promise<ResolvedApiKey | undefined>;
 	getApiKeyForProvider(
 		provider: string,
 		sessionId?: string,
@@ -31,9 +36,9 @@ export interface ApiKeyResolverRegistry {
 	 *
 	 * Two call forms: `resolver(provider, options?)` for provider-scoped keys,
 	 * and `resolver(model, sessionId?)` which derives `baseUrl`/`modelId` from
-	 * the model. The resolver is stateless (safe to reuse across requests).
-	 * Callers that need the initial key for a guard can call
-	 * `resolveApiKeyOnce(resolver)`.
+	 * the model. Each resolution returns its bearer and request metadata atomically.
+	 * Callers that need an atomic initial resolution can call
+	 * `resolveApiKeyOnceWithMetadata(resolver)`.
 	 */
 	resolver(provider: string, options?: ApiKeyResolverOptions): ApiKeyResolver;
 	resolver(model: ApiKeyResolverModel, sessionId?: string): ApiKeyResolver;
@@ -44,15 +49,25 @@ export interface ApiKeyResolverRegistry {
  * Also usable standalone for structural registries that don't carry the method.
  */
 export function createApiKeyResolver(
-	registry: Pick<ApiKeyResolverRegistry, "getApiKeyForProvider" | "authStorage">,
+	registry: Pick<ApiKeyResolverRegistry, "resolveApiKeyForProvider" | "getApiKeyForProvider" | "authStorage">,
 	provider: string,
 	options: ApiKeyResolverOptions = {},
 ): ApiKeyResolver {
 	const { sessionId, baseUrl, modelId } = options;
-	return async ({ lastChance, error, signal }) => {
-		if (error === undefined) {
-			return registry.getApiKeyForProvider(provider, sessionId, { baseUrl, modelId });
+	const resolve = async (forceRefresh: boolean, signal?: AbortSignal): Promise<ResolvedApiKey | undefined> => {
+		const resolutionOptions = { baseUrl, modelId, forceRefresh, signal };
+		if (registry.resolveApiKeyForProvider) {
+			return registry.resolveApiKeyForProvider(provider, sessionId, resolutionOptions);
 		}
+		const apiKey = await registry.getApiKeyForProvider(provider, sessionId, resolutionOptions);
+		return apiKey === undefined ? undefined : { apiKey };
+	};
+	const resolveWithMetadata = async ({
+		lastChance,
+		error,
+		signal,
+	}: Parameters<ApiKeyResolver>[0]): Promise<ResolvedApiKey | undefined> => {
+		if (error === undefined) return resolve(false, signal);
 		if (lastChance) {
 			// Account constraint (401 / usage / account-rate-limit): rotate to a
 			// sibling credential. We do NOT honor any retry-after here — if a
@@ -60,8 +75,11 @@ export function createApiKeyResolver(
 			// is owned by `markUsageLimitReached` (default + server usage-report
 			// reset) and the outer whole-turn retry layer.
 			await registry.authStorage.rotateSessionCredential(provider, sessionId, { error, modelId, signal });
-			return registry.getApiKeyForProvider(provider, sessionId, { baseUrl, modelId });
+			return resolve(false, signal);
 		}
-		return registry.getApiKeyForProvider(provider, sessionId, { baseUrl, modelId, forceRefresh: true, signal });
+		return resolve(true, signal);
 	};
+	const resolver: ApiKeyResolver = async ctx => (await resolveWithMetadata(ctx))?.apiKey;
+	resolver.resolveWithMetadata = resolveWithMetadata;
+	return resolver;
 }

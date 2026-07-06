@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import { type AuthCredential, AuthStorage, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import {
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
@@ -12,7 +12,9 @@ import {
 	startAuthBroker,
 } from "@oh-my-pi/pi-ai/auth-broker";
 import { snapshotResponseSchema } from "@oh-my-pi/pi-ai/auth-broker/wire-schemas";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
+import * as anthropicModule from "@oh-my-pi/pi-ai/registry/oauth/anthropic";
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai/usage";
 import { type } from "arktype";
 import { removeWithRetries } from "../../utils/src/temp";
@@ -595,6 +597,317 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 		// response without waiting for the long-poll snapshot tick.
 		expect(clientStorage.get("kagi")).toEqual({ type: "api_key", key: "new-key" });
 		clientStorage.close();
+	});
+
+	test("failed remote replace preserves visible rows when a hidden profiled credential makes upload conflict", async () => {
+		serverStorage!.upsertCredential("anthropic", {
+			type: "api_key",
+			key: "hidden-console-key",
+			apiKeyRequestProfile: "anthropic-console",
+		});
+		const serverRowsBefore = structuredClone(serverStore!.listAuthCredentials("anthropic"));
+		expect(serverRowsBefore).toHaveLength(2);
+		expect(serverRowsBefore.some(row => row.credential.type === "oauth")).toBe(true);
+		expect(
+			serverRowsBefore.some(
+				row => row.credential.type === "api_key" && row.credential.apiKeyRequestProfile === "anthropic-console",
+			),
+		).toBe(true);
+		const generationBefore = serverStorage!.getGeneration();
+
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const visibleAnthropicRows = initialResult.snapshot.credentials.filter(entry => entry.provider === "anthropic");
+		expect(visibleAnthropicRows).toHaveLength(1);
+		expect(visibleAnthropicRows[0]?.credential.type).toBe("oauth");
+		expect(initialResult.generation).toBe(generationBefore);
+
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+			streamSnapshots: false,
+		});
+		const clientStorage = new AuthStorage(remoteStore);
+		await clientStorage.reload();
+		const clientSnapshotBefore = structuredClone(remoteStore.snapshot);
+		const uploadSpy = vi.spyOn(brokerClient, "uploadCredential");
+		const disableSpy = vi.spyOn(brokerClient, "disableCredential");
+
+		try {
+			await expect(clientStorage.set("anthropic", { type: "api_key", key: "replacement-api-key" })).rejects.toThrow(
+				/409 Conflict/,
+			);
+
+			expect(uploadSpy).toHaveBeenCalledTimes(1);
+			expect(disableSpy).toHaveBeenCalledTimes(0);
+			expect(serverStore!.listAuthCredentials("anthropic")).toEqual(serverRowsBefore);
+			expect(serverStorage!.getGeneration()).toBe(generationBefore);
+			expect(remoteStore.snapshot).toEqual(clientSnapshotBefore);
+		} finally {
+			clientStorage.close();
+		}
+	});
+
+	test("same-key remote replace keeps the broker-returned active row instead of disabling it", async () => {
+		const provider = "same-key-visible";
+		serverStore!.saveApiKey(provider, "same-api-key");
+		await serverStorage!.reload();
+		const activeBefore = serverStore!.listAuthCredentials(provider);
+		expect(activeBefore).toHaveLength(1);
+		const existingId = activeBefore[0]!.id;
+
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+			streamSnapshots: false,
+		});
+		const clientStorage = new AuthStorage(remoteStore);
+		await clientStorage.reload();
+		const uploadSpy = vi.spyOn(brokerClient, "uploadCredential");
+		const disableSpy = vi.spyOn(brokerClient, "disableCredential");
+
+		try {
+			await clientStorage.set(provider, { type: "api_key", key: "same-api-key" });
+
+			expect(uploadSpy).toHaveBeenCalledTimes(1);
+			expect(disableSpy).toHaveBeenCalledTimes(0);
+			const expectedActiveRow = {
+				id: existingId,
+				provider,
+				credential: { type: "api_key" as const, key: "same-api-key" },
+				disabledCause: null,
+			};
+			expect(serverStore!.listAuthCredentials(provider)).toEqual([expectedActiveRow]);
+			expect(clientStorage.listStoredCredentials(provider)).toEqual([expectedActiveRow]);
+		} finally {
+			clientStorage.close();
+		}
+	});
+
+	test.each([
+		[
+			"OAuth then API key",
+			"legacy-multi-oauth-key",
+			[
+				{
+					type: "oauth",
+					access: "oauth-first-access",
+					refresh: "oauth-first-refresh",
+					expires: 4_102_444_800_000,
+					accountId: "oauth-first-account",
+					email: "oauth-first@example.com",
+				},
+				{ type: "api_key", key: "replacement-api-key" },
+			] satisfies AuthCredential[],
+		],
+		[
+			"two distinct OAuth credentials",
+			"legacy-multi-two-oauth",
+			[
+				{
+					type: "oauth",
+					access: "oauth-a-access",
+					refresh: "oauth-a-refresh",
+					expires: 4_102_444_800_000,
+					accountId: "oauth-account-a",
+					email: "oauth-a@example.com",
+				},
+				{
+					type: "oauth",
+					access: "oauth-b-access",
+					refresh: "oauth-b-refresh",
+					expires: 4_102_444_800_000,
+					accountId: "oauth-account-b",
+					email: "oauth-b@example.com",
+				},
+			] satisfies AuthCredential[],
+		],
+		[
+			"API key then OAuth",
+			"legacy-multi-key-oauth",
+			[
+				{ type: "api_key", key: "replacement-api-key-first" },
+				{
+					type: "oauth",
+					access: "oauth-second-access",
+					refresh: "oauth-second-refresh",
+					expires: 4_102_444_800_000,
+					accountId: "oauth-second-account",
+					email: "oauth-second@example.com",
+				},
+			] satisfies AuthCredential[],
+		],
+	] as const)("rejects legacy multi-replace for %s before any broker mutation", async (_name, provider, credentials) => {
+		serverStore!.saveApiKey(provider, `existing-${provider}-key`);
+		await serverStorage!.reload();
+
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+			streamSnapshots: false,
+		});
+		const clientStorage = new AuthStorage(remoteStore);
+		await clientStorage.reload();
+		const serverRowsBefore = structuredClone(serverStore!.listAuthCredentials());
+		const generationBefore = serverStorage!.getGeneration();
+		const clientSnapshotBefore = structuredClone(remoteStore.snapshot);
+		const uploadSpy = vi.spyOn(brokerClient, "uploadCredential");
+		const disableSpy = vi.spyOn(brokerClient, "disableCredential");
+
+		try {
+			const rejection = await clientStorage.set(provider, credentials).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+
+			expect(rejection).toBeInstanceOf(AIError.AuthBrokerError);
+			expect(rejection).toMatchObject({
+				message:
+					"Auth broker protocol v1 does not support atomic replacement with multiple credentials. Log in on the broker host or upgrade the broker protocol before replacing multiple credentials.",
+			});
+			expect(uploadSpy).toHaveBeenCalledTimes(0);
+			expect(disableSpy).toHaveBeenCalledTimes(0);
+			expect(serverStore!.listAuthCredentials()).toEqual(serverRowsBefore);
+			expect(serverStorage!.getGeneration()).toBe(generationBefore);
+			expect(remoteStore.snapshot).toEqual(clientSnapshotBefore);
+		} finally {
+			clientStorage.close();
+		}
+	});
+
+	test("empty remote replace still disables the existing credential", async () => {
+		const provider = "legacy-empty-replace";
+		serverStore!.saveApiKey(provider, "existing-empty-replace-key");
+		await serverStorage!.reload();
+
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+			streamSnapshots: false,
+		});
+		const clientStorage = new AuthStorage(remoteStore);
+		await clientStorage.reload();
+		const uploadSpy = vi.spyOn(brokerClient, "uploadCredential");
+		const disableSpy = vi.spyOn(brokerClient, "disableCredential");
+
+		try {
+			await clientStorage.set(provider, []);
+
+			expect(uploadSpy).toHaveBeenCalledTimes(0);
+			expect(disableSpy).toHaveBeenCalledTimes(1);
+			expect(serverStore!.listAuthCredentials(provider)).toEqual([]);
+			expect(clientStorage.listStoredCredentials(provider)).toEqual([]);
+		} finally {
+			clientStorage.close();
+		}
+	});
+
+	test("rejects remote Console login before OAuth, key creation, or credential mutation", async () => {
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+			streamSnapshots: false,
+		});
+		const clientStorage = new AuthStorage(remoteStore);
+		await clientStorage.reload();
+
+		const loginSpy = vi.spyOn(anthropicModule, "loginAnthropicConsole");
+		const uploadSpy = vi.spyOn(brokerClient, "uploadCredential");
+		const disableSpy = vi.spyOn(brokerClient, "disableCredential");
+		const onAuth = vi.fn();
+		const onProgress = vi.fn();
+		const onPrompt = vi.fn(async () => "authorization-code");
+		const onManualCodeInput = vi.fn(async () => "authorization-code");
+		const createKeyFetch = vi.fn(async () => new Response('{"raw_key":"should-not-be-created"}'));
+		const clientSnapshotBefore = structuredClone(remoteStore.snapshot);
+		const clientCredentialsBefore = structuredClone(clientStorage.getAll());
+		const serverCredentialsBefore = structuredClone(serverStore!.listAuthCredentials("anthropic"));
+		const serverGenerationBefore = serverStorage!.getGeneration();
+
+		try {
+			await expect(
+				clientStorage.login("anthropic-console", {
+					onAuth,
+					onProgress,
+					onPrompt,
+					onManualCodeInput,
+					fetch: createKeyFetch,
+				}),
+			).rejects.toThrow(/Log in on the broker host or upgrade the broker protocol/);
+
+			expect(loginSpy).toHaveBeenCalledTimes(0);
+			expect(onAuth).toHaveBeenCalledTimes(0);
+			expect(onProgress).toHaveBeenCalledTimes(0);
+			expect(onPrompt).toHaveBeenCalledTimes(0);
+			expect(onManualCodeInput).toHaveBeenCalledTimes(0);
+			expect(createKeyFetch).toHaveBeenCalledTimes(0);
+			expect(uploadSpy).toHaveBeenCalledTimes(0);
+			expect(disableSpy).toHaveBeenCalledTimes(0);
+			expect(remoteStore.snapshot).toEqual(clientSnapshotBefore);
+			expect(clientStorage.getAll()).toEqual(clientCredentialsBefore);
+			expect(serverStore!.listAuthCredentials("anthropic")).toEqual(serverCredentialsBefore);
+			expect(serverStorage!.getGeneration()).toBe(serverGenerationBefore);
+		} finally {
+			clientStorage.close();
+		}
+	});
+
+	test("profiled API-key upsert and replace fail closed before changing local or broker state", async () => {
+		const providers = ["profiled-upsert", "profiled-replace"] as const;
+		for (const provider of providers) {
+			serverStorage!.upsertCredential(provider, { type: "api_key", key: `old-${provider}` });
+		}
+
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const initialGeneration = initialResult.snapshot.generation;
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+			streamSnapshots: false,
+		});
+		const profiledCredential = {
+			type: "api_key" as const,
+			key: "console-key",
+			apiKeyRequestProfile: "anthropic-console" as const,
+		};
+
+		try {
+			const results = await Promise.allSettled([
+				remoteStore.upsertAuthCredentialRemote(providers[0], profiledCredential),
+				remoteStore.replaceAuthCredentialsRemote(providers[1], [profiledCredential]),
+			]);
+
+			for (const result of results) {
+				expect(result.status).toBe("rejected");
+				if (result.status === "rejected") {
+					expect(String(result.reason)).toContain("protocol v1 does not support profiled API keys");
+				}
+			}
+			for (const provider of providers) {
+				const expected = [{ type: "api_key", key: `old-${provider}` }] satisfies AuthCredential[];
+				expect(serverStore!.listAuthCredentials(provider).map(entry => entry.credential)).toEqual(expected);
+				expect(remoteStore.listAuthCredentials(provider).map(entry => entry.credential)).toEqual(expected);
+			}
+			expect(serverStorage!.getGeneration()).toBe(initialGeneration);
+			expect(remoteStore.snapshot.generation).toBe(initialGeneration);
+		} finally {
+			remoteStore.close();
+		}
 	});
 
 	test("client AuthStorage.remove disables every broker-side credential for the provider (logout)", async () => {

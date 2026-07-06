@@ -12,6 +12,10 @@
 
 - Fixed an issue where provider orchestration tokens were incorrectly included in context token calculations, which could trigger premature context auto-compaction and promotion.
 
+### Fixed
+
+- Fixed pre-resolved API-key requests preserving credential-bound request metadata when entering the streaming retry pipeline.
+
 ## [16.3.3] - 2026-07-02
 
 ### Changed

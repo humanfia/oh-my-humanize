@@ -17,7 +17,13 @@ import { CATALOG_PROVIDERS, type ProviderCatalogEntry } from "@oh-my-pi/pi-catal
 import { CODEX_BASE_URL } from "@oh-my-pi/pi-catalog/wire/codex";
 import { $env, $pickenv, getConfigRootDir, isEnoent, logger, withExtraCaFetch } from "@oh-my-pi/pi-utils";
 import { getCustomApi } from "./api-registry";
-import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveRetryKey } from "./auth-retry";
+import {
+	AUTH_RETRY_STEPS,
+	isApiKeyResolver,
+	resolveApiKeyOnceWithMetadata,
+	resolveRetryKeyWithMetadata,
+} from "./auth-retry";
+import type { ResolvedApiKey } from "./auth-storage";
 import * as AIError from "./error";
 import { ProviderHttpError } from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
@@ -1022,7 +1028,10 @@ export function streamSimple<TApi extends Api>(
 		// any replay-unsafe event is buffered and returned (so the caller can
 		// retry with a fresh key) instead of surfaced. The terminal attempt
 		// clears the flag and emits whatever it gets.
-		const runAttempt = async (apiKey: string, captureAuthFailure: boolean): Promise<AuthRetryFailure | undefined> => {
+		const runAttempt = async (
+			resolution: ResolvedApiKey,
+			captureAuthFailure: boolean,
+		): Promise<AuthRetryFailure | undefined> => {
 			const bufferedEvents: AssistantMessageEvent[] = [];
 			let emittedReplayUnsafeEvent = false;
 			const flushBuffered = (): void => {
@@ -1031,7 +1040,11 @@ export function streamSimple<TApi extends Api>(
 			};
 
 			try {
-				const inner = streamSimple(model, context, { ...requestOptions, apiKey });
+				const inner = streamSimple(model, context, {
+					...requestOptions,
+					apiKey: resolution.apiKey,
+					apiKeyRequestProfile: resolution.apiKeyRequestProfile,
+				});
 				for await (const event of inner) {
 					if (!emittedReplayUnsafeEvent && event.type === "start") {
 						bufferedEvents.push(event);
@@ -1083,9 +1096,9 @@ export function streamSimple<TApi extends Api>(
 		};
 
 		void (async () => {
-			let lastKey: string | undefined;
+			let lastResolution: ResolvedApiKey | undefined;
 			try {
-				lastKey = (await apiKeyResolver({ lastChance: false, error: undefined, signal })) || undefined;
+				lastResolution = await resolveApiKeyOnceWithMetadata(apiKeyResolver, signal);
 			} catch (error) {
 				// A thrown resolver is a broker/OAuth/network failure, not a missing
 				// key — surface the cause instead of masking it as "No API key".
@@ -1097,25 +1110,36 @@ export function streamSimple<TApi extends Api>(
 				);
 				return;
 			}
-			if (lastKey === undefined) {
+			if (lastResolution === undefined) {
 				outer.fail(new AIError.MissingApiKeyError(model.provider));
 				return;
 			}
-			let failure = await runAttempt(lastKey, true);
+			let failure = await runAttempt(lastResolution, true);
 			if (!failure) return;
 			// a/b/c policy: refresh the same account (lastChance=false), then
 			// switch to a sibling (lastChance=true). A step is skipped when the
-			// resolver yields the same key it just tried or `undefined`; the
-			// final step's attempt clears the capture flag so it emits directly.
+			// resolver yields the same key+profile pair it just tried or `undefined`;
+			// the final step's attempt clears the capture flag so it emits directly.
 			for (let step = 0; step < AUTH_RETRY_STEPS.length; step++) {
 				// Caller aborted between attempts: don't mint a fresh token or fire
 				// another doomed request — emit the captured failure instead.
 				if (signal?.aborted) break;
-				const nextKey = await resolveRetryKey(apiKeyResolver, AUTH_RETRY_STEPS[step]!, failure.error, signal);
-				if (nextKey === undefined || nextKey === lastKey) continue;
-				lastKey = nextKey;
+				const nextResolution = await resolveRetryKeyWithMetadata(
+					apiKeyResolver,
+					AUTH_RETRY_STEPS[step]!,
+					failure.error,
+					signal,
+				);
+				if (
+					nextResolution === undefined ||
+					(nextResolution.apiKey === lastResolution.apiKey &&
+						nextResolution.apiKeyRequestProfile === lastResolution.apiKeyRequestProfile)
+				) {
+					continue;
+				}
+				lastResolution = nextResolution;
 				const isLastStep = step === AUTH_RETRY_STEPS.length - 1;
-				const next = await runAttempt(nextKey, !isLastStep);
+				const next = await runAttempt(nextResolution, !isLastStep);
 				if (!next) return;
 				failure = next;
 			}
@@ -1425,6 +1449,7 @@ function mapOptionsForApi<TApi extends Api>(
 		maxTokens: options?.maxTokens ?? model.maxTokens ?? undefined,
 		signal: options?.signal,
 		apiKey: apiKey ?? (typeof options?.apiKey === "string" ? options.apiKey : undefined),
+		apiKeyRequestProfile: options?.apiKeyRequestProfile,
 		cacheRetention: options?.cacheRetention,
 		headers: options?.headers,
 		initiatorOverride: options?.initiatorOverride,

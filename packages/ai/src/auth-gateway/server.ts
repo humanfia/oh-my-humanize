@@ -21,7 +21,7 @@
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "../auth-retry";
-import type { AuthStorage } from "../auth-storage";
+import type { AuthStorage, ResolvedApiKey } from "../auth-storage";
 import { classifyGatewayError } from "../error/gateway";
 import { isUsageLimitOutcome } from "../error/rate-limit";
 import * as anthropicMessages from "../providers/anthropic-messages-server";
@@ -225,7 +225,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 	signal: AbortSignal,
 	format: string,
 	peer: string,
-): Promise<string | undefined> {
+): Promise<ResolvedApiKey | undefined> {
 	const message = error instanceof Error ? error.message : String(error);
 	if (isUsageLimitOutcome(extractHttpStatusFromError(error), message)) {
 		const retryAfterMs = extractRetryHint(undefined, message);
@@ -245,7 +245,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 			error: message,
 		});
 		if (!switched) return undefined;
-		return storage.getApiKey(provider, sessionId, { modelId: model.id, signal });
+		return storage.resolveApiKey(provider, sessionId, { modelId: model.id, signal });
 	}
 	await storage.invalidateCredentialMatching(provider, oldKey, { sessionId, signal });
 	logger.debug("auth-gateway retrying provider request after credential invalidation", {
@@ -254,7 +254,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 		peer,
 		error: message,
 	});
-	return storage.getApiKey(provider, sessionId, { modelId: model.id, signal });
+	return storage.resolveApiKey(provider, sessionId, { modelId: model.id, signal });
 }
 
 /**
@@ -274,25 +274,29 @@ function buildGatewayApiKeyResolver(
 	storage: AuthStorage,
 	model: Model<Api>,
 	sessionId: string,
-	initialKey: string,
+	initialResolution: ResolvedApiKey,
 	requestSignal: AbortSignal,
 	format: string,
 	peer: string,
 ): ApiKeyResolver {
-	let lastKey = initialKey;
-	return async ({ lastChance, error, signal }) => {
+	let lastKey = initialResolution.apiKey;
+	const resolveWithMetadata = async ({
+		lastChance,
+		error,
+		signal,
+	}: Parameters<ApiKeyResolver>[0]): Promise<ResolvedApiKey | undefined> => {
 		const sig = signal ?? requestSignal;
 		if (error === undefined) {
-			lastKey = initialKey;
-			return initialKey;
+			lastKey = initialResolution.apiKey;
+			return initialResolution;
 		}
 		if (!lastChance) {
-			const refreshed = await storage.getApiKey(model.provider, sessionId, {
+			const refreshed = await storage.resolveApiKey(model.provider, sessionId, {
 				modelId: model.id,
 				signal: sig,
 				forceRefresh: true,
 			});
-			lastKey = refreshed ?? lastKey;
+			if (refreshed) lastKey = refreshed.apiKey;
 			return refreshed;
 		}
 		const next = await refreshGatewayApiKeyAfterAuthError(
@@ -306,9 +310,12 @@ function buildGatewayApiKeyResolver(
 			format,
 			peer,
 		);
-		lastKey = next ?? lastKey;
+		if (next) lastKey = next.apiKey;
 		return next;
 	};
+	const resolver: ApiKeyResolver = async ctx => (await resolveWithMetadata(ctx))?.apiKey;
+	resolver.resolveWithMetadata = resolveWithMetadata;
+	return resolver;
 }
 
 function clientClosedResponse(route: { module: FormatModule }): Response {
@@ -396,9 +403,9 @@ async function handleFormatEndpoint(
 	// expected to resolve the credential and pass it as `options.apiKey`.
 	// For OAuth providers this returns the access token (refreshed via the
 	// broker override on AuthStorage when needed).
-	let apiKey: string | undefined;
+	let apiKeyResolution: ResolvedApiKey | undefined;
 	try {
-		apiKey = await bootOpts.storage.getApiKey(model.provider, sessionId, {
+		apiKeyResolution = await bootOpts.storage.resolveApiKey(model.provider, sessionId, {
 			modelId: model.id,
 			signal: controller.signal,
 		});
@@ -409,7 +416,7 @@ async function handleFormatEndpoint(
 		return route.module.formatError(classified.status, classified.type, classified.message);
 	}
 	if (controller.signal.aborted) return clientClosedResponse(route);
-	if (!apiKey) {
+	if (!apiKeyResolution) {
 		return route.module.formatError(
 			401,
 			"authentication_error",
@@ -422,7 +429,7 @@ async function handleFormatEndpoint(
 		bootOpts.storage,
 		model,
 		sessionId,
-		apiKey,
+		apiKeyResolution,
 		controller.signal,
 		route.label,
 		peer,
@@ -552,9 +559,9 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	const sessionId = parsed.options.sessionId ?? deriveSessionId(parsed.modelId, parsed.context);
 	parsed.options.sessionId ??= sessionId;
 
-	let apiKey: string | undefined;
+	let apiKeyResolution: ResolvedApiKey | undefined;
 	try {
-		apiKey = await bootOpts.storage.getApiKey(model.provider, sessionId, {
+		apiKeyResolution = await bootOpts.storage.resolveApiKey(model.provider, sessionId, {
 			modelId: model.id,
 			signal: controller.signal,
 		});
@@ -565,7 +572,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		return piNative.formatError(classified.status, classified.type, classified.message);
 	}
 	if (controller.signal.aborted) return aborted();
-	if (!apiKey) {
+	if (!apiKeyResolution) {
 		return piNative.formatError(
 			401,
 			"authentication_error",
@@ -577,12 +584,16 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	// trust the client's options (already allow-listed by `parseRequest`) and
 	// only inject server-controlled fields. The codex sampling strip mirrors
 	// `buildStreamOptions` — Codex rejects every one with a 400 (#3117).
-	const streamOpts: SimpleStreamOptions = { ...parsed.options, apiKey, signal: controller.signal };
+	const streamOpts: SimpleStreamOptions = {
+		...parsed.options,
+		apiKey: apiKeyResolution.apiKey,
+		signal: controller.signal,
+	};
 	streamOpts.apiKey = buildGatewayApiKeyResolver(
 		bootOpts.storage,
 		model,
 		sessionId,
-		apiKey,
+		apiKeyResolution,
 		controller.signal,
 		"pi-native",
 		peer,

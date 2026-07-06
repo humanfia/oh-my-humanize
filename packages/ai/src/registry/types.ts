@@ -9,6 +9,7 @@
  * (default model, model-manager factory, catalog discovery) lives in
  * `@oh-my-pi/pi-catalog`'s descriptor table.
  */
+import type { ApiKeyRequestProfile } from "../auth-retry";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "./oauth/types";
 
 /**
@@ -44,6 +45,8 @@ export interface ProviderDefinition {
 	readonly envKeys?: KeyResolver;
 	// --- interactive login (OAuthProviderInterface-compatible) ---
 	readonly login?: (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials | string>;
+	/** Request behavior profile assigned to API keys returned by this login. */
+	readonly apiKeyRequestProfile?: ApiKeyRequestProfile;
 	readonly refreshToken?: (credentials: OAuthCredentials) => Promise<OAuthCredentials>;
 	readonly getApiKey?: (credentials: OAuthCredentials) => string;
 	/** Store OAuth credentials under a different provider id (e.g. `openai-codex-device` ⇒ `openai-codex`). */

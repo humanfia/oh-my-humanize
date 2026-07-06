@@ -631,6 +631,14 @@ export class InputController {
 		this.ctx.editor.onSubmit = async (text: string) => {
 			text = text.trim();
 			const hasPendingImages = this.ctx.editor.pendingImages.length > 0;
+			const manualInput = this.ctx.oauthManualInput;
+			if (text && manualInput?.hasPending() && !text.startsWith("/")) {
+				if (manualInput.submit(text)) {
+					this.ctx.editor.clearDraft();
+					this.ctx.showStatus("OAuth callback received; completing login…");
+				}
+				return;
+			}
 			if ((!isSettingsInitialized() || settings.get("emojiAutocomplete")) && text) text = expandEmoticons(text);
 
 			// Focused subagent session: the editor is a plain chat box for it.
