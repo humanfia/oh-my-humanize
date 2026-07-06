@@ -353,6 +353,18 @@ function spawnParamsFor(params: TaskParams, item: TaskItem): TaskParams {
 
 /** Generic worker agents whose output sharpens with a tailored `role` rather than the bare type. */
 const GENERIC_SPAWN_AGENTS: ReadonlySet<string> = new Set(["task", "sonic"]);
+const SESSION_INHERITED_AGENT_MODELS: ReadonlySet<string> = new Set(["default", "pi/default", "pi/task"]);
+
+function hasModelPatterns(value: string | string[] | undefined): boolean {
+	if (Array.isArray(value)) return value.some(pattern => pattern.trim().length > 0);
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function agentModelInheritsSession(model: string[] | undefined): boolean {
+	if (!model || model.length === 0) return true;
+	if (model.length !== 1) return false;
+	return SESSION_INHERITED_AGENT_MODELS.has(model[0]?.trim() ?? "");
+}
 
 /**
  * Advisory — never a rejection — nudging the spawner toward tailored
@@ -1160,8 +1172,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const agentModelOverrides = this.session.settings.get("task.agentModelOverrides");
 		const settingsModelOverride = agentModelOverrides[agentName];
 		const parentActiveModelPattern = this.session.getActiveModelString?.();
+		const inheritsParentDefaultModel =
+			!hasModelPatterns(settingsModelOverride) && agentModelInheritsSession(effectiveAgent.model);
 		const defaultSubagentModelOverride =
-			params.modelOverride === undefined ? this.session.defaultSubagentModelOverride : undefined;
+			params.modelOverride === undefined && inheritsParentDefaultModel
+				? this.session.defaultSubagentModelOverride
+				: undefined;
 		const modelOverride =
 			params.modelOverride ??
 			defaultSubagentModelOverride ??
