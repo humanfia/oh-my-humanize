@@ -1218,26 +1218,27 @@ export function reconstructWorkflowFamilies(entries: WorkflowLifecycleBranchEntr
 		const event = lifecycleEventFromEntry(entry);
 		if (!event) continue;
 		if (event.event === "family_created") {
-			const existing = families.get(event.familyId);
+			const familyId = normalizeWorkflowFamilyId(event.familyId);
+			const existing = families.get(familyId);
 			if (existing) {
 				if (existing.objective === undefined && event.objective !== undefined) existing.objective = event.objective;
-				currentFamilyId = event.familyId;
+				currentFamilyId = familyId;
 				continue;
 			}
 			const family: WorkflowRunFamilySnapshot = {
-				id: event.familyId,
+				id: familyId,
 				objective: event.objective,
 				freezes: [],
 				attempts: [],
 				checkpoints: [],
 				changeRequests: [],
 			};
-			families.set(event.familyId, family);
-			currentFamilyId = event.familyId;
+			families.set(familyId, family);
+			currentFamilyId = familyId;
 			continue;
 		}
 		if (event.event === "flow_frozen") {
-			const familyId = event.familyId ?? currentFamilyId;
+			const familyId = normalizeWorkflowFamilyId(event.familyId ?? currentFamilyId);
 			const family = familyId ? families.get(familyId) : undefined;
 			if (family && !family.freezes.some(freeze => freeze.id === event.freeze.id)) {
 				family.freezes.push(clone(event.freeze));
@@ -1245,11 +1246,12 @@ export function reconstructWorkflowFamilies(entries: WorkflowLifecycleBranchEntr
 			continue;
 		}
 		if (event.event === "attempt_started" || event.event === "attempt_restarted_from_checkpoint") {
-			const family = families.get(event.familyId);
+			const familyId = normalizeWorkflowFamilyId(event.familyId);
+			const family = families.get(familyId);
 			if (!family) continue;
 			const attempt: WorkflowRunAttemptSnapshot = {
 				id: event.attemptId,
-				familyId: event.familyId,
+				familyId,
 				freezeId: event.freezeId,
 				startNodeId: event.startNodeId,
 				status: "running",
@@ -1262,7 +1264,7 @@ export function reconstructWorkflowFamilies(entries: WorkflowLifecycleBranchEntr
 			}
 			attempts.set(event.attemptId, attempt);
 			family.attempts.push(attempt);
-			currentFamilyId = event.familyId;
+			currentFamilyId = familyId;
 			continue;
 		}
 		if (event.event === "runtime_binding_snapshot_created") {
@@ -1315,17 +1317,18 @@ export function reconstructWorkflowFamilies(entries: WorkflowLifecycleBranchEntr
 			continue;
 		}
 		if (event.event === "change_request_proposed") {
-			const family = families.get(event.request.familyId);
+			const familyId = normalizeWorkflowFamilyId(event.request.familyId);
+			const family = families.get(familyId);
 			if (!family) continue;
-			const request = clone(event.request);
+			const request = { ...clone(event.request), familyId };
 			const existing = changeRequests.get(request.id);
 			if (existing !== undefined && workflowChangeRequestProposalMatches(existing, request)) {
-				currentFamilyId = event.request.familyId;
+				currentFamilyId = familyId;
 				continue;
 			}
 			changeRequests.set(request.id, request);
 			family.changeRequests.push(request);
-			currentFamilyId = event.request.familyId;
+			currentFamilyId = familyId;
 			continue;
 		}
 		if (event.event === "change_request_approved" || event.event === "change_request_rejected") {
@@ -1358,12 +1361,13 @@ export function reconstructWorkflowFamilies(entries: WorkflowLifecycleBranchEntr
 			continue;
 		}
 		if (event.event === "checkpoint_created") {
-			const family = families.get(event.checkpoint.familyId);
+			const familyId = normalizeWorkflowFamilyId(event.checkpoint.familyId);
+			const family = families.get(familyId);
 			if (!family) continue;
-			family.checkpoints.push(clone(event.checkpoint));
+			family.checkpoints.push({ ...clone(event.checkpoint), familyId });
 			const attempt = attempts.get(event.checkpoint.attemptId);
 			if (attempt && attempt.status === "stop_requested") attempt.status = "stopped";
-			currentFamilyId = event.checkpoint.familyId;
+			currentFamilyId = familyId;
 			continue;
 		}
 		if (event.event === "attempt_completed") {
@@ -1381,6 +1385,12 @@ export function reconstructWorkflowFamilies(entries: WorkflowLifecycleBranchEntr
 		}
 	}
 	return [...families.values()];
+}
+
+function normalizeWorkflowFamilyId(familyId: string): string;
+function normalizeWorkflowFamilyId(familyId: string | undefined): string | undefined;
+function normalizeWorkflowFamilyId(familyId: string | undefined): string | undefined {
+	return familyId?.trim();
 }
 
 export function findRunningWorkflowCheckpointResumeAttempt(

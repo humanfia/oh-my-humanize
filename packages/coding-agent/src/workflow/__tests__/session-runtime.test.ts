@@ -732,6 +732,40 @@ edges: []
 		});
 	});
 
+	it("retries OpenAI Responses streams that close before terminal events", async () => {
+		const calls: string[] = [];
+		const host = createSessionWorkflowRuntimeHost({
+			cwd: "/workspace",
+			agentTaskRetryPolicy: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0 },
+			runAgentTask: async request => {
+				calls.push(request.nodeId);
+				if (calls.length === 1) {
+					return {
+						exitCode: 1,
+						output: "",
+						error: "OpenAI responses stream closed before a terminal response event was received\nrequest-context: provider=acme api=openai-responses model=acme-model",
+					};
+				}
+				return {
+					exitCode: 0,
+					output: JSON.stringify({ summary: "agent recovered after terminal-event stream close retry" }),
+				};
+			},
+		});
+		if (host.runAgentNode === undefined) throw new Error("agent runtime missing");
+
+		const node: WorkflowNode = { id: "build", type: "agent", prompt: "Build the thing." };
+		const output = await host.runAgentNode({
+			node,
+			activation: workflowActivation(node.id),
+			agent: "builder",
+			prompt: node.prompt,
+		});
+
+		expect(calls).toEqual(["build", "build"]);
+		expect(output.summary).toBe("agent recovered after terminal-event stream close retry");
+	});
+
 	it("does not retry non-transient agent failures", async () => {
 		let calls = 0;
 		const host = createSessionWorkflowRuntimeHost({

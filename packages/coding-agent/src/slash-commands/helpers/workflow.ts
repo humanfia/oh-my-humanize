@@ -982,7 +982,7 @@ async function handleRestartCommand(rest: string, runtime: SlashCommandRuntime):
 		return usage(errorMessage(error), runtime);
 	}
 	const startNodeId = startNodeIds[0]!;
-	const attemptId = nextWorkflowRestartAttemptId(located.family);
+	const attemptId = nextWorkflowRestartAttemptId(reconstructWorkflowFamilies(runtime.sessionManager.getBranch()));
 	if (!runtime.createWorkflowRuntimeHost) {
 		return usage("Workflow restart requires a workflow runtime host.", runtime);
 	}
@@ -1083,9 +1083,20 @@ async function flushWorkflowLifecycle(runtime: Pick<SlashCommandRuntime, "sessio
 	await runtime.sessionManager.flush();
 }
 
-function nextWorkflowRestartAttemptId(family: WorkflowRunFamilySnapshot): string {
-	const existing = new Set(family.attempts.map(attempt => attempt.id));
-	for (let index = family.attempts.length + 1; ; index += 1) {
+export function nextWorkflowRestartAttemptId(families: WorkflowRunFamilySnapshot[]): string {
+	const existing = new Set(families.flatMap(family => family.attempts.map(attempt => attempt.id)));
+	// Start past both the highest numbered attempt id (so numeric ids never collide
+	// across families) and the total attempt count (preserves the historical
+	// count-based numbering when ids carry no parseable index).
+	const maxNumberedIndex = Math.max(
+		0,
+		...[...existing].map(attemptId => {
+			const match = /(?:^|:)attempt-(\d+)$/.exec(attemptId);
+			return match === null ? 0 : Number(match[1] ?? 0);
+		}),
+	);
+	const nextIndex = Math.max(existing.size, maxNumberedIndex) + 1;
+	for (let index = nextIndex; ; index += 1) {
 		const attemptId = `attempt-${index}`;
 		if (!existing.has(attemptId)) return attemptId;
 	}
