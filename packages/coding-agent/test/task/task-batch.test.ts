@@ -30,7 +30,16 @@ const taskAgent: AgentDefinition = {
 	name: "task",
 	description: "General-purpose task agent",
 	systemPrompt: "You are a task agent.",
+	model: ["pi/task"],
 	source: "bundled",
+};
+
+const explicitModelAgent: AgentDefinition = {
+	name: "custom-scout",
+	description: "Project scout with an explicit model",
+	systemPrompt: "You are a scout.",
+	model: ["acme/scout-pro"],
+	source: "project",
 };
 
 function createSession(
@@ -84,9 +93,9 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 	};
 }
 
-function mockDiscovery(): void {
+function mockDiscovery(agents: AgentDefinition[] = [taskAgent]): void {
 	vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
-		agents: [taskAgent],
+		agents,
 		projectAgentsDir: null,
 	});
 }
@@ -398,6 +407,41 @@ describe("task.batch spawning", () => {
 			{
 				modelOverride: "rust-cat/gpt-5.5",
 				modelOverrideAuthFallback: false,
+			},
+		]);
+	});
+
+	it("keeps explicit project agent models over workflow-owned nested defaults", async () => {
+		mockDiscovery([taskAgent, explicitModelAgent]);
+		const seen: Array<{ agent: string; modelOverride?: string | string[]; modelOverrideAuthFallback?: boolean }> = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			seen.push({
+				agent: options.agent.name,
+				modelOverride: options.modelOverride,
+				modelOverrideAuthFallback: options.modelOverrideAuthFallback,
+			});
+			return makeResult(options.id ?? "?");
+		});
+
+		const tool = await TaskTool.create(
+			createSession({
+				settings: { "async.enabled": false, "task.batch": true },
+				defaultSubagentModelOverride: "rust-cat/gpt-5.5",
+				defaultSubagentModelOverrideAuthFallback: false,
+			}),
+		);
+
+		await tool.execute("tc-explicit-model-agent", {
+			agent: "custom-scout",
+			id: "Scout",
+			assignment: "Research with the project scout.",
+		} as TaskParams);
+
+		expect(seen).toEqual([
+			{
+				agent: "custom-scout",
+				modelOverride: ["acme/scout-pro"],
+				modelOverrideAuthFallback: undefined,
 			},
 		]);
 	});
