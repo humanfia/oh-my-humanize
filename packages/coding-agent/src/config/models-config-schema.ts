@@ -55,12 +55,24 @@ const OpenAICompatFields = {
 	"streamIdleTimeoutMs?": "number >= 0",
 	"supportsLongPromptCacheRetention?": "boolean",
 	"supportsReasoningParams?": "boolean",
+	"omitReasoningEffort?": "boolean",
+	"includeEncryptedReasoning?": "boolean",
+	"filterReasoningHistory?": "boolean",
 	"alwaysSendMaxTokens?": "boolean",
 	"strictResponsesPairing?": "boolean",
 	"supportsImageDetailOriginal?": "boolean",
 	// anthropic-messages compat flags (same `compat` slot, per-api interpretation)
+	"disableStrictTools?": "boolean",
+	"disableAdaptiveThinking?": "boolean",
+	"supportsEagerToolInputStreaming?": "boolean",
+	"supportsPromptCaching?": "boolean",
+	"supportsLongCacheRetention?": "boolean",
+	"supportsMidConversationSystem?": "boolean",
+	"supportsSamplingParams?": "boolean",
 	"requiresToolResultId?": "boolean",
 	"replayUnsignedThinking?": "boolean",
+	"disableNativeThinkingReplay?": "boolean",
+	"escapeBuiltinToolNames?": "boolean",
 } as const;
 
 const OpenAICompatFieldsSchema = type(OpenAICompatFields);

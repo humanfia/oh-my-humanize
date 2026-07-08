@@ -102,6 +102,35 @@ describe("Anthropic-compatible unsigned thinking replay (#2005)", () => {
 		expect(blocks[1]).toEqual({ type: "text", text: "Sure." });
 	});
 
+	it("can suppress native thinking replay for Anthropic-compatible proxies", () => {
+		const model = makeModel({
+			compat: {
+				disableNativeThinkingReplay: true,
+				replayUnsignedThinking: false,
+			},
+		});
+		const assistant: AssistantMessage = {
+			...makeAssistantThinking("", [
+				{ type: "thinking", thinking: "visible chain", thinkingSignature: "signed" },
+				{ type: "redactedThinking", data: "opaque" },
+				{ type: "text", text: "final answer" },
+			]),
+			content: [
+				{ type: "thinking", thinking: "", thinkingSignature: "empty-signed" },
+				{ type: "thinking", thinking: "visible chain", thinkingSignature: "signed" },
+				{ type: "redactedThinking", data: "opaque" },
+				{ type: "text", text: "final answer" },
+			],
+		};
+
+		const blocks = assistantWireBlocks([makeUser("continue"), assistant], model);
+		expect(blocks.some(block => block.type === "thinking" || block.type === "redacted_thinking")).toBe(false);
+		expect(blocks).toEqual([
+			{ type: "text", text: renderDemotedThinking(model.id, "visible chain") },
+			{ type: "text", text: "final answer" },
+		]);
+	});
+
 	it("sends context_management for API-key Anthropic-compatible thinking requests", async () => {
 		const { promise, resolve } = Promise.withResolvers<unknown>();
 		streamAnthropic(

@@ -376,6 +376,8 @@ export interface AnthropicCompat {
 	supportsEagerToolInputStreaming?: boolean;
 	/** Whether long prompt-cache retention (`ttl: "1h"`) is supported. Default: true for canonical Anthropic API. */
 	supportsLongCacheRetention?: boolean;
+	/** Whether Anthropic `cache_control` prompt-cache markers are supported. Default: true. */
+	supportsPromptCaching?: boolean;
 	/**
 	 * Whether mid-conversation `role: "system"` messages are accepted in the
 	 * `messages` array (Claude Opus 4.8+ and Claude Fable/Mythos 5 on the
@@ -419,6 +421,14 @@ export interface AnthropicCompat {
 	 * model reasons. Use for models that reject omitted or disabled thinking.
 	 */
 	requiresThinkingEnabled?: boolean;
+	/**
+	 * Do not replay prior assistant thinking as native Anthropic
+	 * `thinking`/`redacted_thinking` blocks. Visible thinking text is demoted to
+	 * ordinary text; opaque empty signatures and redacted blocks are dropped.
+	 * Use this for Anthropic-compatible gateways that reject native thinking
+	 * history even when the model id is Claude-compatible.
+	 */
+	disableNativeThinkingReplay?: boolean;
 	/**
 	 * Prefix Anthropic built-in tool names (`web_search`, `code_execution`, ...)
 	 * when they are ordinary client tools. Some Anthropic-compatible gateways

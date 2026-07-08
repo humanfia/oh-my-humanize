@@ -441,7 +441,7 @@ function getCacheControl(
 	isOAuthToken: boolean,
 ): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
 	const retention = cacheRetention ?? (isOAuthToken ? "long" : resolveCacheRetention(undefined));
-	if (retention === "none") {
+	if (retention === "none" || !model.compat.supportsPromptCaching) {
 		return { retention };
 	}
 	const ttl = retention === "long" && model.compat.supportsLongCacheRetention ? "1h" : undefined;
@@ -3570,6 +3570,14 @@ export function convertAnthropicMessages(
 						text: block.text.toWellFormed(),
 					});
 				} else if (block.type === "thinking") {
+					if (model.compat.disableNativeThinkingReplay) {
+						if (block.thinking.trim().length === 0) continue;
+						blocks.push({
+							type: "text",
+							text: renderDemotedThinking(model.id, block.thinking),
+						});
+						continue;
+					}
 					if (hasSignedThinking) {
 						if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) {
 							if (block.thinking.trim().length === 0) continue;
@@ -3608,6 +3616,7 @@ export function convertAnthropicMessages(
 						});
 					}
 				} else if (block.type === "redactedThinking") {
+					if (model.compat.disableNativeThinkingReplay) continue;
 					if (block.data.trim().length === 0) continue;
 					blocks.push({
 						type: "redacted_thinking",
