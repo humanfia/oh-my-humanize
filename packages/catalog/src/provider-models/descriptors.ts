@@ -29,6 +29,7 @@ import {
 	mistralModelManagerOptions,
 	moonshotModelManagerOptions,
 	nanoGptModelManagerOptions,
+	nebiusModelManagerOptions,
 	nvidiaModelManagerOptions,
 	ollamaModelManagerOptions,
 	openaiModelManagerOptions,
@@ -263,6 +264,13 @@ export const CATALOG_PROVIDERS = [
 		envVars: ["NANO_GPT_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => nanoGptModelManagerOptions(config),
 		catalogDiscovery: { label: "NanoGPT" },
+	},
+	{
+		id: "nebius",
+		defaultModel: "deepseek-ai/DeepSeek-R1-0528",
+		envVars: ["NEBIUS_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => nebiusModelManagerOptions(config),
+		catalogDiscovery: { label: "Nebius Token Factory" },
 	},
 	{
 		id: "nvidia",

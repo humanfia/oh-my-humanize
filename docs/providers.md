@@ -101,6 +101,7 @@ Each provider has one or more environment variables that supply a key when no st
 | `deepseek` | `DEEPSEEK_API_KEY` |
 | `fireworks` | `FIREWORKS_API_KEY` |
 | `together` | `TOGETHER_API_KEY` |
+| `nebius` | `NEBIUS_API_KEY` |
 | `nvidia` | `NVIDIA_API_KEY` |
 | `huggingface` | `HUGGINGFACE_HUB_TOKEN`, then `HF_TOKEN` |
 | `moonshot` | `MOONSHOT_API_KEY` |
