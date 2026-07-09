@@ -267,7 +267,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "nebius",
-		defaultModel: "deepseek-ai/DeepSeek-R1-0528",
+		defaultModel: "deepseek-ai/DeepSeek-V4-Pro",
 		envVars: ["NEBIUS_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => nebiusModelManagerOptions(config),
 		catalogDiscovery: { label: "Nebius Token Factory" },
