@@ -77,6 +77,27 @@ describe("workflow lifecycle", () => {
 		const family = reconstructWorkflowFamilies(workflowLifecycleStoreEntries(host))[0]!;
 		expect(family.attempts[0]).toMatchObject({ id: "attempt-1", status: "completed", summary: "done" });
 	});
+
+	it("attaches attempts to their family when lifecycle family ids differ only by surrounding whitespace", () => {
+		const host = new MemoryWorkflowHost();
+		startWorkflowFamily(host, { familyId: "family-1" });
+		// A later event can carry the same family id with stray surrounding whitespace
+		// (e.g. re-serialized through a shell/env boundary). Reconstruction must normalize
+		// both sides so the attempt still attaches instead of being dropped.
+		startWorkflowAttempt(host, {
+			familyId: "  family-1  ",
+			attemptId: "attempt-1",
+			freezeId: "freeze-1",
+			startNodeId: "build",
+			runtimeBindingSnapshot: runtimeBinding("binding-1"),
+		});
+
+		const families = reconstructWorkflowFamilies(host.getBranch());
+		expect(families).toHaveLength(1);
+		expect(families[0]?.id).toBe("family-1");
+		expect(families[0]?.attempts).toHaveLength(1);
+		expect(families[0]?.attempts[0]).toMatchObject({ id: "attempt-1", familyId: "family-1" });
+	});
 });
 
 function changeProposal(reason: string) {

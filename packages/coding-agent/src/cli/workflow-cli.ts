@@ -629,22 +629,53 @@ function isWorkflowSpawnOptionsRecord(value: unknown): value is Record<string, u
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Threshold well under a conservative ARG_MAX budget (env + argv share the limit; typical
+// ARG_MAX is ~128KB-2MB but the whole environment counts, so stay conservative).
+export const WORKFLOW_CONTEXT_ENV_SPILL_THRESHOLD = 96 * 1024;
+
+export async function spillLargeWorkflowContextEnv(
+	env: Record<string, string> | undefined,
+): Promise<Record<string, string>> {
+	const resolved: Record<string, string> = { ...(env ?? {}) };
+	const context = resolved.OMP_WORKFLOW_CONTEXT;
+	if (context === undefined || context.length <= WORKFLOW_CONTEXT_ENV_SPILL_THRESHOLD) {
+		return resolved;
+	}
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-wfctx-"));
+	const file = path.join(dir, "context.json");
+	await fs.writeFile(file, context, "utf8");
+	delete resolved.OMP_WORKFLOW_CONTEXT;
+	resolved.OMP_WORKFLOW_CONTEXT_FILE = file;
+	return resolved;
+}
+
 async function runHeadlessShellScript(
 	cwd: string,
 	request: WorkflowShellScriptRequest,
 ): Promise<{ exitCode: number; output: string; error?: string; language: "sh" }> {
+	const baseEnv = buildWorkflowShellEnvironment(workflowScriptEnvironment(request));
+	// The workflow context (full state) is serialized into OMP_WORKFLOW_CONTEXT. For large
+	// tasks (e.g. plan-review gates carrying taskContext + full plan) this can exceed the OS
+	// ARG_MAX limit, causing `E2BIG: argument list too long, posix_spawn 'sh'`. Spill an
+	// oversized context to a temp file and pass its path instead; the reader prefers the file.
+	const env = await spillLargeWorkflowContextEnv(baseEnv);
 	const child = Bun.spawn(["sh", "-c", request.code], {
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",
 		signal: request.signal,
-		env: buildWorkflowShellEnvironment(workflowScriptEnvironment(request)),
+		env,
 	});
 	const [stdout, stderr, exitCode] = await Promise.all([
 		streamText(child.stdout),
 		streamText(child.stderr),
 		child.exited,
 	]);
+	if (env.OMP_WORKFLOW_CONTEXT_FILE !== undefined) {
+		await import("node:fs/promises")
+			.then(fs => fs.rm(env.OMP_WORKFLOW_CONTEXT_FILE as string, { force: true }))
+			.catch(() => {});
+	}
 	const output = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n");
 	return {
 		exitCode,
