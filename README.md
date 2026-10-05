@@ -1,3 +1,14 @@
+> [!WARNING]
+> **Archived.** oh-my-humanize is no longer maintained. It is superseded by
+> [humanfia/humanize](https://github.com/humanfia/humanize); see the
+> [Humanize documentation](https://docs.humanfia.ai/humanize/).
+
+> [!NOTE]
+> oh-my-humanize is a fork of [oh-my-pi](https://github.com/can1357/oh-my-pi) by
+> [Can Bölük](https://github.com/can1357), itself a fork of
+> [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner).
+> Both are MIT-licensed; their copyright notices are kept in [LICENSE](LICENSE).
+
 <p align="center">
   <img src="https://github.com/humanfia/oh-my-humanize/blob/main/assets/hero.png?raw=true" alt="omh">
 </p>
@@ -588,7 +599,10 @@ reviews or vouches you. See **[CONTRIBUTING.md](CONTRIBUTING.md)** and
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). oh-my-humanize is a fork of
+[can1357/oh-my-pi](https://github.com/can1357/oh-my-pi), which is a fork of
+[badlogic/pi-mono](https://github.com/badlogic/pi-mono); the copyright notices
+below are theirs.
 
 © 2025 Mario Zechner  
 © 2025-2026 Can Bölük
