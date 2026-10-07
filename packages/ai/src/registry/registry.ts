@@ -34,6 +34,7 @@ import { minimaxCodeCnProvider } from "./minimax-code-cn";
 import { mistralProvider } from "./mistral";
 import { moonshotProvider } from "./moonshot";
 import { nanogptProvider } from "./nanogpt";
+import { nebiusProvider } from "./nebius";
 import { nvidiaProvider } from "./nvidia";
 import { ollamaProvider } from "./ollama";
 import { ollamaCloudProvider } from "./ollama-cloud";
@@ -111,6 +112,7 @@ const ALL = [
 	basetenProvider,
 	fireworksProvider,
 	togetherProvider,
+	nebiusProvider,
 	nvidiaProvider,
 	huggingfaceProvider,
 	perplexityProvider,

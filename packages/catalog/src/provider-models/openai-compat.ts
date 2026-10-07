@@ -3857,6 +3857,22 @@ export function anthropicModelManagerOptions(
 }
 
 // ---------------------------------------------------------------------------
+// 25. Nebius Token Factory
+// ---------------------------------------------------------------------------
+
+export interface NebiusModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+export function nebiusModelManagerOptions(
+	config?: NebiusModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	return createSimpleOpenAICompletionsOptions("nebius", "https://api.tokenfactory.nebius.com/v1", config);
+}
+
+// ---------------------------------------------------------------------------
 // Models.dev provider descriptors for generate-models.ts
 // ---------------------------------------------------------------------------
 
